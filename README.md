@@ -9,3 +9,7 @@ Some demo pages from sub-projects:
 
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 
+   A short demo in HTML showing convex hull and Welzl's
+   smallest enclosing circle algo (in 2D).
+   Its main interest is the code, not really the page in itself.
+
