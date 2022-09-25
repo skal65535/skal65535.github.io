@@ -6,3 +6,6 @@ Some demo pages from sub-projects:
 
    Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 
+
+## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
+
