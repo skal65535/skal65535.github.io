@@ -11,5 +11,11 @@ Some demo pages from sub-projects:
 
    A short demo in HTML showing convex hull and Welzl's
    smallest enclosing circle algo (in 2D).
+
    Its main interest is the code, not really the page in itself.
 
+## Some shaders in ShaderToy...
+
+  * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
+  * [Fluid flow simulation](https://www.shadertoy.com/view/ft2czK)
+  * [Group Velocity visualization](https://www.shadertoy.com/view/stcBDB)
