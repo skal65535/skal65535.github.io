@@ -14,6 +14,13 @@ Some demo pages from sub-projects:
 
    Its main interest is the code, not really the page in itself.
 
+## [Triangle-based compression](https://skal65535.github.io/triangle/index.html) demo
+
+   Using triangulation + colormap to compress images into a very tight preview
+   (compressed data is a base64 string). The decoder is ~400 lines of javascript + WebGL.
+
+   See the [paper](http://arxiv.org/abs/1809.02257) presented at ICIP 2018.
+
 ## Some shaders in ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
