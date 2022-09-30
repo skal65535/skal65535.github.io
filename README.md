@@ -26,3 +26,5 @@ Some demo pages from sub-projects:
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
   * [Fluid flow simulation](https://www.shadertoy.com/view/ft2czK)
   * [Group Velocity visualization](https://www.shadertoy.com/view/stcBDB)
+  * [Mach cone visualization](https://www.shadertoy.com/view/slKfWR)
+  * [Kelvin wake visualization](https://www.shadertoy.com/view/stGBWh)
