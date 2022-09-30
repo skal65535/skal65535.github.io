@@ -11,8 +11,12 @@ Some demo pages from sub-projects:
 
    A short demo in HTML showing convex hull and Welzl's
    smallest enclosing circle algo (in 2D).
-
    Its main interest is the code, not really the page in itself.
+
+## [Kruskal algorithm](https://skal65535.github.io/network/kruskal.html) demo
+
+   Very simple and elegant way to extract the Minimum-Spanning Tree out
+   of a set of points!
 
 ## [Triangle-based compression](https://skal65535.github.io/triangle/index.html) demo
 
