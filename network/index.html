@@ -1,0 +1,247 @@
+<!-- skal/ (pascal.massimino@gmail.com) -->
+
+<html>
+
+<title>Strange NN network</title>
+
+<head>
+    <style>
+        :root { color-scheme: dark; }
+        #canvas { outline: none;  /* because of the 'tabindex' focus trick */ }
+    </style>
+</head>
+
+<body>
+    <!-- 'tabindex' is a trick to make the canvas capture key events -->
+    <canvas id="canvas" tabindex="1"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+
+    <script>
+        function Norm2(dx, dy) { return dx * dx + dy * dy; }
+        class Point {
+            constructor(x = 0., y = 0.) { this.x = x; this.y = y; }
+            Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
+        }
+        class Link {
+            constructor(i, j, d, g = 0) { this.i = i; this.j = j; this.d = d; this.g = g; }
+        }
+        function makeAllPairs(pts) {
+            const N = pts.length;
+            let t = [];
+            for (let i = 0; i < N; ++i) {
+                for (let j = i + 1; j < N; ++j) {
+                    t.push(new Link(i, j, pts[i].Distance2(pts[j])));
+                }
+            }
+            return t;
+        }
+        function iota(N) {
+            let t = [];
+            for (let i = 0; i < N; ++i) t.push(i);
+            return t;
+        }
+        function findNN(pts) {
+            let links = [];
+            const N = pts.length;
+            let pairs = makeAllPairs(pts);
+
+            for (let generation = 0; pairs.length > 0 && generation < 3; ++generation) {
+                let alt = [];
+                while (pairs.length > 0) {
+                    pairs.sort((a, b) => { return b.d - a.d; });
+                    let P = pairs.pop();
+                    P.g = generation;
+                    links.push(P);
+                    let tmp = [];
+                    for (const p of pairs) {
+                        if (p.i != P.i && p.i != P.j && p.j != P.i && p.j != P.j) {
+                            tmp.push(p);
+                        } else {
+                            alt.push(p);
+                        }
+                    }
+                    pairs = tmp;
+                }
+                pairs = alt;
+            }
+            return links;
+        }
+        // Global parameters
+        const settings = {
+            count: 100,
+            ctype: 0,
+            drawings: {
+                NN: true,
+                radius: 1.,
+                background_color: '#000000',
+            },
+            fps: 0,
+
+            reset: () => { randomPoints(); },
+            gui: null,
+        }
+
+        // GUI
+        const setupGUI = () => {
+            settings.gui = new lil.GUI();
+            const configFolder = settings.gui.addFolder('Config');
+            configFolder.add(settings, 'reset').name('Reset');
+            configFolder.add(settings, 'fps').name('frame rate').listen().disable();
+            configFolder.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
+                .onFinishChange(randomPoints);
+            configFolder.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
+                .onFinishChange(randomPoints);            
+            const drawingsFolder = settings.gui.addFolder('Drawings');
+            drawingsFolder.add(settings.drawings, 'NN').name('Draw NN').listen();
+            drawingsFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
+            drawingsFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
+
+            setupClicks();
+            setupKeys();
+        }
+        const setupClicks = () => {
+            canvas.addEventListener('click',
+                (e) => { points.push(new Point(e.clientX, e.clientY)); }
+            )
+        }
+        const setupKeys = () => {
+            canvas.addEventListener('keydown',
+                function (e) {
+                    switch (e.key) {
+                        default: console.log(e.key); break;
+                    }
+                })
+        }
+
+        // Seedable 'decent' random generator, returning values in [-1, 1]
+        var seed = 91651088029;
+        const mulberry32 = () => {
+            let t = seed += 0x6D2B79F5;
+            t = Math.imul(t ^ t >>> 15, t | 1);
+            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+            return ((t ^ t >>> 14) >>> 0) / 2147483648. - 1.;
+        }
+
+        const randomPoints = () => {  // initial points distribution
+            points.length = 0;
+            const number_of_points = settings.count;
+            const type = settings.ctype;
+            const mx = canvas.width / 2, my = canvas.height / 2;  // center
+            for (let i = 0; i < number_of_points; i++) {
+                let px = mulberry32(), py = mulberry32();
+                let norm = Math.sqrt(px * px + py * py);
+                if (type == 1) {
+                    norm = 1.0 / norm;
+                    px *= norm;
+                    py *= norm;
+                } else if (type == 2) {
+                    if (norm > 1.0) { --i; continue; }
+                } else if (type == 3) {
+                    const N = 3;  // number of branches
+                    let t = Math.atan2(py, px);
+                    t = Math.floor(t * N) * (2. * Math.PI / N);
+                    t = t * (1. + norm / 100.) + Math.PI * (1. + norm / 2.);
+                    px = norm * Math.cos(t);
+                    py = norm * Math.sin(t);
+                }
+                const scale = 0.6;
+                points.push(new Point(scale * px * my + mx, scale * py * my + my));
+            }
+        }
+        function movePoints(pts, amp = 1.2) {   // random displacement of amplitude 'amp'
+            if (false) {
+                for (let p of pts) {
+                    p.x += amp * mulberry32();
+                    p.y += amp * mulberry32();
+                }
+            } else {
+                let mx = 0., my = 0.;
+                for (const p of pts) { mx += p.x; my += p.y; }
+                mx /= pts.length; my /= pts.length;
+                seed = 42364364;
+                for (let p of pts) {
+                    const dx = p.x - mx, dy = p.y - my;
+                    const iR = mulberry32() / 500.;
+                    p.x -= dy * iR;
+                    p.y += dx * iR;
+                }
+            }
+        }
+
+        // Drawing stuff
+        function setCanvasDimensions() {
+            canvas.width = window.innerWidth - 30;  // '- 30' to avoid the side sliders
+            canvas.height = window.innerHeight - 30;
+        }
+        function drawCircle(pt, color, radius, fill = false) {
+            m.beginPath();
+            m.arc(pt.x, pt.y, radius, 0. * Math.PI, 2. * Math.PI);
+            m.closePath();
+            m.strokeStyle = m.fillStyle = color;
+            fill ? m.fill() : m.stroke()
+        };
+        function drawLine(a, b, color) {
+            m.beginPath();
+            m.moveTo(a.x, a.y);
+            m.lineTo(b.x, b.y);
+            m.closePath();
+            m.strokeStyle = color;
+            m.stroke();
+        };
+
+        // BEGIN MAIN
+        const canvas = document.getElementById('canvas');
+        const m = canvas.getContext("2d");
+        setCanvasDimensions();
+
+        // generate points
+        const points = []
+        const links = []  // network
+        randomPoints();
+
+        setupGUI()
+
+        // FPS recording
+        var lastT = Date.now();
+        function recordFPS() {
+            var curT = Date.now();
+            if (curT > lastT) {
+                const new_fps = 1000. / (curT - lastT);
+                settings.fps = Math.round(settings.fps * 0.8 + new_fps * 0.2)
+                lastT = curT;
+            }
+        }
+
+        update();  // let's go!
+//        setInterval(update, 500);
+
+        function update() {
+            setCanvasDimensions();   // if screen size if changed
+            m.fillStyle = settings.drawings.background_color;
+            m.fillRect(0, 0, canvas.width, canvas.height);
+
+            m.font = '24px serif';
+            m.fillStyle = 'white';
+            m.fillText("NN network", 5, 30);
+
+            movePoints(points);
+
+            for (const a of points) {            // draw points
+                drawCircle(a, 'white', settings.drawings.radius);
+            }
+            if (settings.drawings.NN) {  // draw convex hull
+                let links = findNN(points)
+                for (const l of links) {
+                    const v = Math.min(l.g * 200 / 4., 255.);
+                    const color = "rgb(" + v + ", " + (255 - v) + ", 200)";
+                    drawLine(points[l.i], points[l.j], color);
+                }
+            }
+
+            recordFPS();
+            requestAnimationFrame(update);
+        }
+    </script>
+</body>
+</html>
