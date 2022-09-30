@@ -1,0 +1,282 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2022 -->
+
+<html>
+
+<title>Kruskal and Min-Spanning Tree</title>
+
+<head>
+    <style>
+        :root { color-scheme: dark; }
+        #canvas { outline: none;  /* because of the 'tabindex' focus trick */ }
+    </style>
+</head>
+
+<body>
+    <!-- 'tabindex' is a trick to make the canvas capture key events -->
+    <canvas id="canvas" tabindex="1"></canvas>
+
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+
+    <script>
+        function Norm2(dx, dy) { return dx * dx + dy * dy; }
+        class Point {
+            constructor(x, y) { this.x = x; this.y = y; }
+            Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
+        }
+        class Link {
+            constructor(i, j, key) { this.i = i; this.j = j; this.key = key; }
+        }
+
+        // Kruskal's algorithm for Minimum Spanning Tree.
+        //  https://en.wikipedia.org/wiki/Kruskal%27s_algorithm
+        function findSet(F, p) {
+             let P = p;
+             while (F[p] != p) p = F[p];  // 1rst pass: find root
+             // 2nd pass: Path compression
+             while (F[P] != P) { const tmp = F[P]; F[P] = p; P = tmp; }
+             return p;
+        }
+        function findMSTKruskal(edges, pts) {
+            edges.sort((a, b) => { return (b.key - a.key); });
+            let F = [];
+            for (let i = 0; i < pts.length; ++i) F.push(i);   // Forest of single-noded tree
+            let links = [];
+            while (edges.length > 0) {
+                const p = edges.pop();  // pop in increasing length order
+                const Ri = findSet(F, p.i), Rj = findSet(F, p.j);  // Roots
+                if (Ri != Rj) {
+                    links.push(p);
+                    F[Rj] = Ri;  // merge sets (j-path will be compressed later...)
+                }
+            }
+            return links;
+        }
+
+        //////////////////// LESSER INTERESTING STUFF BELOW .... ///////////////
+
+        // Global parameters
+        const settings = {
+            count: 500,
+            ctype: 1,
+            jitter: 100.,
+            drawings: {
+                MST: true,
+                radius: 1.,
+                background_color: '#000000',
+            },
+            fps: 0,
+
+            reset: () => { randomPoints(); },
+            gui: null,
+        }
+
+        // GUI
+        const setupGUI = () => {
+            settings.gui = new lil.GUI();
+            const configFolder = settings.gui.addFolder('Config');
+            configFolder.add(settings, 'reset').name('Reset');
+            configFolder.add(settings, 'fps').name('frame rate').listen().disable();
+            configFolder.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
+                .onFinishChange(randomPoints);
+            configFolder.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
+                .onFinishChange(randomPoints);
+            configFolder.add(settings, 'jitter', 0, 100., .2).name('Jitter Amplitude').listen();
+            const drawingsFolder = settings.gui.addFolder('Drawings');
+            drawingsFolder.add(settings.drawings, 'MST').name('Draw MST').listen();
+            drawingsFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
+            drawingsFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
+
+            setupClicks();
+            setupKeys();
+        }
+        const setupClicks = () => {
+            canvas.addEventListener('click',
+                (e) => { points.push(new Point(e.clientX, e.clientY)); }
+            )
+        }
+        const setupKeys = () => {
+            canvas.addEventListener('keydown',
+                function (e) {
+                    switch (e.key) {
+                        case ' ': randomPoints(); break;
+                        default: console.log(e.key); break;
+                    }
+                })
+        }
+
+        // Seedable 'decent' random generator, returning values in [-1, 1]
+        var seed = 91651088029;
+        const mulberry32 = () => {
+            let t = seed += 0x6D2B79F5;
+            t = Math.imul(t ^ t >>> 15, t | 1);
+            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+            return ((t ^ t >>> 14) >>> 0) / 2147483648. - 1.;
+        }
+
+        const randomPoints = () => {  // initial points distribution
+            points.length = 0;
+            const number_of_points = settings.count;
+            const type = settings.ctype;
+            const mx = canvas.width / 2, my = canvas.height / 2;  // center
+            for (let i = 0; i < number_of_points; i++) {
+                let px = mulberry32(), py = mulberry32();
+                let norm = Math.sqrt(px * px + py * py);
+                if (type == 1) {
+                    norm = 1.0 / norm;
+                    px *= norm;
+                    py *= norm;
+                } else if (type == 2) {
+                    if (norm > 1.0) { --i; continue; }
+                } else if (type == 3) {
+                    const N = 3;  // number of branches
+                    let t = Math.atan2(py, px);
+                    t = Math.floor(t * N) * (2. * Math.PI / N);
+                    t = t * (1. + norm / 100.) + Math.PI * (1. + norm / 2.);
+                    px = norm * Math.cos(t);
+                    py = norm * Math.sin(t);
+                }
+                const scale = 0.6;
+                points.push(new Point(scale * px * my + mx, scale * py * my + my));
+            }
+        }
+
+        // random central-forced displacement of amplitude 'amp'
+        function movePoints(pts, amp) {
+            if (false) {  // Brownian motion
+                for (let p of pts) {
+                    p.x += amp * mulberry32();
+                    p.y += amp * mulberry32();
+                }
+            } else {
+                let mx = 0., my = 0.;
+                for (const p of pts) { mx += p.x; my += p.y; }
+                mx /= pts.length; my /= pts.length;
+                mx += mulberry32() * amp;
+                my += mulberry32() * amp;
+                seed = 42364364;  // always the same radial speed distribution!
+                for (let p of pts) {
+                    const dx = p.x - mx;
+                    const dy = p.y - my;
+                    const r = Math.sqrt(Norm2(dx, dy));
+                    const w = mulberry32() * 0.5 / r;
+                    p.x -= dy * w;
+                    p.y += dx * w;
+                }
+            }
+        }
+
+        // Fully connected graph
+        function makeAllPairs(pts) {
+            const N = pts.length;
+            let t = [];
+            for (let i = 0; i < N; ++i) {
+                for (let j = i + 1; j < N; ++j) {
+                    let key = pts[i].Distance2(pts[j]);
+                    key = (key * N + i) * N + j;  // stabilize the sort
+                    t.push(new Link(i, j, key));
+                }
+            }
+            return t;
+        }
+
+        // Drawing stuff
+        function setCanvasDimensions() {
+            canvas.width = window.innerWidth - 30;  // '- 30' to avoid the side sliders
+            canvas.height = window.innerHeight - 30;
+        }
+        function drawCircle(pt, color, radius, fill = false) {
+            m.beginPath();
+            m.arc(pt.x, pt.y, radius, 0. * Math.PI, 2. * Math.PI);
+            m.closePath();
+            m.strokeStyle = m.fillStyle = color;
+            fill ? m.fill() : m.stroke()
+        };
+        function drawLine(a, b, color) {
+            m.beginPath();
+            m.moveTo(a.x, a.y);
+            m.lineTo(b.x, b.y);
+            m.closePath();
+            m.strokeStyle = color;
+            m.stroke();
+        };
+        // if non null, returns the intersection of [a-b] with [c-d]
+        //    (cf. http://paulbourke.net/geometry/pointlineplane/)
+        function intersection(a, b, c, d) {
+            let det = (d.y - c.y) * (b.x - a.x) - (d.x - c.x) * (b.y - a.y);
+            const eps = 1e-6;
+            if (Math.abs(det) < eps) return null;
+            det = 1. / det;
+            const ab = det * ((d.x - c.x) * (a.y - c.y) - (d.y - c.y) * (a.x - c.x));
+            const cd = det * ((b.x - a.x) * (a.y - c.y) - (b.y - a.y) * (a.x - c.x));
+            if (ab <= eps || ab >= 1. - eps) return null;
+            if (cd <= eps || cd >= 1. - eps) return null;
+            return new Point(a.x + ab * (b.x - a.x), a.y + ab * (b.y - a.y));
+        }
+        function drawIntersections(edges, pts) {
+            for (const p0 of edges) {
+                for (const p1 of edges) {
+                    if (p0.i >= p1.i) continue;
+                    const P = intersection(pts[p0.i], pts[p0.j], pts[p1.i], pts[p1.j]);
+                    if (P == null) continue;
+                    drawCircle(P, 'red', 4., true);
+                }
+            }
+        }
+
+
+        // BEGIN MAIN
+        const canvas = document.getElementById('canvas');
+        const m = canvas.getContext("2d");
+        setCanvasDimensions();
+
+        // Generate points
+        const points = []
+        const links = []  // network
+        randomPoints();
+
+        setupGUI()
+
+        // FPS recording
+        var lastT = Date.now();
+        function recordFPS() {
+            const curT = Date.now();
+            if (curT > lastT) {
+                const new_fps = 1000. / (curT - lastT);
+                settings.fps = Math.round(settings.fps * 0.8 + new_fps * 0.2)
+                lastT = curT;
+            }
+        }
+
+        update();  // let's go!
+
+        function update() {
+            setCanvasDimensions();   // if screen size if changed
+            m.fillStyle = settings.drawings.background_color;
+            m.fillRect(0, 0, canvas.width, canvas.height);
+
+            m.font = '24px serif';
+            m.fillStyle = 'white';
+            m.fillText("Minimum Spanning Tree (Kruskal's algorithm)", 5, 30);
+
+            movePoints(points, settings.jitter);
+
+            for (const a of points) {            // draw points
+                drawCircle(a, 'white', settings.drawings.radius);
+            }
+            if (settings.drawings.MST) {
+                let links = findMSTKruskal(makeAllPairs(points), points);
+                let total_d = 0.;
+                for (const l of links) {
+                    const Pi = points[l.i], Pj = points[l.j];
+                    drawLine(Pi, Pj, '#00ffc0');
+                    total_d += Math.sqrt(Pi.Distance2(Pj));
+                }
+                total_d = total_d.toFixed(0);
+                m.fillText("Total Length: " + total_d, 150, canvas.height - 30);
+            }
+            recordFPS();
+            requestAnimationFrame(update);
+        }
+    </script>
+</body>
+</html>
