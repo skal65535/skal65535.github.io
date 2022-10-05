@@ -52,18 +52,52 @@
             return links;
         }
 
+        // Shortest path algo
+        function findNearest(pts, pos) {
+          let best_d = 1e8, best = -1;
+          for (let i = 0; i < pts.length; ++i) {
+              const d = pts[i].Distance2(pos);
+              if (d < best_d) {
+                  best_d = d;
+                  best = i;
+              }
+          }
+          return best;
+        }
+        function fillSPTree(pts, start) {
+            let tree = [];
+            for (let i = 0; i < pts.length; ++i) tree.push([i, false, 0., 0]);
+
+            let todo = [start];
+            while (todo.length > 0) {
+                const cur = todo.pop();
+                for (let j = 0; j < tree.length; ++j) {
+                    if (j == cur) continue;
+                    const key = tree[cur][2] + points[cur].Distance2(points[j]);
+                    if (tree[j][1] == false) {
+                        todo.push(j);
+                        tree[j]= [cur, true, key, 0];
+                    } else if (key < tree[j][2]) {
+                        tree[j] = [cur, true, key, tree[cur][3] + 1];
+                    }
+                }
+            }
+            return tree;
+        }
+
+
         //////////////////// LESSER INTERESTING STUFF BELOW .... ///////////////
 
         // Global parameters
         const settings = {
             count: 500,
-            ctype: 1,
+            ctype: 2,
             jitter: 100.,
-            drawings: {
-                MST: true,
-                radius: 1.,
-                background_color: '#000000',
-            },
+            rotate: true,
+            MST: true,
+            SPT: false,
+            radius: 1.,
+            background_color: '#000000',
             fps: 0,
 
             reset: () => { randomPoints(); },
@@ -73,26 +107,32 @@
         // GUI
         const setupGUI = () => {
             settings.gui = new lil.GUI();
-            const configFolder = settings.gui.addFolder('Config');
-            configFolder.add(settings, 'reset').name('Reset');
-            configFolder.add(settings, 'fps').name('frame rate').listen().disable();
-            configFolder.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
+            settings.gui.add(settings, 'reset').name('Reset');
+            settings.gui.add(settings, 'fps').name('frame rate').listen().disable();
+            settings.gui.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
                 .onFinishChange(randomPoints);
-            configFolder.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
+            settings.gui.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
                 .onFinishChange(randomPoints);
-            configFolder.add(settings, 'jitter', 0, 100., .2).name('Jitter Amplitude').listen();
+            settings.gui.add(settings, 'jitter', 0, 100., .2).name('Jitter Amplitude').listen();
+            settings.gui.add(settings, 'rotate').name('Rotate points').listen();
             const drawingsFolder = settings.gui.addFolder('Drawings');
-            drawingsFolder.add(settings.drawings, 'MST').name('Draw MST').listen();
-            drawingsFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
-            drawingsFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
+            drawingsFolder.add(settings, 'MST').name('Min-Spanning Tree').listen();
+            drawingsFolder.add(settings, 'SPT').name('Shortest Paths').listen();
+            drawingsFolder.add(settings, 'radius', 0, 10, 0.5).name('Radius').listen();
+            drawingsFolder.addColor(settings, 'background_color').name('Background Color').listen();
 
             setupClicks();
             setupKeys();
         }
+
+        var mouse_pos = new Point(0., 0.);
         const setupClicks = () => {
             canvas.addEventListener('click',
                 (e) => { points.push(new Point(e.clientX, e.clientY)); }
-            )
+            );
+            canvas.addEventListener('mousemove',
+                (e) => { mouse_pos.x = e.clientX; mouse_pos.y = e.clientY; }
+            );
         }
         const setupKeys = () => {
             canvas.addEventListener('keydown',
@@ -101,7 +141,7 @@
                         case ' ': randomPoints(); break;
                         default: console.log(e.key); break;
                     }
-                })
+                });
         }
 
         // Seedable 'decent' random generator, returning values in [-1, 1]
@@ -142,10 +182,10 @@
 
         // random central-forced displacement of amplitude 'amp'
         function movePoints(pts, amp) {
-            if (false) {  // Brownian motion
+            if (!settings.rotate) {  // Brownian motion
                 for (let p of pts) {
-                    p.x += amp * mulberry32();
-                    p.y += amp * mulberry32();
+                    p.x += amp * mulberry32() / 500.;
+                    p.y += amp * mulberry32() / 500.;
                 }
             } else {
                 let mx = 0., my = 0.;
@@ -169,7 +209,7 @@
         function makeAllPairs(pts) {
             const N = pts.length;
             let t = [];
-            for (let i = 0; i < N; ++i) {
+            for (let i = 0; i < N - 1; ++i) {
                 for (let j = i + 1; j < N; ++j) {
                     let key = pts[i].Distance2(pts[j]);
                     key = (key * N + i) * N + j;  // stabilize the sort
@@ -189,7 +229,7 @@
             m.arc(pt.x, pt.y, radius, 0. * Math.PI, 2. * Math.PI);
             m.closePath();
             m.strokeStyle = m.fillStyle = color;
-            fill ? m.fill() : m.stroke()
+            fill ? m.fill() : m.stroke();
         };
         function drawLine(a, b, color) {
             m.beginPath();
@@ -223,7 +263,6 @@
             }
         }
 
-
         // BEGIN MAIN
         const canvas = document.getElementById('canvas');
         const m = canvas.getContext("2d");
@@ -234,7 +273,7 @@
         const links = []  // network
         randomPoints();
 
-        setupGUI()
+        setupGUI();
 
         // FPS recording
         var lastT = Date.now();
@@ -242,7 +281,7 @@
             const curT = Date.now();
             if (curT > lastT) {
                 const new_fps = 1000. / (curT - lastT);
-                settings.fps = Math.round(settings.fps * 0.8 + new_fps * 0.2)
+                settings.fps = Math.round(settings.fps * 0.8 + new_fps * 0.2);
                 lastT = curT;
             }
         }
@@ -251,7 +290,7 @@
 
         function update() {
             setCanvasDimensions();   // if screen size if changed
-            m.fillStyle = settings.drawings.background_color;
+            m.fillStyle = settings.background_color;
             m.fillRect(0, 0, canvas.width, canvas.height);
 
             m.font = '24px serif';
@@ -260,10 +299,10 @@
 
             movePoints(points, settings.jitter);
 
-            for (const a of points) {            // draw points
-                drawCircle(a, 'white', settings.drawings.radius);
+            if (settings.radius > 0.) {
+                for (const a of points) drawCircle(a, 'white', settings.radius);
             }
-            if (settings.drawings.MST) {
+            if (settings.MST) {
                 let links = findMSTKruskal(makeAllPairs(points), points);
                 let total_d = 0.;
                 for (const l of links) {
@@ -273,6 +312,17 @@
                 }
                 total_d = total_d.toFixed(0);
                 m.fillText("Total Length: " + total_d, 150, canvas.height - 30);
+            }
+            if (settings.SPT) {
+                let node0 = findNearest(points, mouse_pos);
+                drawCircle(points[node0], 'red', 5., true);
+                const tree = fillSPTree(points, node0);
+                for (let i = 0; i < tree.length; ++i) {
+                    const colors = [ '#ff8080', '#e08080', '#c08080',
+                                     '#b08080', '#808080', '#408080' ];
+                    color = colors[Math.min(tree[i][3], colors.length - 1)];
+                    drawLine(points[i], points[tree[i][0]], color);
+                }
             }
             recordFPS();
             requestAnimationFrame(update);
