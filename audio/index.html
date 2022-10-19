@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<title>WebAudio test</title>
+<script type="text/javascript">
+// See https://github.com/g200kg/audioworklet-in-one-file
+class AudioWorkletProcessor {}
+function addAudioWorklet(context, proc) {
+  var f = `data:text/javascript,${encodeURI(proc.toString())}; registerProcessor("${proc.name}", ${proc.name})`;
+  return context.audioWorklet.addModule(f);
+}
+class MyWorklet extends AudioWorkletProcessor {
+  constructor() { super(); }
+  static parameterDescriptors = [
+    {name: 'freq', defaultValue: 440, minValue: 440, maxValue: 550},
+    {name: 'amplitude', defaultValue: 1., minValue: 0., maxValue: 2.},
+  ];
+  makeSin(amp, time, frequency) {
+    return amp * Math.sin(frequency * Math.PI * 2 * time);
+  };
+  process(inputs, outputs, parameters) {
+    outputs[0].forEach(channel => {
+      for (let i = 0; i < channel.length; ++i) {
+        channel[i] =
+            this.makeSin(parameters.amplitude, (currentFrame + i) / sampleRate, parameters.freq);
+      }
+    });
+    return true;
+  };
+}
+
+// Main Program
+var closed = true;
+go = (async () => {
+  audioctx = new AudioContext();
+  await addAudioWorklet(audioctx, MyWorklet);
+  const workl = new AudioWorkletNode(audioctx, 'MyWorklet');
+  workl.connect(audioctx.destination);
+  closed = false;
+  document.getElementById("freq").addEventListener("input", (ev) => {
+    workl.parameters.get('freq').value = ev.target.value;
+  });
+  document.getElementById("amp").addEventListener("input", (ev) => {
+    workl.parameters.get('amplitude').value = ev.target.value;
+  });
+  document.getElementById("go").textContent = "STOP!";
+  document.getElementById("go").onclick = stop;
+  document.getElementById("srate").innerHTML = "SampleRate: " + audioctx.sampleRate + " Hz";
+});
+
+stop = (() => {
+  audioctx.close();
+  closed = true;
+  document.getElementById("go").textContent = "go!";
+  document.getElementById("go").onclick = go;
+});
+</script>
+<body>
+
+<h2>WebAudio test.</h2>
+
+Amplitude : <input id="amp" type="range" min="0" max="2" step="0.1" value="1"/><br/>
+Freq : <input id="freq" type="range" min="440" max="550" step="1" value="440"/><br/>
+<div id="srate"></div>
+<button id="go" onclick="go()">go!</button>
+
+</body>
+</html>
