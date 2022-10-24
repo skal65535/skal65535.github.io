@@ -32,3 +32,6 @@ Some demo pages from sub-projects:
   * [Group Velocity visualization](https://www.shadertoy.com/view/stcBDB)
   * [Mach cone visualization](https://www.shadertoy.com/view/slKfWR)
   * [Kelvin wake visualization](https://www.shadertoy.com/view/stGBWh)
+  * [Rainbow visualization](https://www.shadertoy.com/view/NlyfRV)
+  * [Deluge Simulator](https://www.shadertoy.com/view/slKfWc)
+
