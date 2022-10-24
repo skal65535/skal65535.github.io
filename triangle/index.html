@@ -7,14 +7,14 @@
   <script type="text/javascript">
     ////////////////////////////////////////////////////////////////////////////////
     function CreateShader(gl, type, src) {
-      var shader = gl.createShader(type);
+      const shader = gl.createShader(type);
       gl.shaderSource(shader, src);
       gl.compileShader(shader);
       return shader;
     }
 
     function initGL(gl) {
-      var f_shader_src = "                                     \
+      const f_shader_src = "                                   \
   precision mediump float;                                     \
   uniform float amp;                                           \
   varying vec4 vColor;                                         \
@@ -28,7 +28,7 @@
     gl_FragColor = vec4(tmp, vColor.a);                        \
   }                                                            \
 ";
-      var v_shader_src = "                \
+      const v_shader_src = "              \
   attribute vec3 coordinates;             \
   attribute vec4 color;                   \
   varying vec4 vColor;                    \
@@ -38,29 +38,31 @@
   }                                       \
 ";
       // TODO(skal): trap errors
-      var f_shader = CreateShader(gl, gl.FRAGMENT_SHADER, f_shader_src);
-      var v_shader = CreateShader(gl, gl.VERTEX_SHADER, v_shader_src);
-      var shader_program = gl.createProgram();
+      const f_shader = CreateShader(gl, gl.FRAGMENT_SHADER, f_shader_src);
+      const v_shader = CreateShader(gl, gl.VERTEX_SHADER, v_shader_src);
+      const shader_program = gl.createProgram();
       gl.attachShader(shader_program, f_shader);
       gl.attachShader(shader_program, v_shader);
       gl.linkProgram(shader_program);
       gl.useProgram(shader_program);
       return shader_program;
     }
+
     ////////////////////////////////////////////////////////////////////////////////
     // Format constants
-    var kYCoCgBitDepth = 6;
-    var kYCoCgMax = (1 << kYCoCgBitDepth) - 1;
-    var kPreviewMinNumVertices = 0;
-    var kPreviewMaxNumVertices = 1024;
-    var kPreviewMinNumColors = 2;
-    var kPreviewMaxNumColors = 32;
-    var kPreviewMinGridSize = 2;
-    var kPreviewMaxGridSize = 256;
-    var kProbaMax = 1 << 16;
-    var kPreviewOpaqueProba = 3 * kProbaMax / 4;
-    var kPreviewNoiseProba = kProbaMax / 2;
-    var kMaxSum = 256;
+    const kYCoCgBitDepth = 6;
+    const kYCoCgMax = (1 << kYCoCgBitDepth) - 1;
+    const kPreviewMinNumVertices = 0;
+    const kPreviewMaxNumVertices = 1024;
+    const kPreviewMinNumColors = 2;
+    const kPreviewMaxNumColors = 32;
+    const kPreviewMinGridSize = 2;
+    const kPreviewMaxGridSize = 256;
+    const kProbaMax = 1 << 16;
+    const kPreviewOpaqueProba = 3 * kProbaMax / 4;
+    const kPreviewNoiseProba = kProbaMax / 2;
+    const kMaxSum = 256;
+
     ////////////////////////////////////////////////////////////////////////////////
     // ANS
     function ANSBinSymbol(p0, p1) {
@@ -82,35 +84,36 @@
       this.zero = new ANSBinSymbol(1, 1);
       this.sign = new ANSBinSymbol(1, 1);
       this.bits = new Array(kYCoCgBitDepth);
-      for (var i = 0; i < kYCoCgBitDepth; ++i) {
+      for (let i = 0; i < kYCoCgBitDepth; ++i) {
         this.bits[i] = new ANSBinSymbol(1, 1);
       }
       return this;
     }
+
     ////////////////////////////////////////////////////////////////////////////////
     function ANSDec(data) {
       this.data_ = data;
       this.pos_ = 0;
       this.max_pos_ = data.length;
-      this.state_ = new Uint32Array(1); // we need *unsigned* 32b
+      this.state_ = new Uint32Array(1);  // we need *unsigned* 32b
       this.state_[0] = 0;
       this.NextWord();
       this.NextWord();
     }
     ANSDec.prototype.NextWord = function() {
-      var pos = this.pos_;
+      const pos = this.pos_;
       this.pos_ = pos + 2;
-      var hi = this.data_.charCodeAt(pos + 0);
-      var lo = this.data_.charCodeAt(pos + 1);
-      var val = (lo + 256 * hi) || 0;
+      const hi = this.data_.charCodeAt(pos + 0);
+      const lo = this.data_.charCodeAt(pos + 1);
+      const val = (lo + 256 * hi) || 0;
       this.state_[0] = (this.state_[0] << 16) | val;
     }
     ANSDec.prototype.NextBit = function(p0) {
-      var q0 = kProbaMax - p0;
+      const q0 = kProbaMax - p0;
       if (p0 == 0) return 1;
       if (q0 == 0) return 0;
-      var xfrac = this.state_[0] % kProbaMax;
-      var bit = (xfrac >= p0);
+      const xfrac = this.state_[0] % kProbaMax;
+      const bit = (xfrac >= p0);
       if (!bit) {
         this.state_[0] = p0 * (this.state_[0] >>> 16) + xfrac;
       } else {
@@ -120,18 +123,18 @@
       return bit;
     }
     ANSDec.prototype.NextAdaptiveBit = function(s) { // adaptive bit
-      var bit = this.NextBit(s.Proba());
+      const bit = this.NextBit(s.Proba());
       return s.Update(bit);
     }
     // Reads a value in range [min_range, max_range]
     ANSDec.prototype.ReadRange = function(min_range, max_range) {
       max_range = max_range + 1 - min_range;
-      var s = this.state_[0];
-      var value = s % max_range;
+      let s = this.state_[0];
+      let value = s % max_range;
       s /= max_range;
       if (s < kProbaMax) { // we need to do pseudo-uint64 arithmetic
         this.NextWord();
-        var s_lo = this.state_[0] & 0xffff;
+        const s_lo = this.state_[0] & 0xffff;
         value = (value << 16) + s_lo;
         s = (s << 16) + Math.floor(value / max_range);
         value = value % max_range;
@@ -141,26 +144,21 @@
     }
     ANSDec.prototype.ReadAValue = function(stats, is_positive, pred) {
       if (this.NextAdaptiveBit(stats.zero)) return pred;
-      var v = 1;
-      for (var i = 0, j = 1; j <= kYCoCgMax; j <<= 1) {
+      let v = 1;
+      for (let i = 0, j = 1; j <= kYCoCgMax; j <<= 1) {
         if (this.NextAdaptiveBit(stats.bits[i++])) v += j;
       }
       if (!is_positive && this.NextAdaptiveBit(stats.sign)) v = -v;
       return pred + v;
     }
+
     ////////////////////////////////////////////////////////////////////////////////
-    // Preview parameters
-    function Vtx(x, y, idx) {
-      this.x = x;
-      this.y = y;
-      this.idx = idx;
-    }
-    Vtx.prototype = {
-      eq: function(p) {
-        var eps = 0.0001;
-        var dx = this.x - p.x;
-        var dy = this.y - p.y;
-        return (dx < 0 ? -dx : dx) < eps && (dy < 0 ? -dy : dy) < eps;
+    // Preview
+    class Vtx {
+      constructor(x, y, idx) { this.x = x; this.y = y; this.idx = idx; }
+      eq(p) {
+        const eps = 0.0001;
+        return Math.abs(this.x - p.x) < eps && Math.abs(this.y - p.y) < eps;
       }
     }
 
@@ -180,172 +178,161 @@
       y  = Math.floor((y  * 255) / (64 - 1));
       cg = Math.floor((cg * 255) / (64 - 1)) - 128;
       co = Math.floor((co * 255) / (64 - 1)) - 128;
-      var diff = y - cg;
-      var r = clip8b(diff + co);
-      var g = clip8b(y + cg);
-      var b = clip8b(diff - co);
+      const diff = y - cg;
+      const r = clip8b(diff + co);
+      const g = clip8b(   y + cg);
+      const b = clip8b(diff - co);
       return new Color(r, g, b, a);
     }
 
-    function Preview() {
-      this.grid_x = 0;
-      this.grid_y = 0;
-      this.nb_colors = 0;
-      this.nb_pts = 0;
-      this.has_alpha = false;
-      this.use_noise = false;
-      this.txt = "";
-      this.qpts = null;
-      this.counts = null;
-      return this;
-    }
-    Preview.prototype.GetBinText = function(reader) {
-      return this.txt;
-    }
-    Preview.prototype.GetInfoText = function(reader) {
-      var info = "[";
-      info += " grid = " + this.grid_x + " x " + this.grid_y;
-      info += ", nb_colors = " + this.nb_colors;
-      info += " nb_pts = " + this.nb_pts;
-      if (this.has_alpha) info += " (with alpha)";
-      info += "]";
-      return info;
-    }
-    Preview.prototype.GetCMapText = function(reader) {
-      var cmap_txt = "<h5>Colormap (w/ use counts):<br/>";
-      for (var i = 0; i < this.nb_colors; ++i) {
-        cmap_txt += "<div style='width:30px; height:20px; ";
-        cmap_txt += "background-color: rgb(" +
-          this.cmap[i].r + ", " + this.cmap[i].g + ", " + this.cmap[i].b + ");"
-        cmap_txt += " display: inline-block;'>";
-        cmap_txt += "</div>(" + this.counts[i] + ")&nbsp;";
+    class Preview {
+      constructor() {
+        this.grid_x = 0;
+        this.grid_y = 0;
+        this.nb_colors = 0;
+        this.nb_pts = 0;
+        this.has_alpha = false;
+        this.use_noise = false;
+        this.txt = "";
+        this.qpts = null;
+        this.counts = null;
       }
-      cmap_txt += "</h5>";
-      return cmap_txt;
-    }
-    Preview.prototype.ReadPalette = function(reader) {
-      this.nb_colors = reader.ReadRange(kPreviewMinNumColors, kPreviewMaxNumColors);
-      this.has_alpha = reader.NextBit(kPreviewOpaqueProba);
-      this.txt += this.grid_x + " " + this.grid_y + " ";
-      this.txt += this.nb_colors + " " + (this.has_alpha ? 1 : 0) + "\n";
-      this.cmap = new Array(this.nb_colors);
-      var alpha = new ANSBinSymbol(2, 2);
-      var stats_yco = new ValueStats;
-      var stats_cg = new ValueStats;
-      var pred = Color(kYCoCgMax >> 1, kYCoCgMax >> 1, 0, 255); // predictor
-      for (var i = 0; i < this.nb_colors; ++i) {
-        if (this.has_alpha && reader.NextAdaptiveBit(alpha)) pred.a = 1 - pred.a;
-        var y = pred.r = reader.ReadAValue(stats_yco, false, pred.r);
-        var co = pred.g = reader.ReadAValue(stats_yco, false, pred.g);
-        var cg = pred.b = reader.ReadAValue(stats_cg, true, pred.b);
-        this.cmap[i] = YCoCg_to_RGB(y, co, cg, pred.a); // YCoCg -> RGB
-        this.txt += y + " " + co + " " + cg + " " + (pred.a > 0 ? 1 : 0) + "\n";
+      GetBinText(reader) { return this.txt; }
+      GetInfoText(reader) {
+        let info = "[";
+        info += " grid = " + this.grid_x + " x " + this.grid_y;
+        info += ", nb_colors = " + this.nb_colors;
+        info += " nb_pts = " + this.nb_pts;
+        if (this.has_alpha) info += " (with alpha)";
+        info += "]";
+        return info;
       }
-    }
-    Preview.prototype.IsCorner = function(x, y) {
-      return ((x == 0 || x == this.grid_x - 1) &&
-              (y == 0 || y == this.grid_y - 1));
-    }
-    Preview.prototype.DecodeColorIdx = function(reader, stats, idx) {
-      if (reader.NextAdaptiveBit(stats)) {
-        var tmp = reader.ReadRange(0, this.nb_colors - 2);
-        idx = (tmp >= idx ? tmp + 1 : tmp);
-      }
-      ++this.counts[idx];
-      return idx;
-    }
-    Preview.prototype.ReadVertices = function(reader) {
-      var pts_left = this.grid_x * this.grid_y - 4; // omit corners
-      var min_num_pts = Math.max(Math.max(this.nb_colors - 4, 0),
-        kPreviewMinNumVertices);
-      var max_num_pts = Math.min(pts_left, kPreviewMaxNumVertices);
-      this.nb_pts = reader.ReadRange(min_num_pts, max_num_pts);
-      this.qpts = new Array(this.nb_pts + 4, 0); // including corners
-      this.counts = new Array(this.nb_colors).fill(0);
-      // decode corners
-      var stats_idx = new ANSBinSymbol(2, 2);
-      var idx = 0; // color index (used as predictor too)
-      idx = this.DecodeColorIdx(reader, stats_idx, idx);
-      this.qpts[0] = new Vtx(0, 0, idx);
-      idx = this.DecodeColorIdx(reader, stats_idx, idx);
-      this.qpts[1] = new Vtx(this.grid_x - 1, 0, idx);
-      idx = this.DecodeColorIdx(reader, stats_idx, idx);
-      this.qpts[2] = new Vtx(0, this.grid_y - 1, idx);
-      idx = this.DecodeColorIdx(reader, stats_idx, idx);
-      this.qpts[3] = new Vtx(this.grid_x - 1, this.grid_y - 1, idx);
-      // and the remaining vertices
-      var k = 0;
-      var den = pts_left;
-      var num = this.nb_pts;
-      for (var y = 0; y < this.grid_y; ++y) {
-        for (var x = 0; x < this.grid_x; ++x) {
-          var letter = '.';
-          if (this.IsCorner(x, y)) {
-            var c = this.qpts[(x != 0 ? 1 : 0) + (y != 0 ? 2 : 0)].idx;
-            letter = String.fromCharCode(c + 97);
-          } else if (k < this.nb_pts) {
-            var proba = kProbaMax - Math.floor((num << 16) / den);
-            var bit = reader.NextBit(proba);
-            if (bit) {
-              idx = this.DecodeColorIdx(reader, stats_idx, idx);
-              this.qpts[k + 4] = new Vtx(x, y, idx);
-              letter = String.fromCharCode(idx + 97); // 'a' + idx
-              --num;
-              ++k;
-            }
-            --den;
-          }
-          this.txt += letter;
+      GetCMapText(reader) {
+        let cmap_txt = "<h5>Colormap (w/ use counts):<br/>";
+        for (let i = 0; i < this.nb_colors; ++i) {
+          cmap_txt += "<div style='width:30px; height:20px; ";
+          cmap_txt += "background-color: rgb(" +
+            this.cmap[i].r + ", " + this.cmap[i].g + ", " + this.cmap[i].b + ");"
+          cmap_txt += " display: inline-block;'>";
+          cmap_txt += "</div>(" + this.counts[i] + ")&nbsp;";
         }
-        this.txt += "\n";
+        cmap_txt += "</h5>";
+        return cmap_txt;
       }
-    }
+      ReadPalette(reader) {
+        this.nb_colors = reader.ReadRange(kPreviewMinNumColors, kPreviewMaxNumColors);
+        this.has_alpha = reader.NextBit(kPreviewOpaqueProba);
+        this.txt += this.grid_x + " " + this.grid_y + " ";
+        this.txt += this.nb_colors + " " + (this.has_alpha ? 1 : 0) + "\n";
+        this.cmap = new Array(this.nb_colors);
+        const alpha = new ANSBinSymbol(2, 2);
+        const stats_yco = new ValueStats;
+        const stats_cg = new ValueStats;
+        const pred = Color(kYCoCgMax >> 1, kYCoCgMax >> 1, 0, 255);  // predictor
+        for (let i = 0; i < this.nb_colors; ++i) {
+          if (this.has_alpha && reader.NextAdaptiveBit(alpha)) pred.a = 1 - pred.a;
+          const y = pred.r = reader.ReadAValue(stats_yco, false, pred.r);
+          const co = pred.g = reader.ReadAValue(stats_yco, false, pred.g);
+          const cg = pred.b = reader.ReadAValue(stats_cg, true, pred.b);
+          this.cmap[i] = YCoCg_to_RGB(y, co, cg, pred.a);  // YCoCg -> RGB
+          this.txt += y + " " + co + " " + cg + " " + (pred.a > 0 ? 1 : 0) + "\n";
+        }
+      }
+      IsCorner(x, y) {
+        return ((x == 0 || x == this.grid_x - 1) && (y == 0 || y == this.grid_y - 1));
+      }
+      DecodeColorIdx(reader, stats, idx) {
+        if (reader.NextAdaptiveBit(stats)) {
+          const tmp = reader.ReadRange(0, this.nb_colors - 2);
+          idx = (tmp >= idx ? tmp + 1 : tmp);
+        }
+        ++this.counts[idx];
+        return idx;
+      }
+      ReadVertices(reader) {
+        let pts_left = this.grid_x * this.grid_y - 4;  // omit corners
+        const min_num_pts = Math.max(Math.max(this.nb_colors - 4, 0),
+          kPreviewMinNumVertices);
+        const max_num_pts = Math.min(pts_left, kPreviewMaxNumVertices);
+        this.nb_pts = reader.ReadRange(min_num_pts, max_num_pts);
+        this.qpts = new Array(this.nb_pts + 4, 0);  // including corners
+        this.counts = new Array(this.nb_colors).fill(0);
+        // decode corners
+        const stats_idx = new ANSBinSymbol(2, 2);
+        let idx = 0;  // color index (used as predictor too)
+        idx = this.DecodeColorIdx(reader, stats_idx, idx);
+        this.qpts[0] = new Vtx(0, 0, idx);
+        idx = this.DecodeColorIdx(reader, stats_idx, idx);
+        this.qpts[1] = new Vtx(this.grid_x - 1, 0, idx);
+        idx = this.DecodeColorIdx(reader, stats_idx, idx);
+        this.qpts[2] = new Vtx(0, this.grid_y - 1, idx);
+        idx = this.DecodeColorIdx(reader, stats_idx, idx);
+        this.qpts[3] = new Vtx(this.grid_x - 1, this.grid_y - 1, idx);
+        // and the remaining vertices
+        let k = 0;
+        let den = pts_left;
+        let num = this.nb_pts;
+        for (let y = 0; y < this.grid_y; ++y) {
+          for (let x = 0; x < this.grid_x; ++x) {
+            let letter = '.';
+            if (this.IsCorner(x, y)) {
+              const c = this.qpts[(x != 0 ? 1 : 0) + (y != 0 ? 2 : 0)].idx;
+              letter = String.fromCharCode(c + 97);
+            } else if (k < this.nb_pts) {
+              const proba = kProbaMax - Math.floor((num << 16) / den);
+              const bit = reader.NextBit(proba);
+              if (bit) {
+                idx = this.DecodeColorIdx(reader, stats_idx, idx);
+                this.qpts[k + 4] = new Vtx(x, y, idx);
+                letter = String.fromCharCode(idx + 97);  // 'a' + idx
+                --num;
+                ++k;
+              }
+              --den;
+            }
+            this.txt += letter;
+          }
+          this.txt += "\n";
+        }
+      }
+    };
+
     ////////////////////////////////////////////////////////////////////////////////
     // Delaunay triangulation
-    var Delaunay = (function() {
-      function Edge(p0, p1) {
-        this.pts = [p0, p1];
-      }
+    const Delaunay = (function() {
+      function Edge(p0, p1) { this.pts = [p0, p1]; }
       Edge.prototype = {
         eq: function(edge, vtx) {
-          var na = this.pts,
-            nb = edge.pts;
-          var na0 = vtx[na[0]],
-            na1 = vtx[na[1]];
-          var nb0 = vtx[nb[0]],
-            nb1 = vtx[nb[1]];
-          return na0.eq(nb1) && na1.eq(nb0); // are edges opposite?
+          const a = this.pts, b = edge.pts;
+          const a0 = vtx[a[0]], a1 = vtx[a[1]];
+          const b0 = vtx[b[0]], b1 = vtx[b[1]];
+          return a0.eq(b1) && a1.eq(b0);   // are edges opposite?
         }
       }
 
       function Triangle(P0, P1, P2, vtx) {
         this.vtx = [P0, P1, P2];
         this.edges = [new Edge(P0, P1), new Edge(P1, P2), new Edge(P2, P0)];
-        var circle = this.circle = new Object();
-        var p0 = vtx[P0],
-          p1 = vtx[P1],
-          p2 = vtx[P2];
-        var ax = p1.x - p0.x,
-          ay = p1.y - p0.y;
-        var bx = p2.x - p0.x,
-          by = p2.y - p0.y;
-        var t = (p1.x * p1.x - p0.x * p0.x + p1.y * p1.y - p0.y * p0.y);
-        var u = (p2.x * p2.x - p0.x * p0.x + p2.y * p2.y - p0.y * p0.y);
-        var norm = 0.5 / (ax * by - ay * bx);
-        var x = circle.x = ((p2.y - p0.y) * t + (p0.y - p1.y) * u) * norm;
-        var y = circle.y = ((p0.x - p2.x) * t + (p1.x - p0.x) * u) * norm;
-        var dx = p0.x - x;
-        var dy = p0.y - y;
-        circle.r2 = dx * dx + dy * dy; // radius squared, times i_s ^ 2
+        const circle = this.circle = new Object();
+        const p0 = vtx[P0], p1 = vtx[P1], p2 = vtx[P2];
+        const ax = p1.x - p0.x, ay = p1.y - p0.y;
+        const bx = p2.x - p0.x, by = p2.y - p0.y;
+        const t = (p1.x * p1.x - p0.x * p0.x + p1.y * p1.y - p0.y * p0.y);
+        const u = (p2.x * p2.x - p0.x * p0.x + p2.y * p2.y - p0.y * p0.y);
+        const norm = 0.5 / (ax * by - ay * bx);
+        const x = circle.x = ((p2.y - p0.y) * t + (p0.y - p1.y) * u) * norm;
+        const y = circle.y = ((p0.x - p2.x) * t + (p1.x - p0.x) * u) * norm;
+        const dx = p0.x - x;
+        const dy = p0.y - y;
+        circle.r2 = dx * dx + dy * dy;  // radius squared, times i_s ^ 2
       }
       Triangle.prototype = {
         InCircle: function(x, y) {
-          var circle = this.circle;
-          var dx = x - circle.x;
-          var dy = y - circle.y;
-          var r2 = dx * dx + dy * dy;
+          const dx = x - this.circle.x;
+          const dy = y - this.circle.y;
+          const r2 = dx * dx + dy * dy;
           // note the '<=': this is important for replacing vertex!
-          return (r2 <= circle.r2 + 0.001);
+          return (r2 <= this.circle.r2 + 0.001);
         }
       }
 
@@ -356,7 +343,7 @@
         this.vtx = new Array();
         this.Init(width, height);
         if (pts != null) {
-          for (var i = 0; i < pts.length; ++i) this.Insert(pts[i]);
+          for (const pt of pts) this.Insert(pt);
         }
       }
       Delaunay.prototype = {
@@ -365,48 +352,45 @@
         },
         Init: function(w, h) {
           // TODO(skal): remove corner dups
-          var p0 = this.NewVtx(0, 0, 0);
-          var p1 = this.NewVtx(w - 1, 0, 0);
-          var p2 = this.NewVtx(w - 1, h - 1, 0);
-          var p3 = this.NewVtx(0, h - 1, 0);
+          const p0 = this.NewVtx(    0,     0, 0);
+          const p1 = this.NewVtx(w - 1,     0, 0);
+          const p2 = this.NewVtx(w - 1, h - 1, 0);
+          const p3 = this.NewVtx(    0, h - 1, 0);
           this.triangles = [
             new Triangle(p0, p1, p2, this.vtx),
             new Triangle(p0, p2, p3, this.vtx)
           ];
         },
         Insert: function(new_pt) {
-          var triangles = this.triangles;
-          var tri = [];
-          var edges = [];
-          for (var i = 0; i < this.vtx.length; ++i) {
-            if (this.vtx[i].x == new_pt.x && this.vtx[i].y == new_pt.y) {
-              this.vtx[i].idx = new_pt.idx;
+          const triangles = this.triangles;
+          let tri = [];
+          let edges = [];
+          for (const v of this.vtx) {
+            if (v.x == new_pt.x && v.y == new_pt.y) {
+              v.idx = new_pt.idx;
               return;
             }
           }
-          for (var i = 0; i < triangles.length; ++i) {
-            var t = triangles[i];
+          for (const t of triangles) {
             if (t.InCircle(new_pt.x, new_pt.y)) {
               edges.push(t.edges[0], t.edges[1], t.edges[2]);
             } else {
               tri.push(t);
             }
           }
-          var polygon = [];
+          let polygons = [];
           mainLoop:
-            for (var i = 0; i < edges.length; ++i) { // remove duplicate edges
-              var edge = edges[i];
-              for (var j = 0; j < polygon.length; ++j) {
-                if (edge.eq(polygon[j], this.vtx)) {
-                  polygon.splice(j, 1);
+            for (const edge of edges) {   // remove duplicate edges
+              for (const polygon of polygons) {
+                if (edge.eq(polygon, this.vtx)) {
+                  polygons.splice(polygons.indexOf(polygon), 1);
                   continue mainLoop;
                 }
               }
-              polygon.push(edge);
+              polygons.push(edge);
             }
-          for (var i = 0; i < polygon.length; ++i) {
-            var edge = polygon[i];
-            var new_vtx = this.NewVtx(new_pt.x, new_pt.y, new_pt.idx);
+          for (const edge of polygons) {
+            const new_vtx = this.NewVtx(new_pt.x, new_pt.y, new_pt.idx);
             tri.push(new Triangle(edge.pts[0], edge.pts[1], new_vtx, this.vtx));
           }
           this.triangles = tri;
@@ -417,81 +401,83 @@
       }
       return Delaunay;
     })();
+
     ////////////////////////////////////////////////////////////////////////////////
     Preview.prototype.Render = function(w, canvas, show_triangles) {
-      var h = w * this.grid_y / this.grid_x;
+      const h = w * this.grid_y / this.grid_x;
       canvas.width = w;
       canvas.height = h;
-      var delaunay = new Delaunay(this.grid_x, this.grid_y, this.qpts);
-      var triangles = delaunay.getTriangles();
-      var vtx = delaunay.vtx;
-      var nb_triangles = triangles.length;
-      var nb_vtx = vtx.length;
+      const delaunay = new Delaunay(this.grid_x, this.grid_y, this.qpts);
+      const triangles = delaunay.getTriangles();
+      const vtx = delaunay.vtx;
+      const nb_triangles = triangles.length;
+      const nb_vtx = vtx.length;
       do {
-        var gl = canvas.getContext('webgl');
+        const gl = canvas.getContext('webgl');
         if (!gl) {
           alert("ERROR!");
           break;
         }
-        var shader_program = initGL(gl);
-        var amp = gl.getUniformLocation(shader_program, "amp");
+        const shader_program = initGL(gl);
+        const amp = gl.getUniformLocation(shader_program, "amp");
         if (!amp) {
           alert("shader ERROR!");
           break;
         }
-        var amp_value = document.getElementById('amp').value;
+        const amp_value = document.getElementById('amp').value;
         gl.uniform1f(amp, parseFloat(amp_value));
-        var colors = new Uint8Array(4 * nb_vtx);
-        var vertices = new Float32Array(3 * nb_vtx);
-        var sx = 2. / (this.grid_x - 1.);
-        var sy = -2. / (this.grid_y - 1.);
-        for (var i = 0; i < nb_vtx; ++i) {
-          var V = vtx[i];
-          var col = this.cmap[V.idx];
+        const colors = new Uint8Array(4 * nb_vtx);
+        const vertices = new Float32Array(3 * nb_vtx);
+        const sx = 2. / (this.grid_x - 1.);
+        const sy = -2. / (this.grid_y - 1.);
+        for (let i = 0; i < nb_vtx; ++i) {
+          const V = vtx[i];
+          const col = this.cmap[V.idx];
           vertices[i * 3 + 0] = -1 + sx * V.x;
-          vertices[i * 3 + 1] = 1 + sy * V.y;
+          vertices[i * 3 + 1] =  1 + sy * V.y;
           vertices[i * 3 + 2] = 1.;
           colors[i * 4 + 0] = col.r;
           colors[i * 4 + 1] = col.g;
           colors[i * 4 + 2] = col.b;
           colors[i * 4 + 3] = col.a;
         }
-        var vertex_idx_buffer; {
-          var indexes = new Uint16Array(3 * nb_triangles);
-          for (var i = 0; i < nb_triangles; ++i) {
-            var t = triangles[i];
+        {
+          const indexes = new Uint16Array(3 * nb_triangles);
+          for (let i = 0; i < nb_triangles; ++i) {
+            const t = triangles[i];
             indexes[3 * i + 0] = t.vtx[0];
             indexes[3 * i + 1] = t.vtx[1];
             indexes[3 * i + 2] = t.vtx[2];
           }
-          vertex_idx_buffer = gl.createBuffer();
+          const vertex_idx_buffer = gl.createBuffer();
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertex_idx_buffer);
           gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexes, gl.STATIC_DRAW);
-        } {
-          var vertex_buffer = gl.createBuffer();
+        }
+        {
+          const vertex_buffer = gl.createBuffer();
           gl.bindBuffer(gl.ARRAY_BUFFER, vertex_buffer);
           gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-          var coord = gl.getAttribLocation(shader_program, "coordinates");
+          const coord = gl.getAttribLocation(shader_program, "coordinates");
           gl.vertexAttribPointer(coord, 3, gl.FLOAT, false, 0, 0);
           gl.enableVertexAttribArray(coord);
           gl.bindBuffer(gl.ARRAY_BUFFER, null);
-        } {
-          var color_buffer = gl.createBuffer();
+        }
+        {
+          const color_buffer = gl.createBuffer();
           gl.bindBuffer(gl.ARRAY_BUFFER, color_buffer);
           gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
-          var color = gl.getAttribLocation(shader_program, "color");
+          const color = gl.getAttribLocation(shader_program, "color");
           gl.vertexAttribPointer(color, 4, gl.UNSIGNED_BYTE, true, 0, 0);
           gl.enableVertexAttribArray(color);
           gl.bindBuffer(gl.ARRAY_BUFFER, null);
         }
         gl.disable(gl.DEPTH_TEST);
         gl.viewport(0, 0, w, h);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vertex_idx_buffer);
         gl.drawElements(gl.TRIANGLES, 3 * nb_triangles, gl.UNSIGNED_SHORT, 0);
         if (show_triangles) {
           gl.enable(gl.BLEND);
           gl.blendFunc(gl.ZERO, gl.ZERO);
-          for (var i = 0; i < nb_triangles; ++i) {
+          for (let i = 0; i < nb_triangles; ++i) {
             gl.drawElements(gl.LINE_LOOP, 3, gl.UNSIGNED_SHORT, 3 * i * 2);
           }
         }
@@ -503,10 +489,10 @@
 
     // sets ?preview=xxxx param value in URL
     function SetPreviewURL(data64) {
-      var param = "preview";
-      var pattern = new RegExp('\\b('+ param +'=).*?(&|#|$)');
-      var url = window.location.href;
-      var new_url;
+      const param = "preview";
+      const pattern = new RegExp('\\b('+ param +'=).*?(&|#|$)');
+      const url = window.location.href;
+      let new_url;
       if (url.search(pattern) >= 0) {
         new_url = url.replace(pattern,'$1' + data64 + '$2');
       } else {
@@ -518,8 +504,8 @@
     }
     // break down URL params in key/value. Example: ZwnQWM?preview=543254634643
     function GetParamsFromURL() {
-      var vars = {};
-      var url = window.location.href;
+      let vars = {};
+      let url = window.location.href;
       url.replace(/[?&]+([^=&]+)=([^&]*)/gi,    
                   function(m, key, value) { vars[key] = value; });
       return vars;
@@ -528,14 +514,14 @@
     ////////////////////////////////////////////////////////////////////////////////
     // Main call.
     function decode(data64) {
-      var canvas = document.createElement('canvas');
-      var show_tri = document.getElementById('show_tri').checked;
-      var size = parseInt(document.getElementById('size').value);
-      if (size < 16) size = 16;
       SetPreviewURL(data64);
+
+      const canvas = document.createElement('canvas');
+      const show_tri = document.getElementById('show_tri').checked;
+      const size = Math.max(16, parseInt(document.getElementById('size').value));
       // Parsing starts.
-      var reader = new ANSDec(atob(data64));
-      var p = new Preview();
+      const reader = new ANSDec(atob(data64));
+      let p = new Preview();
       p.grid_x = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
       p.grid_y = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
       p.use_noise = reader.NextBit(kPreviewNoiseProba);
@@ -546,14 +532,14 @@
       // Draw the vertices.
       p.Render(size, canvas, show_tri);
       // Print side infos
-      var elm = document.getElementById('comp_data');
+      let elm = document.getElementById('comp_data');
       elm.innerHTML = p.GetBinText();
       elm.rows = p.grid_y + p.nb_colors + 2;
       elm.cols = p.grid_x;
       document.getElementById('info').innerHTML = p.GetInfoText();
       document.getElementById('text').innerHTML = reader.max_pos_ + " bytes ";
       // Canvas to lossless WebP
-      var image = document.getElementById('output');
+      let image = document.getElementById('output');
       image.width = canvas.width;
       image.height = canvas.height;
       image.src = canvas.toDataURL('image/webp', 1.);
@@ -571,7 +557,7 @@
     }
 
     function setPrecalc(idx) {
-      var precalc = [
+      const precalc = [
         // Mona Lisa:
         "AzFhqCBwmt34gyNzfH7iVoErk7T3RW6hS6Xo4vEq2AT2TcphQkyZZpyDDyZxHoGflzF7crbOvhvvl26pVjYkNWgdBdprEeqUURSfwEwXiVuHmt2kuSl8lO5ThRSfluaOTDjc/P/EdTHUHFkia/wBTh73YNYS9zFrrbzGtk8tS9gg3dJ5bAjiwmM+gxXvIu5rm42ObIr0YMxMgeAtWjV3mH/ita9nKI9PrRD7qvuQGoDg5BPhAO+kPXhddDDziI8Ocb3MLImE46ILFAEJTDeV4PvG2srfDAWVp+h8Dntgm4FnTr4h+NR23ExOx8CLakoSHI598ZzMOVMW3g==",
         // Van Gogh:
@@ -595,8 +581,8 @@
     }
 
     function main_launch() {
-      var idx = 0;
-      var preview_data = GetParamsFromURL()["preview"];
+      let idx = 0;
+      const preview_data = GetParamsFromURL()["preview"];
       if (preview_data != undefined) {
         idx = decodeURI(preview_data);
         if (idx.length > 4) {
