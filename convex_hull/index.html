@@ -57,19 +57,40 @@
             });
             return p;
         }
+        function sortLexicographically(points) {
+            let p = [];
+            for (let i = 0; i < points.length; ++i) p.push(i);
+            p.sort((a, b) => {
+                return (points[a].y != points[b].y) ? points[a].y - points[b].y : points[a].x - points[b].x;
+            });
+            return p;
+        }
         function convexHullGrahamScan() {
-            convex.length = 0;   // used as stack
-            let p = sortByAngle(points);
-            for (let C of p) {
-                while (convex.length > 1) {
-                    const last = convex.length - 1;
-                    const A = convex[last - 1];
-                    const B = convex[last - 0];                
-                    if (CCW(points[A], points[B], points[C]) > 0) break;
-                    convex.pop();
-                }
-                convex.push(C);
+            convex.length = points.length + 1;   // Pre-reserved. Used as stack.
+            const P = sortByAngle(points);
+            let k = 0;
+            for (let p of P) {
+                while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[p]) <= 0)) --k;
+                convex[k++] = p;
             }
+            convex.length = k;
+        }
+        // Andrew's monotone chain algorithm.
+        // This version uses less calls to CCW()
+        function convexHullAndrew() {
+            convex.length = points.length + 1;
+            const P = sortLexicographically(points);
+            let k = 0;
+            for (let i = 0; i < P.length; ++i) {   // lower part
+                while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
+                convex[k++] = P[i];
+            }
+            const L = k + 1;  // split point for the 2nd part
+            for (let i = P.length - 2; i >= 0; --i) {   // upper part
+                while (k >= L && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
+                convex[k++] = P[i];
+            }
+            convex.length = k - 1;
         }
 
         // Circum circles from 3 or 2 points
@@ -176,6 +197,7 @@
         const settings = {
             count: 800,
             ctype: 3,    // 0 = random, 1 = circle, 2 = disk, 3 = spiral
+            useGraham: false,
             drawings: {
                 radius: 1.,
                 background_color: '#000000',
@@ -198,11 +220,11 @@
                 .onFinishChange(randomPoints);
             configFolder.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
                 .onFinishChange(randomPoints);
-            const drawingsFolder = settings.gui.addFolder('Drawings');
-            drawingsFolder.add(settings.drawings, 'convexHull').name('Draw Convex Hull').listen();
-            drawingsFolder.add(settings.drawings, 'circum').name('Search Circum Circle').listen();
-            drawingsFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
-            drawingsFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
+            configFolder.add(settings, 'useGraham').name('use Graham scan').listen();
+            configFolder.add(settings.drawings, 'convexHull').name('Draw Convex Hull').listen();
+            configFolder.add(settings.drawings, 'circum').name('Search Circum Circle').listen();
+            configFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
+            configFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
 
             setupClicks();
             setupKeys();
@@ -332,7 +354,7 @@
                 drawCircle(a, 'white', settings.drawings.radius);
             }
             if (settings.drawings.convexHull) {  // draw convex hull
-                convexHullGrahamScan()
+                settings.useGraham ? convexHullGrahamScan() : convexHullAndrew()
                 let prev = points[convex[convex.length - 1]];
                 for (const a of convex) {
                     const pt = points[a];
