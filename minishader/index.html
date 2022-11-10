@@ -76,7 +76,7 @@ bool shadow(vec3 p, vec3 dir) {
   vec3 h = trace(p, dir);
   return (h.x < DMAX);
 }
-  
+
 mat3 makeCam(vec3 target, vec3 origin) {
   vec3 up = vec3(0., 0., 1.);
   vec3 front = normalize(target - origin);
