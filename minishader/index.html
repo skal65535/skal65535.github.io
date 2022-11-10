@@ -1,0 +1,221 @@
+<!-- // https://www.shadertoy.com/view/ttVGRc -->
+<html>
+<title>minishader</title>
+<body>
+<script type='text/javascript' id='h'>
+//
+//  Exploring noise
+//
+//  skal/ (Pascal Massimino) [pascal.massimino@gmail.com]
+// License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
+//
+
+#define eps .01
+#define DMAX 10.
+#define MAX_ITER 30
+#define FBM_ITER 8
+
+#define R0 0.5
+#define SP0 vec3(.0, .0, .0)
+vec3 SP1;
+
+const vec3 lightDir = normalize(vec3(1., 1., 1.));
+const vec3 lightCol = vec3(.6, .6, .4);
+
+float gyroid(vec3 p) {
+  return abs(.05 + dot(sin(p), cos(p.zxy)));
+}
+
+float fbm(vec3 p, float tau) {
+  float a = tau, v = 0.;
+  for (int i = 0; i < FBM_ITER; ++i, a *= tau) {
+    p.z += v * .4;
+    v += gyroid(p / a) * a;
+  }
+  return v;
+}
+
+vec2 testMin(vec2 hit, float d, float id) {
+  return (d > hit.x) ? hit : vec2(d, id);
+}
+
+vec2 scene(vec3 p) {
+  vec2 dmin = vec2(DMAX, 0.);
+  float r0 = R0 + .1 * fbm(p + .1 * vec3(iTime * .4, 0., 0.), .5);
+  float r1 = .3 + .1 * fbm(p * 3., .3);
+  dmin = testMin(dmin, length(p - SP0) - r0, 1.);
+  dmin = testMin(dmin, length(p - SP1) - r1, 2.);
+  return dmin;
+}
+
+vec3 normal(vec3 p) {
+  const vec2 EPS = vec2(0., 0.01);
+#if 0
+  vec3 n = vec3(scene(p + EPS.yxx).x - scene(p - EPS.yxx).x,
+                scene(p + EPS.xyx).x - scene(p - EPS.xyx).x,
+                scene(p + EPS.xxy).x - scene(p - EPS.xxy).x);
+#else
+  vec3 n = vec3(scene(p + EPS.yxx).x, scene(p + EPS.xyx).x, scene(p + EPS.xxy).x) - scene(p).xxx;
+#endif
+  return normalize(n);
+}
+
+vec3 trace(vec3 p, vec3 dir) {
+  float d = eps, hmin = DMAX;
+  for (int i = 0; d < DMAX && i < MAX_ITER; ++i) {
+    vec2 h = scene(p + d * dir);
+    hmin = min(hmin, h.x);
+    if (abs(h.x) < eps) return vec3(d, h.y, hmin);
+    d += h.x * .9;
+    if (d >= DMAX) break;
+  }
+  return vec3(DMAX, 0., hmin);  // sky
+}
+
+bool shadow(vec3 p, vec3 dir) {
+  vec3 h = trace(p, dir);
+  return (h.x < DMAX);
+}
+  
+mat3 makeCam(vec3 target, vec3 origin) {
+  vec3 up = vec3(0., 0., 1.);
+  vec3 front = normalize(target - origin);
+  vec3 left = cross(up, front);
+  up = cross(front, left);
+  return mat3(left, up, front);
+}
+
+vec3 getColor(vec3 p) {
+  vec3 c0 = vec3(.2, .6, .7), c1 = vec3(.6, .4, .3);
+  float t = atan(p.y, p.x);
+  vec3 c = mix(c0, c1, cos(10. * t + 32. * p.z));
+  return c;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 uv = 2. * (fragCoord - iResolution.xy * 0.5) / min(iResolution.x, iResolution.y);
+  float t = iTime * .4;
+  SP1 = 1. * cross(vec3(cos(t), sin(t), 0.), normalize(vec3(1., 1., -1.)));
+  float focal = 1.5;
+  vec3 target = vec3(0., 0., 0.);
+  vec3 origin = vec3(2. * cos(t * .3), 2. * sin(t * .3), .5);
+  mat3 cam = makeCam(target, origin);
+  vec3 dir = normalize(cam * vec3(uv, focal));
+  vec3 h = trace(origin, dir);
+  vec3 col;
+  if (h.y > 0.) {
+    vec3 p = origin + h.x * dir;  // hit point
+    vec3 n = normal(p);
+    float l = max(0., dot(n, lightDir));
+    if (l > 0. && shadow(p + n * 0.01, lightDir)) l *= 0.1;
+    vec3 base = (h.y == 1.) ? getColor(p) : vec3(.3, .6, .5);
+    col = base * mix(0.2, 1.0, l);
+    if (l > 0.) col += lightCol * smoothstep(0.95, 1.0, dot(reflect(dir, n), lightDir));
+  } else {  // 'sky'
+    col = vec3(.30, .25, .30) * fbm(dir, .5);   // base 'clouds'
+    col += lightCol * smoothstep(.9, 1., dot(dir, lightDir));  // global diffuse
+    col = mix(col, vec3(.6, .8, .6), 0.015 / h.z);  // halo
+  }
+  fragColor = vec4(col, 1.);
+}
+
+</script>
+<script id="e">#define U uniform
+U int iFrame;
+U float iTime, iTimeDelta;
+U vec3 iResolution;
+U vec4 iMouse;
+#undef U
+</script>
+
+<script>
+var last_frame = 0|0, last_time = 0;  // for FPS
+// uniforms:
+var u = { frame_count: last_frame,
+          time: last_time,
+          mouse:new Float32Array([0,0,-1,-1]),
+          screen:new Float32Array([9,6,1]) };
+// global vars:
+var cvs, m, prog;
+function ge(a) { return document.getElementById(a); }
+function loop() {
+  cvs.width = window.innerWidth;
+  cvs.height = window.innerHeight;
+  var w = u.screen[0] = m.drawingBufferWidth;
+  var h = u.screen[1] = m.drawingBufferHeight;
+  m.viewport(0, 0, w, h);
+  m.scissor(0, 0, w, h);
+
+  function ul(name) { return m.getUniformLocation(prog, name); }
+  const prev_time = u.time;
+  u.time = performance.now() * .001;
+  const dtime = u.time - prev_time;
+  m.uniform1i(ul("iFrame"), u.frame_count++);
+  m.uniform1f(ul("iTime"), u.time);
+  m.uniform1f(ul("iTimeDelta"), dtime);
+  m.uniform4fv(ul("iMouse"), u.mouse);
+  m.uniform3fv(ul("iResolution"), u.screen);
+
+  m.drawArrays(m.TRIANGLES, 0, 3);
+
+  const et = u.time - last_time;  // compute FPS every ~2 secs
+  if (et >= 2.) {
+    const fps = (u.frame_count - last_frame) / et;
+    ge("FPS").innerHTML = fps.toFixed(1) + " fps";
+    last_frame = u.frame_count;
+    last_time = u.time;
+  }
+  requestAnimationFrame(loop);
+}
+
+function gt(a) { return ge(a).innerHTML; }
+function go() {
+  function updateMouse(e) {
+    u.mouse[0] = e.clientX * u.screen[0] / innerWidth;
+    u.mouse[1] = u.screen[1] - e.clientY * u.screen[1] / innerHeight;
+  }
+  function ael(n, f) { document.addEventListener(n, f, false); }
+  ael('mousemove', e => { if (u.mouse[2] >= 0) updateMouse(e)});
+  ael('mousedown', e => { updateMouse(e); if (u.mouse[2] < 0) { u.mouse[2] = u.mouse[0]; u.mouse[3] = u.mouse[1]}});
+  ael('mouseup', e => { updateMouse(e); u.mouse[2]=-Math.abs(u.mouse[2]); u.mouse[3]=-Math.abs(u.mouse[3])});
+  ael('keydown', e => { });
+
+  cvs = ge("CANVAS");
+  m = cvs.getContext("webgl2",
+    { alpha:false, depth:false, stencil:false, premultipliedAlpha:false, antialias:false, preserveDrawingBuffer:true });
+  var hdr = "#version 300 es\nprecision highp float;\n";
+  var vtxSrc = hdr + "\nconst vec2[3] t=vec2[](vec2(3,-1),vec2(-1,-1),vec2(-1,3));void main(){gl_Position=vec4(t[gl_VertexID],0,1);}";
+  var frgSrc = hdr + gt('e') + gt('h') + "out vec4 o;void main(){mainImage(o,gl_FragCoord.xy);}";
+
+  function err(a, b) { alert(a + "\n" + b); return null; }
+  function compileShader(sh_type, src, name) {
+    const sh = m.createShader(sh_type);
+    m.shaderSource(sh, src);
+    m.compileShader(sh);
+    if (!m.getShaderParameter(sh, m.COMPILE_STATUS))
+      return err(name, m.getShaderInfoLog(sh));
+    return sh;
+  }
+  const vtx_sh = compileShader(m.VERTEX_SHADER, vtxSrc, 'vtx');
+  const frg_sh = compileShader(m.FRAGMENT_SHADER, frgSrc, 'frg');
+
+  prog = m.createProgram();
+  m.attachShader(prog, vtx_sh);
+  m.attachShader(prog, frg_sh);
+  m.linkProgram(prog);
+  if (!m.getProgramParameter(prog,m.LINK_STATUS))
+    return err('link', m.getProgramInfoLog(prog));
+  m.useProgram(prog);
+
+  loop();  // go!
+}
+</script>
+<style>
+#CANVAS{ color:#000; top:0; left:0; position:absolute }
+#FPS{ color:#FFF; top:0; left:0; position:absolute; pointer-events:none }
+</style>
+<body onload="go()">
+<canvas id="CANVAS"></canvas>
+<div id="FPS"></div>
+</body>
+</html>
