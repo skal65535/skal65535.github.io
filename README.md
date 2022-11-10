@@ -35,3 +35,5 @@ Some demo pages from sub-projects:
   * [Rainbow visualization](https://www.shadertoy.com/view/NlyfRV)
   * [Deluge Simulator](https://www.shadertoy.com/view/slKfWc)
 
+... and a [Minishader](https://skal65535.github.io/minishader/index.html) to
+convert simple ShaderToy code to a standalone HTML + WebGL page.
