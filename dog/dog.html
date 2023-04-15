@@ -1,0 +1,126 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<html>
+<title>DoG: difference of Gaussians</title>
+
+<head>
+<style>
+#drop-area {
+  border: 3px dashed #ccc;
+  border-radius: 20px;
+  font-family: sans-serif;
+  margin: 10px auto;
+  padding: 10px;
+}
+#drop-area.highlight {
+  border-color: purple;
+}
+.my-form {
+  margin-bottom: 10px;
+}
+.button {
+  display: inline-block;
+  padding: 8px;
+  background: #bbc;
+  cursor: pointer;
+  border-radius: 5px;
+  border: 1px solid #bbc;
+}
+.button2 {
+  display: inline-block;
+  padding: 10px;
+  background: #dde;
+  border-radius: 5px;
+  border: 3px solid #333;
+}
+.button:hover {
+  background: #bbd;
+}
+#FileElmt {
+  display: none;
+}
+.main-canvas {
+  z-index:0;
+}
+
+</style>
+</head>
+
+<body onload="main();">
+
+<div id="drop-area">
+  <form class="my-form">
+    <input type="file" id="FileElmt" multiple accept="image/*" onchange="handleFile(this.files[0])">
+  </form>
+  This is a small tool for experimenting with the parameters of the
+  Difference Of Gaussian (DoG) operator, as described in
+  <a href="https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf">this paper</a>
+  by Holger Winnemoeller &amp; al.<br/>
+  The kernel used here is 17x17 in size, hence the limited Sigma range.
+  <br/>
+  <p>Drag and drop image on the canvas below or
+  <label class="button" for="FileElmt">select an image</label>.
+  </p>
+  <div>
+    <button class='button2' style='z-index:1; position:relative; top:80;left:30'
+          onmousedown="settings.original=true; Render();"
+          onmouseup="settings.original=false; Render();">show original</button>
+  </div>
+  <canvas id="main-canvas" width='1024' height='800px'></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+
+<!-- vertex shader -->
+<script  id="vertex-shader-2d" type="x-shader/x-vertex">
+attribute vec4 vtx;
+uniform vec2 resolution;
+varying vec2 uv_coord;
+void main() {
+  vec2 pos = 2. * vtx.xy / resolution - 1.;
+  gl_Position = vec4(pos * vec2(1, -1), 0., 1.);
+  uv_coord = vtx.zw;
+}
+</script>
+
+<!-- fragment shaders -->
+<script  id="fragment-shader-2d" type="x-shader/x-fragment">
+precision mediump float;
+uniform sampler2D image;
+uniform vec2 iSize;
+uniform vec2 Threshold;
+uniform int GrayScale;
+uniform float kWeights[8 + 1];
+
+varying vec2 uv_coord;
+
+void main() {
+  vec4 sum = vec4(0.);
+  for (float i = -8.; i <= 8.; ++i) {
+    // yes, the filter is separable and we could do 2 passes.
+    // But it's not worth the complexity.
+    float w0 = kWeights[int(abs(i))];
+    for (float j = -8.; j <= 8.; ++j) {
+      float w = w0 * kWeights[int(abs(j))];
+      vec2 uv = uv_coord + vec2(i * iSize.x, j * iSize.y);
+      vec3 col = texture2D(image, uv).rgb;
+      if (GrayScale > 0) col = vec3(dot(col, vec3(.2126, 0.7152, 0.0722)));
+      sum += vec4(w * col, w);
+    }
+  }
+  vec3 col = (sum.rgb / sum.a - vec3(Threshold.x)) * Threshold.y;   // phi.(u-epsilon)
+  col = vec3(2.) / (vec3(1.) + exp(-col));   // 1 + tanh[phi.(u-epsilon)]
+  gl_FragColor = vec4(min(col, vec3(1.)), 1.);
+}
+</script>
+
+<script  id="fragment-shader-basic" type="x-shader/x-fragment">
+precision mediump float;
+uniform sampler2D image;
+varying vec2 uv_coord;
+void main() { gl_FragColor = texture2D(image, uv_coord); }
+</script>
+
+<script src="./dog.js"></script>
+
+</body>
+</html>
