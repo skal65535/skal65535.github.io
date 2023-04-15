@@ -25,6 +25,13 @@ Some demo pages from sub-projects:
 
    See the [paper](http://arxiv.org/abs/1809.02257) presented at ICIP 2018.
 
+## [Exploring Difference Of Gaussian](https://skal65535.github.io/dog/dog.html)
+
+   Difference of Gaussian operator
+   (as described in the original [paper](https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf))
+   has a lot of different parameters to play with.
+   This HTML+WebGL page lets you do just that.
+
 ## Some shaders in ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
