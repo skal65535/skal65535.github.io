@@ -3,7 +3,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 // DoG: The interesting stuff
 
-const settings = {  // Global parameters
+const params = {  // Global parameters
   Sigma: 0.5,
   K: 1.6,
   p: 30.0,
@@ -18,16 +18,15 @@ const settings = {  // Global parameters
 
 function ComputeWeights() {
   let w = new Float32Array(9);
+  const iK = 1. / params.K;
+  const amp = 1. * (1. - params.Blend) / (Math.sqrt(Math.PI) * params.Sigma);
+  const alpha = amp * (1. + params.p);
+  const beta = amp * params.p * Math.sqrt(iK);
   for (let i = 0; i <= 8; ++i) {
-    const x = 1. * i / settings.Sigma;
-    const iK = 1. / settings.K;
-    const amp = 1. / (Math.sqrt(Math.PI) * settings.Sigma);
-    const alpha = amp * (1. + settings.p);
-    const beta = amp * settings.p * Math.sqrt(iK);
+    const x = 1. * i / params.Sigma;
     w[i] = alpha * Math.exp(-x * x) - beta * Math.exp(-x * x * iK);
   }
-  w[0] +=settings.Blend;
-  for (let i = 1; i <= 8; ++i) w[i] *= 1. - settings.Blend;
+  w[0] += params.Blend;
   return w;
 }
 
@@ -45,9 +44,9 @@ function HandleFile(file) {
   const reader = new FileReader();
   reader.readAsDataURL(file);
   reader.onloadend = function() {
-    settings.image = new Image();
-    settings.image.src = reader.result;
-    settings.image.onload = function() { Render(); };
+    params.image = new Image();
+    params.image.src = reader.result;
+    params.image.onload = function() { Render(); };
   }
 }
 function SetupDragAndDrop() {
@@ -70,6 +69,7 @@ function SetupDragAndDrop() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
+<<<<<<< HEAD
   settings.gui = new dat.GUI();
   settings.gui.domElement.id = 'gui';
   settings.gui.add(settings, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
@@ -79,17 +79,28 @@ function SetupUI() {
   settings.gui.add(settings, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
   settings.gui.add(settings, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
   settings.gui.add(settings, 'GrayScale').name('grayscale').listen().onChange(Render);
+=======
+  params.gui = new dat.GUI();
+  params.gui.domElement.id = 'gui';
+  params.gui.add(params, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
+  params.gui.add(params, 'K', 0.5, 4., .05).name('K').listen().onChange(Render);
+  params.gui.add(params, 'p', 10., 200., .1).name('p').listen().onChange(Render);
+  params.gui.add(params, 'Epsilon', 0.01, 1., .01).name('Epsilon').listen().onChange(Render);
+  params.gui.add(params, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
+  params.gui.add(params, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
+  params.gui.add(params, 'GrayScale').name('grayscale').listen().onChange(Render);
+>>>>>>> f66b745 (add a 'blend w/ source')
   const canvas = document.getElementById('gui-container');
-  canvas.appendChild(settings.gui.domElement);
+  canvas.appendChild(params.gui.domElement);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Main WebGL calls
 
 function main() {
-  settings.image = new Image();
-  settings.image.src = "./SF.webp";
-  settings.image.onload = function() { Render(); };
+  params.image = new Image();
+  params.image.src = "./SF.webp";
+  params.image.onload = function() { Render(); };
 
   SetupDragAndDrop();
   SetupUI();
@@ -122,7 +133,7 @@ function CreateShaders(gl, v_shader_id, f_shader_id) {
 }
 
 function Render() {
-  const image = settings.image;
+  const image = params.image;
   const canvas = document.querySelector("#main-canvas");
   let Wo = canvas.width, Ho = canvas.height;
   let W = image.width, H = image.height;
@@ -146,7 +157,7 @@ function Render() {
 
   const program = CreateShaders(gl,
     "vertex-shader-2d",
-    settings.original ? "fragment-shader-basic" : "fragment-shader-2d");
+    params.original ? "fragment-shader-basic" : "fragment-shader-2d");
 
   // rectangle the same size as the image.
   const vtxBuffer = gl.createBuffer();
@@ -183,8 +194,8 @@ function Render() {
   gl.uniform4f(kView, 2. / Wo, -2. / Ho, W / Wo, -H / Ho);
   gl.uniform2f(iSize, 1. / W, 1. / H);
   gl.uniform1fv(kWeights, ComputeWeights());
-  gl.uniform2f(kThreshold, settings.Epsilon, settings.Phi);
-  gl.uniform1i(kGrayScale, settings.original ? -1 : settings.GrayScale ? 1 : 0);
+  gl.uniform2f(kThreshold, params.Epsilon, params.Phi);
+  gl.uniform1i(kGrayScale, params.original ? -1 : params.GrayScale ? 1 : 0);
 
   // go!
   gl.drawArrays(gl.TRIANGLES, /*offset=*/0, /*count=*/6);
