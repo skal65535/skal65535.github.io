@@ -9,6 +9,7 @@ const settings = {  // Global parameters
   p: 30.0,
   Epsilon: 0.45,
   Phi: 3.2,
+  Blend: 0.0,
   GrayScale: false,
   original: false,
   image: null,
@@ -25,6 +26,8 @@ function ComputeWeights() {
     const beta = amp * settings.p * Math.sqrt(iK);
     w[i] = alpha * Math.exp(-x * x) - beta * Math.exp(-x * x * iK);
   }
+  w[0] +=settings.Blend;
+  for (let i = 1; i <= 8; ++i) w[i] *= 1. - settings.Blend;
   return w;
 }
 
@@ -69,11 +72,12 @@ function SetupDragAndDrop() {
 function SetupUI() {
   settings.gui = new dat.GUI();
   settings.gui.domElement.id = 'gui';
-  settings.gui.add(settings, 'Sigma', 0.01, 5., .01).name('Sigma').listen().onChange(Render);
+  settings.gui.add(settings, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
   settings.gui.add(settings, 'K', 0.5, 4., .05).name('K').listen().onChange(Render);
   settings.gui.add(settings, 'p', 10., 200., .1).name('p').listen().onChange(Render);
-  settings.gui.add(settings, 'Epsilon', 0., 1., .01).name('Epsilon').listen().onChange(Render);
+  settings.gui.add(settings, 'Epsilon', 0.01, 1., .01).name('Epsilon').listen().onChange(Render);
   settings.gui.add(settings, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
+  settings.gui.add(settings, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
   settings.gui.add(settings, 'GrayScale').name('grayscale').listen().onChange(Render);
   const canvas = document.getElementById('gui-container');
   canvas.appendChild(settings.gui.domElement);

@@ -78,8 +78,6 @@
   <br/>
 </div>
 
-<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script> -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 
 <!-- vertex shader -->
 <script  id="vertex-shader-2d" type="x-shader/x-vertex">
@@ -131,6 +129,9 @@ uniform sampler2D image;
 varying vec2 uv_coord;
 void main() { gl_FragColor = texture2D(image, uv_coord); }
 </script>
+
+<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script> -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 
 <script src="./dog.js"></script>
 
