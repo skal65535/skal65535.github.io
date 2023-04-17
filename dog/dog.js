@@ -69,7 +69,6 @@ function SetupDragAndDrop() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
-<<<<<<< HEAD
   settings.gui = new dat.GUI();
   settings.gui.domElement.id = 'gui';
   settings.gui.add(settings, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
@@ -79,17 +78,6 @@ function SetupUI() {
   settings.gui.add(settings, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
   settings.gui.add(settings, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
   settings.gui.add(settings, 'GrayScale').name('grayscale').listen().onChange(Render);
-=======
-  params.gui = new dat.GUI();
-  params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
-  params.gui.add(params, 'K', 0.5, 4., .05).name('K').listen().onChange(Render);
-  params.gui.add(params, 'p', 10., 200., .1).name('p').listen().onChange(Render);
-  params.gui.add(params, 'Epsilon', 0.01, 1., .01).name('Epsilon').listen().onChange(Render);
-  params.gui.add(params, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
-  params.gui.add(params, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
-  params.gui.add(params, 'GrayScale').name('grayscale').listen().onChange(Render);
->>>>>>> f66b745 (add a 'blend w/ source')
   const canvas = document.getElementById('gui-container');
   canvas.appendChild(params.gui.domElement);
 }
