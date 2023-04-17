@@ -1,8 +1,9 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <html>
-<title>DoG: difference of Gaussians</title>
 
 <head>
+<title>DoG: difference of Gaussians</title>
+
 <style>
 #drop-area {
   border: 3px dashed #ccc;
@@ -10,38 +11,40 @@
   font-family: sans-serif;
   margin: 10px auto;
   padding: 10px;
+  width: 1024px;
+  height: 930px;
+  background: #eef;
 }
 #drop-area.highlight {
   border-color: purple;
 }
-.my-form {
-  margin-bottom: 10px;
-}
+
 .button {
   display: inline-block;
   padding: 8px;
   background: #bbc;
   cursor: pointer;
   border-radius: 5px;
-  border: 1px solid #bbc;
-}
-.button2 {
-  display: inline-block;
-  padding: 10px;
-  background: #dde;
-  border-radius: 5px;
-  border: 3px solid #333;
+  border: 3px solid #334;
+  z-index:1;
+  position:relative;
+  font-size: 14px;
 }
 .button:hover {
-  background: #bbd;
-}
-#FileElmt {
-  display: none;
-}
-.main-canvas {
-  z-index:0;
+  background: #cce;
 }
 
+#main-canvas {
+  z-index:0;
+  border: 2px solid #000;
+  border-radius: 20px;
+  background: #000;
+}
+#gui {
+ position: relative;
+ top: -200px;
+ right: -6px;
+}
 </style>
 </head>
 
@@ -49,36 +52,43 @@
 
 <div id="drop-area">
   <form class="my-form">
-    <input type="file" id="FileElmt" multiple accept="image/*" onchange="handleFile(this.files[0])">
+    <input type="file" id="FileElmt" style='display:none;'
+           multiple accept="image/*" onchange="HandleFile(this.files[0])">
   </form>
-  This is a small tool for experimenting with the parameters of the
-  Difference Of Gaussian (DoG) operator, as described in
-  <a href="https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf">this paper</a>
-  by Holger Winnemoeller &amp; al. Also, you might find
-  <a href="https://www.youtube.com/watch?v=5EuYKEvugLU">Acerola's video</a> on the topic quite entertaining!<br/>
-  Note: The kernel used here has size 17x17, hence the limited Sigma range.
-  <br/>
-  <p>Drag and drop image on the canvas below or
-  <label class="button" for="FileElmt">select an image</label>.
-  </p>
+  <div height='200px'>
+    This is a small tool for experimenting with the parameters of the
+    <b>Difference Of Gaussians</b> (DoG) operator, as described in
+    <a href="https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf">this paper</a>
+    by Holger Winnemoeller &amp; al. Also, you might find
+    <a href="https://www.youtube.com/watch?v=5EuYKEvugLU">Acerola's video</a>
+    on the topic quite entertaining!<br/>
+    <font size='-1'>Drag and drop image on the canvas below.</font>
+  </div>
   <div>
-    <button class='button2' style='z-index:1; position:relative; top:80;left:30'
+    <button class='button' style='top:80; left:30;'
           onmousedown="settings.original=true; Render();"
           onmouseup="settings.original=false; Render();">show original</button>
+    <label class='button' for="FileElmt"
+           style='top:80; left:750;'>select an image</label>.
   </div>
-  <canvas id="main-canvas" width='1024' height='800px'></canvas>
+  <div id="gui-container">
+    <canvas id="main-canvas" width='1024' height='800'></canvas>
+  </div>
+  Note: The kernel used by the shader has 17x17 size, hence the limited Sigma range.
+  <br/>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script> -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 
 <!-- vertex shader -->
 <script  id="vertex-shader-2d" type="x-shader/x-vertex">
 attribute vec4 vtx;
-uniform vec2 resolution;
+uniform vec4 u_view;
 varying vec2 uv_coord;
 void main() {
-  vec2 pos = 2. * vtx.xy / resolution - 1.;
-  gl_Position = vec4(pos * vec2(1, -1), 0., 1.);
+  vec2 pos = vtx.xy * u_view.xy - u_view.zw;
+  gl_Position = vec4(pos, 0., 1.);
   uv_coord = vtx.zw;
 }
 </script>
@@ -87,6 +97,7 @@ void main() {
 <script  id="fragment-shader-2d" type="x-shader/x-fragment">
 precision mediump float;
 uniform sampler2D image;
+uniform vec4 u_view;
 uniform vec2 iSize;
 uniform vec2 Threshold;
 uniform int GrayScale;
@@ -121,7 +132,7 @@ varying vec2 uv_coord;
 void main() { gl_FragColor = texture2D(image, uv_coord); }
 </script>
 
-<script src="./dog.js"></script>
+<script src="./dog2.js"></script>
 
 </body>
 </html>

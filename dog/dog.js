@@ -4,7 +4,7 @@
 // DoG: The interesting stuff
 
 const settings = {  // Global parameters
-  sigma: 0.5,
+  Sigma: 0.5,
   K: 1.6,
   p: 30.0,
   Epsilon: 0.45,
@@ -18,9 +18,9 @@ const settings = {  // Global parameters
 function ComputeWeights() {
   let w = new Float32Array(9);
   for (let i = 0; i <= 8; ++i) {
-    const x = 1. * i / settings.sigma;
+    const x = 1. * i / settings.Sigma;
     const iK = 1. / settings.K;
-    const amp = 1. / (Math.sqrt(Math.PI) * settings.sigma);
+    const amp = 1. / (Math.sqrt(Math.PI) * settings.Sigma);
     const alpha = amp * (1. + settings.p);
     const beta = amp * settings.p * Math.sqrt(iK);
     w[i] = alpha * Math.exp(-x * x) - beta * Math.exp(-x * x * iK);
@@ -31,14 +31,14 @@ function ComputeWeights() {
 ////////////////////////////////////////////////////////////////////////////////
 // Drag'n'Drop
 
-function preventDefaults (e) {
+function PreventDefaults (e) {
   e.preventDefault();
   e.stopPropagation();
 }
-function handleDrop(e) {
-  handleFile(e.dataTransfer.files[0]);
+function HandleDrop(e) {
+  HandleFile(e.dataTransfer.files[0]);
 }
-function handleFile(file) {
+function HandleFile(file) {
   const reader = new FileReader();
   reader.readAsDataURL(file);
   reader.onloadend = function() {
@@ -53,7 +53,7 @@ function SetupDragAndDrop() {
   function unhighlight(e) { dropArea.classList.remove('highlight'); }
 
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, preventDefaults, false); }
+    name => { dropArea.addEventListener(name, PreventDefaults, false); }
   );
   ['dragenter', 'dragover'].forEach(
     name => { dropArea.addEventListener(name, highlight, false); }
@@ -61,19 +61,22 @@ function SetupDragAndDrop() {
   ['dragleave', 'drop'].forEach(
     name => { dropArea.addEventListener(name, unhighlight, false); }
   );
-  dropArea.addEventListener('drop', handleDrop, false)
+  dropArea.addEventListener('drop', HandleDrop, false)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
-  settings.gui = new lil.GUI();
-  settings.gui.add(settings, 'sigma', 0.01, 5.).name('Sigma').listen().onChange(Render);
+  settings.gui = new dat.GUI();
+  settings.gui.domElement.id = 'gui';
+  settings.gui.add(settings, 'Sigma', 0.01, 5., .01).name('Sigma').listen().onChange(Render);
   settings.gui.add(settings, 'K', 0.5, 4., .05).name('K').listen().onChange(Render);
   settings.gui.add(settings, 'p', 10., 200., .1).name('p').listen().onChange(Render);
   settings.gui.add(settings, 'Epsilon', 0., 1., .01).name('Epsilon').listen().onChange(Render);
   settings.gui.add(settings, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
   settings.gui.add(settings, 'GrayScale').name('grayscale').listen().onChange(Render);
+  const canvas = document.getElementById('gui-container');
+  canvas.appendChild(settings.gui.domElement);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -133,7 +136,7 @@ function Render() {
   const gl = canvas.getContext("webgl");
   if (!gl) return;
 
-  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+  gl.viewport(0, 0, Wo, Ho);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -146,11 +149,11 @@ function Render() {
   gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([  // x,y, u,v
      0, 0, 0., 0.,
-     image.width, 0, 1., 0.,
-     0, image.height, 0., 1.,
-     0, image.height, 0., 1.,
-     image.width, 0, 1., 0.,
-     image.width, image.height, 1., 1.
+     W, 0, 1., 0.,
+     0, H, 0., 1.,
+     0, H, 0., 1.,
+     W, 0, 1., 0.,
+     W, H, 1., 1.
   ]), gl.STATIC_DRAW);
   const vtxLocation = gl.getAttribLocation(program, "vtx");
   gl.enableVertexAttribArray(vtxLocation);
@@ -167,14 +170,14 @@ function Render() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
 
-  // set the uniforms
-  const kResolution = gl.getUniformLocation(program, "resolution");
+  // uniforms setup
+  const kView = gl.getUniformLocation(program, "u_view");
   const iSize = gl.getUniformLocation(program, "iSize");
   const kWeights = gl.getUniformLocation(program, "kWeights");
   const kThreshold = gl.getUniformLocation(program, "Threshold");
   const kGrayScale = gl.getUniformLocation(program, "GrayScale");
-  gl.uniform2f(kResolution, gl.canvas.width, gl.canvas.height);
-  gl.uniform2f(iSize, 1. / image.width, 1. / image.height);
+  gl.uniform4f(kView, 2. / Wo, -2. / Ho, W / Wo, -H / Ho);
+  gl.uniform2f(iSize, 1. / W, 1. / H);
   gl.uniform1fv(kWeights, ComputeWeights());
   gl.uniform2f(kThreshold, settings.Epsilon, settings.Phi);
   gl.uniform1i(kGrayScale, settings.original ? -1 : settings.GrayScale ? 1 : 0);
