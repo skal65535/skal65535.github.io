@@ -1,4 +1,4 @@
-# Skal's corner: code & demos
+# <center>Skal's corner: code & demos</center>
 
 Some demo pages from sub-projects:
 
@@ -36,7 +36,7 @@ Some demo pages from sub-projects:
 
    ![QR Code](https://skal65535.github.io/QR/QRCode.webp)
 
-## Some shaders in ShaderToy...
+## Some shaders made with ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
   * [Fluid flow simulation](https://www.shadertoy.com/view/ft2czK)

@@ -7,22 +7,22 @@
 </head>
 
 <body onload="SetupDragAndDrop(); SetImage('./QR.webp');">
-<h1 align='center'>QR Code Generator</h1>
+<div id="drop-area">
 
+<h1 align='center'>QR Code Generator</h1>
 <font size='-1'>Drag and Drop an image below</font><br/>
 
-<div id="drop-area">
-  <canvas id="imageColour"></canvas>
-  <canvas id="imagePixel"></canvas>
-  <canvas id="imageThreshold"></canvas>
-  <a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
-    <canvas id="output"></canvas>
-  </a>
-</div>
+<canvas id="imageColour"></canvas>
+<canvas id="imagePixel"></canvas>
+<canvas id="imageThreshold"></canvas>
+<a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
+  <canvas id="output"></canvas>
+</a>
 <br/>
 
 Embedded text:<br/>
 <textarea id="text" cols="50" rows="3" onchange='GenerateQRCode();'>https://skal65535.github.io/QR</textarea>
+<button id="go" onclick="GenerateQRCode();">Generate QR Code</button>
 <br/>
 
 Error correction:
@@ -50,11 +50,11 @@ QR size:
 </select>
 <br/>
 
-Background Type:
+Background:
 <select id="background" onchange='GenerateQRCode();'>
   <option value="image" selected>Image</option>
   <option value="noise">Noise</option>
-  <option value="trans">Transparent</option>
+  <option value="trans">None</option>
 </select><br/>
 
 Pixel size:
@@ -72,7 +72,7 @@ Dithering:
   <option value="none">None</option>
 </select><br/>
 
-Number of gray levels:
+Gray levels:
 <select id="gray_selector" onchange='GenerateQRCode();'>
   <option value="2" selected>2</option>
   <option value="4">4</option>
@@ -80,16 +80,25 @@ Number of gray levels:
   <option value="256">All (256)</option>
 </select><br/>
 
-Luminosity adjustment:
+Luminosity:
 <select id="luma_selector" onchange='GenerateQRCode();'>
   <option value="0">dark</option>
   <option value="128" selected>normal</option>
   <option value="255">light</option>
 </select><br/>
 
-<button id="go" onclick="GenerateQRCode();">Generate QR Code</button><br/>
 
+<footer>
+  <form action="https://skal65535.github.io/">
+    <input type="submit" value="skal 2023"
+      style='float: right; border-radius: 5px; padding: 5px; 
+             background: #cce; border: 1px solid #112;'
+      onmouseover='this.style.background="#cdf"'
+      onmouseout='this.style.background="#cce"'/>
+  </form>
+</footer>
 
+</div>  <!-- main div -->
 
 </body>
 </html>
