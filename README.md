@@ -21,7 +21,8 @@ Some demo pages from sub-projects:
 ## [Triangle-based compression](https://skal65535.github.io/triangle/index.html) demo
 
    Using triangulation + colormap to compress images into a very tight preview
-   (compressed data is a base64 string). The decoder is ~400 lines of javascript + WebGL.
+   (compressed data is a base64 string).<br/>
+   The decoder is ~400 lines of javascript + WebGL.
 
    See the [paper](http://arxiv.org/abs/1809.02257) presented at ICIP 2018.
 
@@ -29,7 +30,7 @@ Some demo pages from sub-projects:
 
    Difference of Gaussian operator
    (as described in the original [paper](https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf))
-   has a lot of different parameters to play with.
+   has a lot of different parameters to play with.<br/>
    This HTML+WebGL page lets you do just that.
 
 ## [QR Code generator](https://skal65535.github.io/QR)
