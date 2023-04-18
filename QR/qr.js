@@ -1,11 +1,11 @@
 // Inspired from https://kazuhikoarase.github.io/qrcode-generator/js/demo/
 //
 // Licensed under the MIT license:
-//    http://www.opensource.org/licenses/mit-license.php
+//	http://www.opensource.org/licenses/mit-license.php
 //
 // The word 'QR Code' is registered trademark of
 // DENSO WAVE INCORPORATED
-//   http://www.denso-wave.com/qrcode/faqpatent-e.html
+//	http://www.denso-wave.com/qrcode/faqpatent-e.html
 //
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -452,6 +452,7 @@ function StringToBytes(s) {
     };
     _this.getLengthInBits = function(mode, type) {
       if (1 <= type && type < 10) {
+
 
 				// 1 - 9
 
