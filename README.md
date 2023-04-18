@@ -34,7 +34,7 @@ Some demo pages from sub-projects:
 
 ## [QR Code generator](https://skal65535.github.io/QR)
 
-   ![QR Code](https://skal65535.github.io/QR/QR.webp)
+   ![QR Code](https://skal65535.github.io/QR/QRCode.webp)
 
 ## Some shaders in ShaderToy...
 
