@@ -1,0 +1,91 @@
+<html>
+
+<head>
+<title>QR Code Generator</title>
+<script src="./qr.js"></script>
+<link rel="stylesheet" href="./qr.css">
+</head>
+
+<body onload="SetupDragAndDrop(); SetImage('./QR.webp');">
+<h1>QR Code Generator</h1>
+<h2>Drop an image into your browser</h2>
+
+QR embedded text:<br/>
+<textarea id="text" cols="50" rows="3" onchange='GenerateQRCode();'>https://skal65535.github.io/QR</textarea>
+<br/>
+
+Redundancy (error correction level):
+<select id="error_level_selector" onchange='GenerateQRCode();'>
+  <option value="L">Low (7%)</option>
+  <option value="M">Medium (15%)</option>
+  <option value="Q">Quartile (25%)</option>
+  <option value="H" selected>High (30%)</option>
+</select>
+<br/>
+
+QR size:
+<select id="size_selector" onchange='GenerateQRCode();'>
+  <option value="0">Auto</option>
+  <option value="1">1</option>
+  <option value="2">2</option>
+  <option value="3">3</option>
+  <option value="4">4</option>
+  <option value="5">5</option>
+  <option value="6" selected>6</option>
+  <option value="7">7</option>
+  <option value="8">8</option>
+  <option value="9">9</option>
+  <option value="10">10</option>
+</select>
+<br/>
+
+Background Type:
+<select id="background" onchange='GenerateQRCode();'>
+  <option value="image" selected>Image</option>
+  <option value="noise">Noise</option>
+  <option value="trans">Transparent</option>
+</select><br/>
+
+Pixel size:
+<select id="pixel_size_selector" onchange='GenerateQRCode();'>
+  <option value="2" selected>2 x 2</option>
+  <option value="3">3 x 3</option>
+  <option value="4">4 x 4</option>
+</select><br/>
+
+Dithering:
+<select id="dithering_selector" onchange='GenerateQRCode();'>
+  <option value="diffusion" selected>Diffusion</option>
+  <option value="ordered">Ordered</option>
+  <option value="random">Random</option>
+  <option value="none">None</option>
+</select><br/>
+
+Number of gray levels:
+<select id="gray_selector" onchange='GenerateQRCode();'>
+  <option value="2" selected>2</option>
+  <option value="4">4</option>
+  <option value="16">16</option>
+  <option value="256">All (256)</option>
+</select><br/>
+
+Luminosity adjustment:
+<select id="luma_selector" onchange='GenerateQRCode();'>
+  <option value="0">dark</option>
+  <option value="128" selected>normal</option>
+  <option value="255">light</option>
+</select><br/>
+
+<button id="go" onclick="GenerateQRCode();">Generate QR Code</button><br/>
+
+<div id="drop-area">
+  <canvas id="imageColour"></canvas>
+  <canvas id="imagePixel"></canvas>
+  <canvas id="imageThreshold"></canvas>
+  <a id="download" href="about:blank" download="qr.png" target="_blank" title="Download QR Code">
+    <canvas id="output"></canvas>
+  </a>
+</div>
+
+</body>
+</html>

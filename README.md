@@ -32,6 +32,10 @@ Some demo pages from sub-projects:
    has a lot of different parameters to play with.
    This HTML+WebGL page lets you do just that.
 
+## [QR Code generator](https://skal65535.github.io/QR)
+
+   ![QR Code](https://skal65535.github.io/QR/QRCode.webp)
+
 ## Some shaders in ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
