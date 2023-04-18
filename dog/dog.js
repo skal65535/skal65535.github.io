@@ -45,8 +45,8 @@ function HandleFile(file) {
   reader.readAsDataURL(file);
   reader.onloadend = function() {
     params.image = new Image();
-    params.image.src = reader.result;
     params.image.onload = function() { Render(); };
+    params.image.src = reader.result;
   }
 }
 function SetupDragAndDrop() {

@@ -1,0 +1,6 @@
+canvas {
+  margin: 5px;
+  box-shadow: 0 0 5px black;
+}
+#output { background-color: grey; }
+#imagePixel { display: none; }   /* Hidden for now */
