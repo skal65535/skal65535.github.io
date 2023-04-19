@@ -12,9 +12,9 @@
 <h1 align='center'>QR Code Generator</h1>
 <font size='-1'>Drag and Drop an image below</font><br/>
 
-<canvas id="imageColour"></canvas>
+<canvas id="imageInput"></canvas>
 <canvas id="imagePixel"></canvas>
-<canvas id="imageThreshold"></canvas>
+<canvas id="imageDithered"></canvas>
 <a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
   <canvas id="output"></canvas>
 </a>
@@ -48,6 +48,7 @@ QR size:
   <option value="9">9</option>
   <option value="10">10</option>
 </select>
+<div style="display:inline;" id='resolution'></div>
 <br/>
 
 Background:
@@ -95,7 +96,7 @@ as mentioned by <a href='https://www.realtimerendering.com/blog/cooler-qr-codes/
 
 <form action="https://skal65535.github.io/">
   <input type="submit" value="skal 2023"
-         style='float: right; border-radius: 5px; padding: 5px; 
+         style='float: right; border-radius: 5px; padding: 5px;
                 background: #cce; border: 1px solid #112;'
          onmouseover='this.style.background="#cdf"'
          onmouseout='this.style.background="#cce"'/>
