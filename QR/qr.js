@@ -810,7 +810,7 @@ function Render() {
   const pixels = ctxPixel.getImageData(0, 0, canvasPixel.width, canvasPixel.height);
   const d = pixels.data;
   const num_levels = params.num_levels;
-  const adjust = params.luma_adjust;
+  const adjust = params.luma_adjust - 128;
 
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i + 0], g = d[i + 1], b = d[i + 2];
@@ -824,25 +824,29 @@ function Render() {
       let correction = 0;
       if (params.dithering == 'diffusion') {
         const off1 = off0 - stride;
-        correction = 8;
+        correction = 0;
         correction += 7 * d[off0 - 1 * 4 + 1];
         correction += 1 * d[off1 - 1 * 4 + 1];
         correction += 5 * d[off1 + 0 * 4 + 1];
         correction += 3 * d[off1 + 1 * 4 + 1];
         correction /= 16;
+        correction *= num_levels;
       } else if (params.dithering == 'random') {
-        correction = Math.floor(Math.random() * 255);
+        correction = Math.floor(Math.random() * 255) - 128;
       } else if (params.dithering == 'ordered') {
         const dithering_4x4 = [  0,  8,  2, 10,
                                 12,  4, 14,  6,
                                  3, 11,  1,  9,
                                 15,  7, 13,  5 ];
         const x4 = x % 4, y4 = y % 4;
-        correction = dithering_4x4[x4 + 4 * y4] * 4;
+        correction = dithering_4x4[x4 + 4 * y4] * 16 - 112;
+      } else {
+        correction = 64;
       }
-      const gray = Math.max(0, Math.min(d[off0 + 0] + correction, 255));
-      const q_gray = Math.floor(gray * num_levels / 256);
-      const d_gray = Math.round((q_gray * 255 + adjust) / num_levels);
+      const gray = d[off0 + 0];
+      const q_gray = Math.floor((gray * num_levels + correction + adjust) / 256);
+      const d_gray =
+        Math.max(0, Math.min(Math.floor(q_gray * 255 / (num_levels - 1)), 255));
       const error = gray - d_gray;
       d[off0 + 0] = d_gray;
       d[off0 + 1] = error;
