@@ -728,22 +728,27 @@ function HalftoneQR(QRBytes, controlBytes, image) {
   const pixelSize = params.pixelSize;
   const blockSize = 3 * pixelSize;
   const dim = QRBytes.length * blockSize;
+  const dim_out = dim + 2 * blockSize;   // including the border
 
-  ['#imageColour', '#imageThreshold', '#imagePixel', '#output'].forEach(name => {
+  ['#imageInput', '#imageDithered', '#imagePixel'].forEach(name => {
     const obj = document.querySelector(name);
     obj.width = dim;
     obj.height = dim;
   });
 
   const canvas = document.querySelector('#output');
+  canvas.width = dim_out;
+  canvas.height = dim_out;
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, dim, dim)
+  ctx.fillStyle = 'white';
+  ctx.rect(0, 0, dim_out, dim_out);
+  ctx.fill();
   if (params.image != null) {
     Render();
     if (params.background === 'image') {
-      const canvasThreshold = document.querySelector('#imageThreshold');
-      const ctxThreshold = canvasThreshold.getContext('2d');
-      ctx.drawImage(canvasThreshold, 0, 0, dim, dim);
+      const canvasDithered = document.querySelector('#imageDithered');
+      const ctxDithered = canvasDithered.getContext('2d');
+      ctx.drawImage(canvasDithered, blockSize, blockSize, dim, dim);
     }
   }
   for (let Y = 0; Y < QRBytes.length; ++Y) {
@@ -753,7 +758,8 @@ function HalftoneQR(QRBytes, controlBytes, image) {
         for (let y = 0; y < 3; ++y) {
           for (let x = 0; x < 3; ++x) {
             ctx.fillStyle = (Math.random() < 0.5) ? 'white' : 'black';
-            ctx.fillRect((3 * Y + y) * pixelSize, (3 * X + x) * pixelSize,
+            ctx.fillRect((3 * Y + 3 + y) * pixelSize,
+                         (3 * X + 3 + x) * pixelSize,
                          pixelSize, pixelSize);
           }
         }
@@ -761,10 +767,10 @@ function HalftoneQR(QRBytes, controlBytes, image) {
       // Re-draw control bytes
       if (controlBytes[Y][X] !== null) {
         ctx.fillStyle = (controlBytes[Y][X] === true) ? 'black' : 'white';
-        ctx.fillRect(Y * blockSize, X * blockSize, blockSize, blockSize);
+        ctx.fillRect((Y + 1) * blockSize, (X + 1) * blockSize, blockSize, blockSize);
       } else {   // Middle Cell
         ctx.fillStyle = QRBytes[Y][X] ? 'black' : 'white';
-        ctx.fillRect((3 * Y + 1) * pixelSize, (3 * X + 1) * pixelSize,
+        ctx.fillRect((3 * Y + 3 + 1) * pixelSize, (3 * X + 3 + 1) * pixelSize,
                      pixelSize, pixelSize);
       }
     }
@@ -781,30 +787,30 @@ function DisableSmoothing(ctx) {
 }
 
 function Render() {
-  const canvasColour = document.querySelector('#imageColour');
+  const canvasColour = document.querySelector('#imageInput');
   const ctxColour = canvasColour.getContext('2d');
   ctxColour.clearRect(0, 0, canvasColour.width, canvasColour.height);
   ctxColour.drawImage(params.image, 0, 0, canvasColour.width, canvasColour.height);
-    
+
   const canvasPixel = document.querySelector('#imagePixel');
   const ctxPixel = canvasPixel.getContext('2d');
 
   const canvasTmp = document.createElement('canvas');
-  canvasTmp.width = canvasTmp.height = (canvasPixel.width / params.pixelSize);
+  // reduced resolution:
+  canvasTmp.width = canvasTmp.height = canvasPixel.width / params.pixelSize;
   const ctxTmp = canvasTmp.getContext('2d');
-  DisableSmoothing(ctxPixel);
   DisableSmoothing(ctxTmp);
   ctxTmp.drawImage(canvasColour, 0, 0, canvasTmp.width, canvasTmp.height);
   ctxPixel.drawImage(canvasTmp, 0, 0, canvasPixel.width, canvasPixel.height);
 
   // DitherImage
-  const canvasThreshold = document.querySelector('#imageThreshold');
-  const ctxThreshold = canvasThreshold.getContext('2d');
-    
-  let pixels = ctxPixel.getImageData(0, 0, canvasPixel.width, canvasPixel.height);
-  let d = pixels.data;
-  let num_levels = params.num_levels;
-  let adjust = params.luma_adjust;
+  const canvasDithered = document.querySelector('#imageDithered');
+  const ctxDithered = canvasDithered.getContext('2d');
+
+  const pixels = ctxPixel.getImageData(0, 0, canvasPixel.width, canvasPixel.height);
+  const d = pixels.data;
+  const num_levels = params.num_levels;
+  const adjust = params.luma_adjust;
 
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i + 0], g = d[i + 1], b = d[i + 2];
@@ -827,9 +833,9 @@ function Render() {
       } else if (params.dithering == 'random') {
         correction = Math.floor(Math.random() * 255);
       } else if (params.dithering == 'ordered') {
-        const dithering_4x4 = [  0,  8,  2, 10, 
-                                12,  4, 14,  6, 
-                                 3, 11,  1,  9, 
+        const dithering_4x4 = [  0,  8,  2, 10,
+                                12,  4, 14,  6,
+                                 3, 11,  1,  9,
                                 15,  7, 13,  5 ];
         const x4 = x % 4, y4 = y % 4;
         correction = dithering_4x4[x4 + 4 * y4] * 4;
@@ -846,7 +852,7 @@ function Render() {
     d[i + 1] = d[i + 2] = d[i + 0];
     d[i + 3] = 255;
   }
-  ctxThreshold.putImageData(pixels, 0, 0);
+  ctxDithered.putImageData(pixels, 0, 0);
 }
 
 function ParseParams(p) {
@@ -858,6 +864,8 @@ function ParseParams(p) {
   p.luma_adjust = parseInt(document.querySelector('#luma_selector').value);
   p.background = document.querySelector('#background').value;
 
+  let dim_text = document.querySelector('#resolution');
+  dim_text.innerHTML = "";
   const sizes = {
     // 10 levels for each quality
     L: [152, 272, 440, 640, 864, 1088, 1248, 1552, 1856, 1240],
@@ -893,6 +901,8 @@ function ParseParams(p) {
     }
   }
   if (p.QRsize == 0) return false;
+  const dim = (p.QRsize * 4 + 17 + 2) * p.pixelSize * 3;
+  dim_text.innerHTML = ' (' + dim + ' x ' + dim + ')';
   return true;
 }
 
@@ -910,7 +920,7 @@ function GenerateQRCode() {
   controls.addData(params.text);
   controls.make(true);
 
-  HalftoneQR(qr.returnByteArray(), controls.returnByteArray());        
+  HalftoneQR(qr.returnByteArray(), controls.returnByteArray());
 }
 
 function SetImage(url) {
