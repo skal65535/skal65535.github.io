@@ -22,10 +22,12 @@
 
 Embedded text:<br/>
 <textarea id="text" cols="50" rows="3" onchange='GenerateQRCode();'>https://skal65535.github.io/QR</textarea>
+<br/>
 <button id="go" onclick="GenerateQRCode();">Generate QR Code</button>
 <br/>
 
-Error correction:
+<table>
+<tr><td>Error correction:</td><td>
 <select id="error_level_selector" onchange='GenerateQRCode();'>
   <option value="L">Low (7%)</option>
   <option value="M">Medium (15%)</option>
@@ -33,8 +35,9 @@ Error correction:
   <option value="H" selected>High (30%)</option>
 </select>
 <br/>
+</td></tr>
 
-QR size:
+<tr><td>QR size:</td><td>
 <select id="size_selector" onchange='GenerateQRCode();'>
   <option value="0">Auto</option>
   <option value="1">1</option>
@@ -50,44 +53,62 @@ QR size:
 </select>
 <div style="display:inline;" id='resolution'></div>
 <br/>
+</td></tr>
 
-Background:
+<tr><td>Background:</td><td>
 <select id="background" onchange='GenerateQRCode();'>
   <option value="image" selected>Image</option>
   <option value="noise">Noise</option>
   <option value="trans">None</option>
 </select><br/>
+</td></tr>
 
-Pixel size:
+<tr><td>Pixel size:</td><td>
 <select id="pixel_size_selector" onchange='GenerateQRCode();'>
   <option value="1">1 x 1</option>
   <option value="2" selected>2 x 2</option>
   <option value="3">3 x 3</option>
   <option value="4">4 x 4</option>
 </select><br/>
+</td></tr>
 
-Dithering:
+<tr><td>Dithering:</td><td>
 <select id="dithering_selector" onchange='GenerateQRCode();'>
   <option value="diffusion" selected>Diffusion</option>
   <option value="ordered">Ordered</option>
   <option value="random">Random</option>
   <option value="none">None</option>
 </select><br/>
+</td></tr>
 
-Gray levels:
+<tr><td>Gray levels:</td><td>
 <select id="gray_selector" onchange='GenerateQRCode();'>
   <option value="2" selected>2</option>
   <option value="4">4</option>
   <option value="16">16</option>
   <option value="256">All (256)</option>
 </select><br/>
+</td></tr>
 
-Luminosity:
+<tr><td>Luminosity:</td><td>
 <select id="luma_selector" onchange='GenerateQRCode();'>
   <option value="0">dark</option>
   <option value="128" selected>normal</option>
   <option value="255">light</option>
 </select><br/>
+</td></tr>
+
+<tr><td>Alpha cutoff:</td><td>
+<select id="alpha_selector" onchange='GenerateQRCode();'>
+  <option value="0">(off)</option>
+  <option value="64" >low</option>
+  <option value="128" selected>mid</option>
+  <option value="255">high</option>
+</select>
+<div style="display:inline;">(controls transparent areas)</div>
+<br/>
+</td></tr>
+</table>
 
 <br/>
 Original idea by <a href='https://codepen.io/xiongbinsh/full/goyobm'>Xiong Bin</a>.

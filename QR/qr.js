@@ -49,6 +49,7 @@ var params = {  // Global parameters
   dithering: 'diffusion',
   num_levels: 2,
   luma_adjust: 128,
+  alpha_limit: 128,
   image: null,
   text: "https://skal65535.github.io/QR",
   QRsize: 6,   // in [1, 10], 0=Auto
@@ -743,23 +744,34 @@ function HalftoneQR(QRBytes, controlBytes, image) {
   ctx.fillStyle = 'white';
   ctx.rect(0, 0, dim_out, dim_out);
   ctx.fill();
+  let transp = null;
+  let stride = 0;
   if (params.image != null) {
     Render();
     if (params.background === 'image') {
       const canvasDithered = document.querySelector('#imageDithered');
       const ctxDithered = canvasDithered.getContext('2d');
       ctx.drawImage(canvasDithered, blockSize, blockSize, dim, dim);
+      if (params.alpha_limit > 0) {
+        const canvasPixel = document.querySelector('#imagePixel');
+        const ctxPixel = canvasPixel.getContext('2d');
+        const pixels = ctxPixel.getImageData(0, 0, canvasPixel.width, canvasPixel.height);
+        transp = pixels.data;
+        stride = canvasPixel.width;
+      }
     }
   }
+
   for (let Y = 0; Y < QRBytes.length; ++Y) {
     for (let X = 0; X < QRBytes[Y].length; ++X) {
+      const off_x = (X + 1) * blockSize;
+      const off_y = (Y + 1) * blockSize;
       if (params.image == null || params.background === 'noise') {
         // Draw random bytes
         for (let y = 0; y < 3; ++y) {
           for (let x = 0; x < 3; ++x) {
             ctx.fillStyle = (Math.random() < 0.5) ? 'white' : 'black';
-            ctx.fillRect((3 * Y + 3 + y) * pixelSize,
-                         (3 * X + 3 + x) * pixelSize,
+            ctx.fillRect(off_y + y * pixelSize, off_x + x * pixelSize,
                          pixelSize, pixelSize);
           }
         }
@@ -767,11 +779,17 @@ function HalftoneQR(QRBytes, controlBytes, image) {
       // Re-draw control bytes
       if (controlBytes[Y][X] !== null) {
         ctx.fillStyle = (controlBytes[Y][X] === true) ? 'black' : 'white';
-        ctx.fillRect((Y + 1) * blockSize, (X + 1) * blockSize, blockSize, blockSize);
+        ctx.fillRect(off_y, off_x, blockSize, blockSize);
       } else {   // Middle Cell
         ctx.fillStyle = QRBytes[Y][X] ? 'black' : 'white';
-        ctx.fillRect((3 * Y + 3 + 1) * pixelSize, (3 * X + 3 + 1) * pixelSize,
-                     pixelSize, pixelSize);
+        ctx.fillRect(off_y + pixelSize, off_x + pixelSize, pixelSize, pixelSize);
+        if (transp != null) {
+          // TODO(skal): average alpha over a 3x3 block??
+          const alpha = transp[(Y + X * stride) * 4 * blockSize + 3];
+          if (alpha < params.alpha_limit) {
+            ctx.fillRect(off_y, off_x, blockSize, blockSize);
+          }
+        }
       }
     }
   }
@@ -854,7 +872,7 @@ function Render() {
   }
   for (let i = 0; i < d.length; i += 4) {
     d[i + 1] = d[i + 2] = d[i + 0];
-    d[i + 3] = 255;
+//    d[i + 3] = 255;
   }
   ctxDithered.putImageData(pixels, 0, 0);
 }
@@ -866,6 +884,7 @@ function ParseParams(p) {
   p.dithering = document.querySelector('#dithering_selector').value;
   p.num_levels = document.querySelector('#gray_selector').value;
   p.luma_adjust = parseInt(document.querySelector('#luma_selector').value);
+  p.alpha_limit = parseInt(document.querySelector('#alpha_selector').value);
   p.background = document.querySelector('#background').value;
 
   let dim_text = document.querySelector('#resolution');
