@@ -240,12 +240,13 @@
       configFolder.add(params, 'fps').name('frame rate').listen().disable();
       configFolder.add(params, 'count', 1, 1000, 1).name('Number of points').listen()
                 .onFinishChange(randomPoints);
-      configFolder.add(params, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
-                .onFinishChange(randomPoints);
+      configFolder.add(params,
+                       'ctype', {square:0, circle:1, disc:2, treskel:3})
+                       .name('Initial Pattern').listen().onFinishChange(randomPoints);
       configFolder.add(params, 'useGraham').name('use Graham scan').listen();
       configFolder.add(params.drawings, 'convexHull').name('Draw Convex Hull').listen();
       configFolder.add(params.drawings, 'circum').name('Search Circum Circle').listen();
-      configFolder.add(params.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
+      configFolder.add(params.drawings, 'radius', 1, 6, 0.5).name('Radius').listen();
       configFolder.addColor(params.drawings, 'background_color').name('Background Color').listen();
       const elmt = document.getElementById('main-area');
       elmt.appendChild(params.gui.domElement);

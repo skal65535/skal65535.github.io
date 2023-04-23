@@ -111,8 +111,9 @@
             settings.gui.add(settings, 'fps').name('frame rate').listen().disable();
             settings.gui.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
                 .onFinishChange(randomPoints);
-            settings.gui.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
-                .onFinishChange(randomPoints);
+            settings.gui.add(settings,
+                         'ctype', {square:0, circle:1, disc:2, treskel:3})
+                         .name('Initial Pattern').listen().onFinishChange(randomPoints);
             settings.gui.add(settings, 'jitter', 0, 100., .2).name('Jitter Amplitude').listen();
             settings.gui.add(settings, 'rotate').name('Rotate points').listen();
             const drawingsFolder = settings.gui.addFolder('Drawings');
