@@ -6,388 +6,399 @@
 <title>Convex Hull and Smallest Enclosing Circle</title>
 
 <head>
-    <style>
-        :root { color-scheme: dark; }
-        #canvas { outline: none;  /* because of the 'tabindex' focus trick */ }
-    </style>
+  <link rel="stylesheet" href="../common/main.css">
+  <style>
+#main-area {
+  width: 1024px;
+  height: 950px;
+}
+#gui {
+ position: relative;
+ top: -800px;
+ right: 6px;
+}
+  </style>
 </head>
 
-<body>
+<body onload='update()'>
+  <div id="main-area">
+    <h1 align='center'>Welzl and Convex Hull algorithms</h1>
+    Welzl algorithm efficiently finds the smallest enclosing circle (in O(n)!).<br/>
+    This optimal circle is show in red, the yellow one being an approximation.
+    The convex hull is shown is blue.<br/>
     <!-- 'tabindex' is a trick to make the canvas capture key events -->
-    <canvas id="canvas" tabindex="1"></canvas>
+    <canvas id="main-canvas" width='1000px' height='800px' tabindex="1"></canvas>
+    <form action="https://skal65535.github.io/">
+      <input type="submit" value="skal 2023" id="skal-2023"
+        onmouseover='this.style.background="#cdf"'
+        onmouseout='this.style.background="#cce"'
+        style='position:relative; top:-5px;'/>
+    </form>
+  </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script>
 
-    <script>
-        function Norm2(dx, dy) { return dx * dx + dy * dy; }
-        class Point {
-            constructor(x = 0., y = 0.) { this.x = x; this.y = y; }
-            sub(p) { return new Point(this.x - p.x, this.y - p.y); }
-            Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
-        }
-        class Circle {
-            constructor(x = 0., y = 0., r2 = 1e38 /* squared radius */) {
-                this.x = x; this.y = y; this.r2 = r2;
-            }
-            area() { return (Math.PI * this.r2).toFixed(0); }
-            contains(point, eps = 0.) {
-                return (this.r2 > 0. && point.Distance2(this) < this.r2 + eps);
-            }
-        }
+  <script>
+    function Norm2(dx, dy) { return dx * dx + dy * dy; }
+    class Point {
+      constructor(x = 0., y = 0.) { this.x = x; this.y = y; }
+      sub(p) { return new Point(this.x - p.x, this.y - p.y); }
+      Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
+    }
+    class Circle {
+      constructor(x = 0., y = 0., r2 = 1e38 /* squared radius */) {
+        this.x = x; this.y = y; this.r2 = r2;
+      }
+      area() { return (Math.PI * this.r2).toFixed(0); }
+      contains(point, eps = 0.) {
+        return (this.r2 > 0. && point.Distance2(this) < this.r2 + eps);
+      }
+    }
 
-        // Extract convex hull using Graham scan
-        // https://en.wikipedia.org/wiki/Graham_scan
-        function CCW(a, b, c) {
-            const dp1 = b.sub(a), dp2 = c.sub(a);
-            return (dp1.x * dp2.y - dp2.x * dp1.y);
-        }
-        function sortByAngle(points) {
-            let p = [];
-            let c = 0;   // find leftmost point
-            for (let i = 0; i < points.length; ++i) {
-                if (points[i].x < points[c].x) c = i;
-                p.push(i);
-            }
-            const C = points[c];
-            p.sort((a, b) => {
-                if (a == c) return -1;
-                if (b == c) return  1;
-                const A = points[a], B = points[b];
-                return CCW(C, B, A);
-            });
-            return p;
-        }
-        function sortLexicographically(points) {
-            let p = [];
-            for (let i = 0; i < points.length; ++i) p.push(i);
-            p.sort((a, b) => {
-                return (points[a].y != points[b].y) ? points[a].y - points[b].y : points[a].x - points[b].x;
-            });
-            return p;
-        }
-        function convexHullGrahamScan() {
-            convex.length = points.length + 1;   // Pre-reserved. Used as stack.
-            const P = sortByAngle(points);
-            let k = 0;
-            for (let p of P) {
-                while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[p]) <= 0)) --k;
-                convex[k++] = p;
-            }
-            convex.length = k;
-        }
-        // Andrew's monotone chain algorithm.
-        // This version uses less calls to CCW()
-        function convexHullAndrew() {
-            convex.length = points.length + 1;
-            const P = sortLexicographically(points);
-            let k = 0;
-            for (let i = 0; i < P.length; ++i) {   // lower part
-                while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
-                convex[k++] = P[i];
-            }
-            const L = k + 1;  // split point for the 2nd part
-            for (let i = P.length - 2; i >= 0; --i) {   // upper part
-                while (k >= L && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
-                convex[k++] = P[i];
-            }
-            convex.length = k - 1;
-        }
+    // Extract convex hull using Graham scan
+    // https://en.wikipedia.org/wiki/Graham_scan
+    function CCW(a, b, c) {
+      const dp1 = b.sub(a), dp2 = c.sub(a);
+      return (dp1.x * dp2.y - dp2.x * dp1.y);
+    }
+    function sortByAngle(points) {
+      let p = [];
+      let c = 0;   // find leftmost point
+      for (let i = 0; i < points.length; ++i) {
+        if (points[i].x < points[c].x) c = i;
+        p.push(i);
+      }
+      const C = points[c];
+      p.sort((a, b) => {
+        if (a == c) return -1;
+        if (b == c) return  1;
+        const A = points[a], B = points[b];
+        return CCW(C, B, A);
+      });
+      return p;
+    }
+    function sortLexicographically(points) {
+      let p = [];
+      for (let i = 0; i < points.length; ++i) p.push(i);
+      p.sort((a, b) => {
+        return (points[a].y != points[b].y) ? points[a].y - points[b].y
+                                            : points[a].x - points[b].x;
+      });
+      return p;
+    }
+    function convexHullGrahamScan() {
+      convex.length = points.length + 1;   // Pre-reserved. Used as stack.
+      const P = sortByAngle(points);
+      let k = 0;
+      for (let p of P) {
+        while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[p]) <= 0)) --k;
+        convex[k++] = p;
+      }
+      convex.length = k;
+    }
+    // Andrew's monotone chain algorithm.
+    // This version uses less calls to CCW()
+    function convexHullAndrew() {
+      convex.length = points.length + 1;
+      const P = sortLexicographically(points);
+      let k = 0;
+      for (let i = 0; i < P.length; ++i) {   // lower part
+        while (k >= 2 && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
+        convex[k++] = P[i];
+      }
+      const L = k + 1;  // split point for the 2nd part
+      for (let i = P.length - 2; i >= 0; --i) {   // upper part
+        while (k >= L && (CCW(points[convex[k - 2]], points[convex[k - 1]], points[P[i]]) <= 0)) --k;
+        convex[k++] = P[i];
+      }
+      convex.length = k - 1;
+    }
 
-        // Circum circles from 3 or 2 points
-        function circumCircle(A, B, C) {  // circle passing through 3 points
-            const dA = A.sub(C), dB = B.sub(C);
-            let D = dA.x * dB.y - dB.x * dA.y;   // == CCW(C, B, A)
-            if (D == 0.) return new Circle(A.x, A.y);
-            D = 0.5 / D;
-            const d0 = Norm2(dA.x, dA.y), d1 = Norm2(dB.x, dB.y);
-            const Cx = D * (dB.y * d0 - dA.y * d1);
-            const Cy = D * (dA.x * d1 - dB.x * d0);
-            const r2 = Norm2(Cx, Cy);
-            return new Circle(Cx + C.x, Cy + C.y, r2);
-        }
-        function midCircle(A, B) {  // minimal circle passing through 2 points
-            const Cx = 0.5 * (A.x + B.x), Cy = 0.5 * (A.y + B.y);
-            const R2 = Math.max(Norm2(A.x - Cx, A.y - Cy),
-                                Norm2(B.x - Cx, B.y - Cy));   // for extra stability
-            return new Circle(Cx, Cy, R2);
-        }
+    // Circum circles from 3 or 2 points
+    function circumCircle(A, B, C) {  // circle passing through 3 points
+      const dA = A.sub(C), dB = B.sub(C);
+      let D = dA.x * dB.y - dB.x * dA.y;   // == CCW(C, B, A)
+      if (D == 0.) return new Circle(A.x, A.y);
+      D = 0.5 / D;
+      const d0 = Norm2(dA.x, dA.y), d1 = Norm2(dB.x, dB.y);
+      const Cx = D * (dB.y * d0 - dA.y * d1);
+      const Cy = D * (dA.x * d1 - dB.x * d0);
+      const r2 = Norm2(Cx, Cy);
+      return new Circle(Cx + C.x, Cy + C.y, r2);
+    }
+    function midCircle(A, B) {  // minimal circle passing through 2 points
+      const Cx = 0.5 * (A.x + B.x), Cy = 0.5 * (A.y + B.y);
+      const R2 = Math.max(Norm2(A.x - Cx, A.y - Cy),
+                          Norm2(B.x - Cx, B.y - Cy));   // for extra stability
+      return new Circle(Cx, Cy, R2);
+    }
 
-        // Welzl algorithm, partially de-recursed
-        // Good summary: https://www.cise.ufl.edu/~sitharam/COURSES/CG/kreveldnbhd.pdf
-        // We use explicit size 'nP' and 'nR' to avoid array copies and resizes.
-        function findCircleWelzl(pts, nP, R = [], nR = 0) {
-            while (nR < 3) {
-                // List all the defined end-cases when 'nP + nR < 3'
-                // Normally, only nP==0 case would need handling, but we can
-                // save 1 extra final recursion by handling nP>0 directly here.
-                if (nR == 2 && nP == 0) return midCircle(R[0], R[1]);
-                if (nR == 1 && nP == 1) return midCircle(R[0], pts[0]);
-                if (nR == 1 && nP == 0) return new Circle(R[0].x, R[0].y, 0.);
-                if (nR == 0 && nP == 1) return new Circle(pts[0].x, pts[0].y, 0.);
-                // shouldn't be needed, but it's just for robustness:
-                if (nR == 0 && nP == 0) return new Circle(0., 0., 0.);
-                // Recursion
-                const p = pts[--nP];
-                const C = findCircleWelzl(pts, nP, R, nR);
-                if (C.contains(p)) return C;
-                R[nR++] = p;  // we found a new (for now) boundary point!
-            }
-            return circumCircle(R[0], R[1], R[2]);
-        }
+    // Welzl algorithm, partially de-recursed
+    // Good summary: https://www.cise.ufl.edu/~sitharam/COURSES/CG/kreveldnbhd.pdf
+    // We use explicit size 'nP' and 'nR' to avoid array copies and resizes.
+    function findCircleWelzl(pts, nP, R = [], nR = 0) {
+      while (nR < 3) {
+        // List all the defined end-cases when 'nP + nR < 3'
+        // Normally, only nP==0 case would need handling, but we can
+        // save 1 extra final recursion by handling nP>0 directly here.
+        if (nR == 2 && nP == 0) return midCircle(R[0], R[1]);
+        if (nR == 1 && nP == 1) return midCircle(R[0], pts[0]);
+        if (nR == 1 && nP == 0) return new Circle(R[0].x, R[0].y, 0.);
+        if (nR == 0 && nP == 1) return new Circle(pts[0].x, pts[0].y, 0.);
+        // shouldn't be needed, but it's just for robustness:
+        if (nR == 0 && nP == 0) return new Circle(0., 0., 0.);
+        // Recursion
+        const p = pts[--nP];
+        const C = findCircleWelzl(pts, nP, R, nR);
+        if (C.contains(p)) return C;
+        R[nR++] = p;  // we found a new (for now) boundary point!
+      }
+      return circumCircle(R[0], R[1], R[2]);
+    }
 
-        //////////////////// LESSER INTERESTING STUFF BELOW .... ///////////////
+    //////////////////// LESSER INTERESTING STUFF BELOW .... ///////////////
 
-        // Exhaustive that algo should find the same result as Welzl, but in O(n^4)!
-        function allInCircle(pts, c) {
-            for (const p of pts) {
-                if (!c.contains(p, 1e-8)) return false;
-            }
-            return true;
+    // Exhaustive that algo should find the same result as Welzl, but in O(n^4)!
+    function allInCircle(pts, c) {
+      for (const p of pts) {
+        if (!c.contains(p, 1e-8)) return false;
+      }
+      return true;
+    }
+    function findCircleExhaustive(pts) {   // look at all pairs and triplets of points
+      let C = new Circle();
+      const N = pts.length;
+      for (let i = 0; i < N - 2; ++i) {
+        const I = points[pts[i]];
+        for (let j = i + 1; j < N - 1; ++j) {
+          const J = points[pts[j]];
+          const tmp = midCircle(I, J);
+          if (tmp.r2 < C.r2 && allInCircle(pts, tmp)) C = tmp;
+          for (let k =  j + 1; k < N; ++k) {
+            const K = points[pts[k]];
+            const tmp = circumCircle(I, J, K);
+            if (tmp.r2 < C.r2 && allInCircle(pts, tmp)) C = tmp;
+          }
         }
-        function findCircleExhaustive(pts) {   // look at all pairs and triplets of points
-            let C = new Circle();
-            const N = pts.length;
-            for (let i = 0; i < N - 2; ++i) {
-                const I = points[pts[i]];
-                for (let j = i + 1; j < N - 1; ++j) {
-                    const J = points[pts[j]];
-                    const tmp = midCircle(I, J);
-                    if (tmp.r2 < C.r2 && allInCircle(pts, tmp)) C = tmp;
-                    for (let k =  j + 1; k < N; ++k) {
-                        const K = points[pts[k]];
-                        const tmp = circumCircle(I, J, K);
-                        if (tmp.r2 < C.r2 && allInCircle(pts, tmp)) C = tmp;
-                    }
-                }
-            }
-            return C;
-        }
+      }
+      return C;
+    }
 
-        // Average circle at center of mass (not necessarily minimal)
-        function findAverageCircle(points) {
-            let C = new Circle;
-            for (const p of points) {
-                C.x += p.x;
-                C.y += p.y;
-            }
-            C.x /= points.length;
-            C.y /= points.length;
-            C.r2 = Math.max(...points.map(p => { return p.Distance2(C);}));
-            return C;
-        }
+    // Average circle at center of mass (not necessarily minimal)
+    function findAverageCircle(points) {
+      let C = new Circle;
+      for (const p of points) {
+        C.x += p.x;
+        C.y += p.y;
+      }
+      C.x /= points.length;
+      C.y /= points.length;
+      C.r2 = Math.max(...points.map(p => { return p.Distance2(C);}));
+      return C;
+    }
 
-        // Randomize the input points
-        function shuffleConvex() {
-            let a = [];
-            for (let i of convex) a.push(points[i]);
-            return shuffle(a);
-        }
-        function shuffle(pts) {
-            const l = pts.length;
-            for (let i = pts.length - 1; i > 0; --i) {
-                const j = Math.floor(Math.random() * (i + 1));
-                const tmp = pts[i];
-                pts[i] = pts[j];
-                pts[j] = tmp;
-            }
-            return pts;
-        }
+    // Randomize the input points
+    function shuffleConvex() {
+      let a = [];
+      for (let i of convex) a.push(points[i]);
+      return shuffle(a);
+    }
+    function shuffle(pts) {
+      const l = pts.length;
+      for (let i = pts.length - 1; i > 0; --i) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = pts[i];
+        pts[i] = pts[j];
+        pts[j] = tmp;
+      }
+      return pts;
+    }
 
-        // Global parameters
-        const settings = {
-            count: 800,
-            ctype: 3,    // 0 = random, 1 = circle, 2 = disk, 3 = spiral
-            useGraham: false,
-            drawings: {
-                radius: 1.,
-                background_color: '#000000',
-                convexHull: true,
-                circum: true,
-            },
-            fps: 0,
+    // Global parameters
+    const params = {
+      count: 800,
+      ctype: 3,    // 0 = random, 1 = circle, 2 = disk, 3 = spiral
+      useGraham: false,
+      drawings: {
+        radius: 1.,
+        background_color: '#000000',
+        convexHull: true,
+        circum: true,
+      },
+      fps: 0,
+      gui: null,
 
-            reset: () => { randomPoints(); },
-            gui: null,
-        }
+      reset: () => { randomPoints(); },
+    }
 
-        // GUI
-        const setupGUI = () => {
-            settings.gui = new lil.GUI();
-            const configFolder = settings.gui.addFolder('Config');
-            configFolder.add(settings, 'reset').name('Reset');
-            configFolder.add(settings, 'fps').name('frame rate').listen().disable();
-            configFolder.add(settings, 'count', 1, 1000, 1).name('Number of points').listen()
+    // GUI
+    const setupGUI = () => {
+      params.gui = new lil.GUI();
+      params.gui.domElement.id = 'gui';
+      const configFolder = params.gui.addFolder('Config');
+      configFolder.add(params, 'reset').name('Reset');
+      configFolder.add(params, 'fps').name('frame rate').listen().disable();
+      configFolder.add(params, 'count', 1, 1000, 1).name('Number of points').listen()
                 .onFinishChange(randomPoints);
-            configFolder.add(settings, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
+      configFolder.add(params, 'ctype', 0, 3, 1).name('Initial Pattern').listen()
                 .onFinishChange(randomPoints);
-            configFolder.add(settings, 'useGraham').name('use Graham scan').listen();
-            configFolder.add(settings.drawings, 'convexHull').name('Draw Convex Hull').listen();
-            configFolder.add(settings.drawings, 'circum').name('Search Circum Circle').listen();
-            configFolder.add(settings.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
-            configFolder.addColor(settings.drawings, 'background_color').name('Background Color').listen();
+      configFolder.add(params, 'useGraham').name('use Graham scan').listen();
+      configFolder.add(params.drawings, 'convexHull').name('Draw Convex Hull').listen();
+      configFolder.add(params.drawings, 'circum').name('Search Circum Circle').listen();
+      configFolder.add(params.drawings, 'radius', 1, 10, 0.5).name('Radius').listen();
+      configFolder.addColor(params.drawings, 'background_color').name('Background Color').listen();
+      const elmt = document.getElementById('main-area');
+      elmt.appendChild(params.gui.domElement);
 
-            setupClicks();
-            setupKeys();
+      setupClicks();
+      setupKeys();
+    }
+    const setupClicks = () => {
+      canvas.addEventListener('click',
+        (e) => { points.push(new Point(e.clientX, e.clientY)); }
+      );
+    };
+    const setupKeys = () => {
+      canvas.addEventListener('keydown',
+         (e) => {
+           switch (e.key) {
+             case 'c':
+               params.drawings.convexHull = !params.drawings.convexHull;
+             break;
+             case 'd':
+               params.drawings.circum = !params.drawings.circum;
+             break;
+             default: console.log(e.key); break;
+           }
+         });
+      };
+
+    // Seedable 'decent' random generator, returning values in [-1, 1]
+    var seed = 91651088029;
+    const mulberry32 = () => {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 2147483648. - 1.;
+    }
+
+    const randomPoints = () => {  // initial points distribution
+      points.length = 0;
+      const number_of_points = params.count;
+      const type = params.ctype;
+      const mx = canvas.width / 2, my = canvas.height / 2;  // center
+      for (let i = 0; i < number_of_points; i++) {
+        let px = mulberry32(), py = mulberry32();
+        let norm = Math.sqrt(px * px + py * py);
+        if (type == 1) {
+          norm = 1.0 / norm;
+          px *= norm;
+          py *= norm;
+        } else if (type == 2) {
+          if (norm > 1.0) { --i; continue; }
+        } else if (type == 3) {
+          const N = 3;  // number of branches
+          let t = Math.atan2(py, px);
+          t = Math.floor(t * N) * (2. * Math.PI / N);
+          t = t * (1. + norm / 100.) + Math.PI * (1. + norm / 2.);
+          px = norm * Math.cos(t);
+          py = norm * Math.sin(t);
         }
-        const setupClicks = () => {
-            canvas.addEventListener('click',
-                (e) => { points.push(new Point(e.clientX, e.clientY)); }
-            )
+        const scale = 0.6;
+        points.push(new Point(scale * px * my + mx, scale * py * my + my));
+      }
+    };
+    function movePoints(pts, amp = 1.2) {   // random displacement of amplitude 'amp'
+      for (let p of pts) {
+        p.x += amp * mulberry32();
+        p.y += amp * mulberry32();
+      }
+    }
+
+    // Drawing stuff
+    function drawCircle(pt, color, radius, fill = false) {
+      m.beginPath();
+      m.arc(pt.x, pt.y, radius, 0. * Math.PI, 2. * Math.PI);
+      m.closePath();
+      m.strokeStyle = m.fillStyle = color;
+      fill ? m.fill() : m.stroke()
+    };
+    function drawLine(a, b, color) {
+      m.beginPath();
+      m.moveTo(a.x, a.y);
+      m.lineTo(b.x, b.y);
+      m.closePath();
+      m.strokeStyle = color;
+      m.stroke();
+    };
+
+    // BEGIN MAIN
+    const canvas = document.getElementById('main-canvas');
+    const m = canvas.getContext("2d");
+
+    // generate points
+    const points = []
+    const convex = []  // indices of convex hull points
+    randomPoints();
+
+    setupGUI()
+
+    // FPS recording
+    var lastT = Date.now();
+    function recordFPS() {
+      var curT = Date.now();
+      if (curT > lastT) {
+        const new_fps = 1000. / (curT - lastT);
+        params.fps = Math.round(params.fps * 0.8 + new_fps * 0.2)
+        lastT = curT;
+      }
+    }
+
+    function update() {
+      m.fillStyle = params.drawings.background_color;
+      m.fillRect(0, 0, canvas.width, canvas.height);
+      m.font = '24px serif';
+
+      movePoints(points);
+
+      for (const a of points) {            // draw points
+        drawCircle(a, 'white', params.drawings.radius);
+      }
+      if (params.drawings.convexHull) {  // draw convex hull
+        params.useGraham ? convexHullGrahamScan() : convexHullAndrew()
+        let prev = points[convex[convex.length - 1]];
+        for (const a of convex) {
+          const pt = points[a];
+          drawCircle(pt, 'red', 5);
+          drawLine(prev, pt, 'lightblue');
+          prev = pt;
         }
-        const setupKeys = () => {
-            canvas.addEventListener('keydown',
-                function (e) {
-                    switch (e.key) {
-                        case 'c':
-                          settings.drawings.convexHull = !settings.drawings.convexHull;
-                        break;
-                        case 'd':
-                          settings.drawings.circum = !settings.drawings.circum;
-                        break;
-                        default: console.log(e.key); break;
-                    }
-                })
-        }
+      }
 
-        // Seedable 'decent' random generator, returning values in [-1, 1]
-        var seed = 91651088029;
-        const mulberry32 = () => {
-            let t = seed += 0x6D2B79F5;
-            t = Math.imul(t ^ t >>> 15, t | 1);
-            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-            return ((t ^ t >>> 14) >>> 0) / 2147483648. - 1.;
-        }
+      if (params.drawings.circum) {     // draw circum-circles
+        let C = findAverageCircle(points);
+        drawCircle(C, 'yellow', Math.sqrt(C.r2));
+        drawCircle(C, 'yellow', 5., true);
+        m.fillText("area: " + C.area(), 5, canvas.height - 30);
 
-        const randomPoints = () => {  // initial points distribution
-            points.length = 0;
-            const number_of_points = settings.count;
-            const type = settings.ctype;
-            const mx = canvas.width / 2, my = canvas.height / 2;  // center
-            for (let i = 0; i < number_of_points; i++) {
-                let px = mulberry32(), py = mulberry32();
-                let norm = Math.sqrt(px * px + py * py);
-                if (type == 1) {
-                    norm = 1.0 / norm;
-                    px *= norm;
-                    py *= norm;
-                } else if (type == 2) {
-                    if (norm > 1.0) { --i; continue; }
-                } else if (type == 3) {
-                    const N = 3;  // number of branches
-                    let t = Math.atan2(py, px);
-                    t = Math.floor(t * N) * (2. * Math.PI / N);
-                    t = t * (1. + norm / 100.) + Math.PI * (1. + norm / 2.);
-                    px = norm * Math.cos(t);
-                    py = norm * Math.sin(t);
-                }
-                const scale = 0.6;
-                points.push(new Point(scale * px * my + mx, scale * py * my + my));
-            }
-        }
-        function movePoints(pts, amp = 1.2) {   // random displacement of amplitude 'amp'
-            for (let p of pts) {
-                p.x += amp * mulberry32();
-                p.y += amp * mulberry32();
-            }
-        }
-
-        // Drawing stuff
-        function setCanvasDimensions() {
-            canvas.width = window.innerWidth - 30;  // '- 30' to avoid the side sliders
-            canvas.height = window.innerHeight - 30;
-        }
-        function drawCircle(pt, color, radius, fill = false) {
-            m.beginPath();
-            m.arc(pt.x, pt.y, radius, 0. * Math.PI, 2. * Math.PI);
-            m.closePath();
-            m.strokeStyle = m.fillStyle = color;
-            fill ? m.fill() : m.stroke()
-        };
-        function drawLine(a, b, color) {
-            m.beginPath();
-            m.moveTo(a.x, a.y);
-            m.lineTo(b.x, b.y);
-            m.closePath();
-            m.strokeStyle = color;
-            m.stroke();
-        };
-
-        // BEGIN MAIN
-        const canvas = document.getElementById('canvas');
-        const m = canvas.getContext("2d");
-        setCanvasDimensions();
-
-        // generate points
-        const points = []
-        const convex = []  // indices of convex hull points
-        randomPoints();
-
-        setupGUI()
-
-        // FPS recording
-        var lastT = Date.now();
-        function recordFPS() {
-            var curT = Date.now();
-            if (curT > lastT) {
-                const new_fps = 1000. / (curT - lastT);
-                settings.fps = Math.round(settings.fps * 0.8 + new_fps * 0.2)
-                lastT = curT;
-            }
-        }
-
-        update();  // let's go!
-//        setInterval(update, 500);
-
-        function update() {
-            setCanvasDimensions();   // if screen size if changed
-            m.fillStyle = settings.drawings.background_color;
-            m.fillRect(0, 0, canvas.width, canvas.height);
-
-            m.font = '24px serif';
-            m.fillStyle = 'white';
-            m.fillText("Graham scan for convex hull + Welzl for smallest enclosing circle (in red).", 5, 30);
-            m.fillText("Look at the code!", 5, 70);
-
-            movePoints(points);
-
-            for (const a of points) {            // draw points
-                drawCircle(a, 'white', settings.drawings.radius);
-            }
-            if (settings.drawings.convexHull) {  // draw convex hull
-                settings.useGraham ? convexHullGrahamScan() : convexHullAndrew()
-                let prev = points[convex[convex.length - 1]];
-                for (const a of convex) {
-                    const pt = points[a];
-                    drawCircle(pt, 'red', 5);
-                    drawLine(prev, pt, 'lightblue');
-                    prev = pt;
-                }
-            }
-
-            if (settings.drawings.circum) {     // draw circum-circles
-                let C = findAverageCircle(points);
-                drawCircle(C, 'yellow', Math.sqrt(C.r2));
-                drawCircle(C, 'yellow', 5., true);
-                m.fillText("area: " + C.area(), 5, canvas.height - 30);
-
-                C = findCircleWelzl(shuffle(points.slice()), points.length);
-                // Normally using only the convex hull points as input
-                // should give the same result:
-                // C = findCircleWelzl(shuffleConvex(convex), convex.length);
-                drawCircle(C, 'red', Math.sqrt(C.r2));
-                drawCircle(C, 'red', 5., true);
-                m.fillText("area: " + C.area(), 165, canvas.height - 30);
+        C = findCircleWelzl(shuffle(points.slice()), points.length);
+        // Normally using only the convex hull points as input
+        // should give the same result:
+        // C = findCircleWelzl(shuffleConvex(convex), convex.length);
+        drawCircle(C, 'red', Math.sqrt(C.r2));
+        drawCircle(C, 'red', 5., true);
+        m.fillText("area: " + C.area(), 165, canvas.height - 30);
 
 /*  verify with exhaustive method:
-                C = findCircleExhaustive(convex);
-                drawCircle(C, 'red', Math.sqrt(C.r2));
-                drawCircle(C, 'red', 5., true);
+        C = findCircleExhaustive(convex);
+        drawCircle(C, 'red', Math.sqrt(C.r2));
+        drawCircle(C, 'red', 5., true);
 */
-            }
+      }
 
-            recordFPS();
-            requestAnimationFrame(update);
-        }
-    </script>
+      recordFPS();
+      requestAnimationFrame(update);
+    }
+  </script>
 </body>
 </html>

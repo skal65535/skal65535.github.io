@@ -1,0 +1,23 @@
+canvas {
+  margin: 10px;
+  box-shadow: 0 0 5px black;
+  outline: none;  // because of the 'tabindex' focus trick
+}
+
+#main-area {
+  border: 3px dashed #ccc;
+  border-radius: 20px;
+  font-family: sans-serif;
+  margin: 10px auto;
+  padding: 10px;
+  background: #eef;
+  display: inline-block;
+}
+
+#skal-2023 {
+  float: right;
+  border-radius: 5px;
+  padding: 5px;
+  background: #cce;
+  border: 1px solid #112;
+}
