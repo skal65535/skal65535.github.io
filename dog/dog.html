@@ -1,4 +1,5 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!DOCTYPE html>
 <html>
 
 <head>
@@ -18,7 +19,6 @@
 #drop-area.highlight {
   border-color: purple;
 }
-
 .button {
   display: inline-block;
   padding: 8px;
@@ -33,12 +33,15 @@
 .button:hover {
   background: #cce;
 }
-
 #main-canvas {
   z-index:0;
   border: 2px solid #000;
   border-radius: 20px;
+  position: relative;
+  left:-2px;
   background: #000;
+  margin: 0px;
+  box-shadow: 0 0 5px black;
 }
 #gui {
  position: relative;
@@ -55,27 +58,34 @@
     <input type="file" id="FileElmt" style='display:none;'
            multiple accept="image/*" onchange="HandleFile(this.files[0])">
   </form>
-  <div height='200px'>
+  <div height='100px'>
     This is a small tool for experimenting with the parameters of the
     <b>Difference Of Gaussians</b> (DoG) operator, as described in
     <a href="https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf">this paper</a>
     by Holger Winnemoeller &amp; al. Also, you might find
     <a href="https://www.youtube.com/watch?v=5EuYKEvugLU">Acerola's video</a>
     on the topic quite entertaining!<br/>
+    <br/>
     <font size='-1'>Drag and drop image on the canvas below.</font>
   </div>
-  <div>
-    <button class='button' style='top:80; left:30;'
+  <button class='button' style='top:80px; left:30px;'
           onmousedown="params.original=true; Render();"
           onmouseup="params.original=false; Render();">show original</button>
-    <label class='button' for="FileElmt"
-           style='top:80; left:750;'>select an image</label>.
-  </div>
+  <label class='button' for="FileElmt"
+         style='top:80px; left:750px;'>select an image</label>
   <div id="gui-container">
-    <canvas id="main-canvas" width='1024' height='800'></canvas>
+    <canvas id="main-canvas" width='1024px' height='800px'></canvas>
   </div>
   Note: The kernel used by the shader has 17x17 size, hence the limited Sigma range.
   <br/>
+  <form action="https://skal65535.github.io/"
+        style='position: relative; top:-30px; left:950px;'>
+    <input type="submit" value="skal 2023" id="skal-2023"
+           style='border-radius: 5px; padding: 5px;
+                  background: #cce; border: 1px solid #112;'
+           onmouseover='this.style.background="#cdf"'
+           onmouseout='this.style.background="#cce"'/>
+  </form>
 </div>
 
 
@@ -134,16 +144,6 @@ void main() { gl_FragColor = texture2D(image, uv_coord); }
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
 
 <script src="./dog.js"></script>
-
-<footer>
-  <form action="https://skal65535.github.io/">
-    <input type="submit" value="skal 2023"
-      style='float: right; border-radius: 5px; padding: 5px; 
-             background: #cce; border: 1px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
-  </form>
-</footer>
 
 </body>
 </html>
