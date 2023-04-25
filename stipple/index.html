@@ -13,7 +13,7 @@
   margin: 10px auto;
   padding: 10px;
   width: 1024px;
-  height: 930px;
+  height: 700px;
   background: #eef;
 }
 #drop-area.highlight {
@@ -39,14 +39,15 @@
   border-radius: 20px;
   position: relative;
   left:-2px;
+  top:-50px;
   background: #fff;
   margin: 0px;
   box-shadow: 0 0 5px black;
 }
 #gui {
  position: relative;
- top: -330px;
- right: -6px;
+ top: -700px;
+ left: 30px;
 }
 .dg {
   color: #f55;
@@ -66,34 +67,43 @@
     <input type="file" id="FileElmt" style='display:none;'
            multiple accept="image/*" onchange="HandleFile(this.files[0])">
   </form>
-  <div height='150px'>
-    <h2><center>Weighted Linde-Buzo-Gray Stippling Demo [WIP]</center></h2>
+  <div height='100px'>
+    <h2><center>Weighted Linde-Buzo-Gray Stippling Demo</center></h2>
     Stippling tool, as described in
     <a href="http://graphics.uni-konstanz.de/publikationen/Deussen2017LindeBuzoGray/WeightedLindeBuzoGrayStippling_authorversion.pdf">this paper</a>
     by O. Deussen, M. Spicker and Q. Zheng. [<a href="https://github.com/MarcSpicker/LindeBuzoGrayStippling">github repo</a>]
     <br/>
+    <font size='-1'>
+    The source image is converted to grayscale and then edge-detected and blended back with the source
+    (~sharpening).<br/>
+    Then a large number of cells is spawns and evolved (removal, split, ...) until the maximum number
+    of points is reached or the confidence is good enough.
     <br/>
-    <font size='-1'>Drag and drop image on the canvas below.</font>
+    Drag and drop image on the canvas below.
+    </font>
   </div>
-  <div>
-    <button class='button' style='top:60px; left:30px;'
-          onmousedown="params.show_original=true; Render(false);"
-          onmouseup="params.show_original=false; Render(false);">show original</button>
     <label class='button' for="FileElmt"
-           style='top:60px; left:780px;'>select an image</label>
-  </div>
+           style='top:30px; left:30px;'>select source</label>
+    <button class='button' style='top:30px; left:30px;'
+          onmousedown="params.show_target=true; Render(false);"
+          onmouseup="params.show_target=false; Render(false);">show target</button>
+    <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
+    <button class='button' style='top:30px; left:30px' download='img.webp'
+            onmouseup="const result = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
+                       document.querySelector('#download').href = result;">save img</button></a>
+    <form action="https://skal65535.github.io/"
+          style='position: relative; top:-150px; left:950px;'>
+      <input type="submit" value="skal 2023" id="skal-2023"
+             style='border-radius: 5px; padding: 5px;
+                    background: #cce; border: 1px solid #112;'
+        onmouseover='this.style.background="#cdf"'
+        onmouseout='this.style.background="#cce"'/>
+    </form>
   <div id="gui-container">
-    <canvas id="side-canvas" width='1024px' height='750px' style='display: none;'></canvas>
-    <center><canvas id="main-canvas" width='1024px' height='750px'></canvas></center>
+    <canvas id="side-canvas" style='display: none;'></canvas>
+    <center><canvas id="main-canvas"></canvas></center>
+
   </div>
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-10px; left:950px;'>
-    <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 1px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
-  </form>
 </div>
 
 
@@ -144,26 +154,27 @@ void main() {
 }
 </script>
 
-<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script> -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script>
 "use strict";
 
 ////////////////////////////////////////////////////////////////////////////////
-// DoG: The interesting stuff
+// The interesting stuff
 
 const params = {  // Global parameters
-  num_points: 5000,
+  num_points: 80000,
   num_iters: 10,
   num_Lloyd_iters: 4,
-  alpha: 0.,
-  strength: 1.,
-  radius: 2.,
+  rho: 0.,
+  alpha: 0.01,
+  strength: 2.6,
+  radius: 1.5,
   use_edges: true,
   invert: false,
   show_voronoi: false,
-  show_original: false,
+  show_target: false,
   image: null,
   gui: null,
   ops: -1,
@@ -174,7 +185,26 @@ const params = {  // Global parameters
   work_width: 512,
   work_height: 512,
 
+  ResetParams: () => {
+    this.num_points = 20000;
+    this.num_iters = 10;
+    this.num_Lloyd_iters = 4;
+    this.rho = 0.;
+    this.alpha = 0.;
+    this.strength = 1.;
+    this.radius = 1.5;
+    this.use_edges = true;
+    this.invert = false;
+    this.show_voronoi = false;
+    this.show_target = false;
+    this.ops = -1;
+    this.work_width = 512;
+    this.work_height = 512;
+    ResetTimer();
+    this.gui.controllersRecurvive();
+  },
   reset: () => {
+    // Doesn't work yet => params.ResetParams();
     params.points.length = 0;
     Render(true);
   },
@@ -194,7 +224,10 @@ function HandleDrop(e) {
 }
 function HandleFile(file) {
   const reader = new FileReader();
-  reader.readAsDataURL(file);
+  try { reader.readAsDataURL(file); } catch {
+    alert("could not read the data blob.\nNot a readable image file.");
+    return;
+  }
   reader.onloadend = function() {
     params.image = new Image();
     params.image.onload = function() { Render(true); };
@@ -221,34 +254,34 @@ function SetupDragAndDrop() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
-  params.gui = new dat.GUI();
+  const elmt = document.getElementById('gui-container');
+  params.gui = new lil.GUI({ width: 250, container: elmt, });
   params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'num_points', 500, 200000, 10).name('Max Points')
-            .listen().onChange(params.reset);
+  params.gui.add(params, 'num_points', 500, 500000, 10).name('Max Points')
+            .listen().onChange(params.go);
+  params.gui.add(params, 'rho', -1., 1, .01).name('Density cut-off')
+            .listen().onChange(params.go);
+  params.gui.add(params, 'use_edges').name('Edge detection')
+            .listen().onChange(params.go);
+  params.gui.add(params, 'alpha', 0.0, 0.2, .01).name('mix edges source')
+            .listen().onChange(params.go);
+  params.gui.add(params, 'strength', 1.0, 16., .01).name('Edges strength')
+            .listen().onChange(params.go);
   params.gui.add(params, 'num_iters', 2, 50, 1).name('Iterations')
             .listen().onChange(params.go);
   params.gui.add(params, 'num_Lloyd_iters', 1, 10, 1).name('Lloyd Iterations')
             .listen().onChange(params.go);
-  params.gui.add(params, 'use_edges').name('Edge detection')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'alpha', 0.0, 1.0, .01).name('blend edges w/ source')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'strength', 1.0, 16., .01).name('blending strength')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'radius', 0.5, 5., .1).name('Points radius')
-            .listen().onChange(params.redo);
-  params.gui.add(params, 'show_voronoi').name('Show Voronoi')
+  params.gui.add(params, 'radius', 0.2, 3., .01).name('Points radius')
             .listen().onChange(params.redo);
   params.gui.add(params, 'invert').name('Video Invert')
             .listen().onChange(params.redo);
+  params.gui.add(params, 'show_voronoi').name('Show Voronoi')
+            .listen().onChange(params.redo);
   params.gui.add(params, 'reset').name('Reset');
-  const canvas_container = document.getElementById('gui-container');
-  canvas_container.appendChild(params.gui.domElement);
-  params.ops = -1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Main WebGL calls
+// Voronoi-related
 
 function Norm2(dx, dy) { return dx * dx + dy * dy; }
 class Point {
@@ -375,8 +408,8 @@ function CollectVoronoi(grays, points, cells) {
 }
 
 function MoveToCentroid(points, cells) {
-  let d2 = 0., count = 0;
-  points.length = cells.length;
+  let d2 = 0.;
+  let count = 0;
   for (let n = 0; n < cells.length; ++n) {
     const c = cells[n];
     if (!c.Average()) continue;
@@ -385,7 +418,8 @@ function MoveToCentroid(points, cells) {
     points[n] = pt;
     ++count;
   }
-  return (d2 > count * 1.);
+  d2 = d2 * params.work_width * params.work_height / count;
+  return (d2 < 1.e-3);  // is improvement too small already?
 }
 
 function DrawVoronoi(canvas) {
@@ -434,41 +468,94 @@ function DrawVoronoi(canvas) {
   ctx.putImageData(data, 0, 0);
 }
 
-function DrawOriginal() {
-  RenderWithGL(params.image);
-  const grays = params.grays;
-  const canvas = document.querySelector("#main-canvas");
-  const W = Math.min(canvas.width, grays.W);
-  const H = Math.min(canvas.height, grays.H);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, W, H);
-  const pixels = data.data;
-  for (let y = 0; y < H; ++y) {
-    for (let x = 0; x < W; ++x) {
-      const idx = (x + y * W) * 4;
-      const c = grays.pixels[x + y * grays.W];
-      pixels[idx + 0] = c;
-      pixels[idx + 1] = c;
-      pixels[idx + 2] = c;
-      pixels[idx + 3] = 255;
-    }
-  }
-  ctx.putImageData(data, 0, 0);
-  console.log("grays: " + grays.W + " x " + grays.H);
-  console.log("canvas: " + canvas.width + " x " + canvas.height);
-}
 
 ////////////////////////////////////////////////////////////////////////////////
-// Main WebGL calls
+// Main calls
 
 function main() {
   SetupDragAndDrop();
   SetupUI();
 
   params.image = new Image();
-  params.image.src = "./input1.webp";
+  params.image.src = "./book.webp";
   params.image.onload = function() { Render(true); };
 }
+
+function ResetTimer() {
+  if (params.tid >= 0) {
+    clearInterval(params.tid);
+    params.tid = -1;
+  }
+  params.ops = -1;
+}
+
+// Seedable 'decent' random generator, returning values in [0, amp)
+var seed = 91651088029;
+const mulberry32 = (amp) => {
+  amp = amp | 1.;
+  let t = seed += 0x6D2B79F5;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296.;
+}
+
+function Init() {
+  ResetTimer();
+  const image = params.image;
+  const canvas = document.querySelector("#main-canvas");
+  const Wo = 1024, Ho = 750; // canvas.width, Ho = canvas.height;
+  let W = image.width, H = image.height;
+  if (W > Wo || H > Ho) {   // needs resizing?
+    if (W * Ho > Wo * H) {
+      H = Math.floor(H * Wo / W);
+      W = Wo;
+    } else {
+      W = Math.floor(W * Ho / H);
+      H = Ho;
+    }
+  }
+  canvas.width = image.width = W;
+  canvas.height = image.height = H;
+  const gui = document.querySelector("#gui");
+  gui.style.top = (-H + 10) + 'px';  // omg, this is naaaasty
+
+  RenderTarget(image);  // populate params.grays
+
+  const max_num_points = params.num_points;
+  if (params.points.length != max_num_points / 2) {
+    params.points.length = max_num_points / 2;
+    for (let n = 0; n < params.points.length; ++n) {
+      const px = mulberry32(), py = mulberry32();
+      params.points[n] = new Point(px, py);
+    }
+    console.log("=== RESET " + params.points.length + " POINTS ===");
+  }
+  params.ops = 0;  // start!
+  params.cells = [];
+  for (let n = 0; n < params.points.length; ++n) params.cells.push(new Cell);
+}
+
+function Render(is_dirty) {
+  if (is_dirty) Init();
+  if (params.ops >= 0 && !ExtractStippling()) {   // finished?
+    ShowProgress();
+    if (params.tid < 0) params.tid = setInterval(() => { Render(false); }, 0);
+    return;
+  }
+  ResetTimer();
+  DrawStippling();
+
+/*
+  const canvas = document.querySelector("#main-canvas");
+  const src_canvas = document.querySelector("#side-canvas");
+  console.log("image: " + params.image.width + " x " + params.image.height);
+  console.log("main-canvas: " + canvas.width + " x " + canvas.height);
+  console.log("side-canvas: " + src_canvas.width + " x " + src_canvas.height);
+*/
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Main WebGL calls
 
 function CreateShader(gl, type, src_id) {
   const shader = gl.createShader(type);
@@ -496,66 +583,9 @@ function CreateShaders(gl, v_shader_id, f_shader_id) {
   return shader_program;
 }
 
-function ResetTimer() {
-  if (params.tid >= 0) {
-    clearInterval(params.tid);
-    params.tid = -1;
-  }
-  params.ops = -1;
-}
-
-function Init() {
-  ResetTimer();
-  const image = params.image;
-  const canvas = document.querySelector("#main-canvas");
-  const Wo = 1024, Ho = 750; // canvas.width, Ho = canvas.height;
-  let W = image.width, H = image.height;
-  if (W > Wo || H > Ho) {   // needs resizing?
-    if (W * Ho > Wo * H) {
-      H = Math.floor(H * Wo / W);
-      W = Wo;
-    } else {
-      W = Math.floor(W * Ho / H);
-      H = Ho;
-    }
-  }
-  canvas.width = image.width = W;
-  canvas.height = image.height = H;
-
-  RenderWithGL(image);  // populate params.grays
-
-  const max_num_points = params.num_points;
-  if (params.points.length != max_num_points / 5) {
-    params.points.length = max_num_points / 5;
-    for (let n = 0; n < params.points.length; ++n) {
-      const px = mulberry32(), py = mulberry32();
-      params.points[n] = new Point(px, py);
-    }
-    console.log("RESET " + params.points.length + " POINTS!");
-  }
-  params.ops = 0;  // start!
-  params.cells = [];
-  for (let n = 0; n < params.points.length; ++n) params.cells.push(new Cell);
-}
-
-function Render(is_dirty) {
-  if (is_dirty) Init();
-  if (params.ops >= 0 && !ExtractStippling()) {   // finished?
-    ShowProgress();
-    if (params.tid < 0) params.tid = setInterval(() => { Render(false); }, 0);
-    return;
-  }
-  ResetTimer();
-  DrawStippling();
-
-  const canvas = document.querySelector("#main-canvas");
-  const src_canvas = document.querySelector("#side-canvas");
-  console.log("image: " + params.image.width + " x " + params.image.height);
-  console.log("main-canvas: " + canvas.width + " x " + canvas.height);
-  console.log("side-canvas: " + src_canvas.width + " x " + src_canvas.height);
-}
-
-function RenderWithGL(image) {
+// Construct (with WebGL) the edge-detected target and generate
+// the params.grays[] levels.
+function RenderTarget(image) {
   const canvas = document.querySelector("#side-canvas");
   const W = image.width, H = image.height;
   const Wo = canvas.width = params.work_width;
@@ -611,15 +641,31 @@ function RenderWithGL(image) {
   params.grays = ExtractGray(canvas);
 }
 
-// Seedable 'decent' random generator, returning values in [0, amp)
-var seed = 91651088029;
-const mulberry32 = (amp) => {
-  amp = amp | 1.;
-  let t = seed += 0x6D2B79F5;
-  t = Math.imul(t ^ t >>> 15, t | 1);
-  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-  return ((t ^ t >>> 14) >>> 0) / 4294967296.;
+function DrawTarget() {
+  RenderTarget(params.image);
+  const grays = params.grays;
+  const canvas = document.querySelector("#main-canvas");
+  const W = Math.min(canvas.width, grays.W);
+  const H = Math.min(canvas.height, grays.H);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, W, H);
+  const pixels = data.data;
+  for (let y = 0; y < H; ++y) {
+    for (let x = 0; x < W; ++x) {
+      const idx = (x + y * W) * 4;
+      const c = grays.pixels[x + y * grays.W];
+      pixels[idx + 0] = c;
+      pixels[idx + 1] = c;
+      pixels[idx + 2] = c;
+      pixels[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  console.log("grays: " + grays.W + " x " + grays.H);
+  console.log("canvas: " + canvas.width + " x " + canvas.height);
 }
+
+////////////////////////////////////////////////////////////////////////////////
 
 function ExtractGray(src_canvas) {
   const canvas = document.createElement("canvas");
@@ -647,6 +693,8 @@ function ExtractGray(src_canvas) {
   return obj;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
 function ExtractStippling() {
   const max_num_points = params.num_points;
   const W = params.grays.W, H = params.grays.H;
@@ -655,18 +703,21 @@ function ExtractStippling() {
   if (params.ops >= max_ops) return true;
   const num_points = params.points.length;
   CollectVoronoi(params.grays, params.points, params.cells);
-  MoveToCentroid(params.points, params.cells);
-  params.ops++;
+  if (MoveToCentroid(params.points, params.cells)) {
+    params.ops = max_ops;
+  } else {
+    params.ops++;
+  }
 
   if ((params.ops % params.num_Lloyd_iters) == 0) {
-    const avg_rho = Math.floor(params.grays.average / max_num_points);
-    const hysteresis = 0.2 + 0.5 * params.ops / params.num_iters;
+    const avg_rho = Math.floor(params.rho * 255. + params.grays.average / max_num_points);
+    const hysteresis = 0.01 + 0.6 * params.ops / max_ops;
     const Tu = Math.ceil((1. + hysteresis) * avg_rho);
     const Tl = Math.floor((1. - hysteresis) * avg_rho);
 
     params.points = [];
     for (let c of params.cells) {
-      if (c.acc == 0) continue;   // empty cell
+      if (c.acc <= 0) continue;   // empty cell
       const rho = Math.round(c.r_acc);
       if (rho < Tl) continue;     // too sparse!
       const color = c.r_acc / c.acc;
@@ -695,27 +746,36 @@ function ExtractStippling() {
   return (params.ops >= max_ops);
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+function ShowProgress() {
+  DrawStippling();
+
+  const max_ops = params.num_iters * params.num_Lloyd_iters;
+  const canvas = document.querySelector("#main-canvas");
+  const ctx = canvas.getContext("2d");
+  const off = 340;
+  const width = (canvas.width - off) * 90 / 100;
+  const len = Math.floor(params.ops * width / (max_ops - 1));
+  const percent = Math.floor(params.ops * 100 / (max_ops - 1));
+  ctx.fillStyle = '#ccf';
+  ctx.fillRect(off, 30, len, 16);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#99e";
+  ctx.strokeRect(off, 30, len, 16);
+  ctx.font = '12px serif';
+  ctx.fillStyle = '#33d';
+  ctx.fillText(percent + "%", off, 42);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 function DrawCircle(m, x, y, color, radius, fill = false) {
   m.beginPath();
   m.arc(x, y, radius, 0. * Math.PI, 2. * Math.PI);
   m.closePath();
   m.strokeStyle = m.fillStyle = color;
   fill ? m.fill() : m.stroke()
-}
-
-function ShowProgress() {
-  const max_ops = params.num_iters * params.num_Lloyd_iters;
-  const canvas = document.querySelector("#main-canvas");
-  const ctx = canvas.getContext("2d");
-  const width = canvas.width * 70 / 100;
-  const off = canvas.width * 30 / 100 / 2;
-  const len = Math.floor(params.ops * width / (max_ops - 1));
-  const percent = Math.floor(params.ops * 100 / (max_ops - 1));
-  ctx.fillStyle = '#ccf';
-  ctx.fillRect(off, 30, len, 16);
-  ctx.font = '12px serif';
-  ctx.fillStyle = '#33d';
-  ctx.fillText(percent + "%", off, 42);
 }
 
 function DrawStippling() {
@@ -727,14 +787,17 @@ function DrawStippling() {
   }
   m.fillStyle = params.invert ? 'black' : 'white';
   m.fillRect(0, 0, canvas.width, canvas.height);
+  m.imageSmoothingEnabled = true;
   if (params.show_voronoi) DrawVoronoi(canvas);
-  else if (params.show_original) DrawOriginal();
+  else if (params.show_target) DrawTarget();
   const radius = Math.min(params.radius, canvas.width / 100);
   for (const pt of params.points) {
     const x = pt.x * canvas.width, y = pt.y * canvas.height;
     DrawCircle(m, x, y, params.invert ? 'white' : 'black', radius, true);
   }
-  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 
 </script>
 
