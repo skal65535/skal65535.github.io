@@ -1,4 +1,4 @@
-# <center>Skal's corner: code & demos</center>
+# <center><a href="./MASSIMINO_Pascal_Resume.pdf">Skal</a>'s corner: code snippets & demos</center>
 
 Some demo pages from sub-projects:
 

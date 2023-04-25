@@ -872,7 +872,6 @@ function Render() {
   }
   for (let i = 0; i < d.length; i += 4) {
     d[i + 1] = d[i + 2] = d[i + 0];
-//    d[i + 3] = 255;
   }
   ctxDithered.putImageData(pixels, 0, 0);
 }

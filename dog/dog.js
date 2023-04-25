@@ -126,7 +126,7 @@ function Render() {
   let Wo = canvas.width, Ho = canvas.height;
   let W = image.width, H = image.height;
   if (W > Wo || H > Ho) {   // needs resizing?
-    if (W * Ho > Wo > H) {
+    if (W * Ho > Wo * H) {
       H = Math.floor(H * Wo / W);
       W = Wo;
     } else {
