@@ -2,10 +2,10 @@
 
 Some demo pages from sub-projects:
 
-## [Particles](https://skal65535.github.io/particle_life/particle_life.html#91651088029) from [life_code](https://github.com/skal65535/life_code) project
+## [Stippling](https://skal65535.github.io/stipple/index.html) toy
 
-   Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
-
+   ![stipple](https://skal65535.github.io/stipple/stipple.thumb.webp)
+   Some LBG algorithm live action, with a lot of parameters to play with.
 
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 
@@ -28,6 +28,7 @@ Some demo pages from sub-projects:
 
 ## [Exploring Difference Of Gaussian](https://skal65535.github.io/dog/dog.html)
 
+   ![DoG](https://skal65535.github.io/dog/dog.thumb.webp)
    Difference of Gaussian operator
    (as described in the original [paper](https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf))
    has a lot of different parameters to play with.<br/>
@@ -35,7 +36,12 @@ Some demo pages from sub-projects:
 
 ## [QR Code generator](https://skal65535.github.io/QR)
 
-   ![QR Code](https://skal65535.github.io/QR/QRCode.webp)
+   ![QR Code](https://skal65535.github.io/QR/QRCode.thumb.webp)
+   Embed pictures in QR codes
+
+## [Particles](https://skal65535.github.io/particle_life/particle_life.html#91651088029) from [life_code](https://github.com/skal65535/life_code) project
+
+   Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 
 ## Some shaders made with ShaderToy...
 
