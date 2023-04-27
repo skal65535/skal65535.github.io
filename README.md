@@ -59,4 +59,4 @@ Some demo pages from sub-projects:
 ... and a [Minishader](https://skal65535.github.io/minishader/index.html) to
 convert simple ShaderToy code to a standalone HTML + WebGL page.
 
-<center>![shaders](https://skal65535.github.io/common/deluge.thumb.webp)</center>
+![shaders](https://skal65535.github.io/common/deluge.thumb.webp)
