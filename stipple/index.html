@@ -179,7 +179,6 @@ const params = {  // Global parameters
   ops: -1,
   tid: -1,   // timer id
   points: [],
-  cells: [],
   grays: null,
   work_width: 512,
   work_height: 512,
@@ -262,7 +261,7 @@ function SetupUI() {
             .listen().onChange(params.go);
   params.gui.add(params, 'use_edges').name('Edge detection')
             .listen().onChange(params.go);
-  params.gui.add(params, 'alpha', 0.0, 0.2, .01).name('mix edges source')
+  params.gui.add(params, 'alpha', 0.0, 0.2, .01).name('mix edges/source')
             .listen().onChange(params.go);
   params.gui.add(params, 'strength', 1.0, 16., .01).name('Edges strength')
             .listen().onChange(params.go);
@@ -301,6 +300,7 @@ class Cell {
   rxx_acc = 0;   // higher moments, for determining cell's typical size
   rxy_acc = 0;
   ryy_acc = 0;
+
   Reset() {
     this.acc = this.r_acc = this.x_acc = this.y_acc = 0;
     this.rx_acc = this.ry_acc = 0;
@@ -330,6 +330,18 @@ class Cell {
       this.rxy_acc *= r_norm;
       this.ryy_acc *= r_norm;
     }
+    return true;
+  }
+  AddRho(x, y, r) {
+    this.r_acc  += r;
+    this.rx_acc += r * x;
+    this.ry_acc += r * y;
+  }
+  AverageRho() {
+    if (this.r_acc == 0) return false;
+    const r_norm = 1. / this.r_acc;
+    this.rx_acc *= r_norm;
+    this.ry_acc *= r_norm;
     return true;
   }
   MainDirection() {
@@ -368,40 +380,66 @@ class Gray {
   }
 }
 
-function CollectVoronoi(grays, points, cells) {
+// returns a Uint32Array with voronoi cells Ids
+function RenderVoronoi(W, H, points) {
   points.sort((a,b) => {  // sort by y-coordinate
     if (a.y == b.y) return a.x - b.x;
     return a.y - b.y;
   });
-  cells.length = points.length;
-  for (let c of cells) c.Reset();
-  let best_so_far = 0;
-  for (let y = 0; y < grays.H; ++y) {
-    let best = best_so_far;
-    for (let x = 0; x < grays.W; ++x) {
-      const X = x / grays.W, Y = y / grays.H
+  const out = new Uint32Array(W * H);   // result
+  let best_start = 0;
+  for (let y = 0, idx = 0; y < H; ++y) {
+    let best = best_start;
+    for (let x = 0; x < W; ++x, ++idx) {
+      const X = x / W, Y = y / H
       const pt0 = new Point(X, Y);
       let best_d2 = pt0.Distance2(points[best]);
-      const min_y = Math.max(0., Y - Math.sqrt(best_d2));
+      const min_y = Y - Math.sqrt(best_d2);
       for (let n = best - 1; n >= 0; --n) {
-        if (points[n].y <= min_y) break;
-        const d2 = pt0.Distance2(points[n]);
+        const pt = points[n];
+        if (pt.y <= min_y) break;
+        const d2 = pt0.Distance2(pt);
         if (d2 < best_d2) {
           best_d2 = d2;
           best = n;
         }
       }
-      const max_y = Math.min(Y + Math.sqrt(best_d2), 1.);
+      const max_y = Y + Math.sqrt(best_d2);
       for (let n = best + 1; n < points.length; ++n) {
-        if (points[n].y >= max_y) break;
-        const d2 = pt0.Distance2(points[n]);
+        const pt = points[n];
+        if (pt.y >= max_y) break;
+        const d2 = pt0.Distance2(pt);
         if (d2 < best_d2) {
           best_d2 = d2;
           best = n;
         }
       }
-      cells[best].Add(X, Y, grays.pixels[x + y * grays.W]);
-      if (x == 0) best_so_far = best;  // for next line
+      out[idx] = best;
+      if (x == 0) best_start = best;  // for next line
+    }
+  }
+  return out;
+}
+
+function CollectVoronoiRho(out, grays, points, cells) {
+  for (let y = 0, idx = 0; y < grays.H; ++y) {
+    for (let x = 0; x < grays.W; ++x, ++idx) {
+      const cell = cells[out[idx]];
+      const c = grays.pixels[idx];
+      const X = x / grays.W, Y = y / grays.H;
+      cell.AddRho(X, Y, c);
+    }
+  }
+}
+
+function CollectVoronoiAll(out, grays, points, cells) {
+  for (let c of cells) c.Reset();
+  for (let y = 0, idx = 0; y < grays.H; ++y) {
+    for (let x = 0; x < grays.W; ++x, ++idx) {
+      const cell = cells[out[idx]];
+      const c = grays.pixels[idx];
+      const X = x / grays.W, Y = y / grays.H;
+      cell.Add(X, Y, c);
     }
   }
 }
@@ -411,7 +449,7 @@ function MoveToCentroid(points, cells) {
   let count = 0;
   for (let n = 0; n < cells.length; ++n) {
     const c = cells[n];
-    if (!c.Average()) continue;
+    if (!c.AverageRho()) continue;
     const pt = new Point(c.rx_acc, c.ry_acc);
     d2 += points[n].Distance2(pt);
     points[n] = pt;
@@ -426,47 +464,20 @@ function DrawVoronoi(canvas) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const data = ctx.getImageData(0, 0, W, H);
   const pixels = data.data;
-  params.points.sort((a,b) => {  // sort by y-coordinate
-    if (a.y == b.y) return a.x - b.x;
-    return a.y - b.y;
-  });
   const scale = params.use_edges ? 8 : 1;
-  let best_y = 0;
-  for (let y = 0; y < H; ++y) {
-    let best = best_y;
-    for (let x = 0; x < W; ++x) {
+  const out = RenderVoronoi(W, H, params.points);
+  for (let y = 0, idx = 0; y < H; ++y) {
+    for (let x = 0; x < W; ++x, ++idx) {
       const X = x / W, Y = y / H;
-      const pt0 = new Point(X, Y);
-      let best_d2 = pt0.Distance2(params.points[best]);
-      const min_y = Math.max(0., Y - Math.sqrt(best_d2));
-      for (let n = best - 1; n >= 0; --n) {
-        if (params.points[n].y <= min_y) break;
-        const d2 = pt0.Distance2(params.points[n]);
-        if (d2 < best_d2) {
-          best_d2 = d2;
-          best = n;
-        }
-      }
-      const max_y = Math.min(Y + Math.sqrt(best_d2), 1.);
-      for (let n = best + 1; n < params.points.length; ++n) {
-        if (params.points[n].y >= max_y) break;
-        const d2 = pt0.Distance2(params.points[n]);
-        if (d2 < best_d2) {
-          best_d2 = d2;
-          best = n;
-        }
-      }
-      const idx = (x + y * W) * 4;
+      const best = out[idx];
       const c = Math.min(params.points[best].c * scale, 255);
-      pixels[idx + 0] = c;
-      pixels[idx + 1] = c;
-      pixels[idx + 2] = c;
-      if (x == 0) best_y = best;  // for next line
+      pixels[4 * idx + 0] = c;
+      pixels[4 * idx + 1] = c;
+      pixels[4 * idx + 2] = c;
     }
   }
   ctx.putImageData(data, 0, 0);
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Main calls
@@ -530,21 +541,24 @@ function Init() {
     console.log("=== RESET " + params.points.length + " POINTS ===");
   }
   params.ops = 0;  // start!
-  params.cells = [];
-  for (let n = 0; n < params.points.length; ++n) params.cells.push(new Cell);
 }
 
 function Render(is_dirty) {
   if (is_dirty) Init();
+  if (params.ops <= 0) params.start_time = Date.now();
   if (params.ops >= 0 && !ExtractStippling()) {   // finished?
     ShowProgress();
-    if (params.tid < 0) params.tid = setInterval(() => { Render(false); }, 0);
+    if (params.tid < 0) {
+      params.tid = setInterval(() => { Render(false); }, 0);
+    }
     return;
   }
   ResetTimer();
   DrawStippling();
 
 /*
+  const delta = (Date.now() - params.start_time) / 1000.;
+  console.log("Rendering time: " + delta + " secs.");
   const canvas = document.querySelector("#main-canvas");
   const src_canvas = document.querySelector("#side-canvas");
   console.log("image: " + params.image.width + " x " + params.image.height);
@@ -659,7 +673,7 @@ function DrawTarget() {
       pixels[idx + 3] = 255;
     }
   }
-  ctx.putImageData(data, 0, 0);
+  ctx.putImageData(data, (canvas.width - W) / 2, (canvas.height - H) / 2);
   console.log("grays: " + grays.W + " x " + grays.H);
   console.log("canvas: " + canvas.width + " x " + canvas.height);
 }
@@ -701,22 +715,27 @@ function ExtractStippling() {
   const max_ops = params.num_iters * params.num_Lloyd_iters;
   if (params.ops >= max_ops) return true;
   const num_points = params.points.length;
-  CollectVoronoi(params.grays, params.points, params.cells);
-  if (MoveToCentroid(params.points, params.cells)) {
+  const out = RenderVoronoi(W, H, params.points);
+
+  const cells = new Array(num_points);
+  for (let n = 0; n < num_points; ++n) cells[n] = new Cell;
+  CollectVoronoiRho(out, params.grays, params.points, cells);
+  if (MoveToCentroid(params.points, cells)) {
     params.ops = max_ops;
   } else {
     params.ops++;
   }
-
-  if ((params.ops % params.num_Lloyd_iters) == 0) {
+  const last_iter = ((params.ops % params.num_Lloyd_iters) == 0);
+  if (last_iter) {
     const avg_rho = Math.floor(params.rho * 255. + params.grays.average / max_num_points);
     const hysteresis = 0.01 + 0.6 * params.ops / max_ops;
     const Tu = Math.ceil((1. + hysteresis) * avg_rho);
     const Tl = Math.floor((1. - hysteresis) * avg_rho);
 
+    CollectVoronoiAll(out, params.grays, params.points, cells);
     params.points = [];
-    for (let c of params.cells) {
-      if (c.acc <= 0) continue;   // empty cell
+    for (const c of cells) {
+      if (!c.Average()) continue;    // empty cell
       const rho = Math.round(c.r_acc);
       if (rho < Tl) continue;     // too sparse!
       const color = c.r_acc / c.acc;
@@ -724,8 +743,7 @@ function ExtractStippling() {
       let stored = false;
       if (c.acc > 1 && rho > Tu) {  // too dense, split the cell
         const dsp = c.MainDirection();
-        if (Math.abs(dsp.dx) > eps_W ||
-            Math.abs(dsp.dy) > eps_H) {
+        if (Math.abs(dsp.dx) > eps_W || Math.abs(dsp.dy) > eps_H) {
           params.points.push(new Point(xf - dsp.dx, yf - dsp.dy, color));
           params.points.push(new Point(xf + dsp.dx, yf + dsp.dy, color));
           stored = true;
@@ -769,31 +787,37 @@ function ShowProgress() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function DrawCircle(m, x, y, color, radius, fill = false) {
-  m.beginPath();
-  m.arc(x, y, radius, 0. * Math.PI, 2. * Math.PI);
-  m.closePath();
-  m.strokeStyle = m.fillStyle = color;
-  fill ? m.fill() : m.stroke()
+function DrawCircle(ctx, x, y, radius) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0. * Math.PI, 2. * Math.PI);
+  ctx.closePath();
+  ctx.fill();
 }
+function DrawLine(ctx, x0, y0, x1, y1) {
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
+  ctx.closePath();
+  ctx.stroke();
+};
 
 function DrawStippling() {
   const canvas = document.querySelector("#main-canvas");
-  const m = canvas.getContext("2d", { willReadFrequently: true });
-  if (!m) {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
     console.log("ERROR! 2d-context is not available.");
     return;
   }
-  m.fillStyle = params.invert ? 'black' : 'white';
-  m.fillRect(0, 0, canvas.width, canvas.height);
-  m.imageSmoothingEnabled = true;
-  if (params.show_voronoi) DrawVoronoi(canvas);
-  else if (params.show_target) DrawTarget();
+  ctx.fillStyle = params.invert ? 'black' : 'white';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   const radius = Math.min(params.radius, canvas.width / 100);
+  ctx.strokeStyle = ctx.fillStyle = params.invert ? 'white' : 'black';
   for (const pt of params.points) {
     const x = pt.x * canvas.width, y = pt.y * canvas.height;
-    DrawCircle(m, x, y, params.invert ? 'white' : 'black', radius, true);
+    DrawCircle(ctx, x, y, radius);
   }
+  if (params.show_voronoi) DrawVoronoi(canvas);
+  else if (params.show_target) DrawTarget();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
