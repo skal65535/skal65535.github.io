@@ -391,7 +391,7 @@ function GetErrorCorrectPolynomial(errorCorrectLength) {
   return a;
 };
 
-function CreateData(typeNumber, errorCorrectLevel, text) {
+function MakePayload(typeNumber, errorCorrectLevel, text) {
   const data = ByteBuffer(text);
   const blocks = QRRSBlock.GetRSBlocks(typeNumber, QRErrorCorrectLevel[errorCorrectLevel]);
   let buffer = BitBuffer();
@@ -592,12 +592,13 @@ class qrcode {
   }
 
   MapData(data, pattern_id) {
+    const last = this._moduleCount - 1;
     let inc = -1;
-    let row = this._moduleCount - 1;
+    let row = last;
     let bitIndex = 7;
     let byteIndex = 0;
     let maskFunc = GetMaskFunction(pattern_id);
-    for (let col = this._moduleCount - 1; col > 0; col -= 2) {
+    for (let col = last; col > 0; col -= 2) {
       if (col == 6) col -= 1;
       while (true) {
         for (let c = 0; c < 2; ++c) {
@@ -616,7 +617,7 @@ class qrcode {
           }
         }
         row += inc;
-        if (row < 0 || this._moduleCount <= row) {
+        if (row < 0 || row > last) {
           row -= inc;
           inc = -inc;
           break;
@@ -627,4 +628,3 @@ class qrcode {
 
   isDark(Y, X) { return this._modules[Y][X]; };
 };
-

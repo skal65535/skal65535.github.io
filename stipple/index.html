@@ -82,23 +82,23 @@
     Drag and drop image on the canvas below.
     </font>
   </div>
-    <label class='button' for="FileElmt"
-           style='top:30px; left:30px;'>select source</label>
-    <button class='button' style='top:30px; left:30px;'
+  <label class='button' for="FileElmt"
+         style='top:30px; left:30px;'>select source</label>
+  <button class='button' style='top:30px; left:30px;'
           onmousedown="params.show_target=true; Render(false);"
           onmouseup="params.show_target=false; Render(false);">show target</button>
-    <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
+  <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
     <button class='button' style='top:30px; left:30px' download='img.webp'
             onmouseup="const result = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
                        document.querySelector('#download').href = result;">save img</button></a>
-    <form action="https://skal65535.github.io/"
-          style='position: relative; top:-150px; left:950px;'>
-      <input type="submit" value="skal 2023" id="skal-2023"
-             style='border-radius: 5px; padding: 5px;
-                    background: #cce; border: 1px solid #112;'
-        onmouseover='this.style.background="#cdf"'
-        onmouseout='this.style.background="#cce"'/>
-    </form>
+  <form action="https://skal65535.github.io/"
+        style='position: relative; top:-150px; left:950px;'>
+    <input type="submit" value="skal 2023" id="skal-2023"
+           style='border-radius: 5px; padding: 5px;
+                  background: #cce; border: 1px solid #112;'
+      onmouseover='this.style.background="#cdf"'
+      onmouseout='this.style.background="#cce"'/>
+  </form>
   <div id="gui-container">
     <canvas id="side-canvas" style='display: none;'></canvas>
     <center><canvas id="main-canvas"></canvas></center>
