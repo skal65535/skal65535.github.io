@@ -27,6 +27,12 @@ Some demo pages from sub-projects:
 
    See the [paper](http://arxiv.org/abs/1809.02257) presented at ICIP 2018.
 
+## [Thinning](https://skal65535.github.io/thinning/index.html) algorithms
+
+   ![thinning](https://skal65535.github.io/thinning/thinning.thumb.webp)
+
+   Implementation of two thinning algorithms that extract skeletons from binarized images.
+
 ## [Exploring Difference Of Gaussian](https://skal65535.github.io/dog/dog.html)
 
    ![DoG](https://skal65535.github.io/dog/dog.thumb.webp)
