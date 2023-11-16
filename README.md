@@ -1,6 +1,8 @@
 # <center><a href="./MASSIMINO_Pascal_Resume.pdf">Skal</a>'s corner: code snippets & demos</center>
 
-Some demo pages from sub-projects:
+My day-job is -amongst other things- to write open-sourced code (like [webp](https://github.com/webmproject/libwebp) or
+[sjpeg](https://github.com/webmproject/sjpeg)). But! I also like to write
+open-sourced code for fun :) Here are some side-projects demo pages:
 
 ## [Stippling](https://skal65535.github.io/stipple/index.html) toy
 
