@@ -1,0 +1,385 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Tree under gravity</title>
+
+<style>
+#drop-area {
+  border: 3px dashed #ccc;
+  border-radius: 20px;
+  font-family: sans-serif;
+  margin: 10px auto;
+  padding: 10px;
+  width: 1024px;
+  height: 200px;
+  background: #eef;
+}
+#main-canvas {
+  z-index:0;
+  border: 2px solid #000;
+  border-radius: 20px;
+  position: relative;
+  left:-2px;
+  top:-10px;
+  background: #fff;
+  margin: 0px;
+  box-shadow: 0 0 5px black;
+}
+#gui {
+ position: relative;
+ top: -750px;
+ left: 750px;
+}
+</style>
+
+</head>
+
+<body onload="main();">
+
+<div id="drop-area">
+  <div height='100px'>
+    <h2><center>There's nothing special about the Root of a tree</center></h2>
+    <font size='-1'>
+    This is just the visualization of a random tree.
+    <ul>
+    <li>Left-click-drag on nodes to move them around</li>
+    <li>Middle-Click on a node to <b>promote</b> it to Root</li>
+    </ul>
+    </font>
+  </div>
+  <form action="https://skal65535.github.io/"
+        style='position: relative; top:-100px; left:950px;'>
+    <input type="submit" value="skal 2023" id="skal-2023"
+           style='border-radius: 5px; padding: 5px;
+                  background: #cce; border: 1px solid #112;'
+      onmouseover='this.style.background="#cdf"'
+      onmouseout='this.style.background="#cce"'/>
+  </form>
+  <div id="gui-container">
+    <center><canvas id="main-canvas"></canvas></center>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+
+<script>
+"use strict";
+
+////////////////////////////////////////////////////////////////////////////////
+// The less interesting stuff
+
+class Node {
+ x = 0.;
+ y = 0.;
+ id = 0;
+ parent = 0;
+ mass = 0;   // total number of children
+ constructor(x, y, id, parent) {
+   this.x = x;
+   this.y = y;
+   this.dx = 0.;
+   this.dy = 0.;
+   this.ddx = 0.;
+   this.ddy = 0.;
+   this.id = id;
+   this.parent = parent;
+   this.mass = 0;
+ }
+}
+
+const params = {  // Global parameters
+  num_nodes: 150,
+  nodes: [],
+  root: 0,
+  K: 5.0,    // string rigidity
+  C: 1.2,    // viscosity
+  R: .5,     // repulsive strength
+  l0: .5,    // distance at rest
+  dt: .01,   // time interval
+  g: 1.0,
+  xm: 0., xM: 1., ym: 0., yM: 1.,  // bounding box
+
+  gui: null,
+  tid: -1,   // timer id
+  focus_id: -1,
+
+  reset: () => { Init(); },
+  AddNode: () => {
+    const id = params.nodes.length;
+    const parent = Math.floor(mulberry32() * id);
+    const x = mulberry32(), y = mulberry32();
+    params.nodes.push(new Node(x, y, id, parent));
+  },
+  FindBounds: () => {
+    let xm = 1e8, xM = -1e8, ym = 1e8, yM = -1e8;
+    for (const n of params.nodes) {
+      if (xm > n.x) xm = n.x;
+      if (xM < n.x) xM = n.x;
+      if (ym > n.y) ym = n.y;
+      if (yM < n.y) yM = n.y;
+    }
+    const mid_x = 0.5 * (xm + xM);
+    const mid_y = 0.5 * (ym + yM);
+    const alpha = 1.2;
+    xm = params.Mix(mid_x, xm, alpha);
+    xM = params.Mix(mid_x, xM, alpha);
+    ym = params.Mix(mid_y, ym, alpha);
+    yM = params.Mix(mid_y, yM, alpha);
+    return [xm, xM, ym, yM];
+  },
+  ResetNodes: () => {
+    params.nodes = [];
+    for (let i = 0; i < params.num_nodes; ++i) params.AddNode();
+    [params.xm, params.xM, params.ym, params.yM] = params.FindBounds();
+  },
+  EventToXY: (event) => {
+    const canvas = document.querySelector("#main-canvas");
+    const bounds = canvas.getBoundingClientRect();
+    const x = (event.x - bounds.left) / canvas.width;
+    const y = (event.y - bounds.top) / canvas.height;
+    return [params.xm + x * (params.xM - params.xm),
+            params.ym + y * (params.yM - params.ym)];
+  },
+  MouseDownEvent: (event) => {
+    const [x, y] = params.EventToXY(event);
+    params.focus_id = -1;
+    let closest = 0.;
+    for (const n of params.nodes) {
+      const d = (n.x - x) * (n.x - x) + (n.y - y) * (n.y - y);
+      if (params.focus_id < 0 || d < closest) {
+        closest = d;
+        params.focus_id = n.id;
+      }
+    }
+  },
+  MouseMoveEvent: (event) => {
+    if (params.focus_id < 0) return;
+    const id = params.focus_id;
+    const [x, y] = params.EventToXY(event);
+    const n = params.nodes[id];
+    n.x = x;
+    n.y = y;
+    n.dx = 0.;
+    n.dy = 0.;
+  },
+  MouseUpEvent: (event) => {
+    if (event.button != 0) {
+      params.SetRoot(params.focus_id);
+    }
+    params.focus_id = -1;
+  },
+  SetRoot: (root) => {
+    // fix path to root
+    let i = root, p = params.nodes[i].parent;;
+    while (i != p) {
+      const P = params.nodes[p].parent;
+      params.nodes[p].parent = i;
+      i = p;
+      p = P;
+    }
+    params.root = root;
+    params.nodes[root].parent = root;   // loop at root (not required)
+    // compute mass
+    for (const n of params.nodes) n.mass = 0;
+    for (let i = 0; i < params.num_nodes; ++i) {
+      let j = i;
+      do {
+        params.nodes[j].mass += 1;
+        const p = params.nodes[j].parent;
+        j = params.nodes[j].parent;
+      } while (j != root);
+      params.nodes[root].mass += 1;
+    }
+  },
+  PrintNodes: () => {
+    for (const n of params.nodes) {
+      console.log("x,y=" + n.x + "," + n.y + " parent:" + n.parent);
+    }
+  },
+  Anim: () => {
+    for (let n of params.nodes) {
+      n.ddx = 0.;
+      n.ddy = params.g;
+    }
+    for (let n of params.nodes) {
+      let p = params.nodes[n.parent];
+      if (params.K > 0.) {
+        const l0 = params.l0 * 10. / (10. + 25. * n.mass);
+        const ux = p.x - n.x, uy = p.y - n.y;
+        const d = Math.sqrt(ux * ux + uy * uy);
+        const F = params.K * (d - l0) / d;
+        n.ddx += F * ux;
+        n.ddy += F * uy;
+        p.ddx -= F * ux;
+        p.ddy -= F * uy;
+      }
+      if (params.R > 0.) {
+        const R = params.R / 10.;
+        let fx = 0., fy = 0.;
+        for (let p of params.nodes) {
+          if (p.id == n.id) continue;
+          const ux = p.x - n.x, uy = p.y - n.y;
+          const d = Math.sqrt(ux * ux + uy * uy) - 0.01;
+          if (d > 0.01) {
+            n.ddx -= R * ux / d / d;
+            n.ddy -= R * uy / d / d;
+          }
+        }
+        n.ddx += fx;
+        n.ddy += fy;
+      }
+      if (params.C > 0.) {      // viscosity
+        n.ddx -= params.C * n.dx;
+        n.ddy -= params.C * n.dy;
+      }
+    }
+    for (let n of params.nodes) {
+      if (n.id == params.nodes[params.root].id) continue;
+      n.dx += params.dt * n.ddx;
+      n.dy += params.dt * n.ddy;
+      n.x += params.dt * n.dx;
+      n.y += params.dt * n.dy;
+    }
+    if (params.root >= 0) {
+      const n = params.nodes[params.root];
+      n.dx = 0.;
+      n.dy = 0.;
+      n.ddx = 0.;
+      n.ddy = 0.;
+    }
+    if (params.focus_id >= 0) {
+      const n = params.nodes[params.focus_id];
+      n.dx = 0.;
+      n.dy = 0.;
+    }
+  },
+  Mix: (a, b, x) => { return (1. - x) * a + x * b; },
+  Render: () => {
+    const canvas = document.querySelector("#main-canvas");
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
+    const [xm, xM, ym, yM] = params.FindBounds();
+    params.xm = params.Mix(params.xm, xm, .001);
+    params.xM = params.Mix(params.xM, xM, .001);
+    params.ym = params.Mix(params.ym, ym, .001);
+    params.yM = params.Mix(params.yM, yM, .001);
+    const scale_x = W / (params.xM - params.xm);
+    const scale_y = H / (params.yM - params.ym);
+    const radius = 10.;
+    ctx.fillStyle = '#000000'
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = "24px Arial";
+    const scale = 5. / params.nodes.length;
+    for (let n of params.nodes) {
+      const radius = 3. * (1. + n.mass * scale);
+      const X = (n.x - params.xm) * scale_x;
+      const Y = (n.y - params.ym) * scale_y;
+      if (n.id == params.root) ctx.fillText("root", X + 1.5 * radius, Y);
+      const p = params.nodes[n.parent];
+      const Xp = (p.x - params.xm) * scale_x;
+      const Yp = (p.y - params.ym) * scale_y;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(X, Y);
+      ctx.lineTo(Xp, Yp);
+      ctx.strokeStyle = '#000000';
+      ctx.shadowBlur = 0.;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.lineWidth = 5;
+      if (n.parent == n.id) ctx.fillStyle = '#ff1020';
+      else if (n.mass > 1) ctx.fillStyle = '#308020';
+      else ctx.fillStyle = '#003300';
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = "black";
+      ctx.arc(X, Y, radius, 0, 2 * Math.PI, false);
+      ctx.lineWidth = 5;
+      ctx.fill();
+    }
+  },
+}
+
+// Seedable 'decent' random generator, returning values in [0, 1.)
+var seed = 91651088029;
+const mulberry32 = () => {
+  let t = seed += 0x6D2B79F5;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296.;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Main calls
+
+function main() {
+  const elmt = document.getElementById('gui-container');
+  params.gui = new lil.GUI({ width: 250, container: elmt, });
+  params.gui.domElement.id = 'gui';
+  params.gui.add(params, 'num_nodes', 1, 255, 1).name('Number of Nodes')
+            .listen().onChange(Init);
+  params.gui.add(params, 'K', 0.00, 20., 0.1).name('Rigidity').listen();
+  params.gui.add(params, 'C', 0.00, 2., 0.1).name('Viscosity').listen();
+  params.gui.add(params, 'R', 0.00, 1.00, 0.1).name('Repulsion').listen();
+  params.gui.add(params, 'l0', 0.001, 1., 0.01).name('Rest Length').listen();
+  params.gui.add(params, 'g', 0.01, 5.00, 0.01).name('Gravity').listen();
+  params.gui.add(params, 'reset').name('Reset');
+
+  params.reset();
+  StartTimer();
+}
+
+function StartTimer() {
+  ResetTimer();
+  if (params.tid < 0) params.tid = setInterval(() => { Render(); });
+}
+
+function ResetTimer() {
+  if (params.tid >= 0) {
+    clearInterval(params.tid);
+    params.tid = -1;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function Init() {
+  const canvas = document.querySelector("#main-canvas");
+  const ctx = canvas.getContext("2d");
+  if (ctx == null) {
+    console.log("Can't get 2d-context.");
+    return;
+  }
+  const Wo = 800, Ho = 600;
+  canvas.width = Wo;
+  canvas.height = Ho;
+
+  const gui = document.querySelector("#gui");
+  gui.style.top = (-Ho + 10) + 'px';  // omg, this is naaaasty
+
+  params.ResetNodes();
+  params.SetRoot(0);
+  params.nodes[params.root].x = .5;
+  params.nodes[params.root].y = .1;
+
+  canvas.addEventListener('mousedown', params.MouseDownEvent);
+  canvas.addEventListener('mouseup', params.MouseUpEvent);
+  canvas.addEventListener('mousemove', params.MouseMoveEvent);
+  StartTimer();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function Render() {
+  params.Anim();
+  params.Render();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+</script>
+
+</body>
+</html>
