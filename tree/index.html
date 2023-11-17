@@ -268,10 +268,14 @@ const params = {  // Global parameters
     const scale_x = W / (params.xM - params.xm);
     const scale_y = H / (params.yM - params.ym);
     const radius = 10.;
+    const scale = 5. / params.nodes.length;
+
     ctx.fillStyle = '#000000'
     ctx.clearRect(0, 0, W, H);
     ctx.font = "24px Arial";
-    const scale = 5. / params.nodes.length;
+    ctx.strokeStyle = '#000000';
+    ctx.shadowBlur = 0.;
+    ctx.lineWidth = 2;
     for (let n of params.nodes) {
       const radius = 3. * (1. + n.mass * scale);
       const X = (n.x - params.xm) * scale_x;
@@ -280,23 +284,22 @@ const params = {  // Global parameters
       const p = params.nodes[n.parent];
       const Xp = (p.x - params.xm) * scale_x;
       const Yp = (p.y - params.ym) * scale_y;
-      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(X, Y);
       ctx.lineTo(Xp, Yp);
-      ctx.strokeStyle = '#000000';
-      ctx.shadowBlur = 0.;
       ctx.stroke();
-
+    }
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "black";
+    for (let n of params.nodes) {
+      const radius = 3. * (1. + n.mass * scale);
+      const X = (n.x - params.xm) * scale_x;
+      const Y = (n.y - params.ym) * scale_y;
       ctx.beginPath();
-      ctx.lineWidth = 5;
       if (n.parent == n.id) ctx.fillStyle = '#ff1020';
       else if (n.mass > 1) ctx.fillStyle = '#308020';
       else ctx.fillStyle = '#003300';
-      ctx.shadowBlur = 20;
-      ctx.shadowColor = "black";
       ctx.arc(X, Y, radius, 0, 2 * Math.PI, false);
-      ctx.lineWidth = 5;
       ctx.fill();
     }
   },
