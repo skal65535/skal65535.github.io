@@ -29,9 +29,9 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    See the [paper](http://arxiv.org/abs/1809.02257) presented at ICIP 2018.
 
-## What's up with the root of ## [Trees](https://skal65535.github.io/tree/index.html)?
+## What's up with the root of [Trees](https://skal65535.github.io/tree/index.html)?
 
-   ![tree](https://skal65535.github.io/thinning/tree.thumb.webp)
+   ![tree](https://skal65535.github.io/tree/tree.thumb.webp)
 
    The root of a tree is not *that* particular, as seen with this simple
    visualization of a random tree that lets you pick any node as root.
