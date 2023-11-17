@@ -33,8 +33,9 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    ![tree](https://skal65535.github.io/tree/tree.thumb.webp)
 
-   The root of a tree is not *that* particular, as seen with this simple
-   visualization of a random tree that lets you pick any node as root.
+   The root of a tree is not *that* particular, as seen with this
+   [simple visualization](https://skal65535.github.io/tree/index.html)
+   of a random tree that lets you pick any node as root.
 
 ## [Thinning](https://skal65535.github.io/thinning/index.html) algorithms
 
