@@ -44,8 +44,8 @@
     <font size='-1'>
     This is just the visualization of a random tree.
     <ul>
-    <li>Left-click-drag on nodes to move them around</li>
-    <li>Middle-Click on a node to <b>promote</b> it to Root</li>
+    <li>click or touch to drag nodes around</li>
+    <li>double-Click or double-tap on a node to <b>promote</b> it to Root</li>
     </ul>
     </font>
   </div>
@@ -134,41 +134,17 @@ const params = {  // Global parameters
     for (let i = 0; i < params.num_nodes; ++i) params.AddNode();
     [params.xm, params.xM, params.ym, params.yM] = params.FindBounds();
   },
-  EventToXY: (event) => {
-    const canvas = document.querySelector("#main-canvas");
-    const bounds = canvas.getBoundingClientRect();
-    const x = (event.x - bounds.left) / canvas.width;
-    const y = (event.y - bounds.top) / canvas.height;
-    return [params.xm + x * (params.xM - params.xm),
-            params.ym + y * (params.yM - params.ym)];
-  },
-  MouseDownEvent: (event) => {
-    const [x, y] = params.EventToXY(event);
-    params.focus_id = -1;
-    let closest = 0.;
-    for (const n of params.nodes) {
+  FindNode: (x, y) => {
+    let id = -1;
+    let closest = 0.5 * 0.5;  // maximum distance to find a node
+    for (const n of params.nodes) {  // could be faster, yeah...
       const d = (n.x - x) * (n.x - x) + (n.y - y) * (n.y - y);
-      if (params.focus_id < 0 || d < closest) {
+      if (d < closest) {
         closest = d;
-        params.focus_id = n.id;
+        id = n.id;
       }
     }
-  },
-  MouseMoveEvent: (event) => {
-    if (params.focus_id < 0) return;
-    const id = params.focus_id;
-    const [x, y] = params.EventToXY(event);
-    const n = params.nodes[id];
-    n.x = x;
-    n.y = y;
-    n.dx = 0.;
-    n.dy = 0.;
-  },
-  MouseUpEvent: (event) => {
-    if (event.button != 0) {
-      params.SetRoot(params.focus_id);
-    }
-    params.focus_id = -1;
+    return id;
   },
   SetRoot: (root) => {
     // fix path to root
@@ -193,11 +169,59 @@ const params = {  // Global parameters
       params.nodes[root].mass += 1;
     }
   },
-  PrintNodes: () => {
-    for (const n of params.nodes) {
-      console.log("x,y=" + n.x + "," + n.y + " parent:" + n.parent);
+
+
+  // Helpers for mouse/tap events
+  last_x: 0,
+  last_y: 0,
+  ScaleXY: (x, y) => {
+    const canvas = document.querySelector("#main-canvas");
+    const bounds = canvas.getBoundingClientRect();
+    x = (x - bounds.left) / canvas.width;
+    y = (y - bounds.top) / canvas.height;
+    params.last_x = params.xm + x * (params.xM - params.xm);
+    params.last_y = params.ym + y * (params.yM - params.ym);
+    return [params.last_x, params.last_y];
+  },
+  EventToXY: (event) => {
+    return params.ScaleXY(event.x, event.y);
+  },
+  TouchToXY: (event) => {
+    if (event.touches.length == 0) return [params.last_x, params.last_y];
+    event.preventDefault();
+    return params.ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
+  },
+  // Double-tap touch event
+  dblTap: false,
+  DoubleTapEvent: ([x, y]) => {
+    if (!params.dblTap) {
+      params.dblTap = true;
+      setTimeout(() => params.dblTap = false, 300);
+      params.DownEvent([x, y]);
+    } else {
+      params.SelectEvent([x, y]);
     }
   },
+
+  // Mouse Events
+  DownEvent: ([x, y]) => {
+    params.focus_id = params.FindNode(x, y);
+  },
+  MoveEvent: ([x, y]) => {
+    if (params.focus_id < 0) return;
+    const id = params.focus_id;
+    const n = params.nodes[id];
+    n.x = x;
+    n.y = y;
+    n.dx = 0.;
+    n.dy = 0.;
+  },
+  UpEvent: ([x, y]) => { params.focus_id = -1; },
+  SelectEvent: ([x, y]) => {
+    const id = params.FindNode(x, y);
+    if (id >= 0) params.SetRoot(id);
+  },
+
   Anim: () => {
     for (let n of params.nodes) {
       n.ddx = 0.;
@@ -367,9 +391,13 @@ function Init() {
   params.nodes[params.root].x = .5;
   params.nodes[params.root].y = .1;
 
-  canvas.addEventListener('mousedown', params.MouseDownEvent);
-  canvas.addEventListener('mouseup', params.MouseUpEvent);
-  canvas.addEventListener('mousemove', params.MouseMoveEvent);
+  canvas.addEventListener('mousedown', (e) => params.DownEvent(params.EventToXY(e)));
+  canvas.addEventListener('mouseup', (e) => params.UpEvent(params.EventToXY(e)));
+  canvas.addEventListener('mousemove', (e) => params.MoveEvent(params.EventToXY(e)));
+  canvas.addEventListener('dblclick', (e) => params.SelectEvent(params.EventToXY(e)));
+  canvas.addEventListener('touchstart', (e) => params.DoubleTapEvent(params.TouchToXY(e)));
+  canvas.addEventListener('touchend', (e) => params.UpEvent(params.TouchToXY(e)));
+  canvas.addEventListener('touchmove', (e) => params.MoveEvent(params.TouchToXY(e)));
   StartTimer();
 }
 
