@@ -1,0 +1,253 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>WebGPU test</title>
+
+</head>
+
+<body onload="main();">
+
+<body>
+<div>
+  <center>
+    <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
+    Ball simulation with WebGPU
+  </center>
+</div>
+
+<script>
+"use strict";
+
+const args = new URLSearchParams(location.search);
+
+function parse_arg_f(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseFloat(args.get(arg_value))
+        : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+function parse_arg_i(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseInt(args.get(arg_value))
+        : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+
+const params = {
+  balls: parse_arg_i("balls", 100, 1, 10000),
+  min_r: parse_arg_f("min_radius", 2., 1., 100.),
+  max_r: parse_arg_f("max_radius", 5., 1., 100.),
+  render: parse_arg_i("render", 1),
+  dt: parse_arg_f("dt", 0.01, 1e-6, .1),
+  gravity: parse_arg_f("g", 1000.),
+}
+const ctx = document.querySelector("#canvas").getContext("2d");
+const W = parse_arg_i("width", 500);
+const H = parse_arg_i("height", 500);
+ctx.canvas.width  = W;
+ctx.canvas.height = H;
+
+const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
+const BUFFER_SIZE = params.balls * 6 * FLOAT32_SIZE;
+
+function randomBetween(a, b) {
+  return Math.random() * (b - a) + a;
+}
+
+function init_balls() {
+  let balls = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
+  for (let i = 0; i < params.balls; ++i) {
+    balls[i * 6 + 0] = randomBetween(2, 10); // radius
+    balls[i * 6 + 1] = 0; // padding
+    balls[i * 6 + 2] = randomBetween(0, W); // position.x
+    balls[i * 6 + 3] = randomBetween(0, H); // position.y
+    balls[i * 6 + 4] = randomBetween(-100, 100); // velocity.x
+    balls[i * 6 + 5] = randomBetween(-100, 100); // velocity.y
+  }
+  return balls;
+}
+
+function animate() {
+  return new Promise(e => requestAnimationFrame(e));
+}
+
+async function init() {
+  if (!navigator.gpu) throw Error("WebGPU not supported.");
+  console.log("Navigator has GPU");
+
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw Error("Couldn’t request WebGPU adapter.");
+  console.log("Adapter ok: " + adapter.limits.maxSamplersPerShaderStage);
+
+  const device = await adapter.requestDevice();
+  if (!device) throw Error("Couldn’t request WebGPU logical device.");
+  console.log("Device acquired");
+
+  const shader_module = device.createShaderModule({
+    code: `
+     struct Ball {
+        radius: f32,
+        position: vec2<f32>,
+        velocity: vec2<f32>,
+      }
+      struct Uniforms {
+        width: f32,
+        height: f32,
+        dt: f32,
+        gravity: f32,
+      }
+      /* I/O bindings */
+      @group(0) @binding(0)
+      var<storage, read> input: array<Ball>;
+      @group(0) @binding(1)
+      var<storage, read_write> output: array<Ball>;
+      @group(0) @binding(2)
+      var<storage, read> uniforms: Uniforms;
+
+      @compute @workgroup_size(64)
+      fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
+        let num_balls = arrayLength(&output);
+        let id = global_id.x;
+        if (id >= num_balls) { return; }
+        let W = uniforms.width;
+        let H = uniforms.height;
+        let dt = uniforms.dt;
+        let g = uniforms.gravity;
+        let R = input[id].radius;
+        var spd = input[id].velocity - dt * vec2(0., g);
+        var pos = input[id].position + dt * spd;
+        if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
+        if (pos.x > W - R) { pos.x = 2. * (W - R) - pos.x; spd.x = -spd.x; }
+        if (pos.y < R) { pos.y = 2. * R - pos.y; spd.y = -spd.y; }
+        if (pos.y > H - R) { pos.y = 2. * (H - R) - pos.y; spd.y = -spd.y; }
+
+        output[id].radius = R;
+        output[id].position = pos;
+        output[id].velocity = spd;
+      }
+    `,
+  });
+
+  const bindGroupLayout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0,   // input buffer
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "read-only-storage", }, },
+      { binding: 1,   // output buffer
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage", }, },
+      { binding: 2,   // 'uniforms'
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "read-only-storage", }, },
+    ],
+  });
+  const layout = device.createPipelineLayout(
+    { bindGroupLayouts: [bindGroupLayout], }
+  );
+
+  const pipeline = device.createComputePipeline({
+    compute: {
+      module: shader_module,
+      entryPoint: "main",
+    },
+    layout: layout,
+  });
+
+  let balls = init_balls();
+
+  const uniforms = device.createBuffer({
+    size: 4 * FLOAT32_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  const input_buffer = device.createBuffer({
+    size: BUFFER_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  const output_buffer = device.createBuffer({
+    size: BUFFER_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+  });
+
+  const staging_buffer = device.createBuffer({
+    size: BUFFER_SIZE,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+
+  const bindGroup = device.createBindGroup({
+    layout: bindGroupLayout,
+    entries: [
+      { binding: 0,
+        resource: { buffer: input_buffer, }, },
+      { binding: 1,
+        resource: { buffer: output_buffer, }, },
+      { binding: 2,
+        resource: { buffer: uniforms, }, },
+    ],
+  });
+
+  // write the uniforms once for all
+  device.queue.writeBuffer(uniforms, 0,
+      new Float32Array([W, H, params.dt, params.gravity]));
+
+  // the main loop
+  for (;;) {
+    performance.mark("webgpu start"),
+    device.queue.writeBuffer(input_buffer, 0, balls);
+    const commandEncoder = device.createCommandEncoder();
+    const pass = commandEncoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(BUFFER_SIZE / 64));
+    pass.end();
+
+    commandEncoder.copyBufferToBuffer(
+      output_buffer, 0 /* src_offset */,
+      staging_buffer, 0 /* dst_offset */,
+      BUFFER_SIZE);
+    const commands = commandEncoder.finish();
+    device.queue.submit([commands]);
+
+    await staging_buffer.mapAsync(GPUMapMode.READ, 0, BUFFER_SIZE);
+    const new_balls = staging_buffer.getMappedRange(0, BUFFER_SIZE).slice();
+    const tmp = new Float32Array(new_balls);
+    staging_buffer.unmap();
+    performance.mark("webgpu end");
+
+    performance.measure("webgpu", "webgpu start", "webgpu end");
+    balls = tmp;
+    draw(balls);
+    await animate();
+  }
+}
+
+function draw(balls) {
+  ctx.save();
+  ctx.scale(1, -1);
+  ctx.translate(0, -H);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'red';
+  for (let i = 0; i < balls.length; i += 6) {
+    ctx.beginPath();
+    const r = balls[i + 0];  // radius
+    const px = balls[i + 2], py = balls[i + 3];  // position
+    ctx.arc(px, py, r, 0, 2. * Math.PI);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function main() {
+  init();
+}
+
+</script>
+
+</body>
+</html>
