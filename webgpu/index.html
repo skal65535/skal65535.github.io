@@ -7,13 +7,13 @@
 
 </head>
 
-<body onload="main();">
+<body onload="init();">
 
 <body>
 <div>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    Ball simulation with WebGPU
+    Ball simulation with WebGPU (WIP)
   </center>
 </div>
 
@@ -38,18 +38,32 @@ function parse_arg_i(arg_value, default_value, min, max) {
 }
 
 const params = {
-  balls: parse_arg_i("balls", 100, 1, 10000),
+  balls: parse_arg_i("balls", 10000, 1, 1000000),
   min_r: parse_arg_f("min_radius", 2., 1., 100.),
   max_r: parse_arg_f("max_radius", 5., 1., 100.),
   render: parse_arg_i("render", 1),
-  dt: parse_arg_f("dt", 0.01, 1e-6, .1),
-  gravity: parse_arg_f("g", 1000.),
+  dt: parse_arg_f("dt", 0.003, 1e-6, .1),
+  gravity: parse_arg_f("g", 10.),
 }
-const ctx = document.querySelector("#canvas").getContext("2d");
-const W = parse_arg_i("width", 500);
-const H = parse_arg_i("height", 500);
+const ctx = document.querySelector("#canvas").getContext("webgpu");
+const textureFormat = 'bgra8unorm';
+
+let W = parse_arg_i("width", 500);
+let H = parse_arg_i("height", 500);
 ctx.canvas.width  = W;
 ctx.canvas.height = H;
+
+function onResize(device) {
+//  W = Math.ceil(window.innerWidth * window.devicePixelRatio);
+//  H = Math.ceil(window.innerHeight * window.devicePixelRatio);
+  canvas.width = W;
+  canvas.height = H;
+  ctx.configure({device: device,
+                 format: textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied'});
+  console.log("On Resize: " + W + "x" + H);
+}
 
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const BUFFER_SIZE = params.balls * 6 * FLOAT32_SIZE;
@@ -58,17 +72,29 @@ function randomBetween(a, b) {
   return Math.random() * (b - a) + a;
 }
 
-function init_balls() {
+function init_balls(device) {
   let balls = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
   for (let i = 0; i < params.balls; ++i) {
-    balls[i * 6 + 0] = randomBetween(2, 10); // radius
-    balls[i * 6 + 1] = 0; // padding
-    balls[i * 6 + 2] = randomBetween(0, W); // position.x
-    balls[i * 6 + 3] = randomBetween(0, H); // position.y
-    balls[i * 6 + 4] = randomBetween(-100, 100); // velocity.x
-    balls[i * 6 + 5] = randomBetween(-100, 100); // velocity.y
+    balls[i * 6 + 0] = randomBetween(params.min_r, params.max_r) / 100.; // radius
+    balls[i * 6 + 1] = randomBetween(0.2, 1.); // brightness
+    balls[i * 6 + 2] = randomBetween(0., 1.);  // position.x
+    balls[i * 6 + 3] = randomBetween(0., 1.);  // position.y
+    balls[i * 6 + 4] = randomBetween(-1., 1.); // velocity.x
+    balls[i * 6 + 5] = randomBetween(-1., 1.); // velocity.y
+
+    balls[i * 6 + 2] = ((i % 30) + 2.) / 32.;
+    balls[i * 6 + 3] = (Math.floor(i / 30) + 2.) / 32.;
   }
-  return balls;
+  const buffer = device.createBuffer({
+    size: balls.byteLength,
+    usage: GPUBufferUsage.VERTEX |
+           GPUBufferUsage.STORAGE |
+           GPUBufferUsage.COMPUTE,
+    mappedAtCreation: true,
+  });
+  new Float32Array(buffer.getMappedRange()).set(balls);
+  buffer.unmap();
+  return buffer;
 }
 
 function animate() {
@@ -87,164 +113,309 @@ async function init() {
   if (!device) throw Error("Couldn’t request WebGPU logical device.");
   console.log("Device acquired");
 
-  const shader_module = device.createShaderModule({
+  onResize(device);  // <- will configure() the ctx
+  window.addEventListener('resize', () => onResize(device), false);
+
+  const uniforms_struct_code = `
+    struct Uniforms {
+      bg_color: vec4<f32>,
+      width: f32,
+      height: f32,
+      dt: f32,
+      gravity: f32,
+      num_balls: f32,
+      pad1: f32,
+      pad2: f32,
+      pad3: f32,
+    }
+  `;
+  const ball_struct_code = `
+    struct Ball {
+      radius:   f32,
+      brightness: f32,
+      position: vec2<f32>,
+      velocity: vec2<f32>,
+    }
+    struct Balls {
+      balls: array<Ball>,
+    }
+  `;
+
+  // COMPUTE pipeline, updating the particles' positions / velocity
+  const update_module = device.createShaderModule({
     code: `
-     struct Ball {
-        radius: f32,
-        position: vec2<f32>,
-        velocity: vec2<f32>,
-      }
-      struct Uniforms {
-        width: f32,
-        height: f32,
-        dt: f32,
-        gravity: f32,
-      }
-      /* I/O bindings */
-      @group(0) @binding(0)
-      var<storage, read> input: array<Ball>;
-      @group(0) @binding(1)
-      var<storage, read_write> output: array<Ball>;
-      @group(0) @binding(2)
-      var<storage, read> uniforms: Uniforms;
+      ${ball_struct_code}
+      ${uniforms_struct_code}
+
+      @group(0) @binding(0) var<storage, read_write> balls: Balls;
+      @group(0) @binding(1) var<uniform> uniforms: Uniforms;
 
       @compute @workgroup_size(64)
       fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
-        let num_balls = arrayLength(&output);
-        let id = global_id.x;
-        if (id >= num_balls) { return; }
-        let W = uniforms.width;
-        let H = uniforms.height;
+        let num_balls = uniforms.num_balls;
+        let idx = global_id.x;
+        if (f32(idx) >= num_balls) { return; }
+        var b = balls.balls[idx];
         let dt = uniforms.dt;
         let g = uniforms.gravity;
-        let R = input[id].radius;
-        var spd = input[id].velocity - dt * vec2(0., g);
-        var pos = input[id].position + dt * spd;
+        let R = b.radius;
+        var spd = b.velocity + dt * vec2(0., g);
+        var pos = b.position + dt * spd;
         if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
-        if (pos.x > W - R) { pos.x = 2. * (W - R) - pos.x; spd.x = -spd.x; }
+        if (pos.x > 1. - R) { pos.x = 2. * (1. - R) - pos.x; spd.x = -spd.x; }
         if (pos.y < R) { pos.y = 2. * R - pos.y; spd.y = -spd.y; }
-        if (pos.y > H - R) { pos.y = 2. * (H - R) - pos.y; spd.y = -spd.y; }
+        if (pos.y > 1. - R) { pos.y = 2. * (1. - R) - pos.y; spd.y = -spd.y; }
 
-        output[id].radius = R;
-        output[id].position = pos;
-        output[id].velocity = spd;
+        b.position = pos;
+        b.velocity = spd;
+
+        balls.balls[idx] = b;
       }
     `,
   });
 
-  const bindGroupLayout = device.createBindGroupLayout({
-    entries: [
-      { binding: 0,   // input buffer
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "read-only-storage", }, },
-      { binding: 1,   // output buffer
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "storage", }, },
-      { binding: 2,   // 'uniforms'
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: "read-only-storage", }, },
-    ],
-  });
-  const layout = device.createPipelineLayout(
-    { bindGroupLayouts: [bindGroupLayout], }
-  );
-
-  const pipeline = device.createComputePipeline({
-    compute: {
-      module: shader_module,
-      entryPoint: "main",
-    },
-    layout: layout,
-  });
-
-  let balls = init_balls();
-
-  const uniforms = device.createBuffer({
-    size: 4 * FLOAT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const input_buffer = device.createBuffer({
-    size: BUFFER_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-
-  const output_buffer = device.createBuffer({
-    size: BUFFER_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
-  });
-
-  const staging_buffer = device.createBuffer({
-    size: BUFFER_SIZE,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
-
-  const bindGroup = device.createBindGroup({
-    layout: bindGroupLayout,
+  const update_bind_group_layout = device.createBindGroupLayout({
     entries: [
       { binding: 0,
-        resource: { buffer: input_buffer, }, },
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "storage", }, },
       { binding: 1,
-        resource: { buffer: output_buffer, }, },
-      { binding: 2,
-        resource: { buffer: uniforms, }, },
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform", }, },
     ],
+  });
+
+  const update_pipeline = device.createComputePipeline({
+    compute: {
+      module: update_module,
+      entryPoint: "main",
+    },
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [update_bind_group_layout],
+    }),
+  });
+
+  // RENDER pipeline clearing the background.
+  const bg_shader_module = device.createShaderModule({
+    code: `
+      ${uniforms_struct_code}
+
+      @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+      @vertex
+      fn vtx_main(@builtin(vertex_index) vtx_idx: u32,)
+          -> @builtin(position) vec4<f32> {
+        var kVtxCoords = array<vec4<f32>, 3>(
+          vec4<f32>(-1.0, -1.0, 0.0, 1.0),
+          vec4<f32>( 3.0, -1.0, 0.0, 1.0),
+          vec4<f32>(-1.0,  3.0, 0.0, 1.0),
+        );
+        return kVtxCoords[vtx_idx];
+      }
+      @fragment
+      fn frag_main(@builtin(position) position: vec4<f32>,)
+          -> @location(0) vec4<f32> {
+        return vec4<f32>(uniforms.bg_color);
+      }
+    `,
+  });
+  const bg_bind_group_layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform", }, },
+    ],
+  });
+
+  const bg_pipeline = device.createRenderPipeline({
+    vertex: {
+      module: bg_shader_module,
+      entryPoint: 'vtx_main',
+    },
+    fragment: {
+      module: bg_shader_module,
+      entryPoint: 'frag_main',
+      targets: [{format: textureFormat}],
+    },
+    primitive: {
+      topology: 'triangle-list',
+    },
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bg_bind_group_layout],
+    }),
+  });
+
+  // RENDER pipeline drawing the particles
+  const particles_code = `
+      ${ball_struct_code}
+      ${uniforms_struct_code}
+
+      struct VertexOutput {
+        @builtin(position) position: vec4<f32>,
+        @location(0) color: vec4<f32>,
+        @location(1) center: vec2<f32>,
+      };
+
+      @group(0) @binding(0) var<storage, read_write> balls: Balls;
+      @group(0) @binding(1) var<uniform> uniforms: Uniforms;
+
+      @vertex
+      fn vtx_main(
+          @builtin(vertex_index) vtx_idx: u32,
+          @builtin(instance_index) instance_idx: u32,
+          @location(0) radius: vec2<f32>,
+          @location(1) pos: vec2<f32>,
+          @location(2) spd: vec2<f32>,
+      ) -> VertexOutput {
+        var kVtxCoords = array<vec2<f32>, 3>(  // arrow shape
+          vec2<f32>( 0., -1.),
+          vec2<f32>( 1.,  1.),
+          vec2<f32>(-1.,  1.),
+        );
+        let vtx = kVtxCoords[vtx_idx];
+        let center = pos.xy * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.);
+        let R = radius.x;
+        var output : VertexOutput;
+        output.position = vec4<f32>(center + vtx * R, 0., 1.);
+        let gray = radius.y * .3;
+        output.color = vec4<f32>(gray, gray, 1. - gray, 1.);
+        output.center = pos.xy;
+        return output;
+      }
+
+      @fragment
+      fn frag_main(
+          @builtin(position) position: vec4<f32>,
+          @location(0) color: vec4<f32>,
+          @location(1) center: vec2<f32>,
+      ) -> @location(0) vec4<f32> {
+        var pos = center.xy * vec2<f32>(uniforms.width, uniforms.height);
+        var d = 1. - smoothstep(0., 10., length(position.xy - pos));
+        return color * d;
+      }
+  `;
+  const particles_module = device.createShaderModule({code: particles_code});
+
+  const particles_bind_group_layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "read-only-storage", }, },
+      { binding: 1,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+        buffer: { type: "uniform", }, },
+    ],
+  });
+
+  const particles_pipeline = device.createRenderPipeline({
+    vertex: {
+      module: particles_module,
+      entryPoint: 'vtx_main',
+      buffers: [
+        { arrayStride: 6 * FLOAT32_SIZE,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 0, offset: 0 * FLOAT32_SIZE, format: 'float32x2', },  // Radius + Brightness
+            { shaderLocation: 1, offset: 2 * FLOAT32_SIZE, format: 'float32x2', },  // x,y
+            { shaderLocation: 2, offset: 4 * FLOAT32_SIZE, format: 'float32x2', },  // dx,dy
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: particles_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: textureFormat,
+        blend: {
+          color: {srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add'},
+          alpha: {srcFactor: 'zero',      dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: {
+      topology: 'triangle-list',
+    },
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [particles_bind_group_layout],
+    }),
+  });
+
+  const balls_buffer = init_balls(device);
+
+  const uniforms = device.createBuffer({
+    size: 12 * FLOAT32_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
   // write the uniforms once for all
   device.queue.writeBuffer(uniforms, 0,
-      new Float32Array([W, H, params.dt, params.gravity]));
+      new Float32Array([.00, .01, .10, 1.,
+                        W, H, params.dt, params.gravity,
+                        params.balls,
+                        0, 0, 0,
+                       ]));
+  const update_bind_group = device.createBindGroup({
+    layout: update_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: balls_buffer, }, },
+      { binding: 1, resource: { buffer: uniforms }, },
+    ],
+  });
+  const bg_bind_group = device.createBindGroup({
+    layout: bg_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniforms, }, },
+    ],
+  });
+  const particles_bind_group = device.createBindGroup({
+    layout: particles_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: balls_buffer, }, },
+      { binding: 1, resource: { buffer: uniforms, }, },
+    ],
+  });
 
   // the main loop
   for (;;) {
-    performance.mark("webgpu start"),
-    device.queue.writeBuffer(input_buffer, 0, balls);
-    const commandEncoder = device.createCommandEncoder();
-    const pass = commandEncoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.dispatchWorkgroups(Math.ceil(BUFFER_SIZE / 64));
-    pass.end();
+    performance.mark("webgpu start");
+    const encoder = device.createCommandEncoder();
 
-    commandEncoder.copyBufferToBuffer(
-      output_buffer, 0 /* src_offset */,
-      staging_buffer, 0 /* dst_offset */,
-      BUFFER_SIZE);
-    const commands = commandEncoder.finish();
-    device.queue.submit([commands]);
+    const compute_pass = encoder.beginComputePass();
+    compute_pass.setPipeline(update_pipeline);
+    compute_pass.setBindGroup(0, update_bind_group);
+    compute_pass.dispatchWorkgroups(Math.ceil(BUFFER_SIZE / 64));
+    compute_pass.end();
 
-    await staging_buffer.mapAsync(GPUMapMode.READ, 0, BUFFER_SIZE);
-    const new_balls = staging_buffer.getMappedRange(0, BUFFER_SIZE).slice();
-    const tmp = new Float32Array(new_balls);
-    staging_buffer.unmap();
+    const textureView = ctx.getCurrentTexture().createView();
+    const bg_pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: textureView, loadValue: {r: 0., g: 0., b: 0., a: 1.},
+          loadOp: 'clear', storeOp: 'store', }
+      ],});
+    bg_pass.setPipeline(bg_pipeline);
+    bg_pass.setBindGroup(0, bg_bind_group);
+    bg_pass.draw(3, 1, 0, 0);
+    bg_pass.end();
+
+    const render_pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: textureView, loadValue: {r: 0., g: 0., b: 0., a: 1.},
+          loadOp: 'load', storeOp: 'store', }
+      ]});
+    render_pass.setPipeline(particles_pipeline);
+    render_pass.setBindGroup(0, particles_bind_group);
+    render_pass.setVertexBuffer(0, balls_buffer);
+    render_pass.draw(3, params.balls, 0, 0);
+    render_pass.end();
+
+    device.queue.submit([encoder.finish()]);
+
     performance.mark("webgpu end");
 
     performance.measure("webgpu", "webgpu start", "webgpu end");
-    balls = tmp;
-    draw(balls);
     await animate();
   }
-}
-
-function draw(balls) {
-  ctx.save();
-  ctx.scale(1, -1);
-  ctx.translate(0, -H);
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'red';
-  for (let i = 0; i < balls.length; i += 6) {
-    ctx.beginPath();
-    const r = balls[i + 0];  // radius
-    const px = balls[i + 2], py = balls[i + 3];  // position
-    ctx.arc(px, py, r, 0, 2. * Math.PI);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.restore();
-}
-
-function main() {
-  init();
 }
 
 </script>
