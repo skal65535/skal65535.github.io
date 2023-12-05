@@ -38,7 +38,7 @@ function parse_arg_i(arg_value, default_value, min, max) {
 }
 
 const params = {
-  balls: parse_arg_i("balls", 10000, 1, 1000000),
+  num_balls: parse_arg_i("balls", 10000, 1, 1000000),
   min_r: parse_arg_f("min_radius", 2., 1., 100.),
   max_r: parse_arg_f("max_radius", 5., 1., 100.),
   render: parse_arg_i("render", 1),
@@ -71,9 +71,9 @@ const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 function RandomRange(a, b) { return Math.random() * (b - a) + a; }
 
 function init_balls(device) {
-  const BUFFER_SIZE = params.balls * 6 * FLOAT32_SIZE;
+  const BUFFER_SIZE = params.num_balls * 6 * FLOAT32_SIZE;
   let balls = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
-  for (let i = 0; i < params.balls; ++i) {
+  for (let i = 0; i < params.num_balls; ++i) {
     balls[i * 6 + 0] = RandomRange( 0.0, 1.);  // position.x
     balls[i * 6 + 1] = RandomRange( 0.0, 1.);  // position.y
     balls[i * 6 + 2] = RandomRange(-1.0, 1.);  // velocity.x
@@ -138,7 +138,7 @@ async function init() {
       @group(0) @binding(0) var<uniform> uniforms: Uniforms;
       @group(0) @binding(1) var<storage, read_write> balls: Balls;
 
-      @compute @workgroup_size(64)
+      @compute @workgroup_size(128)
       fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
         let num_balls = uniforms.num_balls;
         let idx = global_id.x;
@@ -147,7 +147,15 @@ async function init() {
         let dt = uniforms.dt;
         let g = uniforms.gravity;
         let R = b.radius;
-        var spd = b.velocity + dt * vec2(0., g);
+        var f = vec2(0., g);
+        for (var i : u32 = 0; i < u32(num_balls); i = i + 1) {
+          if (i == idx) { continue; }
+          var b2 = balls.balls[i];
+          var d = b.position - b2.position;
+          var s = min(length(d), 1.);
+          //f += d * 0.000001 * (pow(s, -2.) - 6. * pow(s, -6));
+        }
+        var spd = b.velocity + dt * f;
         var pos = b.position + dt * spd;
         if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
         if (pos.x > 1. - R) { pos.x = 2. * (1. - R) - pos.x; spd.x = -spd.x; }
@@ -208,15 +216,10 @@ async function init() {
       }
 
       @fragment
-      fn frag_main(
-          @builtin(position) position: vec4<f32>,
-          @location(0) color: vec4<f32>,
-          @location(1) center: vec2<f32>,
-          @location(2) radius: f32,
-      ) -> @location(0) vec4<f32> {
-        var pos = center.xy * uniforms.dim;
-        var d = 1. - smoothstep(0., radius, length(position.xy - pos));
-        return color * d;
+      fn frag_main(vtx: VertexOutput) -> @location(0) vec4<f32> {
+        var pos = vtx.center.xy * uniforms.dim;
+        var d = 1. - smoothstep(0., vtx.radius, length(vtx.position.xy - pos));
+        return vtx.color * d;
       }
   `;
   const particles_module = device.createShaderModule({code: particles_code});
@@ -262,7 +265,7 @@ async function init() {
   device.queue.writeBuffer(uniforms_buffer, 0,
       new Float32Array([
         W, H,  /* <- dim */
-        params.dt, params.gravity, params.balls,
+        params.dt, params.gravity, params.num_balls,
       ]));
 
   // create bind groups
@@ -288,7 +291,7 @@ async function init() {
     const compute_pass = encoder.beginComputePass();
     compute_pass.setPipeline(update_pipeline);
     compute_pass.setBindGroup(0, update_bind_group);
-    compute_pass.dispatchWorkgroups(Math.ceil(balls_buffer.size / 64));
+    compute_pass.dispatchWorkgroups(Math.ceil(balls_buffer.size / 128));
     compute_pass.end();
 
     const textureView = ctx.getCurrentTexture().createView();
@@ -302,7 +305,7 @@ async function init() {
     render_pass.setPipeline(particles_pipeline);
     render_pass.setBindGroup(0, particles_bind_group);
     render_pass.setVertexBuffer(0, balls_buffer);
-    render_pass.draw(3, params.balls, 0, 0);
+    render_pass.draw(3, params.num_balls, 0, 0);
     render_pass.end();
 
     device.queue.submit([encoder.finish()]);
