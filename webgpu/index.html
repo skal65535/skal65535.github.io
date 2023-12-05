@@ -7,7 +7,7 @@
 
 </head>
 
-<body onload="init();">
+<body onload="init_GUI(); init();">
 
 <body>
 <div>
@@ -16,6 +16,8 @@
     Ball simulation with WebGPU (WIP)
   </center>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script>
 "use strict";
@@ -39,12 +41,11 @@ function parse_arg_i(arg_value, default_value, min, max) {
 
 const params = {
   num_balls: parse_arg_i("balls", 10000, 1, 1000000),
-  min_r: parse_arg_f("min_radius", 2., 1., 100.),
-  max_r: parse_arg_f("max_radius", 5., 1., 100.),
-  render: parse_arg_i("render", 1),
+  rmin: parse_arg_f("rmin", 2., 1., 100.),
+  rmax: parse_arg_f("rmax", 5., 1., 100.),
   dt: parse_arg_f("dt", 0.003, 1e-6, .1),
   gravity: parse_arg_f("g", 10.),
-  collisions: parse_arg_i("collisions", 1, 0, 1),
+  collisions: parse_arg_i("collisions", 1, 0, 1) ? true : false,
 }
 const ctx = document.querySelector("#canvas").getContext("webgpu");
 
@@ -70,16 +71,18 @@ const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 
 function RandomRange(a, b) { return Math.random() * (b - a) + a; }
 
-function init_balls(device) {
+function init_balls(device, do_init) {
   const BUFFER_SIZE = params.num_balls * 6 * FLOAT32_SIZE;
   let balls = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
-  for (let i = 0; i < params.num_balls; ++i) {
-    balls[i * 6 + 0] = RandomRange( 0.0, 1.);  // position.x
-    balls[i * 6 + 1] = RandomRange( 0.0, 1.);  // position.y
-    balls[i * 6 + 2] = RandomRange(-1.0, 1.);  // velocity.x
-    balls[i * 6 + 3] = RandomRange(-1.0, 1.);  // velocity.y
-    balls[i * 6 + 4] = RandomRange(params.min_r, params.max_r) / 200.; // radius
-    balls[i * 6 + 5] = RandomRange( 0.2, 1.);  // brightness
+  if (do_init) {
+    for (let i = 0; i < params.num_balls; ++i) {
+      balls[i * 6 + 0] = RandomRange( 0.0, 1.);  // position.x
+      balls[i * 6 + 1] = RandomRange( 0.0, 1.);  // position.y
+      balls[i * 6 + 2] = RandomRange(-1.0, 1.);  // velocity.x
+      balls[i * 6 + 3] = RandomRange(-1.0, 1.);  // velocity.y
+      balls[i * 6 + 4] = RandomRange(params.rmin, params.rmax) / 800.; // radius
+      balls[i * 6 + 5] = RandomRange( 0.2, 1.);  // brightness
+    }
   }
   const buffer = device.createBuffer({
     size: balls.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
@@ -88,6 +91,19 @@ function init_balls(device) {
   new Float32Array(buffer.getMappedRange()).set(balls);
   buffer.unmap();
   return buffer;
+}
+
+function init_GUI() {
+//  const elmt = document.getElementById('gui-container');
+//  params.gui = new lil.GUI({ width: 250, container: elmt, });
+
+  const gui = new lil.GUI({name: 'WebGPU particle demo'});
+  gui.add(params, 'num_balls', 1, 10000, 1).listen().onChange(init);
+  gui.add(params, 'rmin', .1, 1., .05).listen().onChange(init);
+  gui.add(params, 'rmax', .1, 1., .05).listen().onChange(init);
+  gui.add(params, 'dt', .000001, 0.01, .001).listen().onChange(init);
+  gui.add(params, 'gravity', .1, 10., .1).listen().onChange(init);
+  gui.add(params, 'collisions').listen().onChange(init);
 }
 
 async function init() {
@@ -112,7 +128,7 @@ async function init() {
       dt: f32,
       gravity: f32,
       num_balls: f32,
-      pad1: f32,
+      do_collisions: u32,
       pad2: f32,
       pad3: f32,
     }
@@ -134,37 +150,49 @@ async function init() {
     code: `
       ${ball_struct_code}
       ${uniforms_struct_code}
-
       @group(0) @binding(0) var<uniform> uniforms: Uniforms;
-      @group(0) @binding(1) var<storage, read_write> balls: Balls;
+      @group(0) @binding(1) var<storage, read> balls: Balls;
+      @group(0) @binding(2) var<storage, read_write> out_balls: Balls;
 
       @compute @workgroup_size(128)
       fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
-        let num_balls = uniforms.num_balls;
+        let num_balls = u32(uniforms.num_balls);
         let idx = global_id.x;
-        if (f32(idx) >= num_balls) { return; }
+        if (idx >= num_balls) { return; }
         var b = balls.balls[idx];
         let dt = uniforms.dt;
         let g = uniforms.gravity;
         let R = b.radius;
         var f = vec2(0., g);
-        for (var i : u32 = 0; i < u32(num_balls); i = i + 1) {
-          if (i == idx) { continue; }
-          var b2 = balls.balls[i];
-          var d = b.position - b2.position;
-          var s = min(length(d), 1.);
-          //f += d * 0.000001 * (pow(s, -2.) - 6. * pow(s, -6));
-        }
         var spd = b.velocity + dt * f;
-        var pos = b.position + dt * spd;
+        var pos = b.position;
+
+        if (uniforms.do_collisions > 0) {
+          for (var i = 0u; i < num_balls; i = i + 1u) {
+            if (i == idx) { continue; }
+            var b2 = balls.balls[i];
+            var n = pos - b2.position;
+            let d = length(n);
+            let overlap = R + b2.radius - d;
+            if (overlap <= 0) { continue; }  // contact?
+            n = normalize(n);
+            pos = pos + n * overlap / 2.;
+
+            let mass_ratio = pow(R / b2.radius, 2.0);
+            let c = 2. * dot(n, b2.velocity - spd) / (1. + mass_ratio);
+            spd += c * n;
+          }
+        }
+        pos += dt * spd;
+
         if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
         if (pos.x > 1. - R) { pos.x = 2. * (1. - R) - pos.x; spd.x = -spd.x; }
         if (pos.y < R) { pos.y = 2. * R - pos.y; spd.y = -spd.y; }
         if (pos.y > 1. - R) { pos.y = 2. * (1. - R) - pos.y; spd.y = -spd.y; }
+
         b.position = pos;
         b.velocity = spd;
-
-        balls.balls[idx] = b;
+        out_balls.balls[idx] = b;
       }
     `,
   });
@@ -205,13 +233,13 @@ async function init() {
         );
         let vtx = kVtxCoords[vtx_idx];
         let center = pos.xy * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.);
-        let R = radius.x;
+        let R = radius.x * 20;
         var output : VertexOutput;
         output.position = vec4<f32>(center + vtx * R, 0., 1.);
-        let gray = radius.y * .3;
+        let gray = radius.y;
         output.color = vec4<f32>(gray, gray, 1. - gray, 1.);
         output.center = pos.xy;
-        output.radius = R * 400.;
+        output.radius = R * 80.;
         return output;
       }
 
@@ -254,28 +282,36 @@ async function init() {
     primitive: { topology: 'triangle-list', },
   });
 
-  // Create the data buffers and the binding groups
-  const balls_buffer = init_balls(device);
-
+  // Create and write the uniforms once for all
   const uniforms_buffer = device.createBuffer({
     size: 8 * FLOAT32_SIZE,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  // write the uniforms once for all
   device.queue.writeBuffer(uniforms_buffer, 0,
       new Float32Array([
         W, H,  /* <- dim */
         params.dt, params.gravity, params.num_balls,
+        params.collisions,
       ]));
 
+  // Create the data buffers and the binding groups
+  const balls_buffers = new Array(2);
+  const balls_buffer = init_balls(device, true);
+  balls_buffers[0] = balls_buffer;
+  balls_buffers[1] = init_balls(device, false);
+
   // create bind groups
-  const update_bind_group = device.createBindGroup({
-    layout: update_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniforms_buffer, }, },
-      { binding: 1, resource: { buffer: balls_buffer, }, },
-    ],
-  });
+  var balls_bind_groups = new Array(2);
+  for (var B = 0; B <= 1; ++B) {
+    balls_bind_groups[B] = device.createBindGroup({
+      layout: update_pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniforms_buffer, }, },
+        { binding: 1, resource: { buffer: balls_buffers[B], }, },
+        { binding: 2, resource: { buffer: balls_buffers[1 - B], }, },
+      ],
+    });
+  }
   const particles_bind_group = device.createBindGroup({
     layout: particles_pipeline.getBindGroupLayout(0),
     entries: [
@@ -284,13 +320,14 @@ async function init() {
   });
 
   // main loop
+  let tick = 0;  // tic-toc
   function frame() {
     performance.mark("webgpu start");
     const encoder = device.createCommandEncoder();
 
     const compute_pass = encoder.beginComputePass();
     compute_pass.setPipeline(update_pipeline);
-    compute_pass.setBindGroup(0, update_bind_group);
+    compute_pass.setBindGroup(0, balls_bind_groups[tick]);
     compute_pass.dispatchWorkgroups(Math.ceil(balls_buffer.size / 128));
     compute_pass.end();
 
@@ -304,7 +341,7 @@ async function init() {
       ]});
     render_pass.setPipeline(particles_pipeline);
     render_pass.setBindGroup(0, particles_bind_group);
-    render_pass.setVertexBuffer(0, balls_buffer);
+    render_pass.setVertexBuffer(0, balls_buffers[1 - tick]);
     render_pass.draw(3, params.num_balls, 0, 0);
     render_pass.end();
 
@@ -313,6 +350,7 @@ async function init() {
     performance.mark("webgpu end");
 
     performance.measure("webgpu", "webgpu start", "webgpu end");
+    tick = 1 - tick;
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
