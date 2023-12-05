@@ -45,7 +45,9 @@ const params = {
   rmax: parse_arg_f("rmax", 5., 1., 100.),
   dt: parse_arg_f("dt", 0.003, 1e-6, .1),
   gravity: parse_arg_f("g", 10.),
+  viscosity: parse_arg_f("viscosity", 0.01),
   collisions: parse_arg_i("collisions", 1, 0, 1) ? true : false,
+  reset: () => { init(); },
 }
 const ctx = document.querySelector("#canvas").getContext("webgpu");
 
@@ -103,7 +105,9 @@ function init_GUI() {
   gui.add(params, 'rmax', .1, 1., .05).listen().onChange(init);
   gui.add(params, 'dt', .000001, 0.01, .001).listen().onChange(init);
   gui.add(params, 'gravity', .1, 10., .1).listen().onChange(init);
+  gui.add(params, 'viscosity', .0, .2, .01).listen().onChange(init);
   gui.add(params, 'collisions').listen().onChange(init);
+  gui.add(params, 'reset').name('Reset');
 }
 
 async function init() {
@@ -127,10 +131,10 @@ async function init() {
       dim: vec2<f32>,   // dimension W x H
       dt: f32,
       gravity: f32,
+      viscosity: f32,
       num_balls: f32,
       do_collisions: u32,
-      pad2: f32,
-      pad3: f32,
+      pad1: f32,
     }
   `;
   const ball_struct_code = `
@@ -150,24 +154,24 @@ async function init() {
     code: `
       ${ball_struct_code}
       ${uniforms_struct_code}
-      @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+      @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> balls: Balls;
       @group(0) @binding(2) var<storage, read_write> out_balls: Balls;
 
       @compute @workgroup_size(128)
       fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
-        let num_balls = u32(uniforms.num_balls);
+        let num_balls = u32(params.num_balls);
         let idx = global_id.x;
         if (idx >= num_balls) { return; }
         var b = balls.balls[idx];
-        let dt = uniforms.dt;
-        let g = uniforms.gravity;
+        let dt = params.dt;
+        let g = params.gravity;
         let R = b.radius;
         var f = vec2(0., g);
-        var spd = b.velocity + dt * f;
+        var spd = b.velocity * (1. - params.viscosity) + dt * f;
         var pos = b.position;
 
-        if (uniforms.do_collisions > 0) {
+        if (params.do_collisions > 0) {
           for (var i = 0u; i < num_balls; i = i + 1u) {
             if (i == idx) { continue; }
             var b2 = balls.balls[i];
@@ -216,7 +220,7 @@ async function init() {
         @location(2) radius: f32,
       };
 
-      @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+      @group(0) @binding(0) var<uniform> params: Uniforms;
 
       @vertex
       fn vtx_main(
@@ -236,8 +240,8 @@ async function init() {
         let R = radius.x * 20;
         var output : VertexOutput;
         output.position = vec4<f32>(center + vtx * R, 0., 1.);
-        let gray = radius.y;
-        output.color = vec4<f32>(gray, gray, 1. - gray, 1.);
+        let gray = min(radius.y / 2., 1.);
+        output.color = vec4<f32>(0.2, .5 + gray / 4., 1. - gray, 1.);
         output.center = pos.xy;
         output.radius = R * 80.;
         return output;
@@ -245,7 +249,7 @@ async function init() {
 
       @fragment
       fn frag_main(vtx: VertexOutput) -> @location(0) vec4<f32> {
-        var pos = vtx.center.xy * uniforms.dim;
+        var pos = vtx.center.xy * params.dim;
         var d = 1. - smoothstep(0., vtx.radius, length(vtx.position.xy - pos));
         return vtx.color * d;
       }
@@ -275,7 +279,7 @@ async function init() {
         format: textureFormat,
         blend: {
           color: {srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add'},
-          alpha: {srcFactor: 'zero',      dstFactor: 'one', operation: 'add'},
+          alpha: {srcFactor: 'one',      dstFactor: 'one', operation: 'add'},
         },
       },],
     },
@@ -290,7 +294,8 @@ async function init() {
   device.queue.writeBuffer(uniforms_buffer, 0,
       new Float32Array([
         W, H,  /* <- dim */
-        params.dt, params.gravity, params.num_balls,
+        params.dt, params.gravity, params.viscosity,
+        params.num_balls,
         params.collisions,
       ]));
 
