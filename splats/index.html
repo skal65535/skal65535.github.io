@@ -1,5 +1,6 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!-- 3DGS renderer in WebGPU (WIP!!) -->
+<!-- starting point: https://github.com/antimatter15/splat by Kevin Kwok -->
 
 <!DOCTYPE html>
 <html>
@@ -16,6 +17,7 @@
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
     Gaussian Splat rendering with WebGPU (WIP)<p>
+    Inspired by <a href='https://github.com/antimatter15/splat'>Kevin Kwok's work</a>.
   </center>
 </div>
 
@@ -39,19 +41,19 @@ function parse_arg_i(arg_value, default_value, min, max) {
   return v;
 }
 
-const kVisus = ['ellipsis', 'square', 'axis', 'normal'];
-const kModels = ['cube', 'filled cube', 'train'];
+const kVisus = ['gaussian', 'ellipsis', 'square', 'axis', 'dot', 'cone'];
+const kModels = ['train', 'cube', 'filled cube'];
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const params = {
   num_splats: 500,
   fov: 90.,
-  radius: 3.,
+  radius: 2.,
   theta: 0.,
   phi: 0.,
-  model: kModels[0],
+  model: kModels[2],
   use_color: false,
   auto_rotate: true,
-  visu: kVisus[0],
+  visu: kVisus[1],
   view: new Float32Array(4 * 4),
   proj: new Float32Array(4 * 4),
   mouse_on: false,
@@ -89,7 +91,7 @@ window.addEventListener('pointermove', (event) => {
   params.mouse_x = (event.clientX - bounds.left) / canvas.width;
   params.mouse_y = (event.clientY -  bounds.top) / canvas.height;
   if (params.mouse_on) {
-    params.phi = (params.mouse_y - .5) * 180.;
+    params.phi = (.5 - params.mouse_y) * 180.;
     params.theta = params.mouse_x * 180.;
   }
 }, false);
@@ -101,7 +103,6 @@ window.addEventListener('pointerup', (event) => {
 });
 window.addEventListener('wheel', (event) => {
   if (event.target === canvas) {
-    // console.log(event.deltaX, event.deltaY);
     event.preventDefault();
     params.radius *= (event.deltaY < 0.) ? 1.05 : 1. / 1.05;
   }
@@ -223,7 +224,15 @@ async function render_init(render) {
         var out: Splat2D;
         let vpos = view * b.position;
         out.position = proj * vpos;
-        out.color = b.color;
+        out.color = b.color; // TODO(skal): clamp ?
+        let clip = 1.5 * out.position.w;
+        if (abs(out.position.z) > clip ||
+            abs(out.position.x) > clip ||
+            abs(out.position.y) > clip)  {
+          out.color.a = 0.;
+          out_splats.splats[idx] = out;
+          return;
+        }
 
         // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
         let f = params.focal;
@@ -234,7 +243,7 @@ async function render_init(render) {
         // Jacobian
         let J = mat4x4f(
           focal.x * pz,           0., -focal.x * vpos.x * pz2, 0.,
-                    0., focal.y * pz, -focal.y * vpos.y * pz2, 0.,
+                    0.,-focal.y * pz,  focal.y * vpos.y * pz2, 0.,
                     0.,           0.,                      0., 0.,
                     0.,           0.,                      0., 0.,
         );
@@ -255,8 +264,8 @@ async function render_init(render) {
         let lambda2 = max(0., trace - det);
 
         let diag = vpos.z * normalize(vec2(cov2d[0][1], det - dist));
-        let major = diag * sqrt(2. * lambda1);
-        let minor = vec2(diag.y, -diag.x) * sqrt(2. * lambda2);
+        let major = diag * sqrt(lambda1);
+        let minor = vec2(diag.y, -diag.x) * sqrt(lambda2);
 
 // more unstable is cov2d[0][1] is small:
 //        let major = normalize(fix + vec2(det, 0.)) * sqrt(lambda1);
@@ -279,15 +288,18 @@ async function render_init(render) {
 
 
   // RENDER pipeline drawing the splats
-  const splats_code = `
-      ${uniforms_struct_code}
-
-      struct SplatOut {
+  const SplatOut_struct_code = `
+    struct SplatOut {
         @builtin(position) position: vec4f,
         @location(0) center: vec2f,
         @location(1) color:  vec4f,
         @location(2) radius: vec2f,
-      };
+    };
+  `;
+
+  const vs_splats_code = `
+      ${uniforms_struct_code}
+      ${SplatOut_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
 
@@ -317,7 +329,7 @@ async function render_init(render) {
           axis.z, axis.w, 0., 0.,
               0.,     0., 0., 0.,
               0.,     0., 0., 0.,);
-               
+
         let vtx2 = dirs * vtx;
         output.position = center + vtx2;
         output.center = vtx.xy;
@@ -325,28 +337,41 @@ async function render_init(render) {
         output.radius = vec2f(0., 0.);
         return output;
       }
-
+    `;
+  function fs_splats_code(visu_func) {
+    const kFuncNames = {
+      'ellipsis': 'ellipsis', 'square': 'square',
+      'axis': 'axis', 'dot': 'small_dot', 'cone': 'cone', 'gaussian': 'gaussian'
+    };
+    return `
+      ${SplatOut_struct_code}
+      fn ellipsis(v: vec2f) -> f32 { return step(.9, length(v)) - step(1., length(v)); }
+      fn small_dot(v: vec2f) -> f32 { return 1. - step(.1, length(v)); }
+      fn square(v: vec2f) -> f32 { return smoothstep(0.90, 1., max(abs(v.x), abs(v.y))); }
+      fn axis(v: vec2f) -> f32 { return 1. - smoothstep(0., .05, min(abs(v.x), abs(v.y))); }
+      fn cone(v: vec2f) -> f32 { return 1. - smoothstep(0., 1., length(v)); }
+      fn gaussian(v: vec2f) -> f32 {
+        let d2 = dot(v, v);
+        // let d2 = v.x * v.x + v.y * v.y;
+        if (d2 > 4.) { return 0.; }
+        return exp(-d2);
+      }
       @fragment
       fn frag_main(vtx: SplatOut) -> @location(0) vec4f {
-        var d = 1.;
-        if (params.visu == 0) {  // ellipsis
-          d = step(.9, length(vtx.center)) - step(1., length(vtx.center));
-        } else if (params.visu == 1) {  // square
-          d = smoothstep(0.90, 1., max(abs(vtx.center.x), abs(vtx.center.y)));
-        } else if (params.visu == 2) {  // axis
-          d = 1. - smoothstep(0., .05, min(abs(vtx.center.x), abs(vtx.center.y)));
-        } else {
-          d = 1. - smoothstep(0., 1., length(vtx.center));
-        }
+        if (vtx.color.a == 0.) { discard; }
+        let d = vtx.color.a * ${kFuncNames[visu_func]}(vtx.center);
         return vec4f(vtx.color.rgb * d, d);
       }
-  `;
-  const splats_render_module = render.device.createShaderModule({code: splats_code});
+    `;
+  }
+  const vs_splats_render_module = render.device.createShaderModule({code: vs_splats_code});
+  const fs_code = fs_splats_code(params.visu);
+  const fs_splats_render_module = render.device.createShaderModule({code: fs_code});
 
   render.splats_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: {
-      module: splats_render_module,
+      module: vs_splats_render_module,
       entryPoint: 'vtx_main',
       buffers: [
         { arrayStride: 12 * FLOAT32_SIZE,
@@ -361,18 +386,18 @@ async function render_init(render) {
       ],
     },
     fragment: {
-      module: splats_render_module,
+      module: fs_splats_render_module,
       entryPoint: 'frag_main',
       targets: [{
         format: render.textureFormat,
         blend: {
-          color: {srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add'},
-          alpha: {srcFactor: 'one',      dstFactor: 'one', operation: 'add'},
+          color: {srcFactor: 'one-minus-dst-alpha', dstFactor: 'one', operation: 'add'},  // TODO(skal)!
+          alpha: {srcFactor: 'one-minus-dst-alpha', dstFactor: 'one', operation: 'add'},
         },
       },],
     },
     primitive: {
-      topology: 'triangle-list', 
+      topology: 'triangle-list',
       // cullMode: ??
     },
 /*
@@ -386,13 +411,11 @@ async function render_init(render) {
 
   if (render.device == undefined) return;
 
-/*
   render.depthTexture = render.device.createTexture({
     size: [canvas.width, canvas.height],
     format: 'depth24plus',
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
-*/
 
   // Create uniforms buffer
   render.uniforms_buffer = render.device.createBuffer({
@@ -405,7 +428,31 @@ async function render_init(render) {
   render.splats_2D = init_splats_2D(render.device);
 
   // create bind groups
-  render.update_bind_group = render.device.createBindGroup({
+  const STRIDE1 = 16 * 4;
+  const STRIDE2 = 12 * 4;
+  const max_splats = render.splats_3D.size / STRIDE1;
+  render.update_bind_groups = [];
+  for (let splats = 0; splats < max_splats; ) {
+    const batch_size = Math.min(256, Math.ceil((max_splats - splats) / 64)) * 64;
+    const nb_splats = Math.min(batch_size, max_splats - splats);
+//    console.log("splats:", splats, "num_splats:", nb_splats, "max splats:", max_splats);
+    const update_bind_group = render.device.createBindGroup({
+      layout: render.update_pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+        { binding: 1, resource: { buffer: render.splats_3D,
+                                  offset: splats * STRIDE1,
+                                  size: nb_splats * STRIDE1 }, },
+        { binding: 2, resource: { buffer: render.splats_2D,
+                                  offset: splats * STRIDE2,
+                                  size: nb_splats * STRIDE2 }, },
+      ],
+    });
+    render.update_bind_groups.push([nb_splats, update_bind_group]);
+    splats += nb_splats;
+  }
+/*
+    render.update_bind_group = render.device.createBindGroup({
     layout: render.update_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
@@ -413,6 +460,7 @@ async function render_init(render) {
       { binding: 2, resource: { buffer: render.splats_2D, }, },
     ],
   });
+*/
   render.splats_bind_group = render.device.createBindGroup({
     layout: render.splats_pipeline.getBindGroupLayout(0),
     entries: [
@@ -421,13 +469,18 @@ async function render_init(render) {
   });
 };
 
-function SigmaFromScaleRotation([q0, q1, q2, q3], s) {
+function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
   // quaternion to rotation matrix
-  const N = 2. / (q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+  const N = 2.;// / (q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
   let M = [
+/*
     N * (q0 * q0 + q1 * q1) - 1., N * (q1 * q2 - q0 * q3),      N * (q1 * q3 + q0 * q2),
     N * (q1 * q2 + q0 * q3),      N * (q0 * q0 + q2 * q2) - 1., N * (q2 * q3 - q0 * q1),
     N * (q1 * q3 - q0 * q2),      N * (q2 * q3 + q0 * q1),      N * (q0 * q0 + q3 * q3) - 1.,
+*/
+    1. - N * (q2 * q2 + q3 * q3),      N * (q1 * q2 + q0 * q3),      N * (q1 * q3 - q0 * q2),
+         N * (q1 * q2 - q0 * q3), 1. - N * (q1 * q1 + q3 * q3),      N * (q2 * q3 + q0 * q1),
+         N * (q1 * q3 + q0 * q2),      N * (q2 * q3 - q0 * q1), 1. - N * (q1 * q1 + q2 * q2),
   ];
   // + left-scaling
   for (let j = 0; j < 3; ++j) {
@@ -439,7 +492,7 @@ function SigmaFromScaleRotation([q0, q1, q2, q3], s) {
     for (let i = 0; i < 3; ++i) {
       let s = 0.;
       for (let k = 0; k < 3; ++k) s += M[i + k * 3] * M[j + k * 3];
-      S[i + j * 3] = s;
+      S[i + j * 3] = 8. * s;   // pre-scale by '8'
     }
   }
   return S;
@@ -447,7 +500,7 @@ function SigmaFromScaleRotation([q0, q1, q2, q3], s) {
 
 function RandomRange(a, b) { return Math.random() * (b - a) + a; }
 
-function create_fake_splats(num_splats) {
+function create_synth_splats(num_splats) {
   const STRIDE = 16;
   const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
   let splats = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
@@ -474,13 +527,13 @@ function create_fake_splats(num_splats) {
     splats.set([x, y, z, 1.], i * STRIDE + 0);
 
     // Color
-    let r, g, b;
+    let r, g, b, a = 1.;
     if (params.use_color) {
-      [r, g, b] = [RandomRange(0., 1), RandomRange(0., 1), RandomRange(0., 1)];
+      [r, g, b, a] = [RandomRange(0., 1), RandomRange(0., 1), RandomRange(0., 1), RandomRange(0., 1)];
     } else {
       r = g = b = i / num_splats;
     }
-    splats.set([r, g, b, 1.], i * STRIDE + 4);
+    splats.set([r * a, g * a, b * a, a], i * STRIDE + 4);
 
     // covariance (from matrix M = Scale * Rotation)
     if (params.model == 'cube') {
@@ -489,14 +542,14 @@ function create_fake_splats(num_splats) {
       const q = [RandomRange(-1.0, 1.), RandomRange(-1.0, 1.),
                  RandomRange(-1.0, 1.), RandomRange(-1.0, 1.)];  // rotation quaternion
       const s = [RandomRange(-sM, sM), RandomRange(-sM, sM), RandomRange(-sM, sM)];
-      const sigma = SigmaFromScaleRotation(q, s);
+      const sigma = SigmaFromScaleRotation(s, q);
       splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
                             sigma[4], sigma[5],
                                       sigma[8]], i * STRIDE + 8);
     }
     // TODO: SPH
   }
-  return splats;
+  return [num_splats, splats];
 }
 
 function init_splats_3D(device) {
@@ -554,17 +607,16 @@ function Perspective(fx, aspect, znear, zfar) {
   const B = znear * A;
   return new Float32Array([
       fx,  0., 0., 0.,
-      0.,  fy, 0., 0.,
+      0., -fy, 0., 0.,
       0.,  0.,  A,-1.,
       0.,  0.,  B, 0.]);
 }
-   
 
 function init_GUI() {
   const gui = new lil.GUI({name: 'WebGPU Gaussian Splatting demo'});
   gui.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset);
   gui.add(params, 'fov', 0., 180., 5.).listen().onChange(params.change);
-  gui.add(params, 'radius', 0., 20., 0.1).listen().onChange(params.change);
+  gui.add(params, 'radius', 0., 2000., 0.1).listen().onChange(params.change);
   gui.add(params, 'theta', 0., 360., 1.).listen().onChange(params.change);
   gui.add(params, 'phi', -180., 180., 1.).listen().onChange(params.change);
   gui.add(params, 'auto_rotate').name('auto rotate').listen().onChange(params.change);
@@ -592,7 +644,7 @@ function SetUniforms() {
                       [0., 1., 0.]);
   render.device.queue.writeBuffer(
       render.uniforms_buffer,  0 * FLOAT32_SIZE, view);
-  const proj = Perspective(focal, W / H, 0.1, 10.);
+  const proj = Perspective(focal, W / H, 0.1, 2. * params.radius);
   render.device.queue.writeBuffer(
       render.uniforms_buffer, 16 * FLOAT32_SIZE, proj);
 
@@ -613,17 +665,18 @@ function frame() {
   SetUniforms();
 
   const encoder = render.device.createCommandEncoder();
-
-  const compute_pass = encoder.beginComputePass();
-  compute_pass.setPipeline(render.update_pipeline);
-  compute_pass.setBindGroup(0, render.update_bind_group);
-  compute_pass.dispatchWorkgroups(Math.ceil(render.splats_3D.size / 64), 64);
-  compute_pass.end();
+  for (const [nb_splats, bind_group] of render.update_bind_groups) {
+    const compute_pass = encoder.beginComputePass();
+    compute_pass.setPipeline(render.update_pipeline);
+    compute_pass.setBindGroup(0, bind_group);
+    compute_pass.dispatchWorkgroups(Math.ceil(nb_splats / 64), 64);
+    compute_pass.end();
+  }
 
   const render_pass = encoder.beginRenderPass({
       colorAttachments: [
         { view: ctx.getCurrentTexture().createView(),
-          clearValue: {r:0.0, g:0., b:0., a:1.}, loadOp: 'clear',
+          clearValue: {r:0.0, g:0., b:0., a:0.}, loadOp: 'clear',
           storeOp: 'store', }
       ],
 /*
@@ -689,7 +742,7 @@ function DropFile(file) {
         splats_f[STRIDE_S * i + 60],
         splats_f[STRIDE_S * i + 61],
       ];
-      const sigma = SigmaFromScaleRotation(rot, scale);
+      const sigma = SigmaFromScaleRotation(scale, rot);
       splats[i * STRIDE +  8] = sigma[0];   // upper half only
       splats[i * STRIDE +  9] = sigma[1];
       splats[i * STRIDE + 10] = sigma[2];
@@ -717,7 +770,7 @@ async function LoadURL(name) {
 
   const row_stride = (3 + 3 + 1 + 1);   // stride as float
   const row_size = row_stride * FLOAT32_SIZE;  // pos, color, packed scale, packed rotation
-  let num_splats = Math.min(data.length / row_size, 10000);      // TODO(skal): remove!
+  let num_splats = data.length / row_size;      // TODO(skal): remove!
   const STRIDE = 16;
   const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
   let splats = new Float32Array(num_splats * STRIDE);
@@ -736,16 +789,17 @@ async function LoadURL(name) {
       maxs[k] = Math.max(maxs[k], xyz[k]);
     }
 
-    const rgba = data_u.slice(4 * (off_f + 6), 4 * (off_f + 7));
-    splats.set(rgba.map((v) => v / 255.), i * STRIDE + 4);  // color
+    const [r,g,b,a] = data_u.slice(4 * (off_f + 6), 4 * (off_f + 7));
+    splats.set([r,g,b,a].map((v) => v / 255.), i * STRIDE + 4);  // color
 
     const s = data_f.slice(off_f + 3, off_f + 6);
-    let q = new Float32Array(data_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
-              .map((v) => v / 128. - 1.);
-    const sigma = SigmaFromScaleRotation(q, s);    
+    const q = new Float32Array(data_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
+                .map((v) => v / 128. - 1.);
+    const sigma = SigmaFromScaleRotation(s, q);
     splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
                           sigma[4], sigma[5],
                                     sigma[8]], i * STRIDE + 8);  // sigma
+    if (i == 0) console.log(s, q, sigma);
   }
 
   // normalize positions along major axis
@@ -756,10 +810,10 @@ async function LoadURL(name) {
   diam = 2. / diam;
   for (let i = 0; i < num_splats; ++i) {
     for (let k = 0; k < 3; ++k) {
-      splats[i * STRIDE + 0 + k] = (splats[i * STRIDE + 0 + k] - mins[k]) * diam - 1.;
+//      splats[i * STRIDE + 0 + k] = (splats[i * STRIDE + 0 + k] - mins[k]) * diam - 1.;
     }
   }
-  return [num_splats, splats];  
+  return [num_splats, splats];
 }
 
 var render = {  /* device, uniforms, pipeline... */ };
@@ -772,7 +826,7 @@ async function init(do_init) {
     if (params.model == 'train') {
       [params.num_splats, params.splats] = await LoadURL("train.splat");
     } else {
-      params.splats = create_fake_splats(params.num_splats);
+      [params.num_splats, params.splats] = create_synth_splats(Math.min(500, params.num_splats));
     }
     await render_init(render);
     if (render.device == undefined) return;
@@ -782,7 +836,7 @@ async function init(do_init) {
   tick = 0.;
   params.last_t = Date.now();
   params.req_id = requestAnimationFrame(frame);    // start main loop
-  
+
 //  setInterval(() => { frame(); }, 1000);
 }
 
