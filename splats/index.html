@@ -464,13 +464,12 @@ function create_fake_splats(num_splats) {
       const v = (I & 2) ? -xM : xM;
 
       switch ((I >> 2) % 3) {
-        case 0: [x, y, z] = [u, v, t]; [sx, sy, sz] = [sM, sM, .0]; break;
-        case 1: [x, y, z] = [u, t, v]; [sx, sy, sz] = [sM, .0, sM]; break;
-        case 2: [x, y, z] = [t, u, v]; [sx, sy, sz] = [.0, sM, sM]; break;
+        case 0: [x, y, z] = [u, v, t]; [sx, sy, sz] = [sM, sM, 0.]; break;
+        case 1: [x, y, z] = [u, t, v]; [sx, sy, sz] = [sM, 0., sM]; break;
+        case 2: [x, y, z] = [t, u, v]; [sx, sy, sz] = [0., sM, sM]; break;
       }
     } else {
       [x, y, z] = [RandomRange(-xM, xM), RandomRange(-xM, xM), RandomRange(-xM, xM)];
-      [sx, sy, sz] = [RandomRange(-sM, sM), RandomRange(-sM, sM), RandomRange(-sM, sM)];
     }
     splats.set([x, y, z, 1.], i * STRIDE + 0);
 
@@ -489,7 +488,7 @@ function create_fake_splats(num_splats) {
     } else {
       const q = [RandomRange(-1.0, 1.), RandomRange(-1.0, 1.),
                  RandomRange(-1.0, 1.), RandomRange(-1.0, 1.)];  // rotation quaternion
-      const s = [RandomRange(-1.0, 1.), RandomRange(-1.0, 1.), RandomRange(-1.0, 1.)];
+      const s = [RandomRange(-sM, sM), RandomRange(-sM, sM), RandomRange(-sM, sM)];
       const sigma = SigmaFromScaleRotation(q, s);
       splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
                             sigma[4], sigma[5],
