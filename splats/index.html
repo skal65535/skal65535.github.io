@@ -1,0 +1,793 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!-- 3DGS renderer in WebGPU (WIP!!) -->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Gaussian Splat rendering with WebGPU</title>
+
+</head>
+
+<body onload="init_GUI(); init(true);">
+
+<body>
+<div>
+  <center>
+    <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
+    Gaussian Splat rendering with WebGPU (WIP)<p>
+  </center>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+
+<script>
+"use strict";
+
+const args = new URLSearchParams(location.search);
+
+function parse_arg_f(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+function parse_arg_i(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+
+const kVisus = ['ellipsis', 'square', 'axis', 'normal'];
+const kModels = ['cube', 'filled cube', 'train'];
+const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
+const params = {
+  num_splats: 500,
+  fov: 90.,
+  radius: 3.,
+  theta: 0.,
+  phi: 0.,
+  model: kModels[0],
+  use_color: false,
+  auto_rotate: true,
+  visu: kVisus[0],
+  view: new Float32Array(4 * 4),
+  proj: new Float32Array(4 * 4),
+  mouse_on: false,
+  mouse_x: 0.,
+  mouse_y: 0.,
+
+  splats: undefined,
+  fps: 0.,
+  info: "",
+  req_id: -1,
+  last_t: 0.,
+  record_fps: () => {
+    const cur_t = Date.now();
+    if (cur_t > params.last_t) {
+      const new_fps = 1000. / (cur_t - params.last_t);
+      params.fps = Math.round(params.fps * 0.9 + new_fps * 0.1);
+      params.last_t = cur_t;
+    }
+  },
+
+  reset: () => { init(true); },
+  change: () => { init(false); },
+};
+
+const canvas = document.querySelector("#canvas");
+const ctx = canvas.getContext("webgpu");
+const W = parse_arg_i("w", 800);
+const H = parse_arg_i("h", 800);
+canvas.width  = W;
+canvas.height = H;
+
+// Mouse handling
+window.addEventListener('pointermove', (event) => {
+  const bounds = canvas.getBoundingClientRect();
+  params.mouse_x = (event.clientX - bounds.left) / canvas.width;
+  params.mouse_y = (event.clientY -  bounds.top) / canvas.height;
+  if (params.mouse_on) {
+    params.phi = (params.mouse_y - .5) * 180.;
+    params.theta = params.mouse_x * 180.;
+  }
+}, false);
+window.addEventListener('pointerdown', (event) => {
+  if (event.target === canvas) params.mouse_on = true;
+});
+window.addEventListener('pointerup', (event) => {
+  params.mouse_on = false;
+});
+window.addEventListener('wheel', (event) => {
+  if (event.target === canvas) {
+    // console.log(event.deltaX, event.deltaY);
+    event.preventDefault();
+    params.radius *= (event.deltaY < 0.) ? 1.05 : 1. / 1.05;
+  }
+}, { passive: false });
+
+////// File drop (TODO(skal): broken for now!) //////
+/*
+// File-drop handling
+const PreventDefault = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+};
+document.addEventListener("dragenter", PreventDefault);
+document.addEventListener("dragover", PreventDefault);
+document.addEventListener("dragleave", PreventDefault);
+document.addEventListener("drop", (event) => {
+  PreventDefault(event);
+  console.log("Reading file: " + event.dataTransfer.files[0]);
+  DropFile(event.dataTransfer.files[0]);
+});
+*/
+
+////// WebGPU init //////
+function Oops(e) {
+  document.body.innerHTML = `Oops! <pre>${e}</pre>`;
+  throw Error(e);
+}
+
+async function render_init(render) {
+  if (render.device != undefined) render.device.destroy();
+  render.device = undefined;
+
+  navigator.gpu || Oops("WebGPU not supported.");
+  console.log("Navigator has GPU");
+
+  const adapter = await navigator.gpu.requestAdapter();
+  adapter || Oops("Couldn’t request WebGPU adapter.");
+  console.log("Adapter ok");
+
+  render.device = await adapter.requestDevice();
+  render.device || Oops("Couldn’t request WebGPU logical device.");
+  console.log("Device acquired");
+
+  function onDeviceError(event) {
+    console.log("Something bad happened! Error type: " + event.error.constructor.name);
+    console.log("Error message: " + event.error.message);
+    if (render.device != undefined) {
+      render.device.destroy();
+      render.device = undefined;
+    }
+    params.req_id = -1;  // stop animation
+    Oops("Error while constructing WebGPU device");
+  }
+  render.device.addEventListener('uncapturederror', onDeviceError);
+
+  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({device: render.device,
+                 format: render.textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied'});
+
+  const uniforms_struct_code = `
+    struct Uniforms {  // 44 * 4 bytes
+      view: mat4x4f,
+      proj: mat4x4f,
+      dim:  vec2f,   // screen dimension
+      num_splats: u32,
+      time: f32,
+
+      // 5 * 4 bytes
+      focal: f32,
+      radius: f32,
+      theta: f32,
+      phi: f32,
+      visu: f32,
+    }
+  `;
+  const splat_struct_code = `
+    struct Splat3D {  // 16*4 bytes per splats
+      position: vec4f,
+      color:    vec4f,      // TODO: SPH
+      sigma:    array<f32, 6>,  // covariance matrix, upper half
+    }
+    struct Splats3D {
+      splats: array<Splat3D>,
+    }
+    struct Splat2D {  // 12*4 bytes per splats
+      position: vec4f,
+      axis:     vec4f,  // 2x2 matrix
+      color:    vec4f,
+    }
+    struct Splats2D {
+      splats: array<Splat2D>,
+    }
+  `;
+
+   const matrix_code = `
+     let view = params.view;
+     let proj = params.proj;
+   `;
+
+  // COMPUTE pipeline, projecting the splats
+  const update_module = render.device.createShaderModule({
+    code: `
+      ${splat_struct_code}
+      ${uniforms_struct_code}
+
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+      @group(0) @binding(1) var<storage, read> splats: Splats3D;
+      @group(0) @binding(2) var<storage, read_write> out_splats: Splats2D;
+
+      @compute @workgroup_size(64)
+      fn main(@builtin(global_invocation_id) global_id : vec3u) {
+        ${matrix_code}
+        let num_splats = u32(params.num_splats);
+        let idx = global_id.x;
+        if (idx >= params.num_splats) { return; }
+        let b = splats.splats[idx];
+        var out: Splat2D;
+        let vpos = view * b.position;
+        out.position = proj * vpos;
+        out.color = b.color;
+
+        // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
+        let f = params.focal;
+        let aspect = params.dim[0] / params.dim[1];
+        let focal = vec2(f, f * aspect);
+        let pz = 1. / vpos.z;
+        let pz2 = pz * pz;
+        // Jacobian
+        let J = mat4x4f(
+          focal.x * pz,           0., -focal.x * vpos.x * pz2, 0.,
+                    0., focal.y * pz, -focal.y * vpos.y * pz2, 0.,
+                    0.,           0.,                      0., 0.,
+                    0.,           0.,                      0., 0.,
+        );
+        let Vk = mat4x4f(b.sigma[0], b.sigma[1], b.sigma[2], 0.,
+                         b.sigma[1], b.sigma[3], b.sigma[4], 0.,
+                         b.sigma[2], b.sigma[4], b.sigma[5], 0.,
+                                 0.,         0.,         0., 0.,
+        );
+        let T = transpose(params.view) * J;
+        let cov2d = transpose(T) * Vk * T;   // only need the upper 2x2 matrix
+
+        // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
+        let dist = 0.5 * (cov2d[0][0] - cov2d[1][1]);
+        let fix = vec2f(dist, cov2d[0][1]);
+        let det = length(fix);
+        let trace = (cov2d[0][0] + cov2d[1][1]) * 0.5;
+        let lambda1 = trace + det;
+        let lambda2 = max(0., trace - det);
+
+        let diag = vpos.z * normalize(vec2(cov2d[0][1], det - dist));
+        let major = diag * sqrt(2. * lambda1);
+        let minor = vec2(diag.y, -diag.x) * sqrt(2. * lambda2);
+
+// more unstable is cov2d[0][1] is small:
+//        let major = normalize(fix + vec2(det, 0.)) * sqrt(lambda1);
+//        let minor = normalize(fix - vec2(det, 0.)) * sqrt(lambda2);
+
+        out.axis = vec4f(major.x, major.y, minor.x, minor.y);
+
+        out_splats.splats[idx] = out;
+      }
+    `,
+  });
+
+  render.update_pipeline = render.device.createComputePipeline({
+    layout: "auto",
+    compute: {
+      module: update_module,
+      entryPoint: "main",
+    },
+  });
+
+
+  // RENDER pipeline drawing the splats
+  const splats_code = `
+      ${uniforms_struct_code}
+
+      struct SplatOut {
+        @builtin(position) position: vec4f,
+        @location(0) center: vec2f,
+        @location(1) color:  vec4f,
+        @location(2) radius: vec2f,
+      };
+
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+
+      @vertex
+      fn vtx_main(
+          @builtin(vertex_index) vtx_idx: u32,
+          @builtin(instance_index) instance_idx: u32,
+          // Splat2D:
+          @location(0) position: vec4f,
+          @location(1) axis:     vec4f,   // 2x2 matrix
+          @location(2) color:    vec4f,
+      ) -> SplatOut {
+        ${matrix_code}
+        var kVtxCoords = array<vec4f, 6>(  // quad
+          vec4f(  1., -1., 0., 0.),
+          vec4f(  1.,  1., 0., 0.),
+          vec4f( -1.,  1., 0., 0.),
+          vec4f( -1.,  1., 0., 0.),
+          vec4f(  1., -1., 0., 0.),
+          vec4f( -1., -1., 0., 0.),
+        );
+        let center = position;
+        var output : SplatOut;
+        let vtx = kVtxCoords[vtx_idx];
+        let dirs = mat4x4f(
+          axis.x, axis.y, 0., 0.,
+          axis.z, axis.w, 0., 0.,
+              0.,     0., 0., 0.,
+              0.,     0., 0., 0.,);
+               
+        let vtx2 = dirs * vtx;
+        output.position = center + vtx2;
+        output.center = vtx.xy;
+        output.color = color;
+        output.radius = vec2f(0., 0.);
+        return output;
+      }
+
+      @fragment
+      fn frag_main(vtx: SplatOut) -> @location(0) vec4f {
+        var d = 1.;
+        if (params.visu == 0) {  // ellipsis
+          d = step(.9, length(vtx.center)) - step(1., length(vtx.center));
+        } else if (params.visu == 1) {  // square
+          d = smoothstep(0.90, 1., max(abs(vtx.center.x), abs(vtx.center.y)));
+        } else if (params.visu == 2) {  // axis
+          d = 1. - smoothstep(0., .05, min(abs(vtx.center.x), abs(vtx.center.y)));
+        } else {
+          d = 1. - smoothstep(0., 1., length(vtx.center));
+        }
+        return vec4f(vtx.color.rgb * d, d);
+      }
+  `;
+  const splats_render_module = render.device.createShaderModule({code: splats_code});
+
+  render.splats_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: splats_render_module,
+      entryPoint: 'vtx_main',
+      buffers: [
+        { arrayStride: 12 * FLOAT32_SIZE,
+          stepMode: 'instance',
+          attributes: [
+            // Splats2D
+            { shaderLocation: 0, offset: 0 * FLOAT32_SIZE, format: 'float32x4', },  // position
+            { shaderLocation: 1, offset: 4 * FLOAT32_SIZE, format: 'float32x4', },  // cov
+            { shaderLocation: 2, offset: 8 * FLOAT32_SIZE, format: 'float32x4', },  // color
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: splats_render_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: render.textureFormat,
+        blend: {
+          color: {srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add'},
+          alpha: {srcFactor: 'one',      dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: {
+      topology: 'triangle-list', 
+      // cullMode: ??
+    },
+/*
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'less',
+      format: 'depth24plus',
+    },
+*/
+  });
+
+  if (render.device == undefined) return;
+
+/*
+  render.depthTexture = render.device.createTexture({
+    size: [canvas.width, canvas.height],
+    format: 'depth24plus',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+*/
+
+  // Create uniforms buffer
+  render.uniforms_buffer = render.device.createBuffer({
+    size: 44 * FLOAT32_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  // Create the data buffers and the binding groups
+  render.splats_3D = init_splats_3D(render.device);
+  render.splats_2D = init_splats_2D(render.device);
+
+  // create bind groups
+  render.update_bind_group = render.device.createBindGroup({
+    layout: render.update_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+      { binding: 1, resource: { buffer: render.splats_3D, }, },
+      { binding: 2, resource: { buffer: render.splats_2D, }, },
+    ],
+  });
+  render.splats_bind_group = render.device.createBindGroup({
+    layout: render.splats_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+    ],
+  });
+};
+
+function SigmaFromScaleRotation([q0, q1, q2, q3], s) {
+  // quaternion to rotation matrix
+  const N = 2. / (q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+  let M = [
+    N * (q0 * q0 + q1 * q1) - 1., N * (q1 * q2 - q0 * q3),      N * (q1 * q3 + q0 * q2),
+    N * (q1 * q2 + q0 * q3),      N * (q0 * q0 + q2 * q2) - 1., N * (q2 * q3 - q0 * q1),
+    N * (q1 * q3 - q0 * q2),      N * (q2 * q3 + q0 * q1),      N * (q0 * q0 + q3 * q3) - 1.,
+  ];
+  // + left-scaling
+  for (let j = 0; j < 3; ++j) {
+    for (let i = 0; i < 3; ++i) M[j * 3 + i] *= s[j];
+  }
+  // ... and covariance matrix Sigma
+  let S = [];
+  for (let j = 0; j < 3; ++j) {
+    for (let i = 0; i < 3; ++i) {
+      let s = 0.;
+      for (let k = 0; k < 3; ++k) s += M[i + k * 3] * M[j + k * 3];
+      S[i + j * 3] = s;
+    }
+  }
+  return S;
+}
+
+function RandomRange(a, b) { return Math.random() * (b - a) + a; }
+
+function create_fake_splats(num_splats) {
+  const STRIDE = 16;
+  const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
+  let splats = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
+  for (let i = 0; i < num_splats; ++i) {
+    // Position
+    let x, y, z;
+    let sx, sy, sz;
+    const xM = 1.;
+    const sM = .05;
+    if (params.model == 'cube') {
+      const I = parseInt(Math.floor(i));
+      const t = RandomRange(-xM, xM);
+      const u = (I & 1) ? -xM : xM;
+      const v = (I & 2) ? -xM : xM;
+
+      switch ((I >> 2) % 3) {
+        case 0: [x, y, z] = [u, v, t]; [sx, sy, sz] = [sM, sM, .0]; break;
+        case 1: [x, y, z] = [u, t, v]; [sx, sy, sz] = [sM, .0, sM]; break;
+        case 2: [x, y, z] = [t, u, v]; [sx, sy, sz] = [.0, sM, sM]; break;
+      }
+    } else {
+      [x, y, z] = [RandomRange(-xM, xM), RandomRange(-xM, xM), RandomRange(-xM, xM)];
+      [sx, sy, sz] = [RandomRange(-sM, sM), RandomRange(-sM, sM), RandomRange(-sM, sM)];
+    }
+    splats.set([x, y, z, 1.], i * STRIDE + 0);
+
+    // Color
+    let r, g, b;
+    if (params.use_color) {
+      [r, g, b] = [RandomRange(0., 1), RandomRange(0., 1), RandomRange(0., 1)];
+    } else {
+      r = g = b = i / num_splats;
+    }
+    splats.set([r, g, b, 1.], i * STRIDE + 4);
+
+    // covariance (from matrix M = Scale * Rotation)
+    if (params.model == 'cube') {
+      splats.set([sx, 0., 0., sy, 0., sz], i * STRIDE + 8);
+    } else {
+      const q = [RandomRange(-1.0, 1.), RandomRange(-1.0, 1.),
+                 RandomRange(-1.0, 1.), RandomRange(-1.0, 1.)];  // rotation quaternion
+      const s = [RandomRange(-1.0, 1.), RandomRange(-1.0, 1.), RandomRange(-1.0, 1.)];
+      const sigma = SigmaFromScaleRotation(q, s);
+      splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
+                            sigma[4], sigma[5],
+                                      sigma[8]], i * STRIDE + 8);
+    }
+    // TODO: SPH
+  }
+  return splats;
+}
+
+function init_splats_3D(device) {
+  const buffer = render.device.createBuffer({
+    size: params.num_splats * 16 * FLOAT32_SIZE,
+    usage: GPUBufferUsage.STORAGE,
+    mappedAtCreation: true,
+  });
+  new Float32Array(buffer.getMappedRange()).set(params.splats);
+  buffer.unmap();
+  params.splats = undefined;
+  return buffer;
+}
+
+function init_splats_2D(device) {
+  const BUFFER_SIZE = params.num_splats * 12 * FLOAT32_SIZE;
+  const splats = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
+  const buffer = render.device.createBuffer({
+    size: BUFFER_SIZE,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
+  });
+  return buffer;
+}
+
+function normalize([x, y, z]) {
+  const d = 1. / Math.hypot(x, y, z);
+  return [x * d, y * d, z * d];
+}
+function cross([Ax, Ay, Az], [Bx, By, Bz]) {
+  return [Ay * Bz - Az * By, Az * Bx - Ax * Bz, Ax * By - Ay * Bx];
+}
+function dot([Ax, Ay, Az], [Bx, By, Bz]) {
+  return Ax * Bx + Ay * By + Az * Bz;
+}
+function print(label, x, y, z) {
+  console.log(label + ":" + x + " " + y + " " + z);
+}
+function LookAt([p_x, p_y, p_z],  // position
+                [t_x, t_y, t_z],  // target
+                [up_x, up_y, up_z]) {
+  const [f_x, f_y, f_z] = normalize([p_x - t_x, p_y - t_y, p_z - t_z]);
+  const [r_x, r_y, r_z] = normalize(cross([up_x, up_y, up_z], [f_x, f_y, f_z]));
+  const [d_x, d_y, d_z] = cross([f_x, f_y, f_z], [r_x, r_y, r_z]);
+  return new Float32Array([
+      r_x, d_x, f_x, 0.,
+      r_y, d_y, f_y, 0.,
+      r_z, d_z, f_z, 0.,
+      -dot([r_x, r_y, r_z], [p_x, p_y, p_z]),
+      -dot([d_x, d_y, d_z], [p_x, p_y, p_z]),
+      -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
+}
+function Perspective(fx, aspect, znear, zfar) {
+  const fy = aspect * fx;
+  const A = zfar / (znear - zfar);
+  const B = znear * A;
+  return new Float32Array([
+      fx,  0., 0., 0.,
+      0.,  fy, 0., 0.,
+      0.,  0.,  A,-1.,
+      0.,  0.,  B, 0.]);
+}
+   
+
+function init_GUI() {
+  const gui = new lil.GUI({name: 'WebGPU Gaussian Splatting demo'});
+  gui.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset);
+  gui.add(params, 'fov', 0., 180., 5.).listen().onChange(params.change);
+  gui.add(params, 'radius', 0., 20., 0.1).listen().onChange(params.change);
+  gui.add(params, 'theta', 0., 360., 1.).listen().onChange(params.change);
+  gui.add(params, 'phi', -180., 180., 1.).listen().onChange(params.change);
+  gui.add(params, 'auto_rotate').name('auto rotate').listen().onChange(params.change);
+  gui.add(params, 'model', kModels).listen().onChange(params.reset);
+  gui.add(params, 'visu', kVisus).listen().onChange(params.reset);
+  gui.add(params, 'use_color').name('random colors').listen().onChange(params.reset);
+  gui.add(params, 'reset').name('Reset');
+  gui.add(params, 'fps').name('fps').listen().disable();
+  gui.add(params, 'info').name('info').listen().disable();
+}
+
+var tick = 0;
+function SetUniforms() {
+  const time = tick * 0.1;
+  ++tick;
+
+  // transmit uniforms
+  const focal = 1. / Math.tan(params.fov * Math.PI / 360.);
+  const theta = params.theta * Math.PI / 180. + (params.auto_rotate ? time * .08 : 0.);
+  const phi = params.phi * Math.PI / 180.;
+  const view = LookAt([ params.radius * Math.cos(theta) * Math.cos(phi),
+                        params.radius * Math.sin(phi),
+                        params.radius * Math.sin(theta) * Math.cos(phi)],
+                      [0., 0., 0.],
+                      [0., 1., 0.]);
+  render.device.queue.writeBuffer(
+      render.uniforms_buffer,  0 * FLOAT32_SIZE, view);
+  const proj = Perspective(focal, W / H, 0.1, 10.);
+  render.device.queue.writeBuffer(
+      render.uniforms_buffer, 16 * FLOAT32_SIZE, proj);
+
+  const uniforms = new Float32Array([ W, H, params.num_splats, time]);
+  render.device.queue.writeBuffer(
+      render.uniforms_buffer, 32 * FLOAT32_SIZE, uniforms);
+
+
+  const view_params = new Float32Array(
+      [focal, params.radius, params.theta, params.phi, kVisus.indexOf(params.visu)]);
+  render.device.queue.writeBuffer(
+      render.uniforms_buffer, 36 * FLOAT32_SIZE, view_params);
+}
+
+function frame() {
+  performance.mark("webgpu start");
+
+  SetUniforms();
+
+  const encoder = render.device.createCommandEncoder();
+
+  const compute_pass = encoder.beginComputePass();
+  compute_pass.setPipeline(render.update_pipeline);
+  compute_pass.setBindGroup(0, render.update_bind_group);
+  compute_pass.dispatchWorkgroups(Math.ceil(render.splats_3D.size / 64), 64);
+  compute_pass.end();
+
+  const render_pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: ctx.getCurrentTexture().createView(),
+          clearValue: {r:0.0, g:0., b:0., a:1.}, loadOp: 'clear',
+          storeOp: 'store', }
+      ],
+/*
+      depthStencilAttachment:
+        { view: render.depthTexture.createView(),
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+*/
+  });
+  render_pass.setPipeline(render.splats_pipeline);
+  render_pass.setBindGroup(0, render.splats_bind_group);
+  render_pass.setVertexBuffer(0, render.splats_2D);
+  render_pass.draw(6, params.num_splats, 0, 0);
+  render_pass.end();
+
+  render.device.queue.submit([encoder.finish()]);
+
+  performance.mark("webgpu end");
+
+  performance.measure("webgpu", "webgpu start", "webgpu end");
+
+  params.record_fps();
+  if (params.req_id >= 0) params.req_id = requestAnimationFrame(frame);
+}
+
+function DropFile(file) {
+  return;  // TODO(skal): not finished!
+
+  const fr = new FileReader();
+  fr.onload = () => {
+    // pos:3, nx:3, color:3, sph:45
+    // opacity:1, scale:3, rot:4
+    const STRIDE_S = (3 + 3 + 3 + 45 + 1 + 3 + 4);
+    const rowLength = FLOAT32_SIZE * STRIDE_S;
+
+    let splatData = new Uint8Array(fr.result);
+    let splats_f = new Float32Array(splatData);
+    params.num_splats = Math.floor(splatData.length / rowLength);
+    console.log("Loaded", params.num_splats);
+    const STRIDE = 16;
+    const BUFFER_SIZE = params.num_splats * STRIDE * FLOAT32_SIZE;
+    const splats = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
+    for (let i = 0; i < params.num_splats; ++i) {
+      splats[i * STRIDE + 0] = splats_f[STRIDE_S * i + 0];
+      splats[i * STRIDE + 1] = splats_f[STRIDE_S * i + 1];
+      splats[i * STRIDE + 2] = splats_f[STRIDE_S * i + 2];
+      splats[i * STRIDE + 3] = 1.;
+      splats[i * STRIDE + 4] = splats_f[STRIDE_S * i + 6];
+      splats[i * STRIDE + 5] = splats_f[STRIDE_S * i + 7];
+      splats[i * STRIDE + 6] = splats_f[STRIDE_S * i + 8];
+      const opacity = splats_f[STRIDE_S * i + 54];
+      splats[i * STRIDE + 7] = Math.exp(-opacity);  // opacity
+      const scale = [
+        splats_f[STRIDE_S * i + 55],
+        splats_f[STRIDE_S * i + 56],
+        splats_f[STRIDE_S * i + 57],
+      ];
+      const rot = [
+        splats_f[STRIDE_S * i + 58],
+        splats_f[STRIDE_S * i + 59],
+        splats_f[STRIDE_S * i + 60],
+        splats_f[STRIDE_S * i + 61],
+      ];
+      const sigma = SigmaFromScaleRotation(rot, scale);
+      splats[i * STRIDE +  8] = sigma[0];   // upper half only
+      splats[i * STRIDE +  9] = sigma[1];
+      splats[i * STRIDE + 10] = sigma[2];
+      splats[i * STRIDE + 11] = sigma[4];
+      splats[i * STRIDE + 12] = sigma[5];
+      splats[i * STRIDE + 13] = sigma[6];
+    }
+    params.splats = splats;
+    init(true);
+  };
+  fr.readAsArrayBuffer(file);
+}
+
+async function LoadURL(name) {
+  const url = new URL(name, "https://huggingface.co/cakewalk/splat-data/resolve/main/");
+  const req = await fetch(url, { mode: "cors", credentials: "omit", });
+  if (req.status != 200) Oops("Couldn't load URL [" + req.url + "]");
+  console.log(req.url);
+
+  const bytes = await req.blob();
+  const data = new Uint8Array(await bytes.arrayBuffer());
+  const data_f = new Float32Array(data.buffer);  // float view
+  const data_u = new Uint8Array(data.buffer);    // uint8 view
+  console.log("Finished loading! bytes:" + data.length);
+
+  const row_stride = (3 + 3 + 1 + 1);   // stride as float
+  const row_size = row_stride * FLOAT32_SIZE;  // pos, color, packed scale, packed rotation
+  let num_splats = Math.min(data.length / row_size, 10000);      // TODO(skal): remove!
+  const STRIDE = 16;
+  const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
+  let splats = new Float32Array(num_splats * STRIDE);
+
+  console.log("splat data: " + data.length + " bytes ( => " + num_splats + " splats)");
+
+  let mins = [ 1e8, 1e8, 1e8], maxs = [-1e8,-1e8,-1e8];
+
+  for (let i = 0; i < num_splats; ++i) {
+    const off_f = i * row_stride;   // float-offset
+    const xyz = data_f.slice(off_f + 0, off_f + 3);
+    splats.set(xyz, i * STRIDE + 0);  // position
+    splats[i * STRIDE + 3] = 1.;
+    for (let k = 0; k < 3; ++k) {
+      mins[k] = Math.min(mins[k], xyz[k]);
+      maxs[k] = Math.max(maxs[k], xyz[k]);
+    }
+
+    const rgba = data_u.slice(4 * (off_f + 6), 4 * (off_f + 7));
+    splats.set(rgba.map((v) => v / 255.), i * STRIDE + 4);  // color
+
+    const s = data_f.slice(off_f + 3, off_f + 6);
+    let q = new Float32Array(data_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
+              .map((v) => v / 128. - 1.);
+    const sigma = SigmaFromScaleRotation(q, s);    
+    splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
+                          sigma[4], sigma[5],
+                                    sigma[8]], i * STRIDE + 8);  // sigma
+  }
+
+  // normalize positions along major axis
+  console.log("mins: " + mins + " maxs: " + maxs);
+  let [min, diam] = [mins[0], maxs[0] - mins[1]];
+  if (maxs[1] - mins[1] > diam) [min, diam] = mins[1], maxs[1] - mins[1];
+  if (maxs[2] - mins[2] > diam) [min, diam] = mins[2], maxs[2] - mins[2];
+  diam = 2. / diam;
+  for (let i = 0; i < num_splats; ++i) {
+    for (let k = 0; k < 3; ++k) {
+      splats[i * STRIDE + 0 + k] = (splats[i * STRIDE + 0 + k] - mins[k]) * diam - 1.;
+    }
+  }
+  return [num_splats, splats];  
+}
+
+var render = {  /* device, uniforms, pipeline... */ };
+async function init(do_init) {
+  if (params.req_id != -1) {
+    cancelAnimationFrame(params.req_id);
+    params.req_id = -1;
+  }
+  if (do_init == true) {
+    if (params.model == 'train') {
+      [params.num_splats, params.splats] = await LoadURL("train.splat");
+    } else {
+      params.splats = create_fake_splats(params.num_splats);
+    }
+    await render_init(render);
+    if (render.device == undefined) return;
+    params.info = params.num_splats + " splats";
+  }
+
+  tick = 0.;
+  params.last_t = Date.now();
+  params.req_id = requestAnimationFrame(frame);    // start main loop
+  
+//  setInterval(() => { frame(); }, 1000);
+}
+
+</script>
+
+</body>
+</html>
