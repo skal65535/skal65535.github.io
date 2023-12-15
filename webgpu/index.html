@@ -120,22 +120,22 @@ async function render_init(render) {
 
   const uniforms_struct_code = `
     struct Uniforms {
-      dim: vec2<f32>,   // dimension W x H
+      dim: vec2f,   // dimension W x H
       dt: f32,
       gravity: f32,
       viscosity: f32,
       num_balls: f32,
       do_collisions: u32,
       force_R: f32,
-      force_src: vec2<f32>,
+      force_src: vec2f,
       cohesive: f32,
       pad2: f32,
     }
   `;
   const ball_struct_code = `
     struct Ball {
-      position: vec2<f32>,
-      velocity: vec2<f32>,
+      position: vec2f,
+      velocity: vec2f,
       radius:   f32,
       brightness: f32,
     }
@@ -154,7 +154,7 @@ async function render_init(render) {
       @group(0) @binding(2) var<storage, read_write> out_balls: Balls;
 
       @compute @workgroup_size(128)
-      fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
+      fn main(@builtin(global_invocation_id) global_id : vec3u) {
         let num_balls = u32(params.num_balls);
         let idx = global_id.x;
         if (idx >= num_balls) { return; }
@@ -175,8 +175,6 @@ async function render_init(render) {
             spd -= 2. * dot(delta, spd) * delta;
           }
         }
-        spd += dt * f;
-        if (length(spd) > 1.) { spd -= params.viscosity * spd; }
 
         if (params.do_collisions > 0) {
           for (var i = 0u; i < num_balls; i = i + 1u) {
@@ -193,6 +191,9 @@ async function render_init(render) {
             spd += c * n * params.cohesive;
           }
         }
+        spd += dt * f;
+        if (length(spd) > 1.) { spd -= params.viscosity * spd; }
+
         pos += dt * spd;
 
         if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
@@ -220,9 +221,9 @@ async function render_init(render) {
       ${uniforms_struct_code}
 
       struct VertexOutput {
-        @builtin(position) position: vec4<f32>,
-        @location(0) color: vec4<f32>,
-        @location(1) center: vec2<f32>,
+        @builtin(position) position: vec4f,
+        @location(0) color: vec4f,
+        @location(1) center: vec2f,
         @location(2) radius: f32,
       };
 
@@ -232,32 +233,33 @@ async function render_init(render) {
       fn vtx_main(
           @builtin(vertex_index) vtx_idx: u32,
           @builtin(instance_index) instance_idx: u32,
-          @location(0) pos: vec2<f32>,
-          @location(1) spd: vec2<f32>,
-          @location(2) radius: vec2<f32>,
+          // Ball:
+          @location(0) pos: vec2f,
+          @location(1) spd: vec2f,
+          @location(2) radius: vec2f,
       ) -> VertexOutput {
-        var kVtxCoords = array<vec2<f32>, 3>(  // arrow shape
-          vec2<f32>( 0., -1.),
-          vec2<f32>( 1.,  1.),
-          vec2<f32>(-1.,  1.),
+        var kVtxCoords = array<vec2f, 3>(  // arrow shape
+          vec2f( 0., -1.),
+          vec2f( 1.,  1.),
+          vec2f(-1.,  1.),
         );
         let vtx = kVtxCoords[vtx_idx];
-        let center = pos.xy * vec2<f32>(2., -2.) + vec2<f32>(-1., 1.);
+        let center = pos.xy * vec2f(2., -2.) + vec2f(-1., 1.);
         let R = radius.x * 20;
         var output : VertexOutput;
-        output.position = vec4<f32>(center + vtx * R, 0., 1.);
+        output.position = vec4f(center + vtx * R, 0., 1.);
         let gray = min(radius.y / 2., 1.);
-        output.color = vec4<f32>(0.2, .50 + 0.25 * gray, 1. - gray, 1.);
+        output.color = vec4f(0.2, .50 + 0.25 * gray, 1. - gray, 1.);
         output.center = pos.xy;
         output.radius = R / 8.;
         return output;
       }
 
       @fragment
-      fn frag_main(vtx: VertexOutput) -> @location(0) vec4<f32> {
+      fn frag_main(vtx: VertexOutput) -> @location(0) vec4f {
         var pos = vtx.position.xy / params.dim;
         if (length(pos - params.force_src) < params.force_R) {
-          return vec4<f32>(.0, .0, .0, 1.);
+          return vec4f(.0, .0, .0, 1.);
         }
         var d = 1. - smoothstep(0., vtx.radius, length(pos - vtx.center));
         return vtx.color * d;
@@ -368,7 +370,6 @@ function init_GUI() {
 
 function frame() {
   performance.mark("webgpu start");
-  const encoder = render.device.createCommandEncoder();
 
   // update target_x/y
   if (params.do_mouse) {
@@ -387,6 +388,9 @@ function frame() {
         params.target_y,
         params.cohesive_coeff,
     ]));
+
+  const encoder = render.device.createCommandEncoder();
+
   const compute_pass = encoder.beginComputePass();
   compute_pass.setPipeline(render.update_pipeline);
   compute_pass.setBindGroup(0, render.balls_bind_groups[render.tick]);
