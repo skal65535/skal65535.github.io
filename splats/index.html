@@ -10,13 +10,14 @@
 
 </head>
 
-<body onload="init_GUI(); init(true);">
+<body onload="init_GUI(); init_GPU(); init(true);">
 
 <body>
 <div>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    Gaussian Splat rendering with WebGPU (WIP)<p>
+    <a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
+    rendering with WebGPU (WIP)<p>
     Inspired by <a href='https://github.com/antimatter15/splat'>Kevin Kwok's work</a>.
   </center>
 </div>
@@ -42,7 +43,7 @@ function parse_arg_i(arg_value, default_value, min, max) {
 }
 function parse_arg_b(arg_value) { return (args.has(arg_value) == true); }
 
-const kVisus = ['gaussian', 'ellipsis', 'square', 'filled', 'axis', 'dot', 'cone'];
+const kVisus = ['gaussian', 'cone', 'hard cone', 'ellipsis', 'square', 'filled', 'axis', 'dot'];
 const kModels = [/*'train',*/ 'nike', 'cube', 'filled cube'];
 const kSorts = ['CPU', 'GPU (TODO)', 'none'];
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
@@ -55,7 +56,7 @@ const params = {
   theta: 81.5, // 0.,
   phi: -49.0, // 0.,
   model: 'nike',
-  use_color: false,
+  random_colors: false,
   auto_rotate: false,
   visu: kVisus[0],
   haze: 1.,
@@ -86,26 +87,34 @@ const params = {
   change: () => { init(false); },
 };
 
+var gui = undefined;
 function init_GUI() {
-  const gui = new lil.GUI({name: 'WebGPU Gaussian Splatting demo'});
-  gui.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset);
+  gui = new lil.GUI({name: 'WebGPU Gaussian Splatting demo'});
+  gui.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset).disable();
   gui.add(params, 'fov', 0., 180., 5.).listen().onChange(params.change);
-  gui.add(params, 'radius', 0., 2000., 0.001).listen().onChange(params.change);
+  gui.add(params, 'radius', 0.0001, 100., 0.01).listen().onChange(params.change);
   gui.add(params, 'theta', 0., 360., 1.).listen().onChange(params.change);
   gui.add(params, 'phi', -180., 180., 1.).listen().onChange(params.change);
   gui.add(params, 'haze', 1., 10., 0.1).listen().onChange(params.reset);
   gui.add(params, 'auto_rotate').name('auto rotate').listen().onChange(params.change);
   gui.add(params, 'model', kModels).listen().onChange(params.reset);
   gui.add(params, 'visu', kVisus).listen().onChange(params.change);
-  gui.add(params, 'use_color').name('random colors').listen().onChange(params.reset);
-  gui.add(params, 'timing').name('console timing').listen();
-  gui.add(params, 'use_MSAA').name('use multi-sampling').listen().onChange(params.change);
+  gui.add(params, 'random_colors').name('random colors').listen().onChange(params.reset);
+  gui.add(params, 'use_MSAA').name('use multi-sampling').listen().onChange(params.reset);
   gui.add(params, 'depth_sort', kSorts).name('depth sorting algo').listen().onChange(params.reset);
-  gui.add(params, 'use_depth').name('use depth (?! -> dbg)').listen().onChange(params.change);
+  const dbg_folder = gui.addFolder('Debug');
+  dbg_folder.add(params, 'timing').name('print timing').listen();
+  dbg_folder.add(params, 'use_depth').name('use depth').listen().onChange(params.reset);
   gui.add(params, 'fps').name('fps').listen().disable();
   gui.add(params, 'info').name('info').listen().disable();
 }
 
+function get_GUI_element(name) {
+  for (const c of gui.controllers) {
+    if (c.property == name) return c;
+  }
+  return undefined;
+}
 ////////////////////////////////////////////////////////////////////////////////
 
 const canvas = document.querySelector("#canvas");
@@ -172,6 +181,38 @@ document.addEventListener("drop", (event) => {
 function Oops(e) {
   document.body.innerHTML = `Oops! <pre>${e}</pre>`;
   throw Error(e);
+}
+
+async function init_GPU() {
+  navigator.gpu || Oops("WebGPU not supported.");
+  console.log("Navigator has GPU");
+
+  const adapter = await navigator.gpu.requestAdapter();
+  adapter || Oops("Couldn’t request WebGPU adapter.");
+  console.log("Adapter ok");
+
+  render.device = await adapter.requestDevice();
+  render.device || Oops("Couldn’t request WebGPU logical device.");
+  console.log("Device acquired");
+
+  function onDeviceError(event) {
+    console.log("Something bad happened! Error type: " + event.error.constructor.name);
+    console.log("Error message: " + event.error.message);
+    if (render.device != undefined) {
+      render.device.destroy();
+      render.device = undefined;
+    }
+    params.req_id = -1;  // stop animation
+    Oops("Error while constructing WebGPU device");
+  }
+  render.device.addEventListener('uncapturederror', onDeviceError);
+
+  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({device: render.device,
+                 format: render.textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied',
+                });
 }
 
 async function create_pipeline(render) {
@@ -348,7 +389,8 @@ async function create_pipeline(render) {
   function fs_splats_code(visu_func) {
     const kFuncNames = {
       'ellipsis': 'ellipsis', 'square': 'square', 'filled': 'filled',
-      'axis': 'axis', 'dot': 'small_dot', 'cone': 'cone', 'gaussian': 'gaussian'
+      'axis': 'axis', 'dot': 'small_dot', 'cone': 'cone',
+      'hard cone': 'hard_cone', 'gaussian': 'gaussian'
     };
     return `
       ${SplatOut_struct_code}
@@ -359,7 +401,8 @@ async function create_pipeline(render) {
       fn small_dot(v: vec2f) -> f32 { return 1. - step(.1, length(v)); }
       fn square(v: vec2f) -> f32 { return smoothstep(0.90, 1., max(abs(v.x), abs(v.y))); }
       fn axis(v: vec2f) -> f32 { return 1. - smoothstep(0., .05, min(abs(v.x), abs(v.y))); }
-      fn cone(v: vec2f) -> f32 { return 1. - smoothstep(0., 1., length(v)); }
+      fn cone(v: vec2f) -> f32 { return 1. - smoothstep(0., 2., length(v)); }
+      fn hard_cone(v: vec2f) -> f32 { return 1. - step(2., length(v)); }
       fn filled(v: vec2f) -> f32 { return 1.; }
       fn gaussian(v: vec2f) -> f32 {
         let d2 = dot(v, v);
@@ -484,39 +527,6 @@ function init_splats_2D(device) {
 }
 
 async function init_render(render) {
-  if (render.device != undefined) render.device.destroy();
-  render.device = undefined;
-
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
-  console.log("Device acquired");
-
-  function onDeviceError(event) {
-    console.log("Something bad happened! Error type: " + event.error.constructor.name);
-    console.log("Error message: " + event.error.message);
-    if (render.device != undefined) {
-      render.device.destroy();
-      render.device = undefined;
-    }
-    params.req_id = -1;  // stop animation
-    Oops("Error while constructing WebGPU device");
-  }
-  render.device.addEventListener('uncapturederror', onDeviceError);
-
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
-  ctx.configure({device: render.device,
-                 format: render.textureFormat,
-                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
-                 alphaMode: 'premultiplied',
-                });
-
   // Create the data buffers and the binding groups
   render.splats_3D = init_splats_3D(render.device);
   render.splats_2D = init_splats_2D(render.device);
@@ -633,7 +643,7 @@ function create_synth_splats(num_splats) {
 
     // Color
     let r, g, b, a = 1.;
-    if (params.use_color) {
+    if (params.random_colors) {
       [r, g, b, a] = [RandRange(0., 255), RandRange(0., 255),
                       RandRange(0., 255), RandRange(0., 255)];
     } else {
@@ -924,16 +934,19 @@ async function init(do_init) {
       [params.num_splats, params.splats] = await LoadURL("train.splat");
     } else if (params.model == 'nike') {
       [params.num_splats, params.splats] = await LoadURL("nike.splat");
+      get_GUI_element('num_splats').disable();
+      get_GUI_element('random_colors').disable();
     } else {
+      get_GUI_element('random_colors').enable();
+      get_GUI_element('num_splats').enable();
       [params.num_splats, params.splats] =
-          create_synth_splats(Math.min(500, params.num_splats));
+          create_synth_splats(Math.min(100000, params.num_splats));
     }
     params.info = params.num_splats + " splats";
+    await init_render(render);
   }
-  await init_render(render);
-  if (render.device == undefined) return;
+  render.device || Oops("GPU device not initialized?!");
   await create_pipeline(render);
-
   params.tick = 0.;
   params.last_t = Date.now();
   params.req_id = requestAnimationFrame(frame);    // start main loop
