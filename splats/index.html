@@ -26,7 +26,7 @@
 }
 </style>
 
-<body onload="init_GUI(); init_GPU(); init(true);">
+<body onload="main();">
 
 <div id='drop-area'>
   <center>
@@ -252,7 +252,7 @@ async function init_GPU() {
       render.device = undefined;
     }
     params.req_id = -1;  // stop animation
-    Oops("Error while constructing WebGPU device");
+    Oops("Error caught while constructing the WebGPU device. See console.");
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
@@ -404,6 +404,11 @@ async function create_pipeline(render) {
       ${uniforms_struct_code}
       ${SplatOut_struct_code}
 
+      const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
+        vec2f(  2., -2.), vec2f(  2.,  2.),
+        vec2f( -2.,  2.), vec2f( -2., -2.),
+      );
+
       @vertex
       fn vtx_main(
           @builtin(vertex_index) vtx_idx: u32,
@@ -413,12 +418,8 @@ async function create_pipeline(render) {
           @location(1) axis:     vec4f,   // 2x2 matrix
           @location(2) color:    u32,
       ) -> SplatOut {
-        const kVtxCoords = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
-          vec2f(  2., -2.), vec2f(  2.,  2.),
-          vec2f( -2.,  2.), vec2f( -2., -2.),
-        );
         var output : SplatOut;
-        output.uv = kVtxCoords[vtx_idx];
+        output.uv = kQuad[vtx_idx];
         let delta = output.uv.x * axis.xy + output.uv.y * axis.zw;
         output.position = position + vec4f(delta, 0., 0.);
         output.color = unpack4x8unorm(color);
@@ -565,7 +566,7 @@ function init_splats_2D(device) {
   return buffer;
 }
 
-async function init_render(render) {
+async function init_buffers(render) {
   // Create the data buffers and the binding groups
   render.splats_3D = init_splats_3D(render.device);
   render.splats_2D = init_splats_2D(render.device);
@@ -619,7 +620,6 @@ async function init_render(render) {
   } else {
     render.depthTexture = undefined;
   }
-  create_pipeline(render);
 };
 
 // END OF GPU PART
@@ -999,6 +999,9 @@ async function init(do_init) {
     cancelAnimationFrame(params.req_id);
     params.req_id = -1;
   }
+  render.device || Oops("Initialization failed. " +
+                        "Is WebGPU supported and " +
+                        "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
 
   if (do_init) {
     if (params.model == 'cube' || params.model == 'filled cube') {
@@ -1023,12 +1026,7 @@ async function init(do_init) {
       get_GUI_element('random_colors').disable();
     }
     params.info = params.num_splats + " splats";
-  }
-  render.device || Oops("Initialization failed. " +
-                        "Is WebGPU supported and " +
-                        "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
-  if (do_init) {
-    await init_render(render);
+    await init_buffers(render);
   }
   await create_pipeline(render);
   params.tick = 0;
@@ -1036,6 +1034,14 @@ async function init(do_init) {
   params.req_id = requestAnimationFrame(frame);    // start main loop
 
 //  setInterval(() => { frame(); }, 1000);
+}
+
+async function main() {
+  try {
+    init_GUI();
+    await init_GPU();
+    await init(true);
+   } catch(e) { Oops(e); }
 }
 
 </script>
