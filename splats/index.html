@@ -32,7 +32,9 @@
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
     <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
-    rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a> (WIP)</b><p>
+    rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
+    (WIP)</b><p>
+    On <b>Chrome 113+</b>, you need to enable the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<br/>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
