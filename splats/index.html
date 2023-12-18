@@ -34,7 +34,7 @@
     <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
     rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a> (WIP)</b><p>
   </center>
-    This WebGPU implementation uses a compute shader to extract the splats'
+    This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
     The vertex shader generates a well-oriented Quad suitable for vertex indexation.<br/>
     The fragment shader has several 'visu' functions, other than the expected 'gaussian'.
@@ -43,6 +43,8 @@
     KNOWN BUGS / LIMITATIONS:
     <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering. This is the bottleneck.</li>
     <li>Most big models will overflow the max-buffer-size-limit. 'nike', 'plush', 'train' are ok, probably.</li>
+    <li>the compute-shader needs 3 rather big buffers, that's too much for the GPU.
+    They should at least be packed further, but.. fp16... <a href='https://developer.chrome.com/blog/new-in-webgpu-120'>where art thou</a>?
     <li>Loading is slow and not streamed.</li>
     <li>No Spherical Harmonics for now.</li>
     </ul>
@@ -1008,7 +1010,7 @@ async function init(do_init) {
         params.radius = 1.8;
       } else if (params.model == 'nike') {
         center_model();
-        params.radius = 1.8;
+        params.radius = 2.5;
       } else if (params.model == 'plush') {
         center_model();
         params.radius = 1.8;
