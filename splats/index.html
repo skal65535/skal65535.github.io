@@ -1,13 +1,11 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!-- 3DGS renderer in WebGPU (WIP!!) -->
-<!-- starting point: https://github.com/antimatter15/splat by Kevin Kwok -->
 
 <!DOCTYPE html>
 <html>
 
 <head>
 <title>Gaussian Splat rendering with WebGPU</title>
-
 </head>
 
 <style>
@@ -27,14 +25,14 @@
   box-shadow: 0 0 8px black;
 }
 </style>
+
 <body onload="init_GUI(); init_GPU(); init(true);">
 
-<body>
 <div id='drop-area'>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
     <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
-    rendering, using WebGPU (WIP)</b><p>
+    rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a> (WIP)</b><p>
   </center>
     This WebGPU implementation uses a compute shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
@@ -845,12 +843,13 @@ function Multiply4(A, B) {  // 4x4 multiply
 function SetUniforms() {  // transmit uniforms
   const theta = params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
-  params.view = LookAt([ params.radius * Math.cos(theta) * Math.cos(phi) + params.target[0],
-                         params.radius * Math.sin(phi)                   + params.target[1],
-                         params.radius * Math.sin(theta) * Math.cos(phi) + params.target[2],
-                       ],
-                       params.target,
-                       [0., 1., 0.]);
+  params.view = LookAt(
+      [ params.radius * Math.cos(theta) * Math.cos(phi) + params.target[0],
+        params.radius * Math.sin(phi)                   + params.target[1],
+        params.radius * Math.sin(theta) * Math.cos(phi) + params.target[2],
+      ],
+      params.target,
+      [0., 1., 0.]);
   render.device.queue.writeBuffer(
       render.uniforms_buffer,  0 * FLOAT32_SIZE, params.view);
 
@@ -969,7 +968,7 @@ function frame() {
   }
   const render_pass = encoder.beginRenderPass(pass_descriptor);
   render_pass.setPipeline(render.splats_pipeline);
-//  render_pass.setBindGroup(0, render.splats_bind_group);
+//  NOT NEEDED FOR NOW! render_pass.setBindGroup(0, render.splats_bind_group);
   render_pass.setVertexBuffer(0, render.splats_2D);
   render_pass.setIndexBuffer(render.index_buffer, 'uint32');
   render_pass.drawIndexed(6, params.num_splats);
