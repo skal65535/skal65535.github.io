@@ -10,16 +10,54 @@
 
 </head>
 
+<style>
+#drop-area {
+  border: 3px dashed #ccc;
+  border-radius: 20px;
+  margin: 5px auto;
+  padding: 5px;
+  background: #eef;
+}
+#canvas {
+  z-index:0;
+  border: 2px solid #000;
+  border-radius: 20px;
+  background: #000;
+  margin: 0px;
+  box-shadow: 0 0 8px black;
+}
+</style>
 <body onload="init_GUI(); init_GPU(); init(true);">
 
 <body>
-<div>
+<div id='drop-area'>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    <a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
-    rendering with WebGPU (WIP)<p>
-    Inspired by <a href='https://github.com/antimatter15/splat'>Kevin Kwok's work</a>.
+    <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
+    rendering, using WebGPU (WIP)</b><p>
   </center>
+    This WebGPU implementation uses a compute shader to extract the splats'
+    parameters (position, axis, color) once for all.<br/>
+    The vertex shader generates a well-oriented Quad suitable for vertex indexation.<br/>
+    The fragment shader has several 'visu' functions, other than the expected 'gaussian'.
+    <i>Try 'cone', it looks good too!</i>
+    <ul>
+    KNOWN BUGS / LIMITATIONS:
+    <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering. This is the bottleneck.</li>
+    <li>Most big models will overflow the max-buffer-size-limit. 'nike', 'plush', 'train' are ok, probably.</li>
+    <li>Loading is slow and not streamed.</li>
+    <li>No Spherical Harmonics for now.</li>
+    </ul>
+    
+  <form action="https://skal65535.github.io/"
+        style='position: relative; top:-260px; left:20px;'>
+    <input type="submit" value="skal 2023" id="skal-2023"
+           style='border-radius: 5px; padding: 5px;
+                  background: #cce; border: 3px solid #112;'
+      onmouseover='this.style.background="#cdf"'
+      onmouseout='this.style.background="#cce"'/>
+  </form>
+
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
@@ -44,7 +82,8 @@ function parse_arg_i(arg_value, default_value, min, max) {
 function parse_arg_b(arg_value) { return (args.has(arg_value) == true); }
 
 const kVisus = ['gaussian', 'cone', 'hard cone', 'ellipsis', 'square', 'filled', 'axis', 'dot'];
-const kModels = [/*'train',*/ 'nike', 'cube', 'filled cube'];
+const kModels = ['train', 'nike', 'plush', 'truck', 'garden', 'treehill', 'stump', 'bicycle',
+                 'cube', 'filled cube'];
 const kSorts = ['CPU', 'GPU (TODO)', 'none'];
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const params = {
@@ -52,12 +91,15 @@ const params = {
   splats: undefined,
 
   fov: 90.,
-  radius: 2.50,
-  theta: 81.5, // 0.,
-  phi: -49.0, // 0.,
+  radius: 2.5,
+  theta: -91.,
+  phi: 30.0,
+  target: [0., 0., 0.],
+  znear: 0.2,
+  zfar: 200.,
   model: 'nike',
   random_colors: false,
-  auto_rotate: false,
+  auto_rotate: true,
   visu: kVisus[0],
   haze: 1.,
   timing: false,
@@ -115,12 +157,13 @@ function get_GUI_element(name) {
   }
   return undefined;
 }
+
 ////////////////////////////////////////////////////////////////////////////////
 
 const canvas = document.querySelector("#canvas");
 const ctx = canvas.getContext("webgpu");
-const W = parse_arg_i("w", 800);
-const H = parse_arg_i("h", 800);
+const W = parse_arg_i("w", innerWidth * .9);
+const H = parse_arg_i("h", innerHeight * .8);
 canvas.width  = W;
 canvas.height = H;
 
@@ -137,25 +180,28 @@ if (parse_arg_b("dbg")) {
 
 // Mouse handling
 window.addEventListener('pointermove', (event) => {
+  if (event.target != canvas) return;
+//  event.preventDefault();
   const bounds = canvas.getBoundingClientRect();
-  params.mouse_x = (event.clientX - bounds.left) / canvas.width;
-  params.mouse_y = (event.clientY -  bounds.top) / canvas.height;
+  const mouse_x = (event.clientX - bounds.left) / canvas.width;
+  const mouse_y = (event.clientY -  bounds.top) / canvas.height;
   if (params.mouse_on) {
-    params.phi   = (.5 - params.mouse_y) * 180.;
-    params.theta = (.5 - params.mouse_x) * 180.;
+    params.phi   += (params.mouse_y - mouse_y) * 90.;
+    params.theta += (params.mouse_x - mouse_x) * 90.;
   }
+  params.mouse_x = mouse_x;
+  params.mouse_y = mouse_y;
 }, false);
 window.addEventListener('pointerdown', (event) => {
-  if (event.target === canvas) params.mouse_on = true;
+  if (event.target == canvas) params.mouse_on = true;
 });
 window.addEventListener('pointerup', (event) => {
   params.mouse_on = false;
 });
 window.addEventListener('wheel', (event) => {
-  if (event.target === canvas) {
-    event.preventDefault();
-    params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
-  }
+  if (event.target != canvas) return;
+  event.preventDefault();
+  params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
 }, { passive: false });
 
 ////// File drop (TODO(skal): broken for now!) //////
@@ -252,11 +298,6 @@ async function create_pipeline(render) {
     }
   `;
 
-   const matrix_code = `
-     let view = params.view;
-     let proj = params.proj;
-   `;
-
   // COMPUTE pipeline, projecting the splats
   const update_module = render.device.createShaderModule({
     code: `
@@ -266,7 +307,7 @@ async function create_pipeline(render) {
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> splats: Splats3D;
       @group(0) @binding(2) var<storage, read_write> out_splats: Splats2D;
-      @group(0) @binding(3) var<storage, read> instances_idx: array<u32>;
+      @group(0) @binding(3) var<storage, read> sorted_list: array<u32>;
 
       // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
       fn get_cov2d(vpos: vec4f, sigma: array<f32, 6>) -> vec3f {
@@ -288,10 +329,10 @@ async function create_pipeline(render) {
                          sigma[2], sigma[4], sigma[5], 0.,
                                0.,       0.,       0., 0.,
         );
-        let cov2d = transpose(T) * Vk * T;
+        var cov2d = transpose(T) * Vk * T;
 
         // low-pass filter: avoid degenerate cases of sub-pixel sizes
-        // cov2d[0][0] += .001; cov2d[1][1] += .001;
+        // cov2d[0][0] += 1e-8; cov2d[1][1] += 1e-8;
 
         // only need the upper 2x2 matrix
         return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
@@ -314,14 +355,13 @@ async function create_pipeline(render) {
 
       @compute @workgroup_size(64)
       fn main(@builtin(global_invocation_id) global_id : vec3u) {
-        ${matrix_code}
         let num_splats = u32(params.num_splats);
         if (global_id.x >= params.num_splats) { return; }
-        let idx = instances_idx[global_id.x];
+        let idx = sorted_list[global_id.x];
         let b = splats.splats[idx];
         var out: Splat2D;
-        let vpos = view * b.position;
-        out.position = proj * vpos;
+        let vpos = params.view * b.position;
+        out.position = params.proj * vpos;
         out.color = b.color;
         let clip = 1.1 * out.position.w;
         if (any(out.position.xyz > vec3f(clip, clip, clip)) ||
@@ -361,8 +401,6 @@ async function create_pipeline(render) {
       ${uniforms_struct_code}
       ${SplatOut_struct_code}
 
-      @group(0) @binding(0) var<uniform> params: Uniforms;
-
       @vertex
       fn vtx_main(
           @builtin(vertex_index) vtx_idx: u32,
@@ -372,7 +410,6 @@ async function create_pipeline(render) {
           @location(1) axis:     vec4f,   // 2x2 matrix
           @location(2) color:    u32,
       ) -> SplatOut {
-        ${matrix_code}
         const kVtxCoords = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
           vec2f(  2., -2.), vec2f(  2.,  2.),
           vec2f( -2.,  2.), vec2f( -2., -2.),
@@ -380,8 +417,7 @@ async function create_pipeline(render) {
         var output : SplatOut;
         output.uv = kVtxCoords[vtx_idx];
         let delta = output.uv.x * axis.xy + output.uv.y * axis.zw;
-        let vtx = position.xy + delta;
-        output.position = vec4f(vtx, position.z, position.w);
+        output.position = position + vec4f(delta, 0., 0.);
         output.color = unpack4x8unorm(color);
         return output;
       }
@@ -394,13 +430,11 @@ async function create_pipeline(render) {
     };
     return `
       ${SplatOut_struct_code}
-//      ${uniforms_struct_code}
-//      @group(0) @binding(0) var<uniform> params: Uniforms;
 
       fn ellipsis(v: vec2f) -> f32 { return step(.9, length(v)) - step(1., length(v)); }
       fn small_dot(v: vec2f) -> f32 { return 1. - step(.1, length(v)); }
-      fn square(v: vec2f) -> f32 { return smoothstep(0.90, 1., max(abs(v.x), abs(v.y))); }
-      fn axis(v: vec2f) -> f32 { return 1. - smoothstep(0., .05, min(abs(v.x), abs(v.y))); }
+      fn square(v: vec2f) -> f32 { return smoothstep(0.96, 1.00, max(abs(v.x), abs(v.y))); }
+      fn axis(v: vec2f) -> f32 { return 1. - smoothstep(0.00, .05, min(abs(v.x), abs(v.y))); }
       fn cone(v: vec2f) -> f32 { return 1. - smoothstep(0., 2., length(v)); }
       fn hard_cone(v: vec2f) -> f32 { return 1. - step(2., length(v)); }
       fn filled(v: vec2f) -> f32 { return 1.; }
@@ -495,12 +529,14 @@ async function create_pipeline(render) {
     splats += nb_splats;
   }
 
+/*  BINDING NOT NEEDED FOR NOW!
   render.splats_bind_group = render.device.createBindGroup({
     layout: render.splats_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
     ],
   });
+*/
 }
 
 function init_splats_3D(device) {
@@ -588,7 +624,7 @@ async function init_render(render) {
 
 function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
   // quaternion to rotation matrix
-  const N = 2.; // N = 2. / (q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+  const N = 2. / (q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);  // for normalization
   let M = [
     1. - N * (q2 * q2 + q3 * q3),      N * (q1 * q2 + q0 * q3),      N * (q1 * q3 - q0 * q2),
          N * (q1 * q2 - q0 * q3), 1. - N * (q1 * q1 + q3 * q3),      N * (q2 * q3 + q0 * q1),
@@ -667,6 +703,8 @@ function create_synth_splats(num_splats) {
     }
     // TODO: SPH
   }
+  params.target = [0., 0., 0.];
+  params.radius = 2.;
   return [num_splats, splats];
 }
 
@@ -678,7 +716,7 @@ async function LoadURL(name) {
   const url = new URL(name, "https://huggingface.co/cakewalk/splat-data/resolve/main/");
   const req = await fetch(url, { mode: "cors", credentials: "omit", });
   if (req.status != 200) Oops("Couldn't load URL [" + req.url + "]");
-  console.log(req.url);
+  console.log("Loaded", req.url);
 
   const bytes = await req.blob();
   const data = new Uint8Array(await bytes.arrayBuffer());
@@ -720,19 +758,37 @@ async function LoadURL(name) {
                           sigma[4], sigma[5],
                                     sigma[8]], i * STRIDE + 4);  // sigma
   }
+  return [num_splats, splats];
+}
 
+function center_model() {
   // normalize positions along major axis
-  let [min, diam] = [mins[0], maxs[0] - mins[1]];
-  if (maxs[1] - mins[1] > diam) [min, diam] = [mins[1], maxs[1] - mins[1]];
-  if (maxs[2] - mins[2] > diam) [min, diam] = [mins[2], maxs[2] - mins[2]];
-  diam = 2. / diam;
-  for (let i = 0; i < num_splats; ++i) {
+  let mins = [ Infinity, Infinity, Infinity];
+  let maxs = [-Infinity,-Infinity,-Infinity];
+  const STRIDE = 12;
+  for (let i = 0; i < params.num_splats; ++i) {
+    let xyz = params.splats.slice(i * STRIDE + 0, i * STRIDE + 3);  // position
     for (let k = 0; k < 3; ++k) {
-      const mid = (maxs[k] + mins[k]) / 2.;
-      splats[i * STRIDE + 0 + k] = (splats[i * STRIDE + 0 + k] - mid) * diam;
+      mins[k] = Math.min(mins[k], xyz[k]);
+      maxs[k] = Math.max(maxs[k], xyz[k]);
     }
   }
-  return [num_splats, splats];
+  let                           [min, diam] = [mins[0], maxs[0] - mins[0]];
+  if (maxs[1] - mins[1] > diam) [min, diam] = [mins[1], maxs[1] - mins[1]];
+  if (maxs[2] - mins[2] > diam) [min, diam] = [mins[2], maxs[2] - mins[2]];
+//  params.target = [0.5 * (maxs[0] + mins[0]),
+//                   0.5 * (maxs[1] + mins[1]),
+//                   0.5 * (maxs[2] + mins[2])];
+//  params.radius = diam;
+  // diam = 2. / diam;
+  diam = 1.;
+  for (let i = 0; i < params.num_splats; ++i) {
+    for (let k = 0; k < 3; ++k) {
+      const mid = (maxs[k] + mins[k]) / 2.;
+      params.splats[i * STRIDE + k] =
+          (params.splats[i * STRIDE + k] - mid) * diam;
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -771,38 +827,43 @@ function Perspective(fx, fy, znear, zfar) {
       0.,  0.,  A, -1.,
       0.,  0.,  B, 0.]);
 }
+function Multiply4(A, B) {  // 4x4 multiply
+  let AB = [];
+  for (let j = 0; j < 4; ++j) {
+    for (let i = 0; i < 4; ++i) {
+      AB[i + j * 4] = 0.;
+      let s = 0.;
+      for (let k = 0; k < 4; ++k) s += A[j * 4 + k] * B[i + k * 4];
+      AB[i + j * 4] = s;
+    }
+  }
+  return AB;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
-var tick = 0;
-function SetUniforms() {
-  const time = params.tick * 0.1;
-  ++params.tick;
-
-  // transmit uniforms
-  const theta = params.theta * Math.PI / 180. + (params.auto_rotate ? time * .08 : 0.);
+function SetUniforms() {  // transmit uniforms
+  const theta = params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
-  params.view = LookAt([ params.radius * Math.cos(theta) * Math.cos(phi),
-                         params.radius * Math.sin(phi),
-                         params.radius * Math.sin(theta) * Math.cos(phi)],
-                       [0., 0., 0.],
+  params.view = LookAt([ params.radius * Math.cos(theta) * Math.cos(phi) + params.target[0],
+                         params.radius * Math.sin(phi)                   + params.target[1],
+                         params.radius * Math.sin(theta) * Math.cos(phi) + params.target[2],
+                       ],
+                       params.target,
                        [0., 1., 0.]);
   render.device.queue.writeBuffer(
       render.uniforms_buffer,  0 * FLOAT32_SIZE, params.view);
 
   const focal = 1. / Math.tan(params.fov * Math.PI / 360.);
-  params.proj = Perspective(focal, focal * W / H, 0.2, 2. * params.radius);
+  params.proj = Perspective(focal, focal * W / H, params.znear, params.zfar);
   render.device.queue.writeBuffer(
       render.uniforms_buffer, 16 * FLOAT32_SIZE, params.proj);
 
-  const uniforms = new Float32Array([ W, H, params.num_splats, params.scale]);
+  const uniforms = new Float32Array([
+      W, H, params.num_splats, params.haze,
+      focal, focal * W / H, params.theta, params.phi]);
   render.device.queue.writeBuffer(
       render.uniforms_buffer, 32 * FLOAT32_SIZE, uniforms);
-
-  const view_params = new Float32Array(
-      [focal, focal * W / H, params.theta, params.phi]);
-  render.device.queue.writeBuffer(
-      render.uniforms_buffer, 36 * FLOAT32_SIZE, view_params);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -810,12 +871,14 @@ function SetUniforms() {
 
 async function SortDepth(render) {
   if (params.timing) console.time("SortDepth");
-  const view = [params.view[2], params.view[6], params.view[10]];
+  // const mtx = Multiply4(param.proj, param.view);
+  const mtx = params.view;
+  const view = [mtx[2], mtx[6], mtx[10]];
   let max_depth = -Infinity, min_depth = Infinity;
   const STRIDE = 12;
   const idepths = new Int32Array(params.num_splats);
   for (let i = 0; i < params.num_splats; ++i) {
-    const depth = (16384. * dot(params.splats.slice(STRIDE * i + 0, STRIDE * i + 3), view));
+    const depth = 4096. * dot(params.splats.slice(STRIDE * i + 0, STRIDE * i + 3), view);
     if (max_depth < depth) max_depth = depth;
     if (min_depth > depth) min_depth = depth;
     idepths[i] = depth;
@@ -857,6 +920,9 @@ async function SortDepth(render) {
 
 function frame() {
   performance.mark("webgpu start");
+
+  ++params.tick;
+  if (params.auto_rotate) params.theta -= 0.07;
 
   SetUniforms();
 
@@ -903,7 +969,7 @@ function frame() {
   }
   const render_pass = encoder.beginRenderPass(pass_descriptor);
   render_pass.setPipeline(render.splats_pipeline);
-  render_pass.setBindGroup(0, render.splats_bind_group);
+//  render_pass.setBindGroup(0, render.splats_bind_group);
   render_pass.setVertexBuffer(0, render.splats_2D);
   render_pass.setIndexBuffer(render.index_buffer, 'uint32');
   render_pass.drawIndexed(6, params.num_splats);
@@ -930,24 +996,33 @@ async function init(do_init) {
     params.req_id = -1;
   }
   if (do_init == true) {
-    if (params.model == 'train') {
-      [params.num_splats, params.splats] = await LoadURL("train.splat");
-    } else if (params.model == 'nike') {
-      [params.num_splats, params.splats] = await LoadURL("nike.splat");
-      get_GUI_element('num_splats').disable();
-      get_GUI_element('random_colors').disable();
-    } else {
+    if (params.model == 'cube' || params.model == 'filled cube') {
       get_GUI_element('random_colors').enable();
       get_GUI_element('num_splats').enable();
       [params.num_splats, params.splats] =
           create_synth_splats(Math.min(100000, params.num_splats));
+    } else {
+      [params.num_splats, params.splats] = await LoadURL(params.model + ".splat");
+      if (params.model == 'train') {
+        params.phi = -16.;
+        params.theta = -25.;
+        params.radius = 1.8;
+      } else if (params.model == 'nike') {
+        center_model();
+        params.radius = 1.8;
+      } else if (params.model == 'plush') {
+        center_model();
+        params.radius = 1.8;
+      }
+      get_GUI_element('num_splats').disable();
+      get_GUI_element('random_colors').disable();
     }
     params.info = params.num_splats + " splats";
     await init_render(render);
   }
   render.device || Oops("GPU device not initialized?!");
   await create_pipeline(render);
-  params.tick = 0.;
+  params.tick = 0;
   params.last_t = Date.now();
   params.req_id = requestAnimationFrame(frame);    // start main loop
 

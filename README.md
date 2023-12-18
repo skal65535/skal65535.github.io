@@ -4,6 +4,12 @@ My day-job is -amongst other things- to write open-sourced code (like [webp](htt
 [sjpeg](https://github.com/webmproject/sjpeg)). But! I also like to write
 open-sourced code for fun :) Here are some side-projects demo pages:
 
+## [Gaussian splats](https://skal65535.github.io/splats/index.html) (aka 3DGS)
+
+   ![3DGS](https://skal65535.github.io/splats/splats.thumb.webp)
+
+   Gaussian splats are the new cool in scene rendering, here's my WebGPU version!
+
 ## [Stippling](https://skal65535.github.io/stipple/index.html) toy
 
    ![stipple](https://skal65535.github.io/stipple/stipple.thumb.webp)
