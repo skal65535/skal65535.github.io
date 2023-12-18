@@ -48,7 +48,7 @@
     <li>Loading is slow and not streamed.</li>
     <li>No Spherical Harmonics for now.</li>
     </ul>
-    
+
   <form action="https://skal65535.github.io/"
         style='position: relative; top:-260px; left:20px;'>
     <input type="submit" value="skal 2023" id="skal-2023"
@@ -365,7 +365,7 @@ async function create_pipeline(render) {
         out.color = b.color;
         let clip = 1.1 * out.position.w;
         if (any(out.position.xyz > vec3f(clip, clip, clip)) ||
-            any(out.position.xyz < vec3f(-clip, -clip, 0.))) { 
+            any(out.position.xyz < vec3f(-clip, -clip, 0.))) {
           out.color = 0u;
         } else {
           let cov2d = get_cov2d(vpos, b.sigma);  // mat2x2 = [x, z][z, y]
