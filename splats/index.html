@@ -34,7 +34,8 @@
     <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
     rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
     (WIP)</b><p>
-    On <b>Chrome 113+</b>, you need to enable the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<br/>
+    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
+    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<br/>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
@@ -52,7 +53,7 @@
     </ul>
 
   <form action="https://skal65535.github.io/"
-        style='position: relative; top:-260px; left:20px;'>
+        style='position: relative; top:-310px; left:20px;'>
     <input type="submit" value="skal 2023" id="skal-2023"
            style='border-radius: 5px; padding: 5px;
                   background: #cce; border: 3px solid #112;'
@@ -998,7 +999,8 @@ async function init(do_init) {
     cancelAnimationFrame(params.req_id);
     params.req_id = -1;
   }
-  if (do_init == true) {
+
+  if (do_init) {
     if (params.model == 'cube' || params.model == 'filled cube') {
       get_GUI_element('random_colors').enable();
       get_GUI_element('num_splats').enable();
@@ -1021,9 +1023,13 @@ async function init(do_init) {
       get_GUI_element('random_colors').disable();
     }
     params.info = params.num_splats + " splats";
+  }
+  render.device || Oops("Initialization failed. " +
+                        "Is WebGPU supported and " +
+                        "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
+  if (do_init) {
     await init_render(render);
   }
-  render.device || Oops("GPU device not initialized?!");
   await create_pipeline(render);
   params.tick = 0;
   params.last_t = Date.now();
