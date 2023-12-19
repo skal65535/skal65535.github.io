@@ -31,7 +31,7 @@
 <div id='drop-area'>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    <b><a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
+    <b>one-file <a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
     rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
     (WIP)</b><p>
     On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
@@ -48,7 +48,6 @@
     <li>Most big models will overflow the max-buffer-size-limit. 'nike', 'plush', 'train' are ok, probably.</li>
     <li>the compute-shader needs 3 rather big buffers, that's too much for the GPU.
     They should at least be packed further, but.. fp16... <a href='https://developer.chrome.com/blog/new-in-webgpu-120'>where art thou</a>?
-    <li>Loading is slow and not streamed.</li>
     <li>No Spherical Harmonics for now.</li>
     </ul>
 
@@ -146,6 +145,7 @@ const params = {
   use_depth: false,
   depth_sort: kSorts[0],
   progressive_loading: true,
+  draw_axis: false,
   mouse_on: false,
   mouse_x: 0.,
   mouse_y: 0.,
@@ -180,7 +180,7 @@ function init_GUI() {
                      name: 'WebGPU Gaussian Splatting demo'});
   gui.add(params, 'model_name', kModels.map(a => a.name)).name('model').listen().onChange(params.reload);
   gui.add(params, 'visu', kVisus).listen().onChange(params.change);
-  gui.add(params, 'haze', 1., 5., 0.05).name('haze effect (fun!)').listen().onChange(params.change);
+  gui.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(params.change);
   gui.add(params, 'depth_sort', kSorts).name('depth sorting algo').listen().onChange(params.reset);
   gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(params.reset);
   const cam_folder = gui.addFolder('camera').close();
@@ -195,6 +195,7 @@ function init_GUI() {
   dbg_folder.add(params, 'timing').name('print timing').listen();
   dbg_folder.add(params, 'use_depth').name('use depth').listen().onChange(params.reset);
   dbg_folder.add(params, 'progressive_loading').name('progressive load').listen();
+  dbg_folder.add(params, 'draw_axis').name('draw_axis').listen().onChange(params.reset);
   dbg_folder.add(params, 'stored_splats').name('in-GPU splats').listen().disable();
   gui.add(params, 'info').name('info').listen().disable();
 }
@@ -531,6 +532,7 @@ async function create_pipeline(render) {
       // unclippedDepth: true,
     },
   };
+
   if (params.use_MSAA) {
     pipeline_descriptor.multisample = { count: 4 };
   }
@@ -544,6 +546,35 @@ async function create_pipeline(render) {
   render.splats_pipeline =
       render.device.createRenderPipeline(pipeline_descriptor);
 
+  // RENDER pipeline for axis
+  const axis_code = `
+      ${uniforms_struct_code}
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+      struct TriOut { @builtin(position) position: vec4f,
+                      @location(0) @interpolate(flat) color: u32, };
+      const kAxis = array<vec3f, 9>(
+        vec3f(.0, .1, .0), vec3f(1., 0., 0.), vec3f( .0,-.1, .0),  // x-axis
+        vec3f(.0, .0, .1), vec3f(0., 1., 0.), vec3f( .0, .0,-.1),  // y-axis
+        vec3f(.1, .0, .0), vec3f(0., 0., 1.), vec3f(-.1, .0, .0),  // z-axis
+      );
+      const kColor = array<u32, 3>(0xff0000ff, 0xff00ff00, 0xffff0000);  // ABGR
+      @vertex fn vs_main(@builtin(vertex_index) vtx_idx: u32) -> TriOut {
+        return TriOut(params.proj * params.view * vec4(kAxis[vtx_idx], 1.),
+                      kColor[vtx_idx / 3]);
+      }
+      @fragment fn fs_main(f: TriOut) -> @location(0) vec4f {
+        return unpack4x8unorm(f.color);
+      }
+  `;
+  const axis_module = render.device.createShaderModule({code: axis_code});
+  render.axis_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: axis_module, entryPoint: 'vs_main', },
+    fragment: { module: axis_module, entryPoint: 'fs_main', targets: [{ format: render.textureFormat, },], },
+    primitive: { topology: 'triangle-list', cullMode: 'none', },
+    depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus', },
+  });
+
   // create bind groups
   const max_splats = params.max_splats;
   render.update_bind_groups = [];
@@ -553,7 +584,7 @@ async function create_pipeline(render) {
     const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+        { binding: 0, resource: { buffer: render.uniforms, }, },
         { binding: 1, resource: { buffer: render.splats_3D, }, },  // need the whole buffer!
         { binding: 2, resource: { buffer: render.splats_2D,
                                   offset: splats * STRIDE_2D * FLOAT32_SIZE,
@@ -571,10 +602,16 @@ async function create_pipeline(render) {
   render.splats_bind_group = render.device.createBindGroup({
     layout: render.splats_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+      { binding: 0, resource: { buffer: render.uniforms, }, },
     ],
   });
 */
+
+  render.axis_bind_group = render.device.createBindGroup({
+    layout: render.axis_pipeline.getBindGroupLayout(0),
+    entries: [ { binding: 0, resource: { buffer: render.uniforms, }, }, ],
+  });
+
   params.tick = 0;
   params.last_t = Date.now();
 }
@@ -598,7 +635,7 @@ async function init_buffers(render) {
   });
 
   // Create uniforms buffer
-  render.uniforms_buffer = render.device.createBuffer({
+  render.uniforms = render.device.createBuffer({
     size: 40 * FLOAT32_SIZE,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
@@ -635,7 +672,7 @@ async function init_buffers(render) {
   } else {
     render.multisample_texture = undefined;
   }
-  if (params.use_depth) {
+  if (params.use_depth || params.draw_axis) {
     render.depthTexture = render.device.createTexture({
       label: 'depth',
       size: [canvas.width, canvas.height],
@@ -856,7 +893,8 @@ async function FetchURL() {
   console.log("Finished loading", params.num_splats, "splats.");
 }
 
-function center_model() {   // center positions w/ box (TODO: barycenter?)
+// center positions w/ box (TODO: barycenter?)
+function center_model() {
   let mins = [ Infinity, Infinity, Infinity];
   let maxs = [-Infinity,-Infinity,-Infinity];
   for (let i = 0; i < params.num_splats; ++i) {
@@ -887,12 +925,15 @@ function cross([Ax, Ay, Az], [Bx, By, Bz]) {
 function dot([Ax, Ay, Az], [Bx, By, Bz]) {
   return Ax * Bx + Ay * By + Az * Bz;
 }
-function look_at([p_x, p_y, p_z],  // position
+function look_at([p_x, p_y, p_z],  // position relative to target
                  [t_x, t_y, t_z],  // target
                  [up_x, up_y, up_z]) {
-  const [f_x, f_y, f_z] = normalize([p_x - t_x, p_y - t_y, p_z - t_z]);
+  const [f_x, f_y, f_z] = normalize([p_x, p_y, p_z]);
   const [r_x, r_y, r_z] = normalize(cross([up_x, up_y, up_z], [f_x, f_y, f_z]));
   const [d_x, d_y, d_z] = cross([f_x, f_y, f_z], [r_x, r_y, r_z]);
+  p_x += t_x;
+  p_y += t_y;
+  p_z += t_z;
   return new Float32Array([
       r_x, d_x, f_x, 0.,
       r_y, d_y, f_y, 0.,
@@ -929,24 +970,21 @@ function SetUniforms() {
   const theta = params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
   params.view = look_at(
-      [ params.radius * Math.cos(theta) * Math.cos(phi) + params.target[0],
-        params.radius *                   Math.sin(phi) + params.target[1],
-        params.radius * Math.sin(theta) * Math.cos(phi) + params.target[2],
+      [ params.radius * Math.cos(theta) * Math.cos(phi),
+        params.radius *                   Math.sin(phi),
+        params.radius * Math.sin(theta) * Math.cos(phi),
       ],
       params.target, params.up);
-  render.device.queue.writeBuffer(
-      render.uniforms_buffer,  0 * FLOAT32_SIZE, params.view);
+  render.device.queue.writeBuffer(render.uniforms,  0 * FLOAT32_SIZE, params.view);
 
   const focal = 1. / Math.tan(params.fov * Math.PI / 360.);
   params.proj = perspective(focal, focal * W / H, params.znear, params.zfar);
-  render.device.queue.writeBuffer(
-      render.uniforms_buffer, 16 * FLOAT32_SIZE, params.proj);
+  render.device.queue.writeBuffer(render.uniforms, 16 * FLOAT32_SIZE, params.proj);
 
-  const uniforms = new Float32Array([
-      W, H, params.stored_splats, params.haze,
-      focal, focal * W / H, theta, phi]);
   render.device.queue.writeBuffer(
-      render.uniforms_buffer, 32 * FLOAT32_SIZE, uniforms);
+      render.uniforms, 32 * FLOAT32_SIZE,
+      new Float32Array([ W, H, params.stored_splats, params.haze,
+                         focal, focal * W / H, theta, phi ]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1067,13 +1105,33 @@ function frame() {
         depthLoadOp: 'clear',
         depthStoreOp: 'store', };
   }
-  const render_pass = encoder.beginRenderPass(pass_descriptor);
-  render_pass.setPipeline(render.splats_pipeline);
-//  NOT NEEDED FOR NOW! render_pass.setBindGroup(0, render.splats_bind_group);
-  render_pass.setVertexBuffer(0, render.splats_2D);
-  render_pass.setIndexBuffer(render.index_buffer, 'uint32');
-  render_pass.drawIndexed(6, params.num_splats);
-  render_pass.end();
+  {
+    const render_pass = encoder.beginRenderPass(pass_descriptor);
+    render_pass.setPipeline(render.splats_pipeline);
+  //  NOT NEEDED FOR NOW! render_pass.setBindGroup(0, render.splats_bind_group);
+    render_pass.setVertexBuffer(0, render.splats_2D);
+    render_pass.setIndexBuffer(render.index_buffer, 'uint32');
+    render_pass.drawIndexed(6, params.num_splats);
+    render_pass.end();
+  }
+
+  if (params.draw_axis) {
+    const axis_pass_descriptor = {
+      colorAttachments: [
+        { view: pass_descriptor.colorAttachments[0].view,
+          resolveTarget: pass_descriptor.colorAttachments[0].resolveTarget,
+          loadOp: 'load', storeOp: 'store', },
+      ],
+      depthStencilAttachment: {
+        view: render.depthTexture.createView(),
+        depthClearValue: 1.0, depthLoadOp: 'clear', depthStoreOp: 'store', },
+    };
+    const render_pass = encoder.beginRenderPass(axis_pass_descriptor);
+    render_pass.setPipeline(render.axis_pipeline);
+    render_pass.setBindGroup(0, render.axis_bind_group);
+    render_pass.draw(9);
+    render_pass.end();
+  }
 
   render.device.queue.submit([encoder.finish()]);
 
