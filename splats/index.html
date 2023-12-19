@@ -63,7 +63,7 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 
 <script>
 "use strict";
@@ -82,25 +82,61 @@ function parse_arg_i(arg_value, default_value, min, max) {
   if (max != undefined) v = Math.min(v, max);
   return v;
 }
+function parse_arg_s(arg_value, default_value) {
+  return args.has(arg_value) ? args.get(arg_value) : default_value;
+}
 function parse_arg_b(arg_value) { return (args.has(arg_value) == true); }
 
-const kVisus = ['gaussian', 'cone', 'hard cone', 'ellipsis', 'square', 'filled', 'axis', 'dot'];
-const kModels = ['train', 'nike', 'plush', 'truck', 'garden', 'treehill', 'stump', 'bicycle',
-                 'cube', 'filled cube'];
+const kVisuNames = {
+  'gaussian': 'gaussian', 'cone': 'cone',
+  '(ellipsis)': 'ellipsis', '(dot)': 'small_dot', '(axis)': 'axis',
+  '(hard cone)': 'hard_cone',
+  '(square)': 'square', '(filled)': 'filled',
+};
+const kVisus = Object.keys(kVisuNames);
+
+const kModels = [
+  {name: 'nike',     file: 'nike.splat',  radius: 2.5, theta: -90., phi: 20., fov: 80., center:true, },
+  {name: 'plush',    file: 'plush.splat', radius: 1.8, theta: -90., phi: 12., center:true, },
+  {name: 'train',    file: 'train.splat', radius: 3.6, theta: -95., phi: -20., target: [0., 0., 0.], },
+  {name: 'truck',    file: 'truck.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  {name: 'garden',   file: 'garden.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  {name: 'treehill', file: 'treehill.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  {name: 'stump',    file: 'stump.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  {name: 'bicycle',  file: 'bicycle.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  // synthetic models, for debug (no URL)
+  {name: '[cube]',     radius: 1.8, },
+  {name: '[galaxies]', radius: 2.1, },
+];
+const kModel0 = kModels.find(x => (x.name == parse_arg_s('model', 'nike'))) || kModels[0];
+
 const kSorts = ['CPU', 'GPU (TODO)', 'none'];
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
+
+const STRIDE_3D = 12;   // Splats3D
+const STRIDE_2D = 12;   // Splats2D
+const STRIDE_IDX = 1;   // uint32 (= 4 bytes) for instances idx
+
+// stride for .splat files, in bytes
+const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
+
 const params = {
-  num_splats: 500,
-  splats: undefined,
+  max_splats: 500,   // final number of splats (once fetch is over)
+  num_splats: 500,   // number of splats available on CPU for display
+  stored_splats: 0,  // number of splats transfered to GPU so far
+  splats: undefined, // Splat3D data
 
   fov: 90.,
   radius: 2.5,
   theta: -91.,
   phi: 30.0,
   target: [0., 0., 0.],
+  up: [0., 1., 0.],
   znear: 0.2,
   zfar: 200.,
-  model: 'nike',
+  model_name: kModel0.name,
+  model: undefined,
+
   random_colors: false,
   auto_rotate: true,
   visu: kVisus[0],
@@ -108,55 +144,66 @@ const params = {
   timing: false,
   use_MSAA: false,
   use_depth: false,
-  depth_sort: 'CPU',
+  depth_sort: kSorts[0],
+  progressive_loading: true,
   mouse_on: false,
   mouse_x: 0.,
   mouse_y: 0.,
 
   splats: undefined,
+  loading: false,   // in-flight request?
+  req: undefined,   // the open request
   fps: 0.,
   info: "",
   req_id: -1,
   last_t: 0.,
   tick: 0.,
-  record_fps: () => {
+
+  print_info: () => {
     const cur_t = Date.now();
     if (cur_t > params.last_t) {
       const new_fps = 1000. / (cur_t - params.last_t);
       params.fps = Math.round(params.fps * 0.9 + new_fps * 0.1);
       params.last_t = cur_t;
     }
+    params.info = params.fps + " fps, " + params.max_splats + " splats";
   },
 
-  reset: () => { init(true); },
-  change: () => { init(false); },
+  reset: () => { init(true, false); },
+  change: () => { init(false, false); },
+  reload: () => { init(true, true); },
 };
 
 var gui = undefined;
 function init_GUI() {
-  gui = new lil.GUI({name: 'WebGPU Gaussian Splatting demo'});
-  gui.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset).disable();
-  gui.add(params, 'fov', 0., 180., 5.).listen().onChange(params.change);
-  gui.add(params, 'radius', 0.0001, 100., 0.01).listen().onChange(params.change);
-  gui.add(params, 'theta', 0., 360., 1.).listen().onChange(params.change);
-  gui.add(params, 'phi', -180., 180., 1.).listen().onChange(params.change);
-  gui.add(params, 'haze', 1., 10., 0.1).listen().onChange(params.reset);
-  gui.add(params, 'auto_rotate').name('auto rotate').listen().onChange(params.change);
-  gui.add(params, 'model', kModels).listen().onChange(params.reset);
+  gui = new lil.GUI({container: document.getElementById('#drop-area'),
+                     name: 'WebGPU Gaussian Splatting demo'});
+  gui.add(params, 'model_name', kModels.map(a => a.name)).name('model').listen().onChange(params.reload);
   gui.add(params, 'visu', kVisus).listen().onChange(params.change);
-  gui.add(params, 'random_colors').name('random colors').listen().onChange(params.reset);
-  gui.add(params, 'use_MSAA').name('use multi-sampling').listen().onChange(params.reset);
+  gui.add(params, 'haze', 1., 5., 0.05).name('haze effect (fun!)').listen().onChange(params.change);
   gui.add(params, 'depth_sort', kSorts).name('depth sorting algo').listen().onChange(params.reset);
-  const dbg_folder = gui.addFolder('Debug');
+  gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(params.reset);
+  const cam_folder = gui.addFolder('camera').close();
+  cam_folder.add(params, 'fov', 0., 180., 5.).listen();
+  cam_folder.add(params, 'radius', 0.0001, 100., 0.01).listen();
+  cam_folder.add(params, 'theta', 0., 360., 1.).listen();
+  cam_folder.add(params, 'phi', -180., 180., 1.).listen();
+  cam_folder.add(params, 'auto_rotate').name('auto rotate').listen();
+  const dbg_folder = gui.addFolder('Debug').close();
+  dbg_folder.add(params, 'num_splats', 1, 100000, 1).listen().onChange(params.reset).disable();
+  dbg_folder.add(params, 'random_colors').name('random colors').listen().onChange(params.reset);
   dbg_folder.add(params, 'timing').name('print timing').listen();
   dbg_folder.add(params, 'use_depth').name('use depth').listen().onChange(params.reset);
-  gui.add(params, 'fps').name('fps').listen().disable();
+  dbg_folder.add(params, 'progressive_loading').name('progressive load').listen();
+  dbg_folder.add(params, 'stored_splats').name('in-GPU splats').listen().disable();
   gui.add(params, 'info').name('info').listen().disable();
 }
 
 function get_GUI_element(name) {
-  for (const c of gui.controllers) {
-    if (c.property == name) return c;
+  for (const f of gui.folders) {
+    for (const c of f.controllers) {
+      if (c.property == name) return c;
+    }
   }
   return undefined;
 }
@@ -172,12 +219,8 @@ canvas.height = H;
 
 if (parse_arg_b("dbg")) {
   params.auto_rotate = false;
-  params.model = 'nike';
+  params.model_name = kModels.find(x => x.name == 'nike').name;
   params.visu = 'gaussian';
-  params.num_splats = 50;
-  params.radius = 2;
-  params.theta = 70.;
-  params.phi = 0.;
   params.haze = 1.0;
 }
 
@@ -282,7 +325,7 @@ async function create_pipeline(render) {
     }
   `;
   const splat_struct_code = `
-    struct Splat3D {  // 12*4 bytes per splats
+    struct Splat3D {  // 12 * 4 bytes per splats (STRIDE_3D)
       position: vec4f,          // offset 0
       sigma:    array<f32, 6>,  // covariance matrix, upper half   // offset 4 * 4
       color:    u32,            // packed   offset 10 * 4
@@ -291,7 +334,7 @@ async function create_pipeline(render) {
     struct Splats3D {
       splats: array<Splat3D>,
     }
-    struct Splat2D {  // 12*4 bytes per splats
+    struct Splat2D {  // 12 * 4 bytes per splats (STRIDE_2D)
       position: vec4f,
       axis:     vec4f,  // 2x2 matrix
       color:    u32,    // packed u8
@@ -372,7 +415,7 @@ async function create_pipeline(render) {
           out.color = 0u;
         } else {
           let cov2d = get_cov2d(vpos, b.sigma);  // mat2x2 = [x, z][z, y]
-          out.axis = get_axis(vpos, cov2d);
+          out.axis = params.haze * get_axis(vpos, cov2d);
         }
 
         out_splats.splats[global_id.x] = out;
@@ -427,17 +470,12 @@ async function create_pipeline(render) {
       }
     `;
   function fs_splats_code(visu_func) {
-    const kFuncNames = {
-      'ellipsis': 'ellipsis', 'square': 'square', 'filled': 'filled',
-      'axis': 'axis', 'dot': 'small_dot', 'cone': 'cone',
-      'hard cone': 'hard_cone', 'gaussian': 'gaussian'
-    };
     return `
       ${SplatOut_struct_code}
 
-      fn ellipsis(v: vec2f) -> f32 { return step(.9, length(v)) - step(1., length(v)); }
+      fn ellipsis(v: vec2f) -> f32 { return smoothstep(.9, 1., length(v)) - step(1., length(v)); }
       fn small_dot(v: vec2f) -> f32 { return 1. - step(.1, length(v)); }
-      fn square(v: vec2f) -> f32 { return smoothstep(0.96, 1.00, max(abs(v.x), abs(v.y))); }
+      fn square(v: vec2f) -> f32 { return smoothstep(1.90, 2.00, max(abs(v.x), abs(v.y))); }
       fn axis(v: vec2f) -> f32 { return 1. - smoothstep(0.00, .05, min(abs(v.x), abs(v.y))); }
       fn cone(v: vec2f) -> f32 { return 1. - smoothstep(0., 2., length(v)); }
       fn hard_cone(v: vec2f) -> f32 { return 1. - step(2., length(v)); }
@@ -450,13 +488,13 @@ async function create_pipeline(render) {
       @fragment
       fn frag_main(vtx: SplatOut) -> @location(0) vec4f {
         if (vtx.color.a == 0.) { discard; }
-        let d = vtx.color.a * ${kFuncNames[visu_func]}(vtx.uv);
+        let d = vtx.color.a * ${visu_func}(vtx.uv);
         return vec4f(vtx.color.rgb * d, d);
       }
     `;
   }
   const vs_splats_render_module = render.device.createShaderModule({code: vs_splats_code});
-  const fs_code = fs_splats_code(params.visu);
+  const fs_code = fs_splats_code(kVisuNames[params.visu]);
   const fs_splats_render_module = render.device.createShaderModule({code: fs_code});
 
   let pipeline_descriptor = {
@@ -507,26 +545,22 @@ async function create_pipeline(render) {
       render.device.createRenderPipeline(pipeline_descriptor);
 
   // create bind groups
-  const STRIDE1 = 12 * 4;
-  const STRIDE2 = 12 * 4;
-  const STRIDE3 = 4;  // uint32 for insta
-  const max_splats = render.splats_3D.size / STRIDE1;
+  const max_splats = params.max_splats;
   render.update_bind_groups = [];
   for (let splats = 0; splats < max_splats; ) {
     const batch_size = Math.min(256, Math.ceil((max_splats - splats) / 64)) * 64;
     const nb_splats = Math.min(batch_size, max_splats - splats);
-//    console.log("splats:", splats, "num_splats:", nb_splats, "max splats:", max_splats);
     const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
         { binding: 1, resource: { buffer: render.splats_3D, }, },  // need the whole buffer!
         { binding: 2, resource: { buffer: render.splats_2D,
-                                  offset: splats * STRIDE2,
-                                  size: nb_splats * STRIDE2 }, },
+                                  offset: splats * STRIDE_2D * FLOAT32_SIZE,
+                                  size: nb_splats * STRIDE_2D * FLOAT32_SIZE, }, },
         { binding: 3, resource: { buffer: render.instances_idx,
-                                  offset: splats * STRIDE3,
-                                  size: nb_splats * STRIDE3 }, },
+                                  offset: splats * STRIDE_IDX * FLOAT32_SIZE,
+                                  size: nb_splats * STRIDE_IDX * FLOAT32_SIZE }, },
       ],
     });
     render.update_bind_groups.push([nb_splats, update_bind_group]);
@@ -541,35 +575,27 @@ async function create_pipeline(render) {
     ],
   });
 */
+  params.tick = 0;
+  params.last_t = Date.now();
 }
 
-function init_splats_3D(device) {
-  const buffer = render.device.createBuffer({
-    size: params.num_splats * 12 * FLOAT32_SIZE,
-    usage: GPUBufferUsage.STORAGE,
-    mappedAtCreation: true,
+// Create the data buffers
+async function init_buffers(render) {
+  params.stored_splats = 0;  // reset splat-transfer to GPU
+
+  // create the 3D-splat buffer that will be filled progressively
+  render.splats_3D = render.device.createBuffer({
+    size: params.max_splats * STRIDE_3D * FLOAT32_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  new Float32Array(buffer.getMappedRange()).set(params.splats);
-  buffer.unmap();
 // TODO(skal): we only need to keep the splats' positions, for SortDepth()
 //  params.splats = undefined;
-  return buffer;
-}
 
-function init_splats_2D(device) {
-  const BUFFER_SIZE = params.num_splats * 12 * FLOAT32_SIZE;
-  const splats = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
-  const buffer = render.device.createBuffer({
-    size: BUFFER_SIZE,
+  // create the 2D-splat buffer
+  render.splats_2D = render.device.createBuffer({
+    size: params.max_splats * STRIDE_2D * FLOAT32_SIZE,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
   });
-  return buffer;
-}
-
-async function init_buffers(render) {
-  // Create the data buffers and the binding groups
-  render.splats_3D = init_splats_3D(render.device);
-  render.splats_2D = init_splats_2D(render.device);
 
   // Create uniforms buffer
   render.uniforms_buffer = render.device.createBuffer({
@@ -579,12 +605,12 @@ async function init_buffers(render) {
 
   // work buffer for storing ordered instances idx
   render.instances_idx = render.device.createBuffer({
-    size: params.num_splats * FLOAT32_SIZE,
+    size: params.max_splats * FLOAT32_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  render.instances = new Uint32Array(params.num_splats);
-  for (let n = 0; n < params.num_splats; ++n) render.instances[n] = n;
+  render.instances = new Uint32Array(params.max_splats);
+  for (let n = 0; n < params.max_splats; ++n) render.instances[n] = n;
   new Uint32Array(render.instances_idx.getMappedRange()).set(render.instances);
   render.instances_idx.unmap();
 
@@ -643,10 +669,11 @@ function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
     for (let i = 0; i < 3; ++i) {
       let s = 0.;
       for (let k = 0; k < 3; ++k) s += M[i + k * 3] * M[j + k * 3];
-      S[i + j * 3] = 8. * params.haze * s;   // pre-scale by '8 * haze'
+      S[i + j * 3] = 8. * s;   // pre-scale by '8 * haze'
     }
   }
-  return S;
+  // return upper half only
+  return [S[0], S[1], S[2], S[4], S[5], S[8]];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -664,7 +691,7 @@ function create_synth_splats(num_splats) {
     let sx, sy, sz;
     const xM = 1.;
     const sM = .01;
-    if (params.model == 'cube') {
+    if (params.model.name == '[cube]') {
       const I = parseInt(Math.floor(i));
       const t = RandRange(-xM, xM);
       const u = (I & 1) ? -xM : xM;
@@ -692,85 +719,148 @@ function create_synth_splats(num_splats) {
     splats_u.set([r, g, b, a], 4 * (i * STRIDE + 10));
 
     // covariance (from matrix M = Scale * Rotation)
-    if (params.model == 'cube') {
+    if (params.model.name == '[cube]') {
       splats.set([sx, 0., 0., sy, 0., sz], i * STRIDE + 4);
     } else {
       // rotation quaternion
       const q = [RandRange(-1.0, 1.), RandRange(-1.0, 1.),
                  RandRange(-1.0, 1.), RandRange(-1.0, 1.)];
       const s = [RandRange(-sM, sM), RandRange(-sM, sM), RandRange(-sM, sM)];
-      const sigma = SigmaFromScaleRotation(s, q);
-      splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
-                            sigma[4], sigma[5],
-                                      sigma[8]], i * STRIDE + 4);
+      splats.set(SigmaFromScaleRotation(s, q), i * STRIDE + 4);
     }
     // TODO: SPH
   }
-  params.target = [0., 0., 0.];
-  params.radius = 2.;
+  params.loading = false;
+  params.auto_rotate = false;
   return [num_splats, splats];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // .splat file-loading from URL
 
-async function LoadURL(name) {
+function add_splats(num, src_u) {
+  const from = params.num_splats;
+  const dst_f = params.splats;
+  const src_f = new Float32Array(src_u.buffer);  // view as float
+  const dst_u = new Uint8Array(dst_f.buffer);    // view as uint8
+  for (let i = from; i < from + num; ++i) {
+    const off_f = (i - from) * (STRIDE_SPLAT / 4);   // float-offset
+    const xyz = src_f.slice(off_f + 0, off_f + 3);
+    dst_f.set(xyz, i * STRIDE_3D + 0);  // position
+    dst_f[i * STRIDE_3D + 3] = 1.;
+    dst_u.set(src_u.slice(4 * (off_f + 6), 4 * (off_f + 7)),
+              4 * (i * STRIDE_3D + 10));  // color
+
+    const s = src_f.slice(off_f + 3, off_f + 6);
+    const q = new Float32Array(src_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
+                .map((v) => v / 128. - 1.);
+    dst_f.set(SigmaFromScaleRotation(s, q), i * STRIDE_3D + 4);
+  }
+  params.num_splats += num;
+}
+
+// Thanks Jake! https://jakearchibald.com/2017/async-iterators-and-generators/#making-streams-iterate
+async function* streamAsyncIterator(reader) {
+  try {
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  } finally { reader.releaseLock(); }
+}
+
+async function OpenURL(name) {
 //  const url = new URL(name, "http://localhost:8000/");
   const url = new URL(name, "https://huggingface.co/cakewalk/splat-data/resolve/main/");
   const req = await fetch(url, { mode: "cors", credentials: "omit", });
   if (req.status != 200) Oops("Couldn't load URL [" + req.url + "]");
-  console.log("Loaded", req.url);
+  const bytes_length = req.headers.get('content-length');
 
-  const bytes = await req.blob();
-  const data = new Uint8Array(await bytes.arrayBuffer());
-  const data_f = new Float32Array(data.buffer);  // float view
-  const data_u = new Uint8Array(data.buffer);    // uint8 view
-  console.log("Finished loading! bytes:" + data.length);
+  // output Splats3D buffer
+  const max_splats = Math.floor(bytes_length / STRIDE_SPLAT);
+  const splats = new Float32Array(max_splats * STRIDE_3D);
 
-  const row_stride = (3 + 3 + 1 + 1);   // stride as float
-  const row_size = row_stride * FLOAT32_SIZE;  // pos, color, packed scale, packed rotation
-  let num_splats = data.length / row_size;
-  const STRIDE = 12;
-  const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
-  const splats = new Float32Array(num_splats * STRIDE);
-  const splats_u = new Uint8Array(splats.buffer);  // view as uint8
-
-  console.log("splat data: " + data.length + " bytes ( => " + num_splats + " splats)");
-
-  let mins = [ Infinity, Infinity, Infinity];
-  let maxs = [-Infinity,-Infinity,-Infinity];
-
-  for (let i = 0; i < num_splats; ++i) {
-    const off_f = i * row_stride;   // float-offset
-    const xyz = data_f.slice(off_f + 0, off_f + 3);
-    splats.set(xyz, i * STRIDE + 0);  // position
-    splats[i * STRIDE + 3] = 1.;
-    for (let k = 0; k < 3; ++k) {
-      mins[k] = Math.min(mins[k], xyz[k]);
-      maxs[k] = Math.max(maxs[k], xyz[k]);
-    }
-
-    splats_u.set(data_u.slice(4 * (off_f + 6), 4 * (off_f + 7)),
-                 4 * (i * STRIDE + 10));  // color
-
-    const s = data_f.slice(off_f + 3, off_f + 6);
-    const q = new Float32Array(data_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
-                .map((v) => v / 128. - 1.);
-    const sigma = SigmaFromScaleRotation(s, q);
-    splats.set([sigma[0], sigma[1], sigma[2],   // upper half only
-                          sigma[4], sigma[5],
-                                    sigma[8]], i * STRIDE + 4);  // sigma
-  }
-  return [num_splats, splats];
+  params.loading = true;
+  return [max_splats, splats, req];
 }
 
-function center_model() {
-  // normalize positions along major axis
+async function FetchURL() {
+  if (!params.loading || !params.req) return;  // already done?
+
+  console.log("Loading", params.req.url);
+  params.num_splats = 0;
+  params.stored_splats = 0;
+
+  if (!params.progressive_loading) {
+    // Fetch everything in one scoop
+    const bytes = await params.req.blob();
+    const data = new Uint8Array(await bytes.arrayBuffer());
+    add_splats(params.max_splats, data);
+  } else {
+    // Need to pass add_splats() a buffer aligned to multiples of STRIDE_SPLAT.
+    // => we need a scratch buffer tmp[] to store input fragments.
+    const tmp_size = 16 * STRIDE_SPLAT;
+    const tmp = new Uint8Array(tmp_size);
+    let tmp_stored = 0;  // tmp[] occupancy
+
+    const it = streamAsyncIterator(params.req.body.getReader());
+    let next_recenter = 10000;
+    for await (const chunk of it) {
+      const in_length = chunk.length;
+      let in_pos = 0;
+      // first we complete tmp[] buffer with chunk data
+      let to_copy = tmp_size - tmp_stored;
+      if (to_copy > in_length) to_copy = in_length;
+      if (to_copy > 0) {
+        tmp.set(chunk.slice(0, to_copy), tmp_stored);
+        in_pos += to_copy;
+        tmp_stored += to_copy;
+      }
+      // if tmp[] is full we convert to splats, otherwise input chunk
+      // as been exhausted without filling tmp[].
+      if (tmp_stored == tmp_size) {
+        const new_splats = Math.floor(tmp_size / STRIDE_SPLAT);
+        add_splats(new_splats, tmp);
+        tmp_stored = 0;
+      } else {
+         (in_pos == in_length) || Oops("Inconsistent stream!");
+        continue;   // not enough data in tmp[] or input chunk yet.
+      }
+      // Do we have convertible data left in chunk?
+      if (in_pos < in_length) {
+        const new_splats = Math.floor((in_length - in_pos) / STRIDE_SPLAT);
+        const to_convert = new_splats * STRIDE_SPLAT;
+        if (new_splats > 0) {
+          add_splats(new_splats, chunk.slice(in_pos, in_pos + to_convert));
+          in_pos += to_convert;
+        }
+      }
+      // If we still have a little left-over at end, place it in tmp[]
+      if (in_pos < in_length) {
+        tmp.set(chunk.slice(in_pos, in_length));
+        tmp_stored = in_length - in_pos;
+      }
+      // recenter from time to time
+      if (params.model.center && params.num_splats > next_recenter) {
+        center_model();
+        next_recenter += 10000;
+      }
+    }
+    (tmp_stored == 0) || Oops("Left over buffer! SHOULDN'T HAPPEN");
+  }
+  if (params.model.center) center_model();
+
+  params.req = undefined;  // no longer needed
+  params.loading_file = false;
+  console.log("Finished loading", params.num_splats, "splats.");
+}
+
+function center_model() {   // center positions w/ box (TODO: barycenter?)
   let mins = [ Infinity, Infinity, Infinity];
   let maxs = [-Infinity,-Infinity,-Infinity];
-  const STRIDE = 12;
   for (let i = 0; i < params.num_splats; ++i) {
-    let xyz = params.splats.slice(i * STRIDE + 0, i * STRIDE + 3);  // position
+    let xyz = params.splats.slice(i * STRIDE_3D + 0, i * STRIDE_3D + 3);
     for (let k = 0; k < 3; ++k) {
       mins[k] = Math.min(mins[k], xyz[k]);
       maxs[k] = Math.max(maxs[k], xyz[k]);
@@ -779,19 +869,9 @@ function center_model() {
   let                           [min, diam] = [mins[0], maxs[0] - mins[0]];
   if (maxs[1] - mins[1] > diam) [min, diam] = [mins[1], maxs[1] - mins[1]];
   if (maxs[2] - mins[2] > diam) [min, diam] = [mins[2], maxs[2] - mins[2]];
-//  params.target = [0.5 * (maxs[0] + mins[0]),
-//                   0.5 * (maxs[1] + mins[1]),
-//                   0.5 * (maxs[2] + mins[2])];
-//  params.radius = diam;
-  // diam = 2. / diam;
-  diam = 1.;
-  for (let i = 0; i < params.num_splats; ++i) {
-    for (let k = 0; k < 3; ++k) {
-      const mid = (maxs[k] + mins[k]) / 2.;
-      params.splats[i * STRIDE + k] =
-          (params.splats[i * STRIDE + k] - mid) * diam;
-    }
-  }
+  params.target = [(maxs[0] + mins[0]) / 2,
+                   (maxs[1] + mins[1]) / 2,
+                   (maxs[2] + mins[2]) / 2,];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -807,9 +887,9 @@ function cross([Ax, Ay, Az], [Bx, By, Bz]) {
 function dot([Ax, Ay, Az], [Bx, By, Bz]) {
   return Ax * Bx + Ay * By + Az * Bz;
 }
-function LookAt([p_x, p_y, p_z],  // position
-                [t_x, t_y, t_z],  // target
-                [up_x, up_y, up_z]) {
+function look_at([p_x, p_y, p_z],  // position
+                 [t_x, t_y, t_z],  // target
+                 [up_x, up_y, up_z]) {
   const [f_x, f_y, f_z] = normalize([p_x - t_x, p_y - t_y, p_z - t_z]);
   const [r_x, r_y, r_z] = normalize(cross([up_x, up_y, up_z], [f_x, f_y, f_z]));
   const [d_x, d_y, d_z] = cross([f_x, f_y, f_z], [r_x, r_y, r_z]);
@@ -821,7 +901,7 @@ function LookAt([p_x, p_y, p_z],  // position
       -dot([d_x, d_y, d_z], [p_x, p_y, p_z]),
       -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
 }
-function Perspective(fx, fy, znear, zfar) {
+function perspective(fx, fy, znear, zfar) {
   const A = zfar / (znear - zfar);
   const B = znear * A;
   return new Float32Array([
@@ -830,7 +910,7 @@ function Perspective(fx, fy, znear, zfar) {
       0.,  0.,  A, -1.,
       0.,  0.,  B, 0.]);
 }
-function Multiply4(A, B) {  // 4x4 multiply
+function multiply4(A, B) {  // 4x4 multiply
   let AB = [];
   for (let j = 0; j < 4; ++j) {
     for (let i = 0; i < 4; ++i) {
@@ -845,27 +925,26 @@ function Multiply4(A, B) {  // 4x4 multiply
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function SetUniforms() {  // transmit uniforms
+function SetUniforms() {
   const theta = params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
-  params.view = LookAt(
+  params.view = look_at(
       [ params.radius * Math.cos(theta) * Math.cos(phi) + params.target[0],
-        params.radius * Math.sin(phi)                   + params.target[1],
+        params.radius *                   Math.sin(phi) + params.target[1],
         params.radius * Math.sin(theta) * Math.cos(phi) + params.target[2],
       ],
-      params.target,
-      [0., 1., 0.]);
+      params.target, params.up);
   render.device.queue.writeBuffer(
       render.uniforms_buffer,  0 * FLOAT32_SIZE, params.view);
 
   const focal = 1. / Math.tan(params.fov * Math.PI / 360.);
-  params.proj = Perspective(focal, focal * W / H, params.znear, params.zfar);
+  params.proj = perspective(focal, focal * W / H, params.znear, params.zfar);
   render.device.queue.writeBuffer(
       render.uniforms_buffer, 16 * FLOAT32_SIZE, params.proj);
 
   const uniforms = new Float32Array([
-      W, H, params.num_splats, params.haze,
-      focal, focal * W / H, params.theta, params.phi]);
+      W, H, params.stored_splats, params.haze,
+      focal, focal * W / H, theta, phi]);
   render.device.queue.writeBuffer(
       render.uniforms_buffer, 32 * FLOAT32_SIZE, uniforms);
 }
@@ -915,7 +994,8 @@ async function SortDepth(render) {
 //  for (let i = N; i < params.num_splats; ++i) render.instances[i] = 0;
 
   // copy sorted instances indices
-  render.device.queue.writeBuffer(render.instances_idx, 0, render.instances.buffer);
+  render.device.queue.writeBuffer(
+    render.instances_idx, 0, render.instances.buffer);
 
   if (params.timing) console.timeEnd("SortDepth");
 }
@@ -923,12 +1003,28 @@ async function SortDepth(render) {
 ////////////////////////////////////////////////////////////////////////////////
 
 function frame() {
-  performance.mark("webgpu start");
-
   ++params.tick;
   if (params.auto_rotate) params.theta -= 0.07;
 
+  if (params.req_id >= 0) params.req_id = requestAnimationFrame(frame);
+  if (params.num_splats == 0) return;
+
+  performance.mark("webgpu start");
+
   SetUniforms();
+
+  // Show new splats by sending them to the GPU
+  if (params.stored_splats < params.num_splats) {
+    console.log("Sending", params.num_splats - params.stored_splats,
+                "new splats to GPU");
+    // we somehow have to retransmit the whole buffer so far,
+    // not just the extra trailing data...
+    render.device.queue.writeBuffer(
+        render.splats_3D, 0,
+        params.splats,    0,
+        params.num_splats * STRIDE_3D);
+    params.stored_splats = params.num_splats;
+  }
 
   if (params.depth_sort != 'none') {
     SortDepth(render);
@@ -954,11 +1050,11 @@ function frame() {
           loadOp: 'clear', storeOp: 'store', },
       ],
   };
-  const canvas_view = ctx.getCurrentTexture().createView();
-  canvas_view.label = 'CANVAS VIEW';
+  const canvas_view =
+      ctx.getCurrentTexture().createView({label: 'CANVAS'});
   if (params.use_MSAA) {
-    const MSAA_view = render.multisample_texture.createView();
-    MSAA_view.label = 'MULTISAMPLE';
+    const MSAA_view =
+        render.multisample_texture.createView({label: 'MULTISAMPLE'});
     pass_descriptor.colorAttachments[0].view = MSAA_view;
     pass_descriptor.colorAttachments[0].resolveTarget = canvas_view;
   } else {
@@ -986,15 +1082,40 @@ function frame() {
 
   performance.measure("webgpu", "webgpu start", "webgpu end");
 
-  params.record_fps();
-  if (params.req_id >= 0) params.req_id = requestAnimationFrame(frame);
+  params.print_info();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 var render = {  /* device, uniforms, pipeline... */ };
 
-async function init(do_init) {
+async function SetModel(model) {
+  params.model = model;
+  params.max_splats = 0;
+
+  if (model.file == undefined) {
+    get_GUI_element('random_colors').enable();
+    get_GUI_element('num_splats').enable();
+    [params.max_splats, params.splats] =
+        create_synth_splats(Math.max(10, Math.min(100000, params.num_splats)));
+    params.num_splats = params.max_splats;  // we already have everything
+  } else {
+    get_GUI_element('num_splats').disable();
+    get_GUI_element('random_colors').disable();
+    [params.max_splats, params.splats, params.req] = await OpenURL(model.file);
+    params.num_splats = 0;  // initiate URL transfer
+  }
+  if (model.fov)    params.fov = model.fov;
+  if (model.radius) params.radius = model.radius;
+  if (model.theta)  params.theta = model.theta;
+  if (model.phi)    params.phi = model.phi;
+  if (model.target) params.target = model.target;
+  else              params.target = [0., 0., 0.];
+  if (model.up)     params.up = model.up;
+  else              params.up = [0., 1., 0.];
+}
+
+async function init(do_init, load_model) {
   if (params.req_id != -1) {
     cancelAnimationFrame(params.req_id);
     params.req_id = -1;
@@ -1002,45 +1123,23 @@ async function init(do_init) {
   render.device || Oops("Initialization failed. " +
                         "Is WebGPU supported and " +
                         "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
-
-  if (do_init) {
-    if (params.model == 'cube' || params.model == 'filled cube') {
-      get_GUI_element('random_colors').enable();
-      get_GUI_element('num_splats').enable();
-      [params.num_splats, params.splats] =
-          create_synth_splats(Math.min(100000, params.num_splats));
-    } else {
-      [params.num_splats, params.splats] = await LoadURL(params.model + ".splat");
-      if (params.model == 'train') {
-        params.phi = -16.;
-        params.theta = -25.;
-        params.radius = 1.8;
-      } else if (params.model == 'nike') {
-        center_model();
-        params.radius = 2.5;
-      } else if (params.model == 'plush') {
-        center_model();
-        params.radius = 1.8;
-      }
-      get_GUI_element('num_splats').disable();
-      get_GUI_element('random_colors').disable();
-    }
-    params.info = params.num_splats + " splats";
+  if (load_model) {
+    await SetModel(kModels.find(x => x.name == params.model_name));
+  }
+  if (do_init) {  // set model
     await init_buffers(render);
   }
   await create_pipeline(render);
-  params.tick = 0;
-  params.last_t = Date.now();
   params.req_id = requestAnimationFrame(frame);    // start main loop
 
-//  setInterval(() => { frame(); }, 1000);
+  await FetchURL();  // start loading splats
 }
 
 async function main() {
   try {
     init_GUI();
     await init_GPU();
-    await init(true);
+    await init(true, true);
    } catch(e) { Oops(e); }
 }
 
