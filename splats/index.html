@@ -117,18 +117,6 @@ const ctx = canvas.getContext("webgpu");
 canvas.width  = parse_arg_int("w", innerWidth * .9);
 canvas.height = parse_arg_int("h", innerHeight * .8);
 
-if (parse_arg_bool("dbg")) {
-  params.auto_rotate = false;
-  params.model_name = '[cube]';
-  params.depth_sort_name = 'GPU debug';
-  params.visu = 'gaussian';
-  params.haze = 1.0;
-  params.dbg.synth_splats = 40;
-  params.radius = 2.8;
-  params.theta = 45.;
-  params.phi = 30.;
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 
 const params = {
@@ -151,7 +139,10 @@ const params = {
   visu: kVisus['gaussian'],
   haze: 1.,
   use_MSAA: false,
-  depth_sort_name: parse_arg_str('sort', 'CPU'),
+  sort_name: parse_arg_str('sort', 'CPU'),
+  sort_worksize: 8,
+  sort_groupsize: 128,
+  sort_every: 32,  // perform CPU-sort every xxx frame...
 
   // debugging
   dbg: { random_colors: false, use_depth: false, progressive: true,
@@ -160,6 +151,19 @@ const params = {
          timing: false, synth_splats: 500,
          trace: parse_arg_int('trace', 0, 0, 3), },
 };
+
+if (parse_arg_bool("dbg")) {
+  params.auto_rotate = false;
+  params.model_name = '[cube]';
+  params.sort_name = 'GPU debug';
+  params.visu = 'gaussian';
+  params.haze = 1.0;
+  params.dbg.synth_splats = 32;
+  params.dbg.trace = 0;
+  params.radius = 2.8;
+  params.theta = 45.;
+  params.phi = 30.;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // GUI setup
@@ -174,8 +178,12 @@ const GUI_init = async () => {
   render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').listen().onChange(GUI_reload);
   render.gui.add(params, 'visu', Object.keys(kVisus)).listen().onChange(GUI_change);
   render.gui.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(GUI_change);
-  render.gui.add(params, 'depth_sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(GUI_reset).disable();  // TODO(skal)!
   render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(GUI_reset);
+  const sort_folder = render.gui.addFolder('z-sort');
+  sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(GUI_reset);
+  sort_folder.add(params, 'sort_worksize', [4, 8, 16, 32, 64, 128, 256]).name('work size').listen();
+  sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen();
+  sort_folder.add(params, 'sort_every', 1, 64, 1).name('sort every...').listen();
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params, 'radius', 0.0001, 100., 0.01).listen();
@@ -196,10 +204,8 @@ const GUI_init = async () => {
 }
 
 function GUI_get(name) {
-  for (const f of render.gui.folders) {
-    for (const c of f.controllers) {
-      if (c.property == name) return c;
-    }
+  for (const c of render.gui.controllersRecursive()) {
+    if (c.property == name) return c;
   }
   return undefined;
 }
@@ -314,10 +320,9 @@ const splat_struct_code = `
     }
   `;
 
-const SORT_WSIZE = 32;
 async function create_sort_pipeline(render) {
   if (!render.depth_sort.gpu) return;
-  const sort_code = (wsize) => `
+  const sort_code = (wsize, gsize) => `
     ${uniforms_struct_code}
     ${splat_struct_code}
 
@@ -329,9 +334,10 @@ async function create_sort_pipeline(render) {
       var p = params.view * splats.splats[idx].position;
       return p.z / p.w;
     }
-    @compute @workgroup_size(${wsize}) fn main(
+    @compute @workgroup_size(1, 1, 1) fn main(
       @builtin(global_invocation_id) global_id : vec3u) {
-      let s = global_id.x * ${wsize} + params.sort_offset;
+      let id = global_id.y * ${gsize} + global_id.x;
+      let s = id * ${wsize} + params.sort_offset;
       _ = splats.splats[0];
       _ = params.view;
       for (var i : u32 = 1; i < ${wsize}; i += 1u) {
@@ -339,22 +345,25 @@ async function create_sort_pipeline(render) {
         let a = sorted_list[s + i];
         let za = depth(a);
         var j : u32 = i;
-        for (; j > 0; j -= 1u) {
-          var b = sorted_list[s + j - 1];
+        while (j > 0) {
+          let b = sorted_list[s + j - 1];
           if (za > depth(b)) {
             sorted_list[s + j] = b;
+            j -= 1;
           } else {
             break;
           }
         }
         sorted_list[s + j] = a;
       }
+//      for (var i: u32 = 0; i < ${wsize}; i += 1u) { sorted_list[s + i] = id * ${wsize} + i; }
     }
   `;
   render.sort_pipeline = render.device.createComputePipeline({
     layout: 'auto',
     compute: {
-      module: render.device.createShaderModule({code: sort_code(SORT_WSIZE)}),
+      module: render.device.createShaderModule(
+        {code: sort_code(params.sort_worksize, params.sort_groupsize)}),
       entryPoint: 'main',
     }
   });
@@ -652,13 +661,11 @@ function create_pipelines(render) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // Create the data buffers
+
 async function init_buffers(render) {
   trace(0, "Init buffers() => max_splats:", render.max_splats, ", num_splats:", render.num_splats);
   // reset splat-transfer to GPU
   render.stored_splats = 0;
-
-  // set the sorting method
-  render.depth_sort = kSorts[params.depth_sort_name];
 
   // create the 3D-splat buffer that will be filled progressively
   render.splats_3D = render.device.createBuffer({
@@ -679,29 +686,6 @@ async function init_buffers(render) {
     size: 44 * FLOAT32_SIZE,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-
-  // work buffer for storing ordered instances idx
-  let sorted_idx_usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  if (render.depth_sort.dbg) sorted_idx_usage |= GPUBufferUsage.COPY_SRC;
-  render.sorted_idx = render.device.createBuffer({
-    size: render.max_splats * FLOAT32_SIZE,
-    usage: sorted_idx_usage,
-    mappedAtCreation: true,
-  });
-  render.idx = new Uint32Array(render.max_splats);
-  for (let n = 0; n < render.max_splats; ++n) render.idx[n] = n;
-  new Uint32Array(render.sorted_idx.getMappedRange()).set(render.idx);
-  render.sorted_idx.unmap();
-
-  if (render.depth_sort.dbg) {
-    // prepare mapping buffer to retrieve the on-GPU sorted-idx
-    render.mapped_sorted_idx = render.device.createBuffer({
-      size: render.max_splats * UINT32_SIZE,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-  } else {
-    render.mapped_sorted_idx = undefined;
-  }
 
   // (fixed) index buffer
   render.index_buffer = render.device.createBuffer({
@@ -735,7 +719,122 @@ async function init_buffers(render) {
   } else {
     render.depthTexture = undefined;
   }
-};
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Sorting
+
+// CPU-based sorting
+
+async function SortDepth(render) {
+  if (params.dbg.timing) console.time("SortDepth");
+
+  // const mtx = multiply4(param.proj, param.view);
+  const mtx = render.view;
+  const view = [mtx[2], mtx[6], mtx[10]];
+  let max_depth = -Infinity, min_depth = Infinity;
+  const STRIDE = 12;
+  const idepths = new Int32Array(render.num_splats);
+  for (let i = 0; i < render.num_splats; ++i) {
+    const pos = render.splats.slice(STRIDE * i + 0, STRIDE * i + 3);
+    const depth = (4096. * (pos[0] * view[0] + pos[1] * view[1] + pos[2] * view[2])) | 0;
+    if (max_depth < depth) max_depth = depth;
+    if (min_depth > depth) min_depth = depth;
+    idepths[i] = depth;
+  }
+  // Radix sort
+  const SORT_MAX = 16384; // 256 * 256;
+  const norm = (SORT_MAX - 1) / (max_depth - min_depth);
+  const counts = new Uint32Array(SORT_MAX);
+  for (let i = 0; i < render.num_splats; ++i) {
+    const depth = idepths[i];
+    const key = ((max_depth - depth) * norm) | 0;
+    // const key = ((depth - min_depth) * norm) | 0;
+    idepths[i] = key;
+    ++counts[key];
+  }
+  let C = counts[0];
+  counts[0] = 0;
+  for (let i = 1; i < SORT_MAX; ++i) {
+    const D = counts[i];
+    counts[i] = C;
+    C += D;
+  }
+  for (let i = 0; i < render.num_splats; ++i) {
+    const pos = counts[idepths[i]]++;
+    render.idx[pos] = i;
+  }
+
+// Debug:
+//  for (let i = 0; i < 10; ++i) console.log(i, idepths[render.idx[i]]);
+//  const N = Math.max(10, Math.floor(render.num_splats * (render.tick % 100) / 100));
+//  for (let i = N; i < render.num_splats; ++i) render.idx[i] = 0;
+
+  if (params.dbg.timing) console.timeEnd("SortDepth");
+}
+
+function handle_sorting(render, encoder) {
+  let sort_cpu = render.depth_sort.cpu;
+  let sort_gpu = render.depth_sort.gpu;
+  if (Math.floor(render.tick % params.sort_every) == 0) {
+    sort_gpu = false;
+    sort_cpu = true;
+  }
+  if (sort_gpu) {
+    const compute_pass = encoder.beginComputePass();
+    compute_pass.setPipeline(render.sort_pipeline);
+    compute_pass.setBindGroup(0, render.sort_bind_group);
+    const batches = Math.ceil(render.stored_splats / params.sort_worksize);
+    const batches_group = Math.ceil(batches / params.sort_groupsize)
+    compute_pass.dispatchWorkgroups(params.sort_groupsize, batches_group);
+    compute_pass.end();
+    if (render.depth_sort.dbg) {
+      trace(2, "USING BUFFER");
+      encoder.copyBufferToBuffer(
+          render.sorted_idx, 0,
+          render.mapped_sorted_idx, 0, render.stored_splats * UINT32_SIZE);
+    }
+  } else if (sort_cpu) {
+    SortDepth(render);
+    // copy sorted instances indices
+    render.device.queue.writeBuffer(render.sorted_idx, 0, render.idx.buffer);
+  }
+}
+
+async function init_sorting(render) {
+  // set the sorting method
+  render.depth_sort = kSorts[params.sort_name];
+  if (!render.depth_sort.gpu) {
+    GUI_get('sort_groupsize').disable();
+    GUI_get('sort_worksize').disable();
+  } else {
+    GUI_get('sort_groupsize').enable();
+    GUI_get('sort_worksize').enable();
+  }
+
+  // work buffer for storing ordered instances idx
+  let sorted_idx_usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+  if (render.depth_sort.dbg) sorted_idx_usage |= GPUBufferUsage.COPY_SRC;
+  render.sorted_idx = render.device.createBuffer({
+    size: render.max_splats * FLOAT32_SIZE,
+    usage: sorted_idx_usage,
+    mappedAtCreation: true,
+  });
+  render.idx = new Uint32Array(render.max_splats);
+  for (let n = 0; n < render.max_splats; ++n) render.idx[n] = n;
+  new Uint32Array(render.sorted_idx.getMappedRange()).set(render.idx);
+  render.sorted_idx.unmap();
+
+  if (render.depth_sort.dbg) {
+    // prepare mapping buffer to retrieve the on-GPU sorted-idx
+    render.mapped_sorted_idx = render.device.createBuffer({
+      size: render.max_splats * UINT32_SIZE,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+  } else {
+    render.mapped_sorted_idx = undefined;
+  }
+}
 
 // END OF GPU PART
 ////////////////////////////////////////////////////////////////////////////////
@@ -1051,7 +1150,7 @@ function set_uniforms() {
       new Float32Array([ canvas.width, canvas.height, render.stored_splats, params.haze,
                          focal, focal * aspect, theta, phi ]));
 
-  const sort_offset = render.tick % SORT_WSIZE;
+  const sort_offset = (render.tick % 2) * (params.sort_worksize / 2);
   render.device.queue.writeBuffer(
       render.uniforms, 40 * FLOAT32_SIZE, new Uint32Array([ sort_offset ]));
 }
@@ -1074,61 +1173,9 @@ function transmit_splats_to_GPU() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// CPU-based sorting
-
-async function SortDepth(render) {
-  if (params.dbg.timing) console.time("SortDepth");
-
-  // const mtx = multiply4(param.proj, param.view);
-  const mtx = render.view;
-  const view = [mtx[2], mtx[6], mtx[10]];
-  let max_depth = -Infinity, min_depth = Infinity;
-  const STRIDE = 12;
-  const idepths = new Int32Array(render.num_splats);
-  for (let i = 0; i < render.num_splats; ++i) {
-    const depth = 4096. * dot(render.splats.slice(STRIDE * i + 0, STRIDE * i + 3), view);
-    if (max_depth < depth) max_depth = depth;
-    if (min_depth > depth) min_depth = depth;
-    idepths[i] = depth;
-  }
-  // Radix sort
-  const SORT_MAX = 16384; // 256 * 256;
-  const norm = (SORT_MAX - 1) / (max_depth - min_depth);
-  const counts = new Uint32Array(SORT_MAX);
-  for (let i = 0; i < render.num_splats; ++i) {
-    const depth = idepths[i];
-    const key = ((max_depth - depth) * norm) | 0;
-    // const key = ((depth - min_depth) * norm) | 0;
-    idepths[i] = key;
-    ++counts[key];
-  }
-  let C = counts[0];
-  counts[0] = 0;
-  for (let i = 1; i < SORT_MAX; ++i) {
-    const D = counts[i];
-    counts[i] = C;
-    C += D;
-  }
-  for (let i = 0; i < render.num_splats; ++i) {
-    const pos = counts[idepths[i]]++;
-    render.idx[pos] = i;
-  }
-
-// Debug:
-//  for (let i = 0; i < 10; ++i) console.log(i, idepths[render.idx[i]]);
-//  const N = Math.max(10, Math.floor(render.num_splats * (render.tick % 100) / 100));
-//  for (let i = N; i < render.num_splats; ++i) render.idx[i] = 0;
-
-  if (params.dbg.timing) console.timeEnd("SortDepth");
-}
-
-////////////////////////////////////////////////////////////////////////////////
 // Animation loop
 
-async function frame() {
-  ++render.tick;
-  if (params.auto_rotate) params.theta -= 0.07;
-
+async function frame(time_stamp) {
   performance.mark("webgpu start");
 
   set_uniforms();
@@ -1136,23 +1183,7 @@ async function frame() {
 
   const encoder = render.device.createCommandEncoder();
 
-  if (render.depth_sort.gpu) {
-    const compute_pass = encoder.beginComputePass();
-    compute_pass.setPipeline(render.sort_pipeline);
-    compute_pass.setBindGroup(0, render.sort_bind_group);
-    compute_pass.dispatchWorkgroups(Math.floor(render.stored_splats / SORT_WSIZE), SORT_WSIZE, SORT_WSIZE);
-    compute_pass.end();
-    if (render.depth_sort.dbg) {
-      trace(2, "USING BUFFER");
-      encoder.copyBufferToBuffer(
-        render.sorted_idx, 0,
-        render.mapped_sorted_idx, 0, render.stored_splats * UINT32_SIZE);
-    }
-  } else if (render.depth_sort.cpu) {
-    SortDepth(render);
-    // copy sorted instances indices
-    render.device.queue.writeBuffer(render.sorted_idx, 0, render.idx.buffer);
-  }
+  handle_sorting(render, encoder);
 
   if (params.dbg.timing) console.time("GPU");
 
@@ -1229,11 +1260,40 @@ async function frame() {
     trace(2, "MAPPING =>");
     await render.mapped_sorted_idx.mapAsync(GPUMapMode.READ).then(() => {
         const mapped_sorted_idx = new Uint32Array(render.mapped_sorted_idx.getMappedRange());
-        for (let i = 0; i < 40; ++i) console.log("#", i, mapped_sorted_idx[i], render.idx[i]);
+        let double = false;
+        let err = 0;
+        if (false) {
+          let seen = [];
+          for (let i = 0; i < render.num_splats; ++i) {
+            let v = mapped_sorted_idx[i];
+            if (seen.indexOf(v) >= 0) {
+              console.log("Double value", v, "at position", i);
+              double = true;
+            }
+            seen.push(v);
+            if (v != render.idx[i]) err += 1;
+          }
+        }
+        if (true) {
+          let err = 0;
+          for (let i = 0; i < render.num_splats; ++i) {
+            if (mapped_sorted_idx[i] != render.idx[i]) err += 1;
+          }
+        }
+        if (double || err > 0) {
+          console.log(err, "dup errors at tick", render.tick);
+          for (let i = 0; i < render.num_splats; ++i) {
+            console.log("#", i, mapped_sorted_idx[i], render.idx[i],
+                        (mapped_sorted_idx[i] != render.idx[i] ? "*" : " "));
+          }
+          render.depth_sort.dbg = !double;
+        }
         render.mapped_sorted_idx.unmap();
         trace(2, "UNMAPPING <=");
     });
   }
+  if (params.auto_rotate) params.theta -= 0.07;
+  ++render.tick;
   render.print_info();
   if (render.loop_id != undefined) render.loop_id = requestAnimationFrame(frame);
 }
@@ -1312,8 +1372,13 @@ async function init(do_init, load_model) {
                         "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
   stop_animation();
 
-  if (load_model) await set_model(kModels[params.model_name]);
-  if (do_init) await init_buffers(render);
+  if (load_model) {
+    await set_model(kModels[params.model_name]);
+  }
+  if (do_init) {
+    await init_buffers(render);
+    await init_sorting(render);
+  }
   create_pipelines(render);
 
   render.loop_id = requestAnimationFrame(frame);    // start animation loop
