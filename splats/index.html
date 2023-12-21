@@ -17,9 +17,14 @@
     (WIP)</b><br/>
     On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
     the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <canvas id="canvas" style='outline: 1px solid black;'></canvas>
+    <canvas id="main-canvas"'></canvas>
     <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
     <br/>
+  <canvas id="debug-canvas"
+          style='background:#000; color:#fff; outline: 1px solid black; display: none;
+                 position:relative; top:-300px;
+                 border: 3px solid #fff; border-radius: 10px;'>
+  </canvas>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
@@ -71,11 +76,11 @@ const kModels = {
 };
 
 const kSorts = {  // TODO(skal): simplify semantics!
-  'GPU':      {cpu:false, gpu:true,  every:true},
-  'GPU only': {cpu:false, gpu:true,  every:false},
-  'CPU':      {cpu:false, gpu:false, every:true},
-  'CPU full': {cpu:true,  gpu:false, every:false},
-  'none':     {cpu:false, gpu:false, every:false},
+  'GPU':      {cpu:false, gpu:true,  every:true,},
+  'GPU only': {cpu:false, gpu:true,  every:false,},
+  'CPU':      {cpu:false, gpu:false, every:true,},
+  'CPU full': {cpu:true,  gpu:false, every:false,},
+  'none':     {cpu:false, gpu:false, every:false,},
 };
 
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
@@ -103,7 +108,8 @@ function parse_arg_str(arg_value, default_value) {
 }
 function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
 
-const canvas = document.querySelector("#canvas");
+const dedug_canvas = document.querySelector("#debug-canvas");
+const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 canvas.width  = parse_arg_int("w", innerWidth * .9);
 canvas.height = parse_arg_int("h", innerHeight * .8);
@@ -131,9 +137,10 @@ const params = {
   haze: 1.,
   use_MSAA: false,
   sort_name: parse_arg_str('sort', 'GPU'),
-  sort_worksize: 8,
+  sort_sortsize: 32,
   sort_groupsize: 128,
-  sort_every: 2,  // perform CPU-sort every xxx frame...
+  sort_every: parse_arg_int('every', 8),  // perform CPU-sort every xxx frame...
+  sort_debug: parse_arg_bool('sdbg', false),  // to visualize sorted index and depths
   no_gui: parse_arg_bool('no-gui'),
 
   // debugging
@@ -177,9 +184,10 @@ const GUI_init = () => {
   render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(GUI_reset);
   const sort_folder = render.gui.addFolder('z-sort');
   sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(GUI_reset);
-  sort_folder.add(params, 'sort_worksize', [4, 8, 16, 32, 64, 128, 256]).name('work size').listen();
-  sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen();
+  sort_folder.add(params, 'sort_sortsize', [4, 8, 16, 32, 64, 128, 256]).name('sorting chunk size').listen().onChange(GUI_change);
+  sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen().onChange(GUI_change);
   sort_folder.add(params, 'sort_every', 1, 64, 1).name('CPU sort every...').listen();
+  sort_folder.add(params, 'sort_debug').name('visual debug').listen().onChange(GUI_reset);
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params, 'radius', 0.0001, 100., 0.01).listen();
@@ -257,6 +265,14 @@ const GPU_init = async () => {
   render.device = await adapter.requestDevice();
   render.device || Oops("Couldn’t request WebGPU logical device.");
   console.log("WebGPU Device acquired");
+  for (const name of ['maxComputeInvocationsPerWorkgroup',
+                      'maxComputeWorkgroupSizeX',
+                      'maxComputeWorkgroupSizeY',
+                      'maxComputeWorkgroupSizeZ',
+                      'maxComputeWorkgroupStorageSize',
+                      'maxComputeWorkgroupsPerDimension',]) {
+    console.log("  ->", name, ":", render.device.limits[name]);
+  }
 
   function onDeviceError(event) {
     console.log("Something bad happened! Error type:", event.error.constructor.name);
@@ -318,7 +334,7 @@ const splat_struct_code = `
 
 async function create_sort_pipeline(render) {
   if (!render.depth_sort.gpu) return;
-  const sort_code = (wsize, gsize) => `
+  const sort_code = (ssize, gsize) => `
     ${uniforms_struct_code}
     ${splat_struct_code}
 
@@ -327,17 +343,18 @@ async function create_sort_pipeline(render) {
     @group(0) @binding(2) var<storage, read_write> sorted_list: array<u32>;
 
     fn depth(idx: u32) -> f32 {
-      var p = params.proj * params.view * splats.splats[idx].position;
-      return -p.z / p.w;
+      var p = params.view * splats.splats[idx].position;
+      return p.z;  // note: .proj would use 'z-inverted' convention
     }
-    @compute @workgroup_size(1, 1, 1) fn main(
+    // each work unit sorts ${ssize} idx[] in isolation
+    @compute @workgroup_size(1) fn main(
       @builtin(global_invocation_id) global_id : vec3u) {
       let id = global_id.y * ${gsize} + global_id.x;
-      let s = id * ${wsize} + params.sort_offset;
+      let s = id * ${ssize} + params.sort_offset;
       _ = splats.splats[0];
       _ = params.view;
-      for (var i : u32 = 1; i < ${wsize}; i += 1u) {
-        if (s + i >= u32(params.num_splats)) { break; }
+      for (var i : u32 = 1; i < ${ssize}; i += 1u) {
+        if (s + i >= u32(params.num_splats)) { return; }
         let a = sorted_list[s + i];
         let za = depth(a);
         var j : u32 = i;
@@ -352,14 +369,13 @@ async function create_sort_pipeline(render) {
         }
         sorted_list[s + j] = a;
       }
-//      for (var i: u32 = 0; i < ${wsize}; i += 1u) { sorted_list[s + i] = id * ${wsize} + i; }
     }
   `;
   render.sort_pipeline = render.device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: render.device.createShaderModule(
-        {code: sort_code(params.sort_worksize, params.sort_groupsize)}),
+        {code: sort_code(params.sort_sortsize, params.sort_groupsize)}),
       entryPoint: 'main',
     }
   });
@@ -739,7 +755,7 @@ function SortingThread(self) {
     let max_depth = -10000000, min_depth = 10000000;
     const idepths = new Int32Array(num_splats);
     for (let i = 0; i < num_splats; ++i) {
-      const pos = splats.slice(12 * i + 0, 12 * i + 3);
+      const pos = [splats[12 * i + 0], splats[12 * i + 1], splats[12 * i + 2]];
       const depth =
           (4096. * (pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2])) | 0;
       if (max_depth < depth) max_depth = depth;
@@ -768,10 +784,6 @@ function SortingThread(self) {
       const pos = counts[idepths[i]]++;
       idx[pos] = i;
     }
-//    console.log(min_depth, max_depth);
-//    for (let i = 0; i < (num_splats > 10 ? 10 : num_splats); ++i) {
-//      console.log("*", i, idx[i], idepths[i], splats[12 * i + 0], splats[12 * i + 1], splats[12 * i + 2]);
-//    }
   };
 
   self.onmessage = (e) => {
@@ -821,13 +833,28 @@ function handle_sorting(render, encoder) {
     }
   }
   if (sort_gpu) {
-    const compute_pass = encoder.beginComputePass();
-    compute_pass.setPipeline(render.sort_pipeline);
-    compute_pass.setBindGroup(0, render.sort_bind_group);
-    const batches = Math.ceil(render.stored_splats / params.sort_worksize);
-    const batches_group = Math.ceil(batches / params.sort_groupsize)
-    compute_pass.dispatchWorkgroups(params.sort_groupsize, batches_group);
-    compute_pass.end();
+    if (render.stored_splats > 0) {
+
+      const compute_pass = encoder.beginComputePass();
+      compute_pass.setPipeline(render.sort_pipeline);
+      compute_pass.setBindGroup(0, render.sort_bind_group);
+      // the processing unit is #groupsize processing #sortsize values
+      const groupsize = params.sort_sortsize * params.sort_groupsize;
+      const batches = Math.ceil(render.stored_splats / groupsize);
+      trace(0, "SRT: queueing a sorting pass on GPU,",
+            batches, " batches of size",
+            params.sort_groupsize, " x ", params.sort_sortsize,
+            "=", groupsize * batches, "elements");
+      compute_pass.dispatchWorkgroups(params.sort_groupsize, batches);
+      compute_pass.end();
+
+      if (params.sort_debug) {
+        trace(2, "USING BUFFER");
+        encoder.copyBufferToBuffer(
+          render.sorted_idx, 0,
+          render.mapped_sorted_idx, 0, render.stored_splats * UINT32_SIZE);
+      }
+    }
   } else if (sort_cpu) {
     // if ready, copy sorted instances indices
     if (render.sort_done) {
@@ -838,12 +865,62 @@ function handle_sorting(render, encoder) {
     // launch a new sorting job
     if (!render.sort_waiting) {
       trace(0, "SRT: sending list to sort to WRK.");
+      // we don't need to resend the idx[] array, since the radix-sort
+      // will fill it from scratch, and not incrementally
       render.sort_worker.postMessage(
         { num_splats:render.stored_splats, view:render.view, proj:render.proj,
-          timing:params.dbg.timing, dbg:(params.dbg.trace > 0)});
+          timing:params.dbg.timing, dbg:(params.dbg.trace > 0) });
       render.sort_waiting = true;
     }
   }
+}
+
+function DrawArray(mtx, data, height = 320) {
+  const width = Math.min(data.length, canvas.width / 2);
+  let max = 1.;
+  for (let x = 0; x < width; ++x) {
+    if (data[x] > max) max = data[x];
+  }
+  const scale = height / max;
+
+  dedug_canvas.width = width;
+  dedug_canvas.height = height;
+  const ctx = dedug_canvas.getContext('2d');
+  ctx.font = "bold 20px Arial";
+  ctx.fillStyle = '#fff6';
+  for (let x = 0; x < width; ++x) {
+    const v = data[x] * scale;
+    ctx.fillRect(x, height - v, 1, v);
+  }
+  ctx.fillStyle = '#fff';
+  ctx.fillText("Indices", 20, 20);
+  const zdir = [mtx[2], mtx[6], mtx[10]];
+  let zmin = Infinity, zmax = -Infinity;
+  for (let x = 0; x < width; ++x) {
+    const pos = render.splats.slice(12 * data[x] + 0, 12 * data[x] + 3);
+    const z = pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2];
+    if (z < zmin) zmin = z;
+    if (z > zmax) zmax = z;
+  }
+  ctx.fillStyle = '#e3fa';
+  const zscale = height / (zmax - zmin);
+  for (let x = 0; x < width; ++x) {
+    const pos = render.splats.slice(12 * data[x] + 0, 12 * data[x] + 3);
+    const z = zscale * (pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2] - zmin);
+    ctx.fillRect(x, height - z, 1, z);
+  }
+  ctx.fillStyle = '#e3f';
+  ctx.fillText("Depth keys", 20, 50);
+}
+
+async function debug_sort(render) {
+  if (render.mapped_sorted_idx == undefined) return;
+  // const mtx = multiply4(render.proj, render.view);
+  const mtx = render.view;
+  await render.mapped_sorted_idx.mapAsync(GPUMapMode.READ);
+  const u32 = new Uint32Array(await render.mapped_sorted_idx.getMappedRange());
+  DrawArray(mtx, u32);
+  render.mapped_sorted_idx.unmap();
 }
 
 async function init_sorting(render) {
@@ -852,18 +929,10 @@ async function init_sorting(render) {
 
   // adapt the UI
   if (render.gui) {
-    if (render.depth_sort.gpu) {
-      GUI_get('sort_groupsize').enable();
-      GUI_get('sort_worksize').enable();
-    } else {
-      GUI_get('sort_groupsize').disable();
-      GUI_get('sort_worksize').disable();
-    }
-    if (render.depth_sort.every) {
-      GUI_get('sort_every').enable();
-    } else {
-      GUI_get('sort_every').disable();
-    }
+    GUI_get('sort_groupsize').enable(render.depth_sort.gpu);
+    GUI_get('sort_sortsize').enable(render.depth_sort.gpu);
+    GUI_get('sort_debug').enable(render.depth_sort.gpu);
+    GUI_get('sort_every').enable(render.depth_sort.every);
   }
 
   // launch the worker if needed
@@ -875,7 +944,8 @@ async function init_sorting(render) {
   // work buffer for storing ordered instances idx
   render.sorted_idx = render.device.createBuffer({
     size: render.max_splats * UINT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST |
+           (params.sort_debug ? GPUBufferUsage.COPY_SRC : 0),
     mappedAtCreation: true,
   });
   new Uint32Array(render.sorted_idx.getMappedRange()).set(render.idx);
@@ -887,6 +957,18 @@ async function init_sorting(render) {
                                    splats_buffer: render.splats.buffer,
                                    idx_buffer:render.idx.buffer,
                                    dbg:(params.dbg.trace > 0), });
+
+  // debug: prepare mapping buffer to retrieve the on-GPU sorted-idx
+  if (params.sort_debug && !GUI_get('sort_debug')._disabled) {
+    render.mapped_sorted_idx = render.device.createBuffer({
+      size: render.max_splats * UINT32_SIZE,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    dedug_canvas.style.display = 'inline-block';
+  } else {
+    render.mapped_sorted_idx = undefined;
+    dedug_canvas.style.display = 'none';
+  }
 }
 
 // END OF GPU PART
@@ -1207,7 +1289,7 @@ function set_uniforms() {
       new Float32Array([ canvas.width, canvas.height, render.stored_splats, params.haze,
                          focal, focal * aspect, theta, phi ]));
 
-  const sort_offset = (render.tick % 2) * (params.sort_worksize / 2);
+  const sort_offset = (render.tick % 2) * (params.sort_sortsize / 2);
   render.device.queue.writeBuffer(
       render.uniforms, 40 * FLOAT32_SIZE, new Uint32Array([ sort_offset ]));
 }
@@ -1324,6 +1406,8 @@ async function frame() {
 
   performance.measure("webgpu", "webgpu start", "webgpu end");
 
+  if (params.sort_debug) await debug_sort(render);
+
   if (params.auto_rotate) params.theta -= 0.07;
   ++render.tick;
   if (render.loop_id != undefined) render.loop_id = requestAnimationFrame(frame);
@@ -1378,13 +1462,9 @@ async function set_model(model) {
 
   CancelFetchURL();
   if (render.gui) {
-    if (model.file == undefined) {
-      GUI_get('synth_splats').enable();
-      GUI_get('random_colors').enable();
-    } else {
-      GUI_get('synth_splats').disable();
-      GUI_get('random_colors').disable();
-    }
+    const with_synth = (model.file == undefined);
+    GUI_get('synth_splats').enable(with_synth);
+    GUI_get('random_colors').enable(with_synth);
   }
   if (model.file == undefined) {
     await create_synth_splats();
