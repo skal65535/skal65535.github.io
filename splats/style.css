@@ -1,0 +1,27 @@
+#main-area {
+  border: 3px dashed #ccc; border-radius: 20px;
+  margin: 5px auto; padding: 5px;
+  background: #eef;
+}
+#canvas {
+  z-index:0;
+  border: 2px solid #000; border-radius: 20px;
+  margin: 0px;
+  background: #000;
+  box-shadow: 0 0 8px black;
+}
+#info {
+  z-index: 999;
+  position: absolute;
+  bottom: 180px; right: 40px;
+  background: #cce; color:#112;
+  border: 3px solid; border-radius: 5px; padding: 5px;
+}
+#skal-2023 {
+  border: 3px solid; border-radius: 5px; padding: 5px;
+  background: #cce;
+  position: absolute; bottom:180px; left:40px;
+}
+.lil-gui {
+  border-radius: 15px; padding: 5px;
+}
