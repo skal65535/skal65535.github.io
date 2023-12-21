@@ -6,39 +6,29 @@
 
 <head>
 <title>Gaussian Splat rendering with WebGPU</title>
+<link rel="stylesheet" href="style.css">
 </head>
 
-<style>
-#drop-area {
-  border: 3px dashed #ccc; border-radius: 20px;
-  margin: 5px auto; padding: 5px;
-  background: #eef;
-}
-#canvas {
-  z-index:0;
-  border: 2px solid #000; border-radius: 20px;
-  margin: 0px;
-  background: #000;
-  box-shadow: 0 0 8px black;
-}
-</style>
-
 <body onload="main();">
-
-<div id='drop-area'>
+<div id='main-area'>
   <center>
-    <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
     <b>one-file <a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
     rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
-    (WIP)</b><p>
+    (WIP)</b><br/>
     On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
-    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<br/>
+    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
+    <canvas id="canvas" style='outline: 1px solid black;'></canvas>
+    <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
+    <br/>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
     The vertex shader generates a well-oriented Quad suitable for vertex indexation.<br/>
     The fragment shader has several 'visu' functions, other than the expected 'gaussian'.
-    <i>Try 'cone', it looks good too!</i>
+    <i>Try 'cone', it looks good too!</i><br/>
+    The exact depth-sort is done on CPU at regular intervals (it's a
+    web-worker), while the GPU is doing an incremental insertion-sort [WIP!]
+    to keep the splats approximately sorted while the CPU is working for real.<br/>
     <ul>
     KNOWN BUGS / LIMITATIONS:
     <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering. This is the bottleneck.</li>
@@ -48,13 +38,10 @@
     <li>No Spherical Harmonics for now.</li>
     </ul>
 
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-310px; left:20px;'>
+  <form action="https://skal65535.github.io/">
     <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 3px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
+                 onmouseover='this.style.background="#cdf"'
+                 onmouseout='this.style.background="#cce"'/>
   </form>
 </div>
 
@@ -83,8 +70,12 @@ const kModels = {
   '[galaxies]': {  radius: 2.1, },
 };
 
-const kSorts = {
-  'CPU': {cpu:true}, 'GPU': {gpu: true}, 'none': {}, 'GPU debug': {gpu: true, dbg: true}
+const kSorts = {  // TODO(skal): simplify semantics!
+  'GPU':      {cpu:false, gpu:true,  every:true},
+  'GPU only': {cpu:false, gpu:true,  every:false},
+  'CPU':      {cpu:false, gpu:false, every:true},
+  'CPU full': {cpu:true,  gpu:false, every:false},
+  'none':     {cpu:false, gpu:false, every:false},
 };
 
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
@@ -139,10 +130,11 @@ const params = {
   visu: kVisus['gaussian'],
   haze: 1.,
   use_MSAA: false,
-  sort_name: parse_arg_str('sort', 'CPU'),
+  sort_name: parse_arg_str('sort', 'GPU'),
   sort_worksize: 8,
   sort_groupsize: 128,
-  sort_every: 32,  // perform CPU-sort every xxx frame...
+  sort_every: 2,  // perform CPU-sort every xxx frame...
+  no_gui: parse_arg_bool('no-gui'),
 
   // debugging
   dbg: { random_colors: false, use_depth: false, progressive: true,
@@ -155,7 +147,7 @@ const params = {
 if (parse_arg_bool("dbg")) {
   params.auto_rotate = false;
   params.model_name = '[cube]';
-  params.sort_name = 'GPU debug';
+  params.sort_name = 'GPU';
   params.visu = 'gaussian';
   params.haze = 1.0;
   params.dbg.synth_splats = 32;
@@ -169,11 +161,15 @@ if (parse_arg_bool("dbg")) {
 // GUI setup
 
 const GUI_change = async () => { await init(false, false); }  // parameter changed
-const GUI_reset  = async () => { await init(true, false); }  // need to reset the buffers
-const GUI_reload = async () => { await init(true, true); }  // (re)load a model
+const GUI_reset  = async () => { await init(true, false); }   // need to reset the buffers
+const GUI_reload = async () => { await init(true, true); }    // (re)load a model
 
-const GUI_init = async () => {
-  render.gui = new lil.GUI({container: document.getElementById('#drop-area'),
+const GUI_init = () => {
+  if (params.no_gui) {
+    render.gui = undefined;
+    return;
+  }
+  render.gui = new lil.GUI({container: document.getElementById('#main-area'),
                             name: 'WebGPU Gaussian Splatting demo'});
   render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').listen().onChange(GUI_reload);
   render.gui.add(params, 'visu', Object.keys(kVisus)).listen().onChange(GUI_change);
@@ -183,7 +179,7 @@ const GUI_init = async () => {
   sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(GUI_reset);
   sort_folder.add(params, 'sort_worksize', [4, 8, 16, 32, 64, 128, 256]).name('work size').listen();
   sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen();
-  sort_folder.add(params, 'sort_every', 1, 64, 1).name('sort every...').listen();
+  sort_folder.add(params, 'sort_every', 1, 64, 1).name('CPU sort every...').listen();
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params, 'radius', 0.0001, 100., 0.01).listen();
@@ -220,8 +216,8 @@ window.addEventListener('pointermove', (event) => {
   const mouse_x = (event.clientX - bounds.left) / canvas.width;
   const mouse_y = (event.clientY -  bounds.top) / canvas.height;
   if (params.mouse.on) {
-    params.phi   += (params.mouse.y - mouse_y) * 90.;
-    params.theta += (params.mouse.x - mouse_x) * 90.;
+    params.phi   += (params.mouse.y - mouse_y) * 140.;
+    params.theta += (params.mouse.x - mouse_x) * 140.;
   }
   params.mouse.x = mouse_x;
   params.mouse.y = mouse_y;
@@ -331,8 +327,8 @@ async function create_sort_pipeline(render) {
     @group(0) @binding(2) var<storage, read_write> sorted_list: array<u32>;
 
     fn depth(idx: u32) -> f32 {
-      var p = params.view * splats.splats[idx].position;
-      return p.z / p.w;
+      var p = params.proj * params.view * splats.splats[idx].position;
+      return -p.z / p.w;
     }
     @compute @workgroup_size(1, 1, 1) fn main(
       @builtin(global_invocation_id) global_id : vec3u) {
@@ -656,14 +652,16 @@ function create_pipelines(render) {
   create_splats_pipeline(render),
   create_axis_pipeline(render),
   render.tick = 0;
-  render.last_t = Date.now();
+  render.time_stamp = undefined;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Create the data buffers
 
 async function init_buffers(render) {
-  trace(0, "Init buffers() => max_splats:", render.max_splats, ", num_splats:", render.num_splats);
+  trace(0, "Init buffers() => max_splats:", render.max_splats,
+        ", num_splats:", render.num_splats);
+
   // reset splat-transfer to GPU
   render.stored_splats = 0;
 
@@ -681,6 +679,9 @@ async function init_buffers(render) {
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
   });
 
+  // shared storage for sorted idx
+  render.idx = new Uint32Array(new ArrayBuffer(render.max_splats * UINT32_SIZE));
+  for (let n = 0; n < render.max_splats; ++n) render.idx[n] = n;
   // Create uniforms buffer
   render.uniforms = render.device.createBuffer({
     size: 44 * FLOAT32_SIZE,
@@ -722,63 +723,102 @@ async function init_buffers(render) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Sorting
+// CPU-based sorting, using a web worker
+//
+//  It runs in parallel to the GPU incremental and incomplete per-frame sorting
 
-// CPU-based sorting
+function SortingThread(self) {
+  let splats = undefined;
+  let max_splats = 0;
+  let idx = undefined;
 
-async function SortDepth(render) {
-  if (params.dbg.timing) console.time("SortDepth");
+  const SortDepth = (view, proj, num_splats) => {
+    // const mtx = multiply4(proj, view);
+    const mtx = view;
+    const zdir = [mtx[2], mtx[6], mtx[10]];
+    let max_depth = -10000000, min_depth = 10000000;
+    const idepths = new Int32Array(num_splats);
+    for (let i = 0; i < num_splats; ++i) {
+      const pos = splats.slice(12 * i + 0, 12 * i + 3);
+      const depth =
+          (4096. * (pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2])) | 0;
+      if (max_depth < depth) max_depth = depth;
+      if (min_depth > depth) min_depth = depth;
+      idepths[i] = depth;
+    }
+    // Radix sort
+    const SORT_MAX = 16384; // 256 * 256;
+    const norm = (SORT_MAX - 1) / (max_depth - min_depth);
+    const counts = new Uint32Array(SORT_MAX);
+    for (let i = 0; i < num_splats; ++i) {
+      const depth = idepths[i];
+      const key = ((max_depth - depth) * norm) | 0;
+      // const key = ((depth - min_depth) * norm) | 0;
+      idepths[i] = key;
+      ++counts[key];
+    }
+    let C = counts[0];
+    counts[0] = 0;
+    for (let i = 1; i < SORT_MAX; ++i) {
+      const D = counts[i];
+      counts[i] = C;
+      C += D;
+    }
+    for (let i = 0; i < num_splats; ++i) {
+      const pos = counts[idepths[i]]++;
+      idx[pos] = i;
+    }
+//    console.log(min_depth, max_depth);
+//    for (let i = 0; i < (num_splats > 10 ? 10 : num_splats); ++i) {
+//      console.log("*", i, idx[i], idepths[i], splats[12 * i + 0], splats[12 * i + 1], splats[12 * i + 2]);
+//    }
+  };
 
-  // const mtx = multiply4(param.proj, param.view);
-  const mtx = render.view;
-  const view = [mtx[2], mtx[6], mtx[10]];
-  let max_depth = -Infinity, min_depth = Infinity;
-  const STRIDE = 12;
-  const idepths = new Int32Array(render.num_splats);
-  for (let i = 0; i < render.num_splats; ++i) {
-    const pos = render.splats.slice(STRIDE * i + 0, STRIDE * i + 3);
-    const depth = (4096. * (pos[0] * view[0] + pos[1] * view[1] + pos[2] * view[2])) | 0;
-    if (max_depth < depth) max_depth = depth;
-    if (min_depth > depth) min_depth = depth;
-    idepths[i] = depth;
-  }
-  // Radix sort
-  const SORT_MAX = 16384; // 256 * 256;
-  const norm = (SORT_MAX - 1) / (max_depth - min_depth);
-  const counts = new Uint32Array(SORT_MAX);
-  for (let i = 0; i < render.num_splats; ++i) {
-    const depth = idepths[i];
-    const key = ((max_depth - depth) * norm) | 0;
-    // const key = ((depth - min_depth) * norm) | 0;
-    idepths[i] = key;
-    ++counts[key];
-  }
-  let C = counts[0];
-  counts[0] = 0;
-  for (let i = 1; i < SORT_MAX; ++i) {
-    const D = counts[i];
-    counts[i] = C;
-    C += D;
-  }
-  for (let i = 0; i < render.num_splats; ++i) {
-    const pos = counts[idepths[i]]++;
-    render.idx[pos] = i;
-  }
+  self.onmessage = (e) => {
+    if (e.data.splats_buffer) {
+      if (e.data.dbg) console.log("WRK: Received shared splats data:", e.data.max_splats);
+      max_splats = e.data.max_splats;
+      splats = new Float32Array(e.data.splats_buffer);
+      idx = new Uint32Array(e.data.idx_buffer);
+    } else if (e.data.view) {
+      if (e.data.dbg) console.log("WRK: Received sorting task:", e.data.num_splats, "/", max_splats);
+      if (e.data.timing) console.time("SortDepth");
+      SortDepth(e.data.view, e.data.proj, e.data.num_splats);
+      if (e.data.timing) console.timeEnd("SortDepth");
+      if (e.data.dbg) console.log("WRK: Done sorting, sending back");
+      self.postMessage({done:true, idx:idx.buffer});
+    }
+  };
+}
 
-// Debug:
-//  for (let i = 0; i < 10; ++i) console.log(i, idepths[render.idx[i]]);
-//  const N = Math.max(10, Math.floor(render.num_splats * (render.tick % 100) / 100));
-//  for (let i = N; i < render.num_splats; ++i) render.idx[i] = 0;
-
-  if (params.dbg.timing) console.timeEnd("SortDepth");
+function create_sort_worker(render) {
+  const sort_worker = new Worker(
+    URL.createObjectURL(new Blob(["(", SortingThread.toString(), ")(self)"],
+                                 { type: "application/javascript", })));
+  sort_worker.onmessage = (e) => {
+    trace(0, "SRT: Received back the sorted list (done:", e.data.done, ")");
+    if (render.sort_discard || !render.sort_waiting) {
+      trace(0, "SRT: ... but discarding the result.");
+      render.sort_discard = false;
+      render.sort_done = false;
+    } else {
+      render.idx = new Uint8Array(e.data.idx);
+      render.sort_done = true;
+//      for (let i = 0; i < 10; ++i) console.log(i, render.idx[i]);
+    }
+    render.sort_waiting = false;
+  };
+  return sort_worker;
 }
 
 function handle_sorting(render, encoder) {
   let sort_cpu = render.depth_sort.cpu;
   let sort_gpu = render.depth_sort.gpu;
-  if (Math.floor(render.tick % params.sort_every) == 0) {
-    sort_gpu = false;
-    sort_cpu = true;
+  if (render.depth_sort.every) {
+    if ((render.tick % params.sort_every) == 0) {
+      sort_cpu = true;
+      sort_gpu = false;
+    }
   }
   if (sort_gpu) {
     const compute_pass = encoder.beginComputePass();
@@ -788,52 +828,65 @@ function handle_sorting(render, encoder) {
     const batches_group = Math.ceil(batches / params.sort_groupsize)
     compute_pass.dispatchWorkgroups(params.sort_groupsize, batches_group);
     compute_pass.end();
-    if (render.depth_sort.dbg) {
-      trace(2, "USING BUFFER");
-      encoder.copyBufferToBuffer(
-          render.sorted_idx, 0,
-          render.mapped_sorted_idx, 0, render.stored_splats * UINT32_SIZE);
-    }
   } else if (sort_cpu) {
-    SortDepth(render);
-    // copy sorted instances indices
-    render.device.queue.writeBuffer(render.sorted_idx, 0, render.idx.buffer);
+    // if ready, copy sorted instances indices
+    if (render.sort_done) {
+      trace(0, "SRT: sending sorted list to GPU.");
+      render.device.queue.writeBuffer(render.sorted_idx, 0, render.idx.buffer);
+      render.sort_done = false;
+    }
+    // launch a new sorting job
+    if (!render.sort_waiting) {
+      trace(0, "SRT: sending list to sort to WRK.");
+      render.sort_worker.postMessage(
+        { num_splats:render.stored_splats, view:render.view, proj:render.proj,
+          timing:params.dbg.timing, dbg:(params.dbg.trace > 0)});
+      render.sort_waiting = true;
+    }
   }
 }
 
 async function init_sorting(render) {
   // set the sorting method
   render.depth_sort = kSorts[params.sort_name];
-  if (!render.depth_sort.gpu) {
-    GUI_get('sort_groupsize').disable();
-    GUI_get('sort_worksize').disable();
-  } else {
-    GUI_get('sort_groupsize').enable();
-    GUI_get('sort_worksize').enable();
+
+  // adapt the UI
+  if (render.gui) {
+    if (render.depth_sort.gpu) {
+      GUI_get('sort_groupsize').enable();
+      GUI_get('sort_worksize').enable();
+    } else {
+      GUI_get('sort_groupsize').disable();
+      GUI_get('sort_worksize').disable();
+    }
+    if (render.depth_sort.every) {
+      GUI_get('sort_every').enable();
+    } else {
+      GUI_get('sort_every').disable();
+    }
+  }
+
+  // launch the worker if needed
+  if (render.sort_worker == undefined) {
+    render.sort_worker = create_sort_worker(render);
+    render.sort_discard = false;
   }
 
   // work buffer for storing ordered instances idx
-  let sorted_idx_usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  if (render.depth_sort.dbg) sorted_idx_usage |= GPUBufferUsage.COPY_SRC;
   render.sorted_idx = render.device.createBuffer({
-    size: render.max_splats * FLOAT32_SIZE,
-    usage: sorted_idx_usage,
+    size: render.max_splats * UINT32_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  render.idx = new Uint32Array(render.max_splats);
-  for (let n = 0; n < render.max_splats; ++n) render.idx[n] = n;
   new Uint32Array(render.sorted_idx.getMappedRange()).set(render.idx);
   render.sorted_idx.unmap();
 
-  if (render.depth_sort.dbg) {
-    // prepare mapping buffer to retrieve the on-GPU sorted-idx
-    render.mapped_sorted_idx = render.device.createBuffer({
-      size: render.max_splats * UINT32_SIZE,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-  } else {
-    render.mapped_sorted_idx = undefined;
-  }
+  // set-up the buffers shared with sort_worker
+  trace(0, "SRT: Sending initial shared buffers (max_splats:", render.max_splats, ")");
+  render.sort_worker.postMessage({ max_splats: render.max_splats,
+                                   splats_buffer: render.splats.buffer,
+                                   idx_buffer:render.idx.buffer,
+                                   dbg:(params.dbg.trace > 0), });
 }
 
 // END OF GPU PART
@@ -924,8 +977,8 @@ function create_synth_splats() {
 function add_splats(num, src_u) {
   const from = render.num_splats;
   trace(1, "CPU: Added", num, "splats ( currently:", from, ", now:", from + num, ")");
-  const dst_f = render.splats;
   const src_f = new Float32Array(src_u.buffer);  // view as float
+  const dst_f = render.splats;
   const dst_u = new Uint8Array(dst_f.buffer);    // view as uint8
   for (let i = from; i < from + num; ++i) {
     const off_f = (i - from) * (STRIDE_SPLAT / 4);   // float-offset
@@ -941,6 +994,10 @@ function add_splats(num, src_u) {
     dst_f.set(SigmaFromScaleRotation(s, q), i * STRIDE_3D + 4);
   }
   render.num_splats += num;
+  render.sort_worker.postMessage({ max_splats: render.max_splats,
+                                   splats_buffer: render.splats.buffer,
+                                   idx_buffer:render.idx.buffer,
+                                   dbg:(params.dbg.trace > 0), });
 }
 
 // Thanks Jake! https://jakearchibald.com/2017/async-iterators-and-generators/#making-streams-iterate
@@ -974,7 +1031,7 @@ async function OpenURL(name) {
   render.num_splats = 0;     // initiate URL transfer
   render.stored_splats = 0;  // restart GPU transfer
   render.max_splats = max_splats;
-  render.splats = new Float32Array(max_splats * STRIDE_3D);
+  render.splats = new Float32Array(new ArrayBuffer(max_splats * STRIDE_3D * FLOAT32_SIZE));
   trace(0, "allocated buffer for Splats3D with max_splats =" , max_splats);
   render.loading = true;
 }
@@ -1175,7 +1232,19 @@ function transmit_splats_to_GPU() {
 ////////////////////////////////////////////////////////////////////////////////
 // Animation loop
 
-async function frame(time_stamp) {
+async function frame() {
+  const time_stamp = performance.now();
+  if (render.time_stamp) {
+    const delta_t = time_stamp - render.time_stamp;
+    if (delta_t > 1.) {
+      const new_fps = 1000. / delta_t;
+      render.fps = Math.round(render.fps * 0.8 + new_fps * 0.2);
+    }
+    render.info = render.max_splats + " splats";
+    document.getElementById("fps").innerText = render.fps.toFixed(1) + " fps";
+  }
+  render.time_stamp = time_stamp;
+
   performance.mark("webgpu start");
 
   set_uniforms();
@@ -1255,46 +1324,8 @@ async function frame(time_stamp) {
 
   performance.measure("webgpu", "webgpu start", "webgpu end");
 
-  if (render.depth_sort.dbg) {
-    SortDepth(render);
-    trace(2, "MAPPING =>");
-    await render.mapped_sorted_idx.mapAsync(GPUMapMode.READ).then(() => {
-        const mapped_sorted_idx = new Uint32Array(render.mapped_sorted_idx.getMappedRange());
-        let double = false;
-        let err = 0;
-        if (false) {
-          let seen = [];
-          for (let i = 0; i < render.num_splats; ++i) {
-            let v = mapped_sorted_idx[i];
-            if (seen.indexOf(v) >= 0) {
-              console.log("Double value", v, "at position", i);
-              double = true;
-            }
-            seen.push(v);
-            if (v != render.idx[i]) err += 1;
-          }
-        }
-        if (true) {
-          let err = 0;
-          for (let i = 0; i < render.num_splats; ++i) {
-            if (mapped_sorted_idx[i] != render.idx[i]) err += 1;
-          }
-        }
-        if (double || err > 0) {
-          console.log(err, "dup errors at tick", render.tick);
-          for (let i = 0; i < render.num_splats; ++i) {
-            console.log("#", i, mapped_sorted_idx[i], render.idx[i],
-                        (mapped_sorted_idx[i] != render.idx[i] ? "*" : " "));
-          }
-          render.depth_sort.dbg = !double;
-        }
-        render.mapped_sorted_idx.unmap();
-        trace(2, "UNMAPPING <=");
-    });
-  }
   if (params.auto_rotate) params.theta -= 0.07;
   ++render.tick;
-  render.print_info();
   if (render.loop_id != undefined) render.loop_id = requestAnimationFrame(frame);
 }
 
@@ -1317,7 +1348,11 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   stored_splats: 0,  // number of splats transfered to GPU so far
   splats: undefined, // Splat3D data
 
-  depth_sort: undefined,  // one of kSorts[]
+  depth_sort: undefined,    // one of kSorts[]
+  sort_worker: undefined,   // worker for depth-sorting
+  sort_done:    false,
+  sort_discard: false,
+  sort_waiting: false,
   view: undefined,
   proj: undefined,
 
@@ -1326,37 +1361,35 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   req: undefined,   // the open request
   reader: undefined,
   fps: 0.,
+  time_stamp: undefined,
   info: "",
   loop_id: undefined,  // id for animation loop
-  last_t: 0.,
   tick: 0.,
 
   gui: undefined,
-
-  print_info: () => {
-    const cur_t = Date.now();
-    if (cur_t > render.last_t) {
-      const new_fps = 1000. / (cur_t - render.last_t);
-      render.fps = Math.round(render.fps * 0.9 + new_fps * 0.1);
-      render.last_t = cur_t;
-    }
-    render.info = render.fps + " fps, " + render.max_splats + " splats";
-  },
 };
 
 async function set_model(model) {
+  if (render.sort_worker) {
+    render.sort_discard = true;
+  }
   render.model = model;
   render.max_splats = 0;
 
   CancelFetchURL();
+  if (render.gui) {
+    if (model.file == undefined) {
+      GUI_get('synth_splats').enable();
+      GUI_get('random_colors').enable();
+    } else {
+      GUI_get('synth_splats').disable();
+      GUI_get('random_colors').disable();
+    }
+  }
   if (model.file == undefined) {
     await create_synth_splats();
-    GUI_get('synth_splats').enable();
-    GUI_get('random_colors').enable();
   } else {
     await OpenURL(model.file);
-    GUI_get('synth_splats').disable();
-    GUI_get('random_colors').disable();
   }
   // set camera params if needed
   params.fov    = model.fov    || params.fov;
@@ -1365,6 +1398,8 @@ async function set_model(model) {
   params.phi    = model.phi    || params.phi;
   params.target = model.target || [0., 0., 0.];
   params.up     = model.up     || [0., 1., 0.];
+
+  render.info = render.max_splats + " splats";
 }
 
 async function init(do_init, load_model) {
@@ -1381,17 +1416,18 @@ async function init(do_init, load_model) {
   }
   create_pipelines(render);
 
-  render.loop_id = requestAnimationFrame(frame);    // start animation loop
+  render.loop_id = 0;
+  frame();    // start animation loop
 
   if (render.loading) await FetchURL();  // start loading splats
 }
 
 async function main() {
   try {
-    await GUI_init();
+    GUI_init();
     await GPU_init();
     await GUI_reload();
-   } catch(e) { Oops(e); }
+  } catch(e) { Oops(e); }
 }
 
 </script>
