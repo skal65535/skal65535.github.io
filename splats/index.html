@@ -20,11 +20,11 @@
     <canvas id="main-canvas"'></canvas>
     <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
     <br/>
-  <canvas id="debug-canvas"
+    <canvas id="debug-canvas"
           style='background:#000; color:#fff; outline: 1px solid black; display: none;
-                 position:relative; top:-300px;
+                 position:absolute; bottom:120px; right:70px;
                  border: 3px solid #fff; border-radius: 10px;'>
-  </canvas>
+    </canvas>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
@@ -875,7 +875,7 @@ function handle_sorting(render, encoder) {
   }
 }
 
-function DrawArray(mtx, data, height = 320) {
+function DrawArray(mtx, data, height = canvas.height / 4) {
   const width = Math.min(data.length, canvas.width / 2);
   let max = 1.;
   for (let x = 0; x < width; ++x) {
