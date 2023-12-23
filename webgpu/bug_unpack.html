@@ -1,0 +1,98 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!-- repro code for unpack4x8unorm bug on Safari 185
+
+With Safari Technology Preview Release 185 (Safari 17.4, WebKit 19618.1.9.8)
+the compiler seems to struggle with unpack4x8unorm() instruction (at least).
+https://www.w3.org/TR/WGSL/#unpack4x8unorm-builtin
+
+This modified version of 'hello triangle' should display a single triangle
+but doesn't. Uncommenting line 51 makes the triangle appear.
+
+Tested on a MacBook Pro M1 Sonoma 14.2.1 (23C71)
+
+Works fine with Chrome 120.0.6099.109 (Official Build) (arm64)
+ -->
+
+<!DOCTYPE html>
+<html>
+<head><title>unpack4x8unorm bug repro code</title></head>
+<body onload="main();">
+<canvas id="main-canvas"'></canvas>
+
+<script>"use strict";
+
+async function main() {
+  const canvas = document.querySelector("#main-canvas");
+  const ctx = canvas.getContext("webgpu");
+  canvas.width  = innerWidth;
+  canvas.height = innerHeight;
+
+  // Init
+  navigator.gpu || Error("WebGPU not supported.");
+  const textureFormat = navigator.gpu.getPreferredCanvasFormat();
+
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  if (!device) Error("Initialization failed.");
+  ctx.configure({device: device,
+                 format: textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied', });
+
+  // create pipeline
+  const code = `
+      const kTri = array<vec4f, 3>(
+        vec4f(.2,-.2,0.,1.), vec4f(.2,.2,0.,1.), vec4f(-.2,.2,0.,1.)
+      );
+
+      @vertex
+      fn vtx_main(@builtin(vertex_index) vtx_idx: u32)
+          -> @builtin(position) vec4f {
+        _ = unpack4x8unorm(0xdeadbeef);  // not even used!
+        return kTri[vtx_idx];
+      }
+
+      @fragment
+      fn frag_main() -> @location(0) vec4f {
+        return vec4f(0.,.7, 1., 1.);
+      }
+    `;
+  const module = device.createShaderModule({code: code});
+
+  const pipeline_descriptor = {
+    layout: 'auto',
+    vertex: {
+      module: module,
+      entryPoint: 'vtx_main',
+    },
+    fragment: {
+      module: module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: textureFormat,
+        blend: {
+          color: {srcFactor: 'one', dstFactor: 'one', operation: 'add'},
+          alpha: {srcFactor: 'one', dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: { topology: 'triangle-list', },
+  };
+  const pipeline = device.createRenderPipeline(pipeline_descriptor);
+
+  // render
+  const encoder = device.createCommandEncoder();
+  const render_pass = encoder.beginRenderPass({
+    colorAttachments: [
+      { view: ctx.getCurrentTexture().createView(),
+        clearValue: {r:0., g:0., b:1., a:1.},
+        loadOp: 'clear', storeOp: 'store', },
+    ],});
+  render_pass.setPipeline(pipeline);
+  render_pass.draw(3, 1);
+  render_pass.end();
+  device.queue.submit([encoder.finish()]);
+}
+</script>
+</body>
+</html>
