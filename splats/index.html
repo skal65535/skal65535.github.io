@@ -534,7 +534,13 @@ function create_splats_pipeline(render) {
         output.uv = kQuad[vtx_idx];
         let delta = output.uv.x * axis.xy + output.uv.y * axis.zw;
         output.position = position + vec4f(delta, 0., 0.);
-        output.color = unpack4x8unorm(color);
+        // Safari 185 Tech Preview has a bug with:
+        //   output.color = unpack4x8unorm(color);
+        // so here's a work-around:
+        output.color = vec4f(f32((color >>  0) & 0xff),
+                             f32((color >>  8) & 0xff),
+                             f32((color >> 16) & 0xff),
+                             f32((color >> 24) & 0xff)) / 255.;
         return output;
       }
     `;
@@ -573,7 +579,7 @@ function create_splats_pipeline(render) {
       entryPoint: 'vtx_main',
       buffers: [
         // Splats2D
-        { arrayStride: 12 * FLOAT32_SIZE,
+        { arrayStride: STRIDE_2D * FLOAT32_SIZE,
           stepMode: 'instance',
           attributes: [
             { shaderLocation: 0, offset: 0 * FLOAT32_SIZE, format: 'float32x4', },  // position
@@ -1005,8 +1011,7 @@ function RandRange(a, b) { return Math.random() * (b - a) + a; }
 
 function create_synth_splats() {
   const num_splats = Math.max(10, Math.min(100000, params.dbg.synth_splats));
-  const STRIDE = 12;
-  const BUFFER_SIZE = num_splats * STRIDE * FLOAT32_SIZE;
+  const BUFFER_SIZE = num_splats * STRIDE_3D * FLOAT32_SIZE;
   const splats_f = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
   const splats_u = new Uint8Array(splats_f.buffer);   // view as uint8
   for (let i = 0; i < num_splats; ++i) {
