@@ -37,8 +37,8 @@
     <ul>
     KNOWN BUGS / LIMITATIONS:
     <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering. This is the bottleneck.</li>
-    <li>Most big models will overflow the max-buffer-size-limit. 'nike', 'plush', 'train' are ok, probably.</li>
-    <li>the compute-shader needs 3 rather big buffers, that's too much for the GPU.
+    <li>Bicycle / garden will overflow the max-buffer-size-limit. WIP!</li>
+    <li>the vertex-shader needs rather big buffers, that's too much for the GPU.
     They should at least be packed further, but.. fp16... <a href='https://developer.chrome.com/blog/new-in-webgpu-120'>where art thou</a>?
     <li>No Spherical Harmonics for now.</li>
     </ul>
@@ -58,10 +58,10 @@ const kModels = {
   'plush': { file: 'plush.splat', radius: 1.8, theta: -90., phi: 12., center:true, },
   'train': { file: 'train.splat', radius: 3.6, theta: -95., phi: -20., target: [0., 0., 0.], },
   'truck': { file: 'truck.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
-  'garden': { file: 'garden.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   'treehill': { file: 'treehill.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   'stump': { file: 'stump.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
-  'bicycle': { file: 'bicycle.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  '(garden)': { file: 'garden.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  '(bicycle)': { file: 'bicycle.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   // synthetic models, for debug (no URL)
   '[cube]': { radius: 2.9, },
   '[galaxies]': {  radius: 2.1, },
@@ -108,7 +108,7 @@ const ctx = canvas.getContext("webgpu");
 
 const params = {
   // Model
-  model_name: parse_arg_str('model', 'nike'),
+  model_name: parse_arg_str('model', 'truck'),
 
   // Camera
   fov: 90.,
