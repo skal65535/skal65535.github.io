@@ -143,12 +143,16 @@ const params = {
   sort_debug: parse_arg_bool('sdbg', false),  // to visualize sorted index and depths
   no_gui: parse_arg_bool('no-gui'),
 
+  wsize: 256,        // maxComputeInvocationsPerWorkgroup,
+  wsize_max: 65535,  // maxComputeWorkgroupsPerDimension
+
   // debugging
   dbg: { random_colors: false, use_depth: false, progressive: true,
          use_localhost: parse_arg_bool('localhost'),
          draw_axis: parse_arg_bool('axis'),
          timing: false, synth_splats: 500,
-         trace: parse_arg_int('trace', 0, 0, 3), },
+         trace: parse_arg_int('trace', 0, 0, 3),
+         skip_compute: parse_arg_bool('no-compute', false), },
 };
 
 if (parse_arg_bool("dbg")) {
@@ -203,6 +207,8 @@ const GUI_init = () => {
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
   dbg_folder.add(params.dbg, 'use_depth').name('use depth (?!)').listen().onChange(GUI_reset);
   dbg_folder.add(params.dbg, 'draw_axis').name('draw axis').listen().onChange(GUI_reset);
+  dbg_folder.add(params.dbg, 'skip_compute').name('skip compute (!?)').listen();
+  dbg_folder.add(params, 'wsize', [4, 16, 64, 128, 256]).name('workgroup size').listen().onChange(GUI_reset);
   dbg_folder.add(render, 'stored_splats').name('in-GPU splats').listen().disable();
   render.gui.add(render, 'info').name('info').listen().disable();
 }
@@ -273,6 +279,8 @@ const GPU_init = async () => {
                       'maxComputeWorkgroupsPerDimension',]) {
     console.log("  ->", name, ":", render.device.limits[name]);
   }
+  params.wsize = render.device.limits['maxComputeInvocationsPerWorkgroup'];
+  params.wsize_max = render.device.limits['maxComputeWorkgroupsPerDimension'];
 
   function onDeviceError(event) {
     console.log("Something bad happened! Error type:", event.error.constructor.name);
@@ -390,9 +398,18 @@ async function create_sort_pipeline(render) {
 }
 
 function create_update_pipeline(render) {
+  const max_splats = render.max_splats;
+  let dim_x = 1, dim_y = 0;
+  do {
+    ++dim_y;
+    dim_x = Math.ceil(max_splats / params.wsize / dim_y);
+  } while (dim_x > params.wsize_max);
+  trace(-1, "Compute binding: wsize=", params.wsize, "dim_x=", dim_x, "dim_y=", dim_y);
+  trace(-1, "  => total:", params.wsize * dim_x * dim_y, "for", max_splats, "splats");
+
   // COMPUTE pipeline, projecting the splats
-  const update_module = render.device.createShaderModule({
-    code: `
+  function update_code(wsize, xsize, xysize) {
+    return `
       ${splat_struct_code}
       ${uniforms_struct_code}
 
@@ -445,12 +462,12 @@ function create_update_pipeline(render) {
         return vec4f(major, minor);
       }
 
-      @compute @workgroup_size(64)
+      @compute @workgroup_size(${wsize})
       fn main(@builtin(global_invocation_id) global_id : vec3u) {
         let num_splats = u32(params.num_splats);
-        if (global_id.x >= num_splats) { return; }
-        let idx = sorted_list[global_id.x];
-        let b = splats.splats[idx];
+        let idx = global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x;
+        if (idx >= num_splats) { return; }
+        let b = splats.splats[sorted_list[idx]];
         var out: Splat2D;
         let vpos = params.view * b.position;
         out.position = params.proj * vpos;
@@ -463,43 +480,32 @@ function create_update_pipeline(render) {
           let cov2d = get_cov2d(vpos, b.sigma);  // mat2x2 = [x, z][z, y]
           out.axis = params.haze * get_axis(vpos, cov2d);
         }
-
-        out_splats.splats[global_id.x] = out;
-
-// TODO(later):        out_depth[global_id.x] = vpos.z;
+        out_splats.splats[idx] = out;
       }
-    `,
-  });
+    `;}
 
   render.update_pipeline = render.device.createComputePipeline({
     layout: "auto",
     compute: {
-      module: update_module,
+      module: render.device.createShaderModule(
+        {code: update_code(params.wsize,
+                           dim_x * params.wsize,
+                           dim_y * dim_x * params.wsize),}),
       entryPoint: "main",
     },
   });
+
   // create COMPUTE binding groups
-  const max_splats = render.max_splats;
-  render.update_bind_groups = [];
-  for (let splats = 0; splats < max_splats; ) {
-    const batch_size = Math.min(256, Math.ceil((max_splats - splats) / 64)) * 64;
-    const nb_splats = Math.min(batch_size, max_splats - splats);
-    const update_bind_group = render.device.createBindGroup({
+  const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: render.uniforms, }, },
-        { binding: 1, resource: { buffer: render.splats_3D, }, },  // need the whole buffer!
-        { binding: 2, resource: { buffer: render.splats_2D,
-                                  offset: splats * STRIDE_2D * FLOAT32_SIZE,
-                                  size: nb_splats * STRIDE_2D * FLOAT32_SIZE, }, },
-        { binding: 3, resource: { buffer: render.sorted_idx,
-                                  offset: splats * STRIDE_IDX * UINT32_SIZE,
-                                  size: nb_splats * STRIDE_IDX * UINT32_SIZE }, },
+        { binding: 1, resource: { buffer: render.splats_3D, }, },
+        { binding: 2, resource: { buffer: render.splats_2D, }, },
+        { binding: 3, resource: { buffer: render.sorted_idx, }, },
       ],
-    });
-    render.update_bind_groups.push([nb_splats, update_bind_group]);
-    splats += nb_splats;
-  }
+  });
+  render.update_bindings = [dim_x, dim_y, update_bind_group];
 }
 
 function create_splats_pipeline(render) {
@@ -840,7 +846,6 @@ function handle_sorting(render, encoder) {
   }
   if (sort_gpu) {
     if (render.stored_splats > 0) {
-
       const compute_pass = encoder.beginComputePass();
       compute_pass.setPipeline(render.sort_pipeline);
       compute_pass.setBindGroup(0, render.sort_bind_group);
@@ -1343,11 +1348,12 @@ async function frame() {
 
   if (params.dbg.timing) console.time("GPU");
 
-  for (const [nb_splats, bind_group] of render.update_bind_groups) {
+  if (render.tick > 0. && !params.dbg.skip_compute) {
+    const [dim_x, dim_y, bind_group] = render.update_bindings;
     const compute_pass = encoder.beginComputePass();
     compute_pass.setPipeline(render.update_pipeline);
     compute_pass.setBindGroup(0, bind_group);
-    compute_pass.dispatchWorkgroups(Math.ceil(nb_splats / 64), 64);
+    compute_pass.dispatchWorkgroups(dim_x, dim_y);
     compute_pass.end();
   }
 
@@ -1373,8 +1379,7 @@ async function frame() {
     pass_descriptor.depthStencilAttachment = {
         view: render.depthTexture.createView(),
         depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store', };
+        depthLoadOp: 'clear', depthStoreOp: 'store', };
   }
   if (render.num_splats > 0) {
     const render_pass = encoder.beginRenderPass(pass_descriptor);
