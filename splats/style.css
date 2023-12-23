@@ -23,6 +23,20 @@
   background: #cce;
   position: absolute; bottom:180px; left:40px;
 }
+#skal-2023:hover { background: #cdf; }
+
+#progress-canvas {
+  z-index:1;
+  background:#000; color:#f33; outline: 1px solid #333;
+  position:absolute; bottom:160px; left:100px;
+  display: none;
+}
+#debug-canvas {
+  background:#000; color:#fff; outline: 1px solid black; display: none;
+  position:absolute; bottom:120px; right:70px;
+  border: 3px solid #fff; border-radius: 10px;
+}
+
 .lil-gui {
   border-radius: 15px; padding: 5px;
 }
