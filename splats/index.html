@@ -78,9 +78,10 @@ const kSorts = {  // TODO(skal): simplify semantics!
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const UINT32_SIZE = Uint32Array.BYTES_PER_ELEMENT;
 
+const use_packed_f16 = true;
 const STRIDE_POS = 4;
-const STRIDE_3D = 6;   // cov3d (upper half)
-const STRIDE_2D = 4;   // axis 2x2
+const STRIDE_COV3 = use_packed_f16 ? 3 : 6;   // cov3d (upper half), as six f16 packs as vec4u
+const STRIDE_COV2 = 2;   // axis 2x2, as four f16 packed as vec2u
 
 // stride for .splat files, in bytes
 const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
@@ -254,7 +255,15 @@ const trace = (level, ...args) => {
 }
 
 function Oops(e) {
-  document.body.innerHTML = `Oops! <pre>${e}</pre>`;
+  // document.body.innerHTML = `Oops! <pre>${e}</pre>`;
+  dedug_canvas.style.display = 'inline-block';
+  dedug_canvas.width = canvas.width * .8;
+  const ctx = dedug_canvas.getContext('2d');
+  ctx.fillStyle = '#f33';
+  ctx.font = "bold 20px Arial";
+  ctx.fillText('Oops!', 15, 30);
+  ctx.font = "bold 12px Arial";
+  ctx.fillText(e, 15, 55);
   throw Error(e);
 }
 
@@ -388,10 +397,10 @@ function create_update_pipeline(render) {
   } while (dim_x > params.wsize_max);
   trace(-1, "Compute binding: wsize=", params.wsize, "dim_x=", dim_x, "dim_y=", dim_y);
   trace(-1, "  => total:", params.wsize * dim_x * dim_y, "for", max_splats, "splats");
-  const s3d_size = STRIDE_3D * FLOAT32_SIZE * max_splats;
+  const s3d_size = STRIDE_COV3 * UINT32_SIZE * max_splats;
   const pos_size = STRIDE_POS * FLOAT32_SIZE * max_splats;
   const color_size = UINT32_SIZE * max_splats;
-  const s2d_size = STRIDE_2D * FLOAT32_SIZE * max_splats;
+  const s2d_size = STRIDE_COV2 * UINT32_SIZE * max_splats;
   const idx_size =             UINT32_SIZE * max_splats;
   trace(-1, " Total buffer mem:");
   trace(-1, "   Splats3D:", s3d_size);
@@ -402,17 +411,29 @@ function create_update_pipeline(render) {
   trace(-1, "      total:", s3d_size + s2d_size + idx_size + pos_size + color_size);
 
   // COMPUTE pipeline, projecting the splats
-  function update_code(wsize, xsize, xysize) {
+  const unpack_f16 = `
+    let s01 = unpack2x16float(sigma[0]);
+    let s23 = unpack2x16float(sigma[1]);
+    let s45 = unpack2x16float(sigma[2]);
+  `;
+  const unpack_vec6f = `
+    let s01 = vec2f(sigma[0], sigma[1]);
+    let s23 = vec2f(sigma[2], sigma[3]);
+    let s45 = vec2f(sigma[4], sigma[5]);
+  `;
+
+  function update_code(wsize, xsize, xysize,
+                       sigma_type, sigma_unpack) {
     return `
       ${uniforms_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
-      @group(0) @binding(2) var<storage, read> sigmas: array<array<f32, 6>>;
-      @group(0) @binding(3) var<storage, read_write> axis: array<vec4f>;
+      @group(0) @binding(2) var<storage, read> sigmas: array<${sigma_type}>;
+      @group(0) @binding(3) var<storage, read_write> axis: array<vec2u>;
 
       // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
-      fn get_cov2d(vpos: vec4f, sigma: array<f32, 6>) -> vec3f {
+      fn get_cov2d(vpos: vec4f, sigma: ${sigma_type}) -> vec3f {
         let focal = 0.5 * params.focal;
         let pz = 1. / vpos.z;
         // Jacobian (adjusted by a 'pz' factor)
@@ -426,10 +447,11 @@ function create_update_pipeline(render) {
         let T = transpose(params.view) * J;
 
         // Vk is actually mat3x3f
-        let Vk = mat4x4f(sigma[0], sigma[1], sigma[2], 0.,
-                         sigma[1], sigma[3], sigma[4], 0.,
-                         sigma[2], sigma[4], sigma[5], 0.,
-                               0.,       0.,       0., 0.,
+        ${sigma_unpack}   // expands 'sigma' into s01/s23/s45
+        let Vk = mat4x4f(s01.x, s01.y, s23.x, 0.,
+                         s01.y, s23.y, s45.x, 0.,
+                         s23.x, s45.x, s45.y, 0.,
+                            0.,    0.,    0., 0.,
         );
         var cov2d = transpose(T) * Vk * T;
 
@@ -441,18 +463,18 @@ function create_update_pipeline(render) {
       }
 
       // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
-      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec4f {
+      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec2u {
         let dist = 0.5 * (cov2d.x - cov2d.y);
         let trace = (cov2d.x + cov2d.y) * 0.5;
         let det = length(vec2f(dist, cov2d.z));
         let lambda1 = clamp(trace + det, 0., 16383.);
         let lambda2 = clamp(trace - det, 0., 16383.);
 
-        let diag = normalize(vec2f(cov2d.z, det - dist));
+        let diag = params.haze * normalize(vec2f(cov2d.z, det - dist));
         let major = sqrt(lambda1) * diag;
         let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
 
-        return vec4f(major, minor);
+        return vec2u(pack2x16float(major), pack2x16float(minor));
       }
 
       @compute @workgroup_size(${wsize})
@@ -460,17 +482,16 @@ function create_update_pipeline(render) {
         let num_splats = u32(params.num_splats);
         let idx = global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x;
         if (idx >= num_splats) { return; }
-        var out: vec4f;
+        var out: vec2u;
         let vpos = params.view * vec4f(positions[idx], 1.);
         var position = params.proj * vpos;
         let clip = 1.1 * position.w;
         if (any(position.xyz > vec3f( clip, clip, clip)) ||
             any(position.xyz < vec3f(-clip, -clip,  0.))) {
-          out = vec4f(0.);  // discard
+          out = vec2u(0);  // discard
         } else {
-          let b = sigmas[idx];
-          let cov2d = get_cov2d(vpos, b);  // mat2x2 = [x, z][z, y]
-          out = params.haze * get_axis(vpos, cov2d);
+          let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
+          out = get_axis(vpos, cov2d);
         }
         axis[idx] = out;
       }
@@ -482,7 +503,9 @@ function create_update_pipeline(render) {
       module: render.device.createShaderModule(
         {code: update_code(params.wsize,
                            dim_x * params.wsize,
-                           dim_y * dim_x * params.wsize),}),
+                           dim_y * dim_x * params.wsize,
+                           use_packed_f16 ? 'array<u32, 3>' : 'array<f32, 6>',
+                           use_packed_f16 ? unpack_f16 : unpack_vec6f),},),
       entryPoint: "main",
     },
   });
@@ -517,7 +540,7 @@ function create_splats_pipeline(render) {
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
-      @group(0) @binding(2) var<storage, read> axis: array<vec4f>;
+      @group(0) @binding(2) var<storage, read> axis: array<vec2u>;
       @group(0) @binding(3) var<storage, read> colors: array<u32>;
 
       const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
@@ -531,10 +554,11 @@ function create_splats_pipeline(render) {
           @location(0) idx: u32,   // <- sorted idx
       ) -> SplatOut {
         var output : SplatOut;
-        let cov = axis[idx];
+        let major = unpack2x16float(axis[idx].x);
+        let minor = unpack2x16float(axis[idx].y);
         // TODO(skal): if cov == 0 -> discard (cull)
         output.uv = kQuad[vtx_idx];
-        let delta = output.uv.x * cov.xy + output.uv.y * cov.zw;
+        let delta = output.uv.x * major + output.uv.y * minor;
         let position = vec4f(positions[idx], 1.0);
         let vpos = params.proj * params.view * position;
         output.position = vpos + vec4f(delta, 0., 0.);
@@ -684,9 +708,9 @@ async function init_buffers(render) {
   trace(0, "Init buffers() => max_splats:", render.max_splats,
         ", num_splats:", render.num_splats);
 
-  // create the 3D-splat buffers that will be filled progressively
+  // Create the persistent GPU buffers that will be filled progressively
   render.GPU.sigmas = render.device.createBuffer({
-    size: render.max_splats * STRIDE_3D * FLOAT32_SIZE,
+    size: render.max_splats * STRIDE_COV3 * UINT32_SIZE,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   render.GPU.positions = render.device.createBuffer({
@@ -698,9 +722,9 @@ async function init_buffers(render) {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  // create the 2D-splat buffer
+  // create the cov2x2 buffer to communicate between COMPUTE and VERTEX shaders
   render.GPU.axis = render.device.createBuffer({
-    size: render.max_splats * STRIDE_2D * FLOAT32_SIZE,
+    size: render.max_splats * STRIDE_COV2 * UINT32_SIZE,
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
   });
 
@@ -725,10 +749,9 @@ async function init_buffers(render) {
   new Uint32Array(render.GPU.idx.getMappedRange()).set(render.CPU.idx);
   render.GPU.idx.unmap();
 
-
   // (fixed) index buffer
   render.GPU.index_buffer = render.device.createBuffer({
-    size: 6 * 4,  // 1 quad (6 vtx) per splats
+    size: 6 * UINT32_SIZE,  // 1 quad (6 vtx) per indexed splats
     usage: GPUBufferUsage.INDEX,
     mappedAtCreation: true,
   });
@@ -772,9 +795,9 @@ async function init_textures(render) {
 //  It runs in parallel to the GPU incremental and incomplete per-frame sorting
 
 function SortingThread(self) {
-  let positions = undefined;
   let max_splats = 0;
-  let idx = undefined;
+  let positions = null;
+  let idx = null;
   const STRIDE_POS = 4;
 
   const SortDepth = (view, proj, num_splats) => {
@@ -782,7 +805,7 @@ function SortingThread(self) {
     const mtx = view;
     const zdir = [mtx[2], mtx[6], mtx[10]];
     let max_depth = -10000000, min_depth = 10000000;
-    const idepths = new Int32Array(num_splats);
+    const keys = new Int32Array(num_splats);
     for (let i = 0; i < num_splats; ++i) {
       const pos = [positions[STRIDE_POS * i + 0],
                    positions[STRIDE_POS * i + 1],
@@ -791,17 +814,17 @@ function SortingThread(self) {
           (4096. * (pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2])) | 0;
       if (max_depth < depth) max_depth = depth;
       if (min_depth > depth) min_depth = depth;
-      idepths[i] = depth;
+      keys[i] = depth;
     }
     // Radix sort
     const SORT_MAX = 16384; // 256 * 256;
     const norm = (SORT_MAX - 1) / (max_depth - min_depth);
     const counts = new Uint32Array(SORT_MAX);
     for (let i = 0; i < num_splats; ++i) {
-      const depth = idepths[i];
+      const depth = keys[i];
       const key = ((max_depth - depth) * norm) | 0;
       // const key = ((depth - min_depth) * norm) | 0;
-      idepths[i] = key;
+      keys[i] = key;
       ++counts[key];
     }
     let C = counts[0];
@@ -812,18 +835,18 @@ function SortingThread(self) {
       C += D;
     }
     for (let i = 0; i < num_splats; ++i) {
-      const pos = counts[idepths[i]]++;
+      const pos = counts[keys[i]]++;
       idx[pos] = i;
     }
   };
 
   self.onmessage = (e) => {
-    if (e.data.positions) {
+    if (e.data.positions_buffer) {
       if (e.data.dbg) console.log("WRK: Received shared splats data:",
                                   e.data.max_splats);
       max_splats = e.data.max_splats;
-      positions = new Float32Array(e.data.positions);
-      idx = new Uint32Array(e.data.idx_buffer);
+      positions = new Float32Array(e.data.positions_buffer);
+      idx       = new Uint32Array(e.data.idx_buffer);
     } else if (e.data.view) {
       if (e.data.dbg) console.log("WRK: Received sorting task:",
                                   e.data.num_splats, "/", max_splats);
@@ -831,7 +854,7 @@ function SortingThread(self) {
       SortDepth(e.data.view, e.data.proj, e.data.num_splats);
       if (e.data.timing) console.timeEnd("SortDepth");
       if (e.data.dbg) console.log("WRK: Done sorting, sending back");
-      self.postMessage({done:true, idx:idx.buffer});
+      self.postMessage({done:true, idx_buffer:idx.buffer});
     }
   };
 }
@@ -847,7 +870,7 @@ function create_sort_worker(render) {
       render.sort_discard = false;
       render.sort_done = false;
     } else {
-      render.CPU.idx = new Uint32Array(e.data.idx);
+      render.CPU.idx = new Uint32Array(e.data.idx_buffer);
       render.sort_done = true;
     }
     render.sort_waiting = false;
@@ -899,7 +922,8 @@ function handle_sorting(render, encoder) {
       // we don't need to resend the idx[] array, since the radix-sort
       // will fill it from scratch, and not incrementally
       render.sort_worker.postMessage(
-        { num_splats:render.stored_splats, view:render.view, proj:render.proj,
+        { num_splats:render.stored_splats,
+          view:render.view, proj:render.proj,
           timing:params.dbg.timing, dbg:(params.dbg.trace > 0) });
       render.sort_waiting = true;
     }
@@ -999,13 +1023,31 @@ async function init_sorting(render) {
   // set-up the buffers shared with sort_worker
   trace(0, "SRT: Sending initial shared buffers (max_splats:", render.max_splats, ")");
   render.sort_worker.postMessage({ max_splats: render.max_splats,
-                                   positions: render.CPU.positions.buffer,
-                                   idx_buffer:render.CPU.idx.buffer,
+                                   positions_buffer: render.CPU.positions.buffer,
+                                   idx_buffer: render.CPU.idx.buffer,
                                    dbg:(params.dbg.trace > 0), });
 }
 
 // END OF GPU PART
 ////////////////////////////////////////////////////////////////////////////////
+
+const as_f32 = new Float32Array(1);
+const as_u32 = new Uint32Array(as_f32.buffer);
+function f32To16(f32) {
+  as_f32[0] = f32;
+  const u32 = as_u32[0];
+  const m = ((u32 + (1 << 12)) >> 13) & 0x03ff;  // rounded mantissa
+  const e = (u32 >> 23) & 0x00ff;
+  const s = (u32 >> 16) & 0x8000;    // sign
+  if (e < 113 || e > 142) return s;  // don't handle denormals, overflows or NaNs!
+  return s | ((e - 112) << 10) | m;
+}
+
+function f32To16x2(a, b) { return (f32To16(a) | (f32To16(b) << 16)) >>> 0; }
+function PackSigmas(s) {   // pack six fp32's sigmas as three u32's
+  return use_packed_f16 ?
+    [f32To16x2(s[0], s[1]), f32To16x2(s[2], s[3]), f32To16x2(s[4], s[5])] : s;
+}
 
 function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
   // quaternion to rotation matrix
@@ -1029,7 +1071,7 @@ function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
     }
   }
   // return upper half only
-  return [S[0], S[1], S[2], S[4], S[5], S[8]];
+  return PackSigmas([S[0], S[1], S[2], S[4], S[5], S[8]]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1038,7 +1080,9 @@ function RandRange(a, b) { return Math.random() * (b - a) + a; }
 
 function allocate_splats(max_splats) {
   render.CPU.positions = new Float32Array(max_splats * STRIDE_POS);
-  render.CPU.sigmas    = new Float32Array(max_splats * STRIDE_3D);
+  render.CPU.sigmas    =
+    use_packed_f16 ? new Uint32Array(max_splats * STRIDE_COV3)
+                   : new Float32Array(max_splats * STRIDE_COV3);
   render.CPU.colors    = new Uint8Array(max_splats * UINT32_SIZE);   // view as uint8
   render.max_splats = max_splats;
   render.num_splats = 0;     // initial CPU storing
@@ -1079,13 +1123,13 @@ function create_synth_splats() {
 
     // covariance (from matrix M = Scale * Rotation)
     if (params.model_name == '[cube]') {
-      render.CPU.sigmas.set([sx, 0., 0., sy, 0., sz], i * STRIDE_3D);
+      render.CPU.sigmas.set(PackSigmas([sx, 0., 0., sy, 0., sz]), i * STRIDE_COV3);
     } else {
       // rotation quaternion
       const q = [RandRange(-1.0, 1.), RandRange(-1.0, 1.),
                  RandRange(-1.0, 1.), RandRange(-1.0, 1.)];
       const s = [RandRange(-sM, sM), RandRange(-sM, sM), RandRange(-sM, sM)];
-      render.CPU.sigmas.set(SigmaFromScaleRotation(s, q), i * STRIDE_3D);
+      render.CPU.sigmas.set(SigmaFromScaleRotation(s, q), i * STRIDE_COV3);
     }
     // TODO: SPH
   }
@@ -1099,7 +1143,6 @@ function add_splats(num, src_u) {
   const from = render.num_splats;
   trace(1, "CPU: Added", num, "splats ( currently:", from, ", now:", from + num, ")");
   const src_f = new Float32Array(src_u.buffer);  // view as float
-  const splats = render.CPU.sigmas;
   const positions = render.CPU.positions;
   for (let i = from; i < from + num; ++i) {
     const off_f = (i - from) * (STRIDE_SPLAT / 4);   // float-offset
@@ -1109,12 +1152,12 @@ function add_splats(num, src_u) {
     const s = src_f.slice(off_f + 3, off_f + 6);
     const q = new Float32Array(src_u.slice(4 * (off_f + 7), 4 * (off_f + 8)))
                 .map((v) => v / 128. - 1.);
-    splats.set(SigmaFromScaleRotation(s, q), i * STRIDE_3D);
+    render.CPU.sigmas.set(SigmaFromScaleRotation(s, q), i * STRIDE_COV3);
   }
   render.num_splats += num;
   render.sort_worker.postMessage({ max_splats: render.max_splats,
-                                   positions: render.CPU.positions.buffer,
-                                   idx_buffer:render.CPU.idx.buffer,
+                                   positions_buffer: render.CPU.positions.buffer,
+                                   idx_buffer:       render.CPU.idx.buffer,
                                    dbg:(params.dbg.trace > 0), });
 
 }
@@ -1345,7 +1388,7 @@ function transmit_splats_to_GPU() {
     render.device.queue.writeBuffer(
         render.GPU.sigmas, 0,
         render.CPU.sigmas, 0,
-        render.num_splats * STRIDE_3D);
+        render.num_splats * STRIDE_COV3);
     render.device.queue.writeBuffer(
         render.GPU.colors, 0,
         render.CPU.colors, 0,
@@ -1357,6 +1400,10 @@ function transmit_splats_to_GPU() {
     render.stored_splats = render.num_splats;
     if (render.stored_splats == render.max_splats) {
       trace(0, "Done transfering to GPU.");
+      // get rid of unneeded buffers now. We need to keep CPU.positions[]
+      // and CPU.idx[] for sorting
+      render.CPU.sigmas = null;
+      render.CPU.colors = null;
     }
   }
   trace(2, "STATE:", render.num_splats, "on CPU,", render.stored_splats, "on GPU");
@@ -1482,23 +1529,23 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   num_splats: 500,   // number of splats available on CPU for display
   stored_splats: 0,  // number of splats transfered to GPU so far
   GPU: {   // data sent to GPU
-    sigmas:    undefined,   // vec6f
-    axis:      undefined,   // vec4f
-    positions: undefined,   // vec3f
-    colors:    undefined,   // u32
-    idx:       undefined,   // sorted idx
-    uniforms:  undefined,
-    index_buffer: undefined,
+    sigmas:    null,   // vec4u  packed f16s
+    axis:      null,   // vec2u  packed f16s
+    positions: null,   // vec3f
+    colors:    null,   // u32
+    idx:       null,   // sorted idx
+    uniforms:  null,
+    index_buffer: null,
   },
   CPU: {   // data hosted in GPU
-    sigmas:    undefined,   // vec6f
-    positions: undefined,   // vec3f
-    colors:    undefined,   // u32
-    idx:       undefined,   // sorted idx
+    sigmas:    null,   // vec4u
+    positions: null,   // vec3f
+    colors:    null,   // u8x4
+    idx:       null,   // u32 sorted idx
   },
 
-  depth_sort: undefined,    // one of kSorts[]
-  sort_worker: undefined,   // worker for depth-sorting
+  depth_sort: null,    // one of kSorts[]
+  sort_worker: null,   // worker for depth-sorting
   sort_done:    false,
   sort_discard: false,
   sort_waiting: false,
