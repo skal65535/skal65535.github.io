@@ -75,21 +75,9 @@ const kSorts = {  // TODO(skal): simplify semantics!
   'none':     {cpu:false, gpu:false, every:false,},
 };
 
-const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
-const UINT32_SIZE = Uint32Array.BYTES_PER_ELEMENT;
-
-const use_packed_f16 = true;
-const STRIDE_POS = 4;
-const STRIDE_COV3 = use_packed_f16 ? 3 : 6;   // cov3d (upper half), as six f16 packs as vec4u
-const STRIDE_COV2 = 2;   // axis 2x2, as four f16 packed as vec2u
-
-// stride for .splat files, in bytes
-const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
-
 ////////////////////////////////////////////////////////////////////////////////
 
 const args = new URLSearchParams(location.search);
-
 function parse_arg_int(arg_value, default_value, min, max) {
   let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
   if (min != undefined) v = Math.max(v, min);
@@ -100,6 +88,22 @@ function parse_arg_str(arg_value, default_value) {
   return args.has(arg_value) ? args.get(arg_value) : default_value;
 }
 function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
+
+
+////////////////////////////////////////////////////////////////////////////////
+// constants
+
+const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
+const UINT32_SIZE = Uint32Array.BYTES_PER_ELEMENT;
+
+const is_safari_185 = navigator.userAgent.includes("Version/17.4 Safari/605.1.15");
+const use_packed_f16 = !is_safari_185 && !parse_arg_bool("fp32");
+const STRIDE_POS = 4;
+const STRIDE_COV3 = use_packed_f16 ? 3 : 6;   // cov3d (upper half), as six f16 packs as vec4u
+const STRIDE_COV2 = use_packed_f16 ? 2 : 4;   // axis 2x2, as four f16 packed as vec2u
+
+// stride for .splat files, in bytes
+const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
 
 const dedug_canvas = document.querySelector("#debug-canvas");
 const canvas = document.querySelector("#main-canvas");
@@ -280,7 +284,8 @@ const GPU_init = async () => {
 
   render.device = await adapter.requestDevice();
   render.device || Oops("Couldn’t request WebGPU logical device.");
-  console.log("WebGPU Device acquired");
+  console.log("WebGPU Device acquired.");
+  console.log(" Using", use_packed_f16 ? "fp16." : "fp32.");
   for (const name of ['maxComputeInvocationsPerWorkgroup',
                       'maxComputeWorkgroupSizeX',
                       'maxComputeWorkgroupSizeY',
@@ -402,9 +407,9 @@ function create_update_pipeline(render) {
   trace(-1, "  => total:", params.wsize * dim_x * dim_y, "for", max_splats, "splats");
   const s3d_size = STRIDE_COV3 * UINT32_SIZE * max_splats;
   const pos_size = STRIDE_POS * FLOAT32_SIZE * max_splats;
-  const color_size = UINT32_SIZE * max_splats;
+  const color_size =             UINT32_SIZE * max_splats;
   const s2d_size = STRIDE_COV2 * UINT32_SIZE * max_splats;
-  const idx_size =             UINT32_SIZE * max_splats;
+  const idx_size =               UINT32_SIZE * max_splats;
   trace(-1, " Total buffer mem:");
   trace(-1, "   Splats3D:", s3d_size);
   trace(-1, "   Splats2D:", s2d_size);
@@ -425,15 +430,15 @@ function create_update_pipeline(render) {
     let s45 = vec2f(sigma[4], sigma[5]);
   `;
 
-  function update_code(wsize, xsize, xysize,
-                       sigma_type, sigma_unpack, mapped_idx) {
+  function compute_base_code(sigma_type, sigma_unpack,
+                             axis_type, axis_pack) {
     return `
       ${uniforms_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
       @group(0) @binding(2) var<storage, read> sigmas: array<${sigma_type}>;
-      @group(0) @binding(3) var<storage, read_write> axis: array<vec2u>;
+      @group(0) @binding(3) var<storage, read_write> axis: array<array<${axis_type}, 2>>;
       @group(0) @binding(4) var<storage, read> sorted_idx: array<u32>;
 
       // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
@@ -466,8 +471,14 @@ function create_update_pipeline(render) {
         return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
       }
 
+      fn vec2f_to_axis(a: vec2f, b:vec2f) -> array<${axis_type}, 2> {
+        var ret: array<${axis_type}, 2>;
+        ret[0] = ${axis_pack}(a);
+        ret[1] = ${axis_pack}(b);
+        return ret;
+      }
       // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
-      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec2u {
+      fn get_axis(vpos: vec4f, cov2d: vec3f) -> array<${axis_type}, 2> {
         let dist = 0.5 * (cov2d.x - cov2d.y);
         let trace = (cov2d.x + cov2d.y) * 0.5;
         let det = length(vec2f(dist, cov2d.z));
@@ -477,21 +488,24 @@ function create_update_pipeline(render) {
         let diag = params.haze * normalize(vec2f(cov2d.z, det - dist));
         let major = sqrt(lambda1) * diag;
         let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
-
-        return vec2u(pack2x16float(major), pack2x16float(minor));
+        return vec2f_to_axis(major, minor);
       }
-      fn compute_axis(idx: u32) -> vec2u {
-        var out: vec2u;
+      fn compute_axis(idx: u32) -> array<${axis_type}, 2> {
         let vpos = params.view * vec4f(positions[idx], 1.);
         var position = params.proj * vpos;
         let clip = 1.1 * position.w;
         if (any(position.xyz > vec3f( clip, clip, clip)) ||
             any(position.xyz < vec3f(-clip, -clip,  0.))) {
-          return vec2u(0);  // discard
+          return vec2f_to_axis(vec2f(0.), vec2f(0.));   // discard
         }
+
         let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
         return get_axis(vpos, cov2d);
       }
+    `;
+  }
+  function compute_main_code(wsize, xsize, xysize, mapped_idx) {
+    return `
       @compute @workgroup_size(${wsize})
       fn main(@builtin(global_invocation_id) global_id : vec3u) {
         let num_splats = u32(params.num_splats);
@@ -502,17 +516,21 @@ function create_update_pipeline(render) {
       }
     `;
   };
+  const base_code =
+    compute_base_code(use_packed_f16 ? 'array<u32, 3>' : 'array<f32, 6>',
+                      use_packed_f16 ? unpack_f16 : unpack_vec6f,
+                      use_packed_f16 ? 'u32' : 'vec2f',
+                      use_packed_f16 ? 'pack2x16float' : '');
 
   render.update_pipeline = render.device.createComputePipeline({
     layout: "auto",
     compute: {
       module: render.device.createShaderModule(
-        {code: update_code(params.wsize,
-                           dim_x * params.wsize,
-                           dim_y * dim_x * params.wsize,
-                           use_packed_f16 ? 'array<u32, 3>' : 'array<f32, 6>',
-                           use_packed_f16 ? unpack_f16 : unpack_vec6f,
-                           params.sort_culled ? "idx" : "_" /* wow!*/),
+        {code: base_code +
+               compute_main_code(params.wsize,
+                                 dim_x * params.wsize,
+                                 dim_y * dim_x * params.wsize,
+                                 params.sort_culled ? "idx" : "_" /* wow!*/),
         },),
       entryPoint: "main",
     },
@@ -543,28 +561,28 @@ function create_splats_pipeline(render) {
     };
   `;
 
-  const vs_splats_code = `
+  function vs_splats_code(packed_type, unpack) {
+    return `
       ${uniforms_struct_code}
       ${SplatOut_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
-      @group(0) @binding(2) var<storage, read> axis: array<vec2u>;
+      @group(0) @binding(2) var<storage, read> axis: array<${packed_type}>;
       @group(0) @binding(3) var<storage, read> colors: array<u32>;
 
       const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
         vec2f(  2., -2.), vec2f(  2.,  2.),
         vec2f( -2.,  2.), vec2f( -2., -2.),
       );
-
       @vertex
       fn vtx_main(
           @builtin(vertex_index) vtx_idx: u32,
           @location(0) idx: u32,   // <- sorted idx
       ) -> SplatOut {
         var output : SplatOut;
-        let major = unpack2x16float(axis[idx].x);
-        let minor = unpack2x16float(axis[idx].y);
+        let major = ${unpack}(axis[idx][0]);
+        let minor = ${unpack}(axis[idx][1]);
         // TODO(skal): if cov == 0 -> discard (cull)
         output.uv = kQuad[vtx_idx];
         let delta = output.uv.x * major + output.uv.y * minor;
@@ -581,7 +599,7 @@ function create_splats_pipeline(render) {
                              f32((color >> 24) & 0xff)) / 255.;
         return output;
       }
-    `;
+  `};
   function fs_splats_code(visu_func) {
     return `
       ${SplatOut_struct_code}
@@ -605,7 +623,9 @@ function create_splats_pipeline(render) {
       }
     `;
   }
-  const vs_splats_render_module = render.device.createShaderModule({code: vs_splats_code});
+  const vs_splats_render_module = render.device.createShaderModule({
+      code: vs_splats_code(use_packed_f16 ? 'array<u32, 2>' : 'array<vec2f, 2>',
+                           use_packed_f16 ? 'unpack2x16float' : '') });
   const fs_code = fs_splats_code(kVisus[params.visu]);
   const fs_splats_render_module = render.device.createShaderModule({code: fs_code});
 
