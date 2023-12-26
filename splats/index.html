@@ -118,8 +118,8 @@ const params = {
   phi: 30.0,
   target: [0., 0., 0.],
   up: [0., 1., 0.],
-  znear: 0.2,
-  zfar: 200.,
+  znear: 0.1,
+  zfar: 100.,
   auto_rotate: true,
   mouse: {on:false, x:0., y:0.},
 
@@ -320,11 +320,13 @@ const uniforms_struct_code = `
       // 36 * 4
       view: mat4x4f,
       proj: mat4x4f,
-      dim:  vec2f,   // screen dimension
+      // dim:  vec2f,   // screen dimension
+      znear: f32,
+      zfar:  f32,
       num_splats: f32,
       haze: f32,
 
-      // 4 * 4 bytes
+      // 5 * 4 bytes
       focal: vec2f,
       theta: f32,
       phi: f32,
@@ -801,23 +803,24 @@ function SortingThread(self) {
   const STRIDE_POS = 4;
 
   const SortDepth = (view, proj, num_splats) => {
-    // const mtx = multiply4(proj, view);
     const mtx = view;
-    const zdir = [mtx[2], mtx[6], mtx[10]];
+    const zdir = [mtx[2], mtx[6], mtx[10], mtx[14]];
+    const A = proj[10], B = proj[14];
     let max_depth = -10000000, min_depth = 10000000;
     const keys = new Int32Array(num_splats);
     for (let i = 0; i < num_splats; ++i) {
       const pos = [positions[STRIDE_POS * i + 0],
                    positions[STRIDE_POS * i + 1],
                    positions[STRIDE_POS * i + 2]];
-      const depth =
-          (4096. * (pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2])) | 0;
+      const z = pos[0] * zdir[0] + pos[1] * zdir[1] + pos[2] * zdir[2];
+      // TODO(skal): cull and use 1/z reverse-z
+      const depth = 10000. * B * z; // should be: cst * (B * z - A);
       if (max_depth < depth) max_depth = depth;
       if (min_depth > depth) min_depth = depth;
       keys[i] = depth;
     }
     // Radix sort
-    const SORT_MAX = 16384; // 256 * 256;
+    const SORT_MAX = 65536; // 16384;
     const norm = (SORT_MAX - 1) / (max_depth - min_depth);
     const counts = new Uint32Array(SORT_MAX);
     for (let i = 0; i < num_splats; ++i) {
@@ -861,8 +864,8 @@ function SortingThread(self) {
 
 function create_sort_worker(render) {
   const sort_worker = new Worker(
-    URL.createObjectURL(new Blob(["(", SortingThread.toString(), ")(self)"],
-                                 { type: "application/javascript", })));
+    URL.createObjectURL(new Blob(["(", SortingThread.toString(), ")(self)" ],
+                                  { type: "application/javascript", })));
   sort_worker.onmessage = (e) => {
     trace(0, "SRT: Received back the sorted list (done:", e.data.done, ")");
     if (render.sort_discard || !render.sort_waiting) {
@@ -950,7 +953,7 @@ function DrawArray(mtx, data, height = canvas.height / 4) {
   }
   ctx.fillStyle = '#fff';
   ctx.fillText("Indices", 20, 20);
-  const zdir = [mtx[2], mtx[6], mtx[10]];
+  const zdir = [mtx[2], mtx[6], mtx[10], mtx[14]];
   let zmin = Infinity, zmax = -Infinity;
   for (let x = 0; x < width; ++x) {
     const pos = render.CPU.positions.slice(STRIDE_POS * data[x] + 0,
@@ -973,7 +976,6 @@ function DrawArray(mtx, data, height = canvas.height / 4) {
 
 async function debug_sort(render) {
   if (!render.depth_sort.gpu && !render.depth_sort.cpu) return;
-  // const mtx = multiply4(render.proj, render.view);
   const mtx = render.view;
   if (render.depth_sort.gpu == false) {
     DrawArray(mtx, render.CPU.idx);
@@ -1332,24 +1334,13 @@ function look_at([p_x, p_y, p_z],  // position relative to target
       -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
 }
 function perspective(fx, fy, znear, zfar) {
-  const A = zfar / (znear - zfar);
-  const B = znear * A;
+  const A = znear / (zfar - znear);
+  const B = zfar * A;
   return new Float32Array([
-      -fx,  0., 0., 0.,
-      0.,-fy,  0., 0.,
+     -fx,  0., 0.,  0.,
+      0., -fy, 0.,  0.,
       0.,  0.,  A, -1.,
-      0.,  0.,  B, 0.]);
-}
-function multiply4(A, B) {  // 4x4 multiply
-  let AB = new Float32Array(16);
-  for (let j = 0; j < 4; ++j) {
-    for (let i = 0; i < 4; ++i) {
-      let s = 0.;
-      for (let k = 0; k < 4; ++k) s += A[j * 4 + k] * B[i + k * 4];
-      AB[i + j * 4] = s;
-    }
-  }
-  return AB;
+      0.,  0.,  B,  0.]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1372,7 +1363,9 @@ function set_uniforms() {
 
   render.device.queue.writeBuffer(
       render.GPU.uniforms, 32 * FLOAT32_SIZE,
-      new Float32Array([ canvas.width, canvas.height, render.stored_splats, params.haze,
+      new Float32Array([ // canvas.width, canvas.height,
+                         params.znear, params.zfar,
+                         render.stored_splats, params.haze,
                          focal, focal * aspect, theta, phi ]));
 
   const sort_offset = (render.tick % 2) * (params.sort_sortsize / 2);
