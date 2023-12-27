@@ -129,8 +129,12 @@ const params = {
 
   // Visual
   visu: kVisus['gaussian'],
-  haze: 1.,
   use_MSAA: false,
+
+  haze: 1.,
+  dof: .0,  // fake Depth Of Field
+  z_dof: 1.,
+
   sort_name: parse_arg_str('sort', 'CPU'),
   sort_sortsize: 32,
   sort_groupsize: 128,
@@ -184,8 +188,11 @@ const GUI_init = () => {
                             name: 'WebGPU Gaussian Splatting demo'});
   render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').listen().onChange(GUI_reload);
   render.gui.add(params, 'visu', Object.keys(kVisus)).listen().onChange(GUI_change);
-  render.gui.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(GUI_change);
   render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() =>init({textures:true}));
+  const fun_folder = render.gui.addFolder('fun').close();
+  fun_folder.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(GUI_change);
+  fun_folder.add(params, 'dof', 0., 1., 0.01).name('Depth of Field').listen().onChange(GUI_change);
+  fun_folder.add(params, 'z_dof', 0., 1., 0.01).name('DoF distance').listen().onChange(GUI_change);
   const sort_folder = render.gui.addFolder('z-sort');
   sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(GUI_reset);
   sort_folder.add(params, 'sort_culled').name('culled sort').listen().onChange(GUI_reset);
@@ -324,13 +331,15 @@ const GPU_init = async () => {
 // Pipelines & Shaders (the cool stuff!)
 
 const uniforms_struct_code = `
-    struct Uniforms {  // 41 * 4 bytes
-      // 36 * 4
+    struct Uniforms {  // 43 * 4 bytes
+      // 38 * 4
       view: mat4x4f,
       proj: mat4x4f,
       dim:  vec2f,   // screen dimension
       num_splats: f32,
       haze: f32,
+      dof: f32,
+      z_dof: f32,
 
       // 5 * 4 bytes
       focal: vec2f,
@@ -484,8 +493,9 @@ function create_update_pipeline(render) {
         let det = length(vec2f(dist, cov2d.z));
         let lambda1 = clamp(trace + det, 0., 16383.);
         let lambda2 = clamp(trace - det, 0., 16383.);
-
-        let diag = params.haze * normalize(vec2f(cov2d.z, det - dist));
+        let dof = 1. + params.dof * smoothstep(0., 1., abs(vpos.z - params.z_dof));
+        let haze = params.haze * dof;
+        let diag = haze * normalize(vec2f(cov2d.z, det - dist));
         let major = sqrt(lambda1) * diag;
         let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
         return vec2f_to_axis(major, minor);
@@ -500,7 +510,7 @@ function create_update_pipeline(render) {
         }
 
         let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
-        return get_axis(vpos, cov2d);
+        return get_axis(position, cov2d);
       }
     `;
   }
@@ -1119,10 +1129,11 @@ const as_u32 = new Uint32Array(as_f32.buffer);
 function f32To16(f32) {
   as_f32[0] = f32;
   const u32 = as_u32[0];
-  const m = ((u32 + (1 << 12)) >> 13) & 0x03ff;  // rounded mantissa
-  const e = (u32 >> 23) & 0x00ff;
+  const m = (u32 >> 13) & 0x03ff;    // mantissa
+  const e = (u32 >> 23) & 0x00ff;    // exponent
   const s = (u32 >> 16) & 0x8000;    // sign
-  if (e < 113 || e > 142) return s;  // don't handle denormals, overflows or NaNs!
+  if (e >= 143 || e < 102) return s;  // NaN
+  if (e <= 112) return ((m + 0x400) >> (113 - e)) | s;  // subnormals
   return s | ((e - 112) << 10) | m;
 }
 
@@ -1435,12 +1446,13 @@ function transmit_uniforms() {
     render.GPU.uniforms, 32 * FLOAT32_SIZE,
       new Float32Array([ canvas.width, canvas.height,
                          render.num_visible, params.haze,
+                         params.dof, params.z_dof,
                          render.fx, render.fy,
                          params.znear, params.zfar, ]));
 
   const sort_offset = (render.tick % 2) * (params.sort_sortsize / 2);
   render.device.queue.writeBuffer(
-      render.GPU.uniforms, 40 * FLOAT32_SIZE, new Uint32Array([ sort_offset ]));
+      render.GPU.uniforms, 42 * FLOAT32_SIZE, new Uint32Array([ sort_offset ]));
 }
 
 function transmit_splats_to_GPU() {
