@@ -13,22 +13,21 @@
 }
 #info {
   z-index: 999;
-  position: absolute;
-  bottom: 180px; right: 40px;
+  position: absolute; right: 3%; bottom:10%;
   background: #cce; color:#112;
   border: 3px solid; border-radius: 5px; padding: 5px;
 }
 #skal-2023 {
   border: 3px solid; border-radius: 5px; padding: 5px;
   background: #cce;
-  position: absolute; bottom:180px; left:40px;
+  position: absolute; left:2%; top:5%;
 }
 #skal-2023:hover { background: #cdf; }
 
 #progress-canvas {
   z-index:1;
   background:#000; color:#f33; outline: 1px solid #333;
-  position:absolute; bottom:160px; left:100px;
+  position: absolute; left: 7%; top: 83%;
   display: none;
 }
 #debug-canvas {

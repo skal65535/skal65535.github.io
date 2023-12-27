@@ -17,12 +17,13 @@
     (WIP)</b><br/>
     On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
     the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <div><canvas id="main-canvas"'></canvas></div>
-    <canvas id="progress-canvas" height='10px'></canvas>
-    <form action="https://skal65535.github.io/">
-      <input type="submit" value="skal 2023" id="skal-2023"/>
-    </form>
-    <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
+    <div><canvas id="main-canvas"'></canvas>
+      <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
+      <form action="https://skal65535.github.io/">
+        <input type="submit" value="skal 2023" id="skal-2023"/>
+      </form>
+      <canvas id="progress-canvas" height='10px'></canvas>
+    </div>
     <br/>
     <canvas id="debug-canvas"></canvas>
   </center>
@@ -221,8 +222,10 @@ const GUI_init = () => {
   render.gui.add(render, 'info').name('total splats').listen().disable();
   render.gui.add(render, 'visible').name('visible').listen().disable();
 
-  render.gui.domElement.style.top = '60px';  // omg, this is naaaasty
+  render.gui.domElement.style.top = '5%';  // omg, this is naaaasty
+  render.gui.domElement.style.right = '3%';
 
+  DoResize();
 }
 
 function GUI_get(name) {
@@ -259,7 +262,17 @@ window.addEventListener('wheel', (event) => {
   event.preventDefault();
   params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
 }, { passive: false });
-window.addEventListener("resize", (e) => { GUI_reset(); });
+
+window.addEventListener("resize", (e) => {
+  canvas.width = innerWidth * .9;
+  canvas.height = innerHeight * .8;
+  DoResize();
+});
+
+function DoResize() {
+  const pcanvas = document.getElementById("progress-canvas")
+  pcanvas.width = .93 * canvas.width;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 ////// WebGPU init //////
@@ -1127,6 +1140,7 @@ async function init_sorting(render) {
 const as_f32 = new Float32Array(1);
 const as_u32 = new Uint32Array(as_f32.buffer);
 function f32To16(f32) {
+  // https://www.corsix.org/content/converting-fp32-to-fp16
   as_f32[0] = f32;
   const u32 = as_u32[0];
   const m = (u32 >> 13) & 0x03ff;    // mantissa
@@ -1312,7 +1326,6 @@ async function FetchURL() {
 
     const pcanvas = document.getElementById("progress-canvas")
     const pctx = pcanvas.getContext("2d");
-    pcanvas.width = .93 * canvas.width;
     pcanvas.style.display = 'inline-block';
 
     render.reader = render.req.body.getReader();
@@ -1588,7 +1601,7 @@ async function frame() {
 
   if (params.auto_rotate) params.theta -= 0.07;
   ++render.tick;
-  if (render.loop_id != undefined) render.loop_id = requestAnimationFrame(frame);
+  render.loop_id = requestAnimationFrame(frame);
 }
 
 function stop_animation() {
@@ -1712,7 +1725,6 @@ async function init(what) {
   }
   create_pipelines(render);
 
-  render.loop_id = 0;
   frame();    // start animation loop
 
   if (render.loading) await FetchURL();  // start loading splats
