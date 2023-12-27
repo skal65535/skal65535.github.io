@@ -1245,6 +1245,32 @@ function create_synth_splats() {
   render.num_splats = num_splats;  // we already have everything
 }
 
+// File-drop handling
+const PreventDefault = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+};
+document.addEventListener("dragenter", PreventDefault);
+document.addEventListener("dragover", PreventDefault);
+document.addEventListener("dragleave", PreventDefault);
+document.addEventListener("drop", (event) => {
+  PreventDefault(event);
+  console.log("Reading file: " + event.dataTransfer.files[0]);
+  DropFile(event.dataTransfer.files[0]);
+});
+
+function DropFile(file) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    const data = new Uint8Array(fr.result);
+    const num_splats = Math.floor(data.length / STRIDE_SPLAT);
+    allocate_splats(num_splats);
+    add_splats(num_splats, data);
+    GUI_reset();
+  };
+  fr.readAsArrayBuffer(file);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // .splat file-loading from URL
 
@@ -1268,7 +1294,6 @@ function add_splats(num, src_u) {
                                    positions_buffer: render.CPU.positions.buffer,
                                    idx_buffer:       render.CPU.idx.buffer,
                                    dbg:(params.dbg.trace > 0), });
-
 }
 
 // Thanks Jake! https://jakearchibald.com/2017/async-iterators-and-generators/#making-streams-iterate
@@ -1664,7 +1689,8 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   gui: undefined,
 };
 
-async function set_model(model) {
+async function set_model(model_name) {
+  const model = kModels[model_name] || {file: model_name};
   if (render.sort_worker) {
     render.sort_discard = true;
   }
@@ -1714,7 +1740,7 @@ async function init(what) {
   stop_animation();
 
   if (what.model) {
-    await set_model(kModels[params.model_name]);
+    await set_model(params.model_name);
     await init_buffers(render);
   }
   if (what.buffers || what.textures) {
