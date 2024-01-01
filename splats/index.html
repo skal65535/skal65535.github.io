@@ -29,7 +29,7 @@
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
-    The vertex shader generates a quad as triangle-list.<br/>
+    The vertex shader generates a quad as triangle-strip.<br/>
     The fragment shader has several 'visu' functions, other than the expected 'gaussian'.
     <i>Try 'cone', it looks good too!</i><br/>
     The exact depth-sort is done on CPU at regular intervals (it's a
@@ -739,6 +739,7 @@ function create_axis_pipeline(render) {
     fragment: { module: axis_module, entryPoint: 'fs_main', targets: [{ format: render.textureFormat, },], },
     primitive: { topology: 'triangle-strip', cullMode: 'none', },
     depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus', },
+    multisample: { count: (params.use_MSAA ? 4 : 1), },
   });
   render.axis_bind_group = render.device.createBindGroup({
     layout: render.axis_pipeline.getBindGroupLayout(0),
@@ -1004,8 +1005,9 @@ function handle_sorting(render, encoder) {
   } else if (sort_cpu) {
     // if ready, copy sorted instances indices
     if (render.sort_done) {
-      trace(0, "SRT: sending sorted list to GPU.");
-      render.device.queue.writeBuffer(render.GPU.idx, 0, render.CPU.idx);
+      trace(0, "SRT: sending sorted list of size", render.num_visible, "to GPU.");
+      render.device.queue.writeBuffer(
+          render.GPU.idx, 0, render.CPU.idx, 0, render.num_visible);
       render.sort_done = false;
     }
     // launch a new sorting job
