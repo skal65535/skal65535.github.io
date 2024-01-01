@@ -887,8 +887,8 @@ function SortingThread(self) {
       const x = px * mtx[0] + py * mtx[4] + pz * mtx[ 8] + mtx[12];
       const y = px * mtx[1] + py * mtx[5] + pz * mtx[ 9] + mtx[13];
       if (z > 0) continue;
-      if (Math.abs(x) > fx * (-z)) continue;
-      if (Math.abs(y) > fy * (-z)) continue;
+      if (Math.abs(x) * fx > -z) continue;
+      if (Math.abs(y) * fy > -z) continue;
       // TODO(skal): cull and use 1/z reverse-z
       const depth = 10000. * B * z; // should be: cst * (B * z - A);
       if (max_depth < depth) max_depth = depth;
@@ -939,8 +939,8 @@ function SortingThread(self) {
       if (e.data.dbg) console.log("WRK: Received sorting task:",
                                   e.data.num_splats, "/", max_splats);
       if (e.data.timing) console.time("SortDepth");
-      fx = 1.2 * e.data.fx;
-      fy = 1.2 * e.data.fy;
+      fx = 0.96 * e.data.fx;
+      fy = 0.96 * e.data.fy;
       const num_visible =
         e.data.do_cull ? SortDepthCulled(e.data.view, e.data.proj, e.data.num_splats) :
                          SortDepth(e.data.view, e.data.proj, e.data.num_splats);
