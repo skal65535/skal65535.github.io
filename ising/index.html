@@ -1,0 +1,1113 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
+<!-- Ising model simulations with WebGPU -->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Ising model simulations with WebGPU</title>
+<link rel="stylesheet" href="../splats/style.css">
+<style>
+#sample-canvas {
+  background:#000; color:#fff; outline: 1px solid black; display: inline-block;
+  position:absolute; bottom:180px; left:110px;
+  border: 3px solid #fff; border-radius: 10px;
+}
+</style>
+</head>
+
+<body onload="main();">
+<div id='main-area'>
+  <center>
+    <b>Ising-model simulation using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
+    </b><br/>
+    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
+    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
+    <div><canvas id="main-canvas"'></canvas></div>
+    <form action="https://skal65535.github.io/">
+      <input type="submit" value="skal 2024" id="skal-back"/>
+    </form>
+    <br/>
+    <canvas id="sample-canvas"></canvas>
+    <canvas id="side-canvas"></canvas>
+  </center>
+    Using WebGPU, we simulate a 3D cubic <a href="https://en.wikipedia.org/wiki/Ising_model">Ising Model</a>
+    for magnetic spins, with no external field.
+    The critical parameter is <i>beta = J / kT</i>, where J is the coupling constant between spins
+    (J&gt;0: ferromagnetism, J&lt;0: antiferromagnetism).<br/>
+    Since the cubic lattice can be decomposed into two independant sub-lattices
+    (depending on the parity of (x + y + z)), both cases are symmetric and share
+    the same critical temperature <a href="https://www.hermetic-systems.com/compsci/thesis/chap3.htm"><b>Tc=4.5115...</b></a><br/>
+    The anti-ferromagnetic case is visually interesting with the alterning planes of +1 and -1 spins.
+    <br/>
+    All the Monte-Carlo simulation is done as a <b>WebGPU compute-shader</b> (flipping the spins,
+    drawing a random number and rejecting the move or not, etc.)
+    which run several loops internally before a pass of visualisation is done.
+    <br/>
+    Just for fun, we scan the whole range of temperature [Tmin, Tmax],
+    performing a warm-up steps, followed by a proper sampling of the magnetic field and internal
+    energy.
+    <br/>
+    The resulting magnetic field |M| and specific heat Cv are plotted on the bottom-left.
+    Instantaneous magnetic field is plotted on the bottom-right.
+    <br/>
+    Of course, a proper scientific Monte-Carlo experiment should let run the system at a single
+    temperature value for <i>millions</i> of thermalisation steps before any measurement.
+    <br/>
+    An often overlooked part of the Monte-Carlo simulation is the Random
+    Number Generator, which needs to be high-quality, given the millions of
+    draws involved, which can easily exhaust the period of the RNG if not
+    careful.
+    <br/>
+    Here, each spins carries its own RNG state as a triplet of u32 which are
+    used for <a href="https://www.omscs-notes.com/simulation/generating-uniform-random-numbers/">three Tausworthe steps</a>
+    with different periods, and then combined into a final 24bit result.
+    <br/>
+    This is how you do to stay massively parallel!
+    <br/>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script>
+"use strict";
+
+////////////////////////////////////////////////////////////////////////////////
+
+const args = new URLSearchParams(location.search);
+function parse_arg_int(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+function parse_arg_float(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+function parse_arg_str(arg_value, default_value) {
+  return args.has(arg_value) ? args.get(arg_value) : default_value;
+}
+function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
+
+const trace = (level, ...args) => {
+  if (params.dbg.trace > level) console.log(args.join(' '));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// constants
+
+const UINT32_SIZE = Uint32Array.BYTES_PER_ELEMENT;
+const is_safari_185 = navigator.userAgent.includes("Version/17.4 Safari/605.1.15");
+const side_canvas = document.querySelector("#side-canvas");
+const sample_canvas = document.querySelector("#sample-canvas");
+const canvas = document.querySelector("#main-canvas");
+const ctx = canvas.getContext("webgpu");
+
+////////////////////////////////////////////////////////////////////////////////
+// Params
+
+const params = {
+  // physics / simulation
+  nb_spins: parse_arg_int("spins", 48),  // number of spins per dimensions
+  kT_J: parse_arg_float("T", 2.0),   // = J/kT
+  Tmin: parse_arg_float("Tmin", -6.),   // temperature range
+  Tmax: parse_arg_float("Tmax",  6.),
+  Tbins: parse_arg_int("bins", 256),  // for stats
+  auto_scan: !parse_arg_bool("no-scan"),
+  scan_period: parse_arg_int("scan-period", 200),
+  p:  0.,
+  nb_sim_loops: parse_arg_int("loops", 32),   // number of simulation loops (before one of visu)
+  warmup: parse_arg_int("warmup", 5),
+  stats_every: parse_arg_int("every", 6),     // extract stats every XX cycles
+  stats_for: parse_arg_int("stats-for", 4),   // how many cycles of stats extraction per scan
+
+  wsize: 1,            // maxComputeInvocationsPerWorkgroup,
+  wsize_max: 65535,    // maxComputeWorkgroupsPerDimension
+  max_buffer_size: 268435456,
+
+  // Camera / Visu
+  cam: {
+    fov: 90.,
+    radius: 1.5,
+    theta: 0.,
+    phi: -30.0,
+    znear: 0.1,
+    zfar: 100.,
+    show_cube: true,
+    dot_radius_p: .3,
+    dot_radius_m: .3,
+    auto_rotate: !parse_arg_bool("no-rotate"),
+    show_mag: !parse_arg_bool("no-mag"),
+  },
+  mouse: {on:false, x:0., y:0.},
+
+  // debugging
+  dbg: { timing: false,
+         trace: parse_arg_int('trace', 0, 0, 3),
+         freeze: parse_arg_bool("freeze"),
+         visu: !parse_arg_bool("no-visu"),
+       },
+  reset: () => init({stats:true, temperature:true, start:true}),
+};
+
+if (parse_arg_bool("dbg")) {
+  params.dbg.trace = 0;
+  params.dbg.freeze = true;
+  params.dbg.visu = true;
+  params.cam.radius = 2.8;
+  params.cam.theta = 45.;
+  params.cam.phi = 30.;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// GUI setup
+
+const GUI_change = async () => { await init({}); }  // parameter changed
+
+const GUI_init = () => {
+  canvas.width  = parse_arg_int("w", innerWidth * .9);
+  canvas.height = parse_arg_int("h", innerHeight * .8);
+
+  if (params.no_gui) {
+    render.gui = undefined;
+    return;
+  }
+  render.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'Ising model'});
+  render.gui.add(params, 'nb_spins', 4, 128, 1).name('# spins / dimension').listen().onChange(() => init({start:true}));
+  render.gui.add(params, 'kT_J', params.Tmin, params.Tmax, 0.0001).name("kT/J").listen().onChange(() => init({temperature:true}));
+  //  render.gui.add(params, 'p', .0, 1., 0.001).listen().onChange(GUI_change);
+  render.gui.add(params, 'auto_scan').name('auto-scan').listen().onChange(GUI_change);
+  render.gui.add(params, 'Tmin').name("Tmin").listen().onChange(() => init({temperature:true,stats:true,}));
+  render.gui.add(params, 'Tmax').name("Tmax").listen().onChange(() => init({temperature:true,stats:true,}));
+  render.gui.add(params, 'scan_period', 1, 10000).name('scan period').listen().onChange(GUI_change);
+  render.gui.add(params, 'reset').name('Reset');
+  const sim_folder = render.gui.addFolder('simulation');
+  sim_folder.add(params, 'nb_sim_loops', 1, 10000, 1).name("# internal loops").listen();
+  sim_folder.add(params, 'warmup', 0, 100, 1).name("warm-up cycles").listen();
+  sim_folder.add(params, 'stats_every', 1, 100, 1).name("stat interval").listen();
+  sim_folder.add(params, 'stats_for', 1, 100, 1).name("# stat cycles").listen();
+  const cam_folder = render.gui.addFolder('camera / visu').close();
+  cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
+  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen();
+  cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
+  cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
+  cam_folder.add(params.cam, 'show_cube').name('show cube').listen();
+  cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
+  cam_folder.add(params.cam, 'dot_radius_p', .0001, 1., .01).name('+1 dot radius').listen();
+  cam_folder.add(params.cam, 'dot_radius_m', .0001, 1., .01).name('-1 dot radius').listen();
+  cam_folder.add(params.cam, 'show_mag').name('show magnetization').listen();
+  const dbg_folder = render.gui.addFolder('Debug').close();
+  dbg_folder.add(params.dbg, 'freeze').name('freeze simulation').listen();
+  dbg_folder.add(params.dbg, 'visu').name('visualize').listen();
+  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
+  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
+  render.gui.add(render, 'txt_info').name('spins').listen().disable();
+  render.gui.add(render, 'txt_info2').name('').listen().disable();
+
+  render.gui.domElement.style.top = '5%';
+  render.gui.domElement.style.right = '3%';
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// event handling
+
+window.addEventListener('pointermove', (event) => {
+  if (event.target != canvas) return;
+//  event.preventDefault();
+  const bounds = canvas.getBoundingClientRect();
+  const mouse_x = (event.clientX - bounds.left) / canvas.width;
+  const mouse_y = (event.clientY -  bounds.top) / canvas.height;
+  if (params.mouse.on) {
+    params.cam.phi   += (params.mouse.y - mouse_y) * 140.;
+    params.cam.theta += (params.mouse.x - mouse_x) * 140.;
+  }
+  params.mouse.x = mouse_x;
+  params.mouse.y = mouse_y;
+}, false);
+window.addEventListener('pointerdown', (event) => {
+  if (event.target == canvas) params.mouse.on = true;
+});
+window.addEventListener('pointerup', (event) => {
+  params.mouse.on = false;
+});
+window.addEventListener('wheel', (event) => {
+  if (event.target != canvas) return;
+  event.preventDefault();
+  params.cam.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
+}, { passive: false });
+
+window.addEventListener("resize", (e) => {
+  canvas.width  = innerWidth  * .9;
+  canvas.height = innerHeight * .8;
+  do_resize();
+});
+
+function do_resize() {
+  init_textures(render);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////// WebGPU init //////
+
+function Oops(e) {
+  // document.body.innerHTML = `Oops! <pre>${e}</pre>`;
+  side_canvas.style.display = 'inline-block';
+  side_canvas.width = canvas.width * .8;
+  const ctx = side_canvas.getContext('2d');
+  ctx.fillStyle = '#f33';
+  ctx.font = "bold 20px Arial";
+  ctx.fillText('Oops!', 15, 30);
+  ctx.font = "bold 12px Arial";
+  ctx.fillText(e, 15, 55);
+  throw Error(e);
+}
+
+const GPU_init = async () => {
+  navigator.gpu || Oops("WebGPU not supported.");
+  console.log("Navigator has GPU");
+
+  const adapter = await navigator.gpu.requestAdapter();
+  adapter || Oops("Couldn’t request WebGPU adapter.");
+  console.log("WebGPU Adapter ok");
+
+  render.device = await adapter.requestDevice();
+  render.device || Oops("Couldn’t request WebGPU logical device.");
+  console.log("WebGPU Device acquired.");
+  for (const name of ['maxComputeInvocationsPerWorkgroup',
+                      'maxComputeWorkgroupSizeX',
+                      'maxComputeWorkgroupSizeY',
+                      'maxComputeWorkgroupSizeZ',
+                      'maxComputeWorkgroupStorageSize',
+                      'maxComputeWorkgroupsPerDimension',
+                      'maxStorageBufferBindingSize']) {
+    console.log("  ->", name, ":", render.device.limits[name]);
+  }
+  params.wsize = render.device.limits['maxComputeInvocationsPerWorkgroup'];
+  params.wsize_max = render.device.limits['maxComputeWorkgroupsPerDimension'];
+
+  params.max_buffer_size = render.device.limits.maxBufferSize;
+  params.max_binding_size = render.device.limits.maxStorageBufferBindingSize;
+
+  function onDeviceError(event) {
+    console.log("Something bad happened! Error type:", event.error.constructor.name);
+    console.log("Error message:", event.error.message);
+    if (render.device != undefined) {
+      render.device.destroy();
+      render.device = undefined;
+    }
+    stop_animation();
+    Oops("Error caught while constructing the WebGPU device. See console.");
+  }
+  render.device.addEventListener('uncapturederror', onDeviceError);
+
+  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({device: render.device,
+                 format: render.textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied', });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Pipelines & Shaders (the cool stuff!)
+
+const UNIFORMS_SIZE = (8 + 256);
+const uniforms_struct_code = `
+    struct Uniforms {  // 9 * 4 bytes + ptable[]
+      L: vec4u,  // lattice dim + total number of spins
+      beta: f32,
+      p: f32,
+      parity: u32,
+      ptable: array<vec4f, 256 / 4>,   // proba-table, offset 36
+    }
+  `;
+const rng_code = `
+  // https://indico.cern.ch/event/93877/contributions/2118070/attachments/1104200/1575343/acat3_revised_final.pdf
+  fn Tausworthe_step(v: u32, S1: u32, S2: u32, S3: u32, Mask: u32) -> u32 {
+    let w = ((v << S1) ^ v) >> S2;
+    return ((v & Mask) << S3) ^ w;
+  }
+  // fn LCG_step(v: u32, A: u32, B: u32) -> u32 { return (v * A + B); }
+  fn update_seed(s: vec4u) -> vec4u {
+    return vec4u(Tausworthe_step(s.x,  13, 19, 12, 0xfffffffe),
+                 Tausworthe_step(s.y,   2, 25,  4, 0xfffffff8),
+                 Tausworthe_step(s.z,   3, 11, 17, 0xfffffff0),
+                 s.w,  /* no LCG_step, we store the spin here instead */);
+  }
+  fn rand(seed: vec4u) -> f32 {
+    // return 2.3283064365387e-10 * f32(seed.x ^ seed.y ^ seed.z);
+    return f32((seed.x ^ seed.y ^ seed.z) >> 8) / 16777216.;
+  }
+`;
+
+function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
+  function compute_sim_code(wsize, xsize, xysize) {
+    return `
+      ${uniforms_struct_code}
+      ${rng_code}
+
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+      @group(0) @binding(1) var<storage, read_write> spins: array<vec4u>;
+
+      fn get_spin(x: u32, y: u32, z: u32) -> u32 {
+        return spins[(z * params.L[1] + y) * params.L[0] + x].w & 1;
+      }
+      fn get_nn(pos: vec3u) -> f32 {
+        let L = params.L;
+        let x = pos.x;
+        let y = pos.y;
+        let z = pos.z;
+        let m = get_spin((x + 1) % L[0], y, z)
+              + get_spin((x - 1) % L[0], y, z)
+              + get_spin(x, (y + 1) % L[1], z)
+              + get_spin(x, (y - 1) % L[1], z)
+              + get_spin(x, y, (z + 1) % L[2])
+              + get_spin(x, y, (z - 1) % L[2])
+        ;
+        var nn = f32(m) - 3;  // in [-3, 3]
+        if (get_spin(x, y, z) != 0) { nn = -nn; }
+        return nn * params.beta;
+      }
+      @compute @workgroup_size(${wsize})
+      fn main(@builtin(global_invocation_id) global_id : vec3u) {
+        let nb_spins = params.L[3];
+        var idx = global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x;
+        if (idx >= nb_spins) { return; }
+
+        let L = params.L;
+        let pos = vec3u(idx                   % L[0],
+                        (idx / L[0])          % L[1],
+                        (idx / (L[1] * L[0])) % L[2]);
+        if (((pos.x ^ pos.y ^ pos.z) & 1) == params.parity) { return; }
+
+        spins[idx] = update_seed(spins[idx]);
+        let E = get_nn(pos);
+        let r = rand(spins[idx]);
+        if (E > 0 || r < exp(E)) { spins[idx].w ^= 1; }
+      }
+    `;
+  };
+  render.sim_pipeline = render.device.createComputePipeline({
+    layout: "auto",
+    compute: {
+      module: render.device.createShaderModule(
+        {code: compute_sim_code(render.wsize,
+                                render.dim_x * render.wsize,
+                                render.dim_y * render.dim_x * render.wsize),
+        },),
+      entryPoint: "main",
+    },
+  });
+
+  // create COMPUTE binding groups
+  render.sim_bindings = [];
+  const sim_bind_group1 = render.device.createBindGroup({
+      layout: render.sim_pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
+        { binding: 1, resource: { buffer: render.GPU.spins, }, },
+      ],
+  });
+  render.sim_bindings.push(sim_bind_group1);
+
+  const sim_bind_group2 = render.device.createBindGroup({
+      layout: render.sim_pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: render.GPU.uniforms2, }, },
+        { binding: 1, resource: { buffer: render.GPU.spins, }, },
+      ],
+  });
+  render.sim_bindings.push(sim_bind_group2);
+}
+
+const visu_uniforms_struct_code = `
+    struct VisuUniforms {  // 44 * 4 bytes
+      view: mat4x4f,
+      proj: mat4x4f,
+      L:      vec4u,  // lattice dim + total number of spins
+      dim:    vec2f,   // display dimension
+      focal:  vec2f,   // fx / fy
+      radius: vec2f,   // dot radius red/blue
+    }
+  `;
+function create_visu_pipeline(render) {  // RENDER pipeline drawing the spins
+  const visu_code = `
+    ${uniforms_struct_code}
+    ${visu_uniforms_struct_code}
+    struct Spin {
+        @builtin(position) position: vec4f,
+        @location(0) uv: vec2f,
+        @location(1) @interpolate(flat) color: vec4f,
+    };
+    @group(0) @binding(0) var<uniform> params: VisuUniforms;
+    @group(0) @binding(1) var<storage, read> spins: array<vec4u>;
+    const kQuad = array<vec2f, 4>(  // quad [-1,1]x[-1,1]
+      vec2f(1., -1.), vec2f(1., 1.), vec2f(-1., -1.), vec2f(-1., 1.),
+    );
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                        @builtin(instance_index) idx: u32,  ) -> Spin {
+      let spin = spins[idx].w & 1;
+
+      let s_x = f32(idx % params.L[0]) / f32(params.L[0]);
+      let s_y = f32((idx / params.L[0]) % params.L[1]) / f32(params.L[1]);
+      let s_z = f32((idx / (params.L[0] * params.L[1])) % params.L[2]) / f32(params.L[2]);
+      let position = vec4f(s_x - .5, s_y - .5, s_z - .5, 1.0);
+      let vpos = params.proj * params.view * position;
+
+      var output : Spin;
+      var r : f32;
+      if (spin == 0) {
+        r = params.radius.x;
+        output.color = vec4f(1., 0., 0., 1.);
+      } else {
+        r = params.radius.y;
+        output.color = vec4f(0., 0., 1., 1.);
+      }
+      output.uv = kQuad[vtx_idx];
+      let delta = output.uv * vec2f(1., params.focal.y / params.focal.x);
+      output.position = vpos + 10. * r / params.dim.x * vec4f(delta, 0., 0.);
+      return output;
+    }
+    @fragment fn frag_main(s: Spin) -> @location(0) vec4f {
+      let d = length(s.uv);
+      if (d > 1.) { discard; }
+      return vec4f(s.color.rgb * s.position.www, 1.);
+    }
+  `;
+  const visu_module = render.device.createShaderModule({ code: visu_code, });
+  render.visu_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: visu_module,
+      entryPoint: 'vtx_main',
+      buffers: [
+        { arrayStride: UINT32_SIZE,
+          stepMode: 'instance',
+          attributes: [ { shaderLocation: 0, offset: 0, format: 'uint32', }, ],
+        },
+      ],
+    },
+    fragment: {
+      module: visu_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: render.textureFormat,
+        blend: {
+          color: {srcFactor: 'one', dstFactor: 'one-minus-dst-alpha', operation: 'add'},
+          alpha: {srcFactor: 'one', dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: {
+      topology: 'triangle-strip',
+      cullMode: 'none',
+    },
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'greater',
+      format: 'depth24plus',
+    },
+  });
+  render.visu_bind_group = render.device.createBindGroup({
+    layout: render.visu_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: render.GPU.visu_uniforms, }, },
+      { binding: 1, resource: { buffer: render.GPU.spins, }, },
+    ],
+  });
+}
+
+function create_cube_pipeline(render) {  // RENDER pipeline drawing the spins
+  const cube_code = `
+    ${visu_uniforms_struct_code}
+    @group(0) @binding(0) var<uniform> params: VisuUniforms;
+    const lines = array<u32, 12 * 2>(
+      0, 1,   1, 3,   3, 2,  2, 0,
+      4, 5,   5, 7,   7, 6,  6, 4,
+      0, 4,   1, 5,   2, 6,  3, 7,
+    );
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32) -> @builtin(position) vec4f {
+      let vtx = lines[vtx_idx];
+      var pos = vec4f(1., 1., 1., 2.);
+      if ((vtx & 1) != 0) { pos.x = -1.; }
+      if ((vtx & 2) != 0) { pos.y = -1.; }
+      if ((vtx & 4) != 0) { pos.z = -1.; }
+      let eps = 1 / vec3f(params.L.xyz);
+      return params.proj * params.view * (pos - vec4f(eps, 0.));
+    }
+    @fragment fn frag_main(@builtin(position) pos:vec4f) -> @location(0) vec4f {
+      return vec4f(pos.www, 1.);
+    }
+  `;
+  const cube_module = render.device.createShaderModule({ code: cube_code, });
+  render.cube_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: cube_module,
+      entryPoint: 'vtx_main',
+      buffers: [
+        { arrayStride: UINT32_SIZE,
+          stepMode: 'instance',
+          attributes: [ { shaderLocation: 0, offset: 0, format: 'uint32', }, ],
+        },
+      ],
+    },
+    fragment: {
+      module: cube_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: render.textureFormat,
+        blend: {
+          color: {srcFactor: 'one', dstFactor: 'one-minus-dst-alpha', operation: 'add'},
+          alpha: {srcFactor: 'one', dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: {
+      topology: 'line-list',
+      cullMode: 'none',
+    },
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'greater',
+      format: 'depth24plus',
+    },
+  });
+  render.cube_bind_group = render.device.createBindGroup({
+    layout: render.cube_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: render.GPU.visu_uniforms, }, },
+    ],
+  });
+}
+
+function find_worksize(size, wsize) {
+  let dim_x = 1, dim_y = 0;
+  do {
+    ++dim_y;
+    dim_x = Math.ceil(size / wsize / dim_y);
+  } while (dim_x > params.wsize_max);
+  trace(-1, "Compute binding: wsize=", wsize, "dim_x=", dim_x, "dim_y=", dim_y);
+  trace(-1, "  => total:", wsize * dim_x * dim_y, "for", size, "work items");
+  return [dim_x, dim_y];
+}
+
+function create_pipelines(render) {
+  render.wsize = 1;
+  [render.dim_x, render.dim_y] = find_worksize(render.nb_spins, render.wsize);
+  create_sim_pipeline(render);
+  create_visu_pipeline(render);
+  create_cube_pipeline(render);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Create the data buffers
+
+async function init_textures(render) {
+  if (render.depthTexture != undefined) {
+    render.depthTexture.destroy();
+    render.depthTexture = undefined;
+  }
+  render.depthTexture = render.device.createTexture({
+    label: 'depth',
+    size: [canvas.width, canvas.height],
+    format: 'depth24plus',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+}
+
+function draw_mag(s, data, min, max, width, height = canvas.height / 8) {
+  data || Oops("Internal data is undefined.");
+  width = Math.min(width, canvas.width);
+  side_canvas.style.display = 'inline-block';
+  side_canvas.style.bottom = '170px';
+  side_canvas.width = width;
+  side_canvas.height = height + 10;
+  const ctx = side_canvas.getContext('2d');
+  ctx.font = "bold 20px Arial";
+  ctx.fillStyle = '#d2e';
+  const scale = height / (max - min);
+  for (let x = 0; x < width; ++x) {
+    const v = (data[x] - min) * scale;
+    ctx.fillRect(x, height - v + 4, 1, 3);
+  }
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, height / 2 + 4, width, 1);
+  ctx.font = "bold 9px Arial";
+  ctx.fillStyle = '#fff';
+  ctx.fillText("M=" + s.toFixed(2), 20, 20);
+}
+
+function get_T_bin(T) {
+  return Math.floor((T - params.Tmin) * params.Tbins / (params.Tmax - params.Tmin));
+}
+function get_T(bin, max_bin) {
+  return params.Tmin + (bin + .5) * (params.Tmax - params.Tmin) / max_bin;
+}
+function draw_samples(render) {
+  const width = params.Tbins;
+  const height = canvas.height / 6;
+  const H = 2 * height;
+  sample_canvas.width = 2 * width;
+  sample_canvas.height = H + 2 * 5;
+  const ctx = sample_canvas.getContext('2d');
+  ctx.font = "bold 12px Arial";
+  ctx.fillStyle = '#f55';
+  ctx.fillText("|M|(T)", 20, H - 15);
+  ctx.fillStyle = '#3af';
+  ctx.fillText("Cv(T)", 20, H - 30);
+  for (let i = 0; i < width; ++i) {
+    const N = render.stats.num_samples[i];
+    if (N > 0) {
+      const norm = 1. / N;
+
+      const m = render.stats.M[i] * norm;
+      ctx.fillStyle = '#f55';
+      ctx.fillRect(2 * i, H * (1. - m) - 1 + 5, 2, 3);
+
+      const U2 = render.stats.U2[i] * norm;
+      const U = render.stats.U[i] * norm;
+      const cv = (U2 - U * U) * 40.;
+      ctx.fillStyle = '#3af';
+      ctx.fillRect(2 * i, H * (1. - cv) - 1 + 5, 2, 3);
+
+/*
+      const M2 = render.stats.M2[i] * norm;
+      const M = render.stats.Mm[i] * norm;
+      const kT = get_T(i, width);
+      const chi = (M2 - M * M) / Math.abs(kT);
+      ctx.fillStyle = '#3f4';
+      ctx.fillRect(2 * i, H * (1. - chi) - 1 + 5, 2, 3);
+*/
+    }
+  }
+  ctx.fillStyle = '#33f';
+  const Tc_bin = get_T_bin(4.5115);
+  ctx.fillRect(2 * Tc_bin, 5, 1, H);
+  const Tc_anti_bin = get_T_bin(-4.5115);  // critical T for anti-ferromagnetism
+  ctx.fillRect(2 * Tc_anti_bin, 5, 1, H);
+
+  const T_bin = get_T_bin(render.kT_J);
+  ctx.fillStyle = '#ff3';
+  ctx.fillRect(2 * T_bin, 5, 1, H);
+  ctx.fillText("T~=" + render.kT_J.toFixed(3), 2 * T_bin + 5, 20);
+
+  const T_0_bin = get_T_bin(0);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(2 * T_0_bin, 5, 1, H);
+  ctx.fillRect(0, H + 5 - 1, 2 * width, 1);
+}
+
+async function draw_stats(render) {
+  if (render.GPU.mapped) return;
+  render.GPU.mapped = true;
+
+  await render.GPU.mapped_spins.mapAsync(GPUMapMode.READ);
+  const u32 = new Uint32Array(await render.GPU.mapped_spins.getMappedRange());
+  let s = 0.;
+  let e = 0.;
+  const N = params.nb_spins;
+  for (let z = 0; z < N; ++z) {
+    for (let y = 0; y < N; ++y) {
+      for (let x = 0; x < N; ++x) {
+        const i = x + y * N + z * N * N;
+        const s0 = u32[4 * i + 3];
+        s += s0;
+        const xp = ((x + 1) % N) + y * N + z * N * N;
+        const xm = ((x + N - 1) % N) + y * N + z * N * N;
+        const yp = x + ((y + 1) % N) * N + z * N * N;
+        const ym = x + ((y + N - 1) % N) * N + z * N * N;
+        const zp = x + y * N + ((z + 1) % N) * N * N;
+        const zm = x + y * N + ((z + N - 1) % N) * N * N;
+        const JJ = u32[4 * xp + 3] + u32[4 * xm + 3]
+                 + u32[4 * yp + 3] + u32[4 * ym + 3]
+                 + u32[4 * zp + 3] + u32[4 * zm + 3];
+        const u = (2 * s0 - 1) * (2 * JJ - 6);
+        e += u;
+      }
+    }
+  }
+  s = 2. * s / render.nb_spins - 1.;
+  e /= render.nb_spins;
+  render.GPU.mapped_spins.unmap();
+  render.GPU.mapped = false;
+
+  if (params.cam.show_mag) {
+    if (render.stats.mag_pos == render.stats.mag_max) {
+      --render.stats.mag_pos;
+      for (let i = 0; i < render.stats.mag_pos; ++i) {
+        render.stats.mag[i] = render.stats.mag[i + 1];
+      }
+    }
+    render.stats.mag[render.stats.mag_pos++] = s;
+    draw_mag(s, render.stats.mag, -1., 1., render.stats.mag_max);
+  } else {
+    side_canvas.style.display = 'none';
+  }
+
+  const T_scale = params.Tbins / (params.Tmax - params.Tmin);
+  const T = Math.floor((render.kT_J - params.Tmin) * T_scale);
+  render.stats.Mm[T] += s;
+  render.stats.M[T] += Math.abs(s);
+  render.stats.M2[T] += s * s;
+  render.stats.M4[T] += s * s * s * s;
+  render.stats.U[T] += e;
+  render.stats.U2[T] += e * e;
+  render.stats.num_samples[T] += 1;
+  draw_samples(render);
+}
+
+// END OF GPU PART
+////////////////////////////////////////////////////////////////////////////////
+
+// https://gist.github.com/tommyettinger/46a874533244883189143505d203312c?permalink_comment_id=4365431#gistcomment-4365431
+function splitmix32(seed) {
+  seed |= 0;
+  seed = seed + 0x9e3779b9 | 0;
+  let t = seed ^ seed >>> 16;
+  t = Math.imul(t, 0x21f0aaad);
+  t = t ^ t >>> 15;
+  t = Math.imul(t, 0x735a2d97);
+  return ((t = t ^ t >>> 15) >>> 0);  // in [0, 4294967296);
+}
+
+function get_random_spins(nb_spins) {
+  const spins = new Uint32Array(nb_spins * 4);
+  for (let i = 0; i < nb_spins * 4; i += 4) {
+    spins[i + 0] = splitmix32(i + 0);
+    spins[i + 1] = splitmix32(i + 1);
+    spins[i + 2] = splitmix32(i + 2);
+    spins[i + 3] = splitmix32(i + 3) & 1;    // <- initial spin
+  }
+  return spins;
+}
+
+async function init_buffers(render) {
+  trace(0, "Init buffers() => nb_spins:", render.nb_spins);
+
+  // Create the persistent GPU buffers that will be filled progressively
+  render.GPU.spins = render.device.createBuffer({
+    size: render.nb_spins * 4 * UINT32_SIZE,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX |
+           GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  const spins = get_random_spins(render.nb_spins);
+  new Uint32Array(render.GPU.spins.getMappedRange()).set(spins);
+  render.GPU.spins.unmap();
+
+  // Create uniforms buffer
+  render.GPU.uniforms = render.device.createBuffer({
+    size: UNIFORMS_SIZE * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  render.GPU.uniforms2 = render.device.createBuffer({
+    size: UNIFORMS_SIZE * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  render.GPU.visu_uniforms = render.device.createBuffer({
+    size: 44 * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  // buffer to copy the spins out of the GPU
+  render.GPU.mapped_spins = render.device.createBuffer({
+    size: render.nb_spins * 4 * UINT32_SIZE,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+}
+
+async function init_spins(render) {
+  // TODO(skal): lattice stuff
+  render.L = new Uint32Array(4);
+  render.L[0] = params.nb_spins;
+  render.L[1] = params.nb_spins;
+  render.L[2] = params.nb_spins;
+  render.L[3] = render.L[0] * render.L[1] * render.L[2];
+  render.nb_spins = render.L[3];  // short-cut
+
+  await init_buffers(render);
+
+  render.table_array = new Uint32Array(256);
+  render.GPU.mapped = false;
+
+  trace(-1, "GPU: Sending", render.nb_spins, "initial spins");
+  const spins = get_random_spins(render.nb_spins);
+  render.device.queue.writeBuffer(render.GPU.spins, 0, spins);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function normalize([x, y, z]) {
+  const d = 1. / Math.hypot(x, y, z);
+  return [x * d, y * d, z * d];
+}
+function cross([Ax, Ay, Az], [Bx, By, Bz]) {
+  return [Ay * Bz - Az * By, Az * Bx - Ax * Bz, Ax * By - Ay * Bx];
+}
+function dot([Ax, Ay, Az], [Bx, By, Bz]) {
+  return Ax * Bx + Ay * By + Az * Bz;
+}
+function look_at([p_x, p_y, p_z],  // position relative to target
+                 [t_x, t_y, t_z],  // target
+                 [up_x, up_y, up_z]) {
+  const [f_x, f_y, f_z] = normalize([p_x, p_y, p_z]);
+  const [r_x, r_y, r_z] = normalize(cross([up_x, up_y, up_z], [f_x, f_y, f_z]));
+  const [d_x, d_y, d_z] = cross([f_x, f_y, f_z], [r_x, r_y, r_z]);
+  p_x += t_x;
+  p_y += t_y;
+  p_z += t_z;
+  return new Float32Array([
+      r_x, d_x, f_x, 0.,
+      r_y, d_y, f_y, 0.,
+      r_z, d_z, f_z, 0.,
+      -dot([r_x, r_y, r_z], [p_x, p_y, p_z]),
+      -dot([d_x, d_y, d_z], [p_x, p_y, p_z]),
+      -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
+}
+function perspective(fx, fy, znear, zfar) {
+  const A = znear / (zfar - znear);
+  const B = zfar * A;
+  return new Float32Array([
+     -fx,  0., 0.,  0.,
+      0., -fy, 0.,  0.,
+      0.,  0.,  A, -1.,
+      0.,  0.,  B,  0.]);
+}
+
+function transmit_frame_params(render) {
+  const aspect = canvas.width / canvas.height;
+  render.frame.fx = 1. / Math.tan(params.cam.fov * Math.PI / 360.);
+  render.frame.fy = aspect * render.frame.fx;
+  render.frame.proj = perspective(render.frame.fx, render.frame.fy, params.cam.znear, params.cam.zfar);
+  const theta = params.cam.theta * Math.PI / 180.;
+  const phi = params.cam.phi * Math.PI / 180.;
+  render.frame.view = look_at(
+      [ params.cam.radius * Math.cos(theta) * Math.cos(phi),
+        params.cam.radius *                   Math.sin(phi),
+        params.cam.radius * Math.sin(theta) * Math.cos(phi), ],
+      [0., 0., 0.], [0., 1., 0.]);
+
+  // transmit
+  render.device.queue.writeBuffer(render.GPU.visu_uniforms,  0 * 4, render.frame.view);
+  render.device.queue.writeBuffer(render.GPU.visu_uniforms, 16 * 4, render.frame.proj);
+  render.device.queue.writeBuffer(render.GPU.visu_uniforms, 32 * 4, render.L);
+  render.device.queue.writeBuffer(render.GPU.visu_uniforms, 36 * 4,
+      new Float32Array([ canvas.width, canvas.height,
+                         render.frame.fx, render.frame.fy,
+                         params.cam.dot_radius_p, params.cam.dot_radius_m, ]));
+
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Animation loop
+
+function transmit_uniforms() {
+  render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.L);
+  render.device.queue.writeBuffer(render.GPU.uniforms,  4 * 4, new Float32Array([render.beta, params.p]));
+  render.device.queue.writeBuffer(render.GPU.uniforms,  6 * 4, new Uint32Array([0]));
+  render.device.queue.writeBuffer(render.GPU.uniforms,  8 * 4, render.table_array);
+
+  render.device.queue.writeBuffer(render.GPU.uniforms2,  0 * 4, render.L);
+  render.device.queue.writeBuffer(render.GPU.uniforms2,  4 * 4, new Float32Array([render.beta, params.p]));
+  render.device.queue.writeBuffer(render.GPU.uniforms2,  6 * 4, new Uint32Array([1]));
+  render.device.queue.writeBuffer(render.GPU.uniforms2,  8 * 4, render.table_array);
+}
+
+async function frame() {
+  if (params.auto_scan && render.cycle == 0) {
+    const t = params.kT_J + render.scan / params.scan_period * (params.Tmax - params.Tmin);
+    const T = ((t - params.Tmin) % (params.Tmax - params.Tmin)) + params.Tmin;
+    set_temperature(T);
+    render.scan = (render.scan + 1) % params.scan_period;
+  }
+  ++render.cycle;
+
+  const warming_up = (render.cycle < params.warmup);
+  const delta = render.cycle - params.warmup;
+  const need_stats = !warming_up && ((delta % params.stats_every) == 0) && !render.GPU.mapped;
+  const total_cycles = params.stats_every * params.stats_for + params.warmup;
+  if (render.cycle > total_cycles) render.cycle = 0;  // restart
+
+  if (!params.dbg.freeze) {
+    if (params.dbg.timing) console.time("GPU-sim");
+    performance.mark("sim-webgpu start");
+    transmit_uniforms();
+    const encoder = render.device.createCommandEncoder();
+    for (let iter = 0; iter < params.nb_sim_loops; ++iter) {
+      for (const bind_group of render.sim_bindings) {
+        const compute_pass = encoder.beginComputePass();
+        compute_pass.setPipeline(render.sim_pipeline);
+        compute_pass.setBindGroup(0, bind_group);
+        compute_pass.dispatchWorkgroups(render.dim_x, render.dim_y);
+        compute_pass.end();
+      }
+    }
+    if (need_stats) {
+      encoder.copyBufferToBuffer(
+          render.GPU.spins, 0,
+          render.GPU.mapped_spins, 0, render.nb_spins * 4 * UINT32_SIZE);
+    }
+    render.device.queue.submit([encoder.finish()]);
+    performance.mark("sim-webgpu end");
+    if (params.dbg.timing) console.timeEnd("GPU-sim");
+    if (need_stats) draw_stats(render);
+  }
+
+  if (params.dbg.visu) {
+    if (params.dbg.timing) console.time("GPU-visu");
+    performance.mark("visu-webgpu end");
+    const encoder = render.device.createCommandEncoder();
+    transmit_frame_params(render);
+    const render_pass = encoder.beginRenderPass({
+      colorAttachments: [
+        { view: ctx.getCurrentTexture().createView(),
+          clearValue: {r:0., g:0., b:0., a:0.},
+          loadOp: 'clear', storeOp: 'store', },
+      ],
+      depthStencilAttachment: {
+        view: render.depthTexture.createView(),
+        depthClearValue: 0.0,
+        depthLoadOp: 'clear', depthStoreOp: 'store', },
+    });
+    render_pass.setPipeline(render.visu_pipeline);
+    render_pass.setBindGroup(0, render.visu_bind_group);
+    render_pass.setVertexBuffer(0, render.GPU.spins);
+    render_pass.draw(4, render.nb_spins);
+    if (params.cam.show_cube) {
+      render_pass.setPipeline(render.cube_pipeline);
+      render_pass.setBindGroup(0, render.cube_bind_group);
+      render_pass.draw(24);
+    }
+    render_pass.end();
+
+    render.device.queue.submit([encoder.finish()]);
+    performance.mark("visu-webgpu end");
+    if (params.dbg.timing) console.timeEnd("GPU-visu");
+    // performance.measure("webgpu", "visu-webgpu start", "visu-webgpu end");
+  }
+
+  if (params.cam.auto_rotate) params.cam.theta -= 0.07;
+  render.loop_id = requestAnimationFrame(frame);
+
+  render.txt_info = render.nb_spins;
+  render.txt_info2 = "scan:" + render.scan + "/" + params.scan_period
+                   + "   T:" + render.kT_J.toFixed(4);
+}
+
+function stop_animation() {
+  if (render.loop_id != undefined) {
+    cancelAnimationFrame(render.loop_id);
+    render.loop_id = undefined;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+var render = {  /* Run-time data: device, uniforms, pipeline... */
+  device: undefined,
+  textureFormat: undefined,
+
+  nb_spins:   undefined,   // final number of spins
+  GPU: {   // data sent to GPU
+    spins:        null,   // array<vec4u>: 3 seeds + 1 spin
+    mapped_spins: null,   // mapped for exporting the spins
+    mapped:       false,  // true is mapped_spins[] is active
+    uniforms:     null,
+    visu_uniforms:null,
+  },
+  sim_pipeline: null,
+  sim_bindings: [],
+  dim_x: 0,
+  dim_y: 0,
+  wsize: 1,
+
+  table_array: undefined,   // Float32Array[256]
+
+  // per-frame params
+  frame: {
+    view: undefined,
+    proj: undefined,
+    fx: undefined,
+    fy: undefined,
+  },
+
+  // side info
+  txt_info: "",
+  txt_info2: "",
+  loop_id: undefined,  // id for animation loop
+
+  // simulation
+  scan: 0,
+  cycle: 0,
+  stats: {
+    mag_pos: 0,
+    mag_max: 100,
+    mag: undefined,  // Float32Array(this.stats_max)
+    M: null,  // array for M(T)
+    Mm: null,
+    M2: null,
+    M4: null,
+    U: null,
+    U2: null,
+    num_samples: null,  // num samples per bin
+  },
+
+  gui: null,
+};
+
+function set_temperature(T) {
+  render.kT_J = T;
+  render.beta = 4. / render.kT_J;
+  render.warmup = 0;
+}
+
+function init_stats(render) {
+  set_temperature(params.kT_J);
+  render.scan = 0;
+
+  // CPU storage for stats
+  render.stats.mag_pos = 0;
+  render.stats.mag_max = 100;
+  render.stats.mag = new Float32Array(render.stats.mag_max);
+
+  render.stats.U  = new Float32Array(params.Tbins);
+  render.stats.U2 = new Float32Array(params.Tbins);
+  render.stats.M  = new Float32Array(params.Tbins);
+  render.stats.M2 = new Float32Array(params.Tbins);
+  render.stats.M4 = new Float32Array(params.Tbins);
+  render.stats.Mm = new Float32Array(params.Tbins);
+  render.stats.num_samples = new Uint32Array(params.Tbins);
+}
+
+async function init(what) {
+  render.device || Oops("Initialization failed. Is WebGPU supported and " +
+                        "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
+  stop_animation();
+
+  if (what.textures) await init_textures(render);
+  if (what.start) await init_spins(render);
+  if (what.stats) init_stats(render);
+  if (what.temperature) set_temperature(params.kT_J);
+
+  create_pipelines(render);
+
+  render.scan = 0;
+  render.warmup = 0;
+
+  frame();    // start animation loop
+}
+
+async function main() {
+  try {
+    GUI_init();
+    await GPU_init();
+    init({stats:true, textures:true, start:true})
+    do_resize();
+  } catch(e) { Oops(e); }
+}
+
+</script>
+
+</body>
+</html>

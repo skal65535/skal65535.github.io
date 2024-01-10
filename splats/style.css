@@ -17,12 +17,12 @@
   background: #cce; color:#112;
   border: 3px solid; border-radius: 5px; padding: 5px;
 }
-#skal-2023 {
+#skal-back {
   border: 3px solid; border-radius: 5px; padding: 5px;
   background: #cce;
   position: absolute; left:2%; top:5%;
 }
-#skal-2023:hover { background: #cdf; }
+#skal-back:hover { background: #cdf; }
 
 #progress-canvas {
   z-index:1;
@@ -30,7 +30,7 @@
   position: absolute; left: 7%; top: 83%;
   display: none;
 }
-#debug-canvas {
+#side-canvas {
   background:#000; color:#fff; outline: 1px solid black; display: none;
   position:absolute; bottom:120px; right:70px;
   border: 3px solid #fff; border-radius: 10px;

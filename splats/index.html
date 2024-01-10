@@ -1,5 +1,5 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
-<!-- 3DGS renderer in WebGPU (WIP!!) -->
+<!-- 3DGS renderer with WebGPU -->
 
 <!DOCTYPE html>
 <html>
@@ -20,12 +20,12 @@
     <div><canvas id="main-canvas"'></canvas>
       <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
       <form action="https://skal65535.github.io/">
-        <input type="submit" value="skal 2023" id="skal-2023"/>
+        <input type="submit" value="skal 2023" id="skal-back"/>
       </form>
       <canvas id="progress-canvas" height='10px'></canvas>
     </div>
     <br/>
-    <canvas id="debug-canvas"></canvas>
+    <canvas id="side-canvas"></canvas>
   </center>
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
@@ -37,8 +37,8 @@
     to keep the splats approximately sorted while the CPU is working for real.<br/>
     <ul>
     KNOWN BUGS / LIMITATIONS:
-    <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering. This is the bottleneck.</li>
-    <li>Bicycle / garden will overflow the max-buffer-size-limit. WIP!</li>
+    <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering.
+    The bottleneck is the writeBuffer() to send back the sorted id back to the GPU.</li>
     <li>the vertex-shader needs rather big buffers, that's too much for the GPU.
     They should at least be packed further, but.. fp16... <a href='https://developer.chrome.com/blog/new-in-webgpu-120'>where art thou</a>?
     <li>No Spherical Harmonics for now.</li>
@@ -61,7 +61,7 @@ const kModels = {
   'truck': { file: 'truck.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   'treehill': { file: 'treehill.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   'stump': { file: 'stump.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
-  'garden': { file: 'garden.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
+  'garden': { file: 'garden.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], up:[1., 1., 1.], },
   'bicycle': { file: 'bicycle.splat', radius: 3.1, theta: 2.4, phi: 3., target: [0., 0., 0.], },
   '(counter)': { file: 'counter.splat', radius: 3.1, target: [0., 2., 0.], },
   '(toyroom)': { file: 'toyroom.splat', radius: 2.0, target: [0., 0., 0.], },
@@ -110,7 +110,7 @@ const STRIDE_COV2 = use_packed_fp16 ? 2 : 4;   // axis 2x2, as four f16 packed a
 // stride for .splat files, in bytes
 const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
 
-const dedug_canvas = document.querySelector("#debug-canvas");
+const side_canvas = document.querySelector("#side-canvas");
 const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 
@@ -145,6 +145,7 @@ const params = {
   sort_groupsize: 128,
   sort_every: parse_arg_int('every', 8),    // perform CPU-sort every xxx frame...
   sort_culled: !parse_arg_bool('no-cull'),  // cull splats during depth-sorting
+  sort_wasm: parse_arg_bool('wasm'),
   sort_debug: parse_arg_bool('sdbg'),       // visualize sorted index and depths
   no_gui: parse_arg_bool('no-gui'),
 
@@ -200,6 +201,7 @@ const GUI_init = () => {
   const sort_folder = render.gui.addFolder('z-sort');
   sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(() => init({sorting:true}));
   sort_folder.add(params, 'sort_culled').name('culled sort').listen().onChange(GUI_change);
+  // sort_folder.add(params, 'sort_wasm').name('use WASM sort').listen().onChange(() => init({sorting:true}));
   sort_folder.add(params, 'sort_sortsize', [4, 8, 16, 32, 64, 128, 256]).name('sorting chunk size').listen().onChange(GUI_change);
   sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen().onChange(GUI_change);
   sort_folder.add(params, 'sort_every', 1, 64, 1).name('CPU sort every...').listen();
@@ -287,9 +289,9 @@ const trace = (level, ...args) => {
 
 function Oops(e) {
   // document.body.innerHTML = `Oops! <pre>${e}</pre>`;
-  dedug_canvas.style.display = 'inline-block';
-  dedug_canvas.width = canvas.width * .8;
-  const ctx = dedug_canvas.getContext('2d');
+  side_canvas.style.display = 'inline-block';
+  side_canvas.width = canvas.width * .8;
+  const ctx = side_canvas.getContext('2d');
   ctx.fillStyle = '#f33';
   ctx.font = "bold 20px Arial";
   ctx.fillText('Oops!', 15, 30);
@@ -524,7 +526,6 @@ function create_update_pipeline(render) {
             any(position.xyz < vec3f(-clip, -clip,  0.))) {
           return vec2f_to_axis(vec2f(0.), vec2f(0.));   // discard
         }
-
         let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
         return get_axis(position, cov2d);
       }
@@ -566,7 +567,6 @@ function create_update_pipeline(render) {
   const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
-        // TODO(skal): MaxBindingSize 134217728!
         { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
         { binding: 1, resource: { buffer: render.GPU.positions, }, },
         { binding: 2, resource: { buffer: render.GPU.sigmas, }, },
@@ -601,9 +601,8 @@ function create_splats_pipeline(render) {
         vec2f(  2., -2.), vec2f(  2.,  2.),
         vec2f( -2., -2.), vec2f( -2.,  2.),
       );
-      @vertex
-      fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
-                  @location(0) idx: u32,   // <- sorted idx
+      @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                          @location(0) idx: u32,   // <- sorted idx
       ) -> SplatOut {
         var output : SplatOut;
         let major = ${unpack}(axis[idx][0]);
@@ -625,10 +624,7 @@ function create_splats_pipeline(render) {
         return output;
       }
   `};
-  function fs_splats_code(visu_func) {
-    return `
-      ${SplatOut_struct_code}
-
+  const visu_code = `
       fn ellipsis(v: vec2f) -> f32 { return smoothstep(.9, 1., length(v)) - step(1., length(v)); }
       fn small_dot(v: vec2f) -> f32 { return 1. - step(.1, length(v)); }
       fn square(v: vec2f) -> f32 { return smoothstep(1.90, 2.00, max(abs(v.x), abs(v.y))); }
@@ -641,10 +637,15 @@ function create_splats_pipeline(render) {
         if (d2 > 4.) { return 0.; }
         return exp(-d2);
       }
-      @fragment
-      fn frag_main(vtx: SplatOut) -> @location(0) vec4f {
-        let d = vtx.color.a * ${visu_func}(vtx.uv);
-        return vec4f(vtx.color.rgb * d, d);
+  `;
+  function fs_splats_code(visu_func) {
+    return `
+      ${SplatOut_struct_code}
+      ${visu_code}
+      @fragment fn frag_main(vtx: SplatOut) -> @location(0) vec4f {
+        let color = vtx.color;
+        let d = color.a * ${visu_func}(vtx.uv);
+        return vec4f(color.rgb * d, d);
       }
     `;
   }
@@ -843,6 +844,7 @@ async function init_textures(render) {
 //  It runs in parallel to the GPU incremental and incomplete per-frame sorting
 
 function SortingThread(self) {
+  let wasm_instance = null;  // WebAssembly module compiled
   let max_splats = 0;
   let positions = null;
   let idx = null;
@@ -872,7 +874,6 @@ function SortingThread(self) {
   }
 
   const SortDepthCulled = (view, proj, num_splats) => {
-    const mtx = view;
     const A = proj[10], B = proj[14];
     let max_depth = -10000000, min_depth = 10000000;
     const keys = new Int32Array(num_splats);
@@ -883,9 +884,9 @@ function SortingThread(self) {
       const px = positions[off + 0];
       const py = positions[off + 1];
       const pz = positions[off + 2];
-      const z = px * mtx[2] + py * mtx[6] + pz * mtx[10] + mtx[14];
-      const x = px * mtx[0] + py * mtx[4] + pz * mtx[ 8] + mtx[12];
-      const y = px * mtx[1] + py * mtx[5] + pz * mtx[ 9] + mtx[13];
+      const z = px * view[2] + py * view[6] + pz * view[10] + view[14];
+      const x = px * view[0] + py * view[4] + pz * view[ 8] + view[12];
+      const y = px * view[1] + py * view[5] + pz * view[ 9] + view[13];
       if (z > 0) continue;
       if (Math.abs(x) * fx > -z) continue;
       if (Math.abs(y) * fy > -z) continue;
@@ -905,8 +906,7 @@ function SortingThread(self) {
     return num_visible;
   };
   const SortDepth = (view, proj, num_splats) => {
-    const mtx = view;
-    const zdir = new Float32Array([mtx[2], mtx[6], mtx[10], mtx[14]]);
+    const zdir = new Float32Array([view[2], view[6], view[10], view[14]]);
     const A = proj[10], B = proj[14];
     let max_depth = -10000000, min_depth = 10000000;
     const keys = new Int32Array(num_splats);
@@ -941,20 +941,55 @@ function SortingThread(self) {
       if (e.data.timing) console.time("SortDepth");
       fx = 0.96 * e.data.fx;
       fy = 0.96 * e.data.fy;
-      const num_visible =
-        e.data.do_cull ? SortDepthCulled(e.data.view, e.data.proj, e.data.num_splats) :
-                         SortDepth(e.data.view, e.data.proj, e.data.num_splats);
+      let num_visible = new Float32Array([e.data.num_splats]);
+      if (e.data.use_wasm && wasm_instance != undefined) {
+        if (e.data.dbg) console.log("WRK: calling WASM sort.");
+        if (e.data.do_cull) {
+          wasm_instance.exports.sort_culled(e.data.view.buffer, e.data.proj.buffer,
+              fx, fy, num_visible, positions.buffer, idx)
+        } else {
+          wasm_instance.exports.sort(e.data.view.buffer, e.data.proj.buffer,
+              num_visible, positions.buffer, idx);
+        }
+      } else {
+        num_visible[0] = e.data.do_cull ?
+          SortDepthCulled(e.data.view, e.data.proj, e.data.num_splats) :
+          SortDepth(e.data.view, e.data.proj, e.data.num_splats);
+      }
       if (e.data.timing) console.timeEnd("SortDepth");
-      if (e.data.dbg) console.log("WRK: Done sorting (", num_visible, "visible), sending back");
-      self.postMessage({done:true, idx_buffer:idx.buffer, num_visible:num_visible});
+      if (e.data.dbg) console.log("WRK: Done sorting (", num_visible[0], "visible), sending back");
+      self.postMessage({done:true, idx_buffer:idx.buffer, num_visible:num_visible[0]});
+    } else if (e.data.wasm_module) {
+      const imports = {
+        'env': {
+          'memoryBase': 0,
+          'tableBase': 0,
+          'memory': new WebAssembly.Memory({ initial: 256 }),
+          emscripten_notify_memory_growth: () => { },
+          emscripten_asm_const_int: console.log,
+        },
+        wasi_snapshot_preview1: {
+          proc_exit: () => { },
+        },
+      };
+      WebAssembly.instantiate(e.data.wasm_module, imports)
+        .then(instance => wasm_instance = instance);
+      console.log("WRK: Compiled the WASM module.");
     }
   };
 }
 
 function create_sort_worker(render) {
-  const sort_worker = new Worker(
-    URL.createObjectURL(new Blob(["(", SortingThread.toString(), ")(self)" ],
-                                  { type: "application/javascript", })));
+  const blob =
+    new Blob(["(", SortingThread.toString(), ")(self)" ],
+             { type: "application/javascript", });
+  const sort_worker = new Worker(URL.createObjectURL(blob));
+  if (params.sort_wasm) {
+    fetch("sort.wasm").then(response => response.arrayBuffer())
+                      .then(bytes => WebAssembly.compile(bytes))
+                      .then(WasmModule => sort_worker.postMessage({wasm_module: WasmModule}));
+  }
+
   sort_worker.onmessage = (e) => {
     trace(0, "SRT: Received back the sorted list (done:", e.data.done, ")");
     if (render.sort_discard || !render.sort_waiting) {
@@ -999,7 +1034,7 @@ function handle_sorting(render, encoder) {
         trace(2, "USING BUFFER");
         encoder.copyBufferToBuffer(
           render.GPU.idx, 0,
-          render.mapped_sorted_idx, 0, render.stored_splats * UINT32_SIZE);
+          render.GPU.mapped_idx, 0, render.stored_splats * UINT32_SIZE);
       }
     }
   } else if (sort_cpu) {
@@ -1019,7 +1054,8 @@ function handle_sorting(render, encoder) {
         { num_splats:render.stored_splats,
           view:render.view, proj:render.proj,
           fx:render.fx, fy:render.fy, do_cull:params.sort_culled,
-          timing:params.dbg.timing, dbg:(params.dbg.trace > 0) });
+          timing:params.dbg.timing, dbg:(params.dbg.trace > 0),
+          use_wasm:params.sort_wasm, });
       render.sort_waiting = true;
     }
   }
@@ -1034,9 +1070,9 @@ function DrawArray(mtx, data, height = canvas.height / 4) {
   }
   const scale = height / max;
 
-  dedug_canvas.width = width;
-  dedug_canvas.height = height;
-  const ctx = dedug_canvas.getContext('2d');
+  side_canvas.width = width;
+  side_canvas.height = height;
+  const ctx = side_canvas.getContext('2d');
   ctx.font = "bold 20px Arial";
   ctx.fillStyle = '#fff6';
   for (let x = 0; x < width; ++x) {
@@ -1072,10 +1108,10 @@ async function debug_sort(render) {
   if (render.depth_sort.gpu == false) {
     DrawArray(mtx, render.CPU.idx);
   } else {
-    await render.mapped_sorted_idx.mapAsync(GPUMapMode.READ);
-    const u32 = new Uint32Array(await render.mapped_sorted_idx.getMappedRange());
+    await render.GPU.mapped_idx.mapAsync(GPUMapMode.READ);
+    const u32 = new Uint32Array(await render.GPU.mapped_idx.getMappedRange());
     DrawArray(mtx, u32);
-    render.mapped_sorted_idx.unmap();
+    render.GPU.mapped_idx.unmap();
   }
 }
 
@@ -1092,21 +1128,21 @@ async function init_sorting(render) {
   }
 
   // debug: prepare mapping buffer to retrieve the on-GPU sorted-idx
-  if (render.mapped_sorted_idx != undefined) {
-    render.mapped_sorted_idx.destroy();
-    render.mapped_sorted_idx = undefined;
+  if (render.GPU.mapped_idx != undefined) {
+    render.GPU.mapped_idx.destroy();
+    render.GPU.mapped_idx = undefined;
   }
   if (params.sort_debug && (render.depth_sort.gpu || render.depth_sort.cpu)) {
     if (render.depth_sort.gpu) {
-      render.mapped_sorted_idx = render.device.createBuffer({
+      render.GPU.mapped_idx = render.device.createBuffer({
         size: render.max_splats * UINT32_SIZE,
         usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
       });
     } else {  // CPU-sorting visual debug
     }
-    dedug_canvas.style.display = 'inline-block';
+    side_canvas.style.display = 'inline-block';
   } else {
-    dedug_canvas.style.display = 'none';
+    side_canvas.style.display = 'none';
   }
 
   // launch the worker if needed
@@ -1658,6 +1694,7 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
     positions: null,   // vec3f
     colors:    null,   // u32
     idx:       null,   // sorted idx
+    mapped_idx:null,   // copy-and-mapped idx, for display
     uniforms:  null,
   },
   CPU: {   // data hosted in GPU
