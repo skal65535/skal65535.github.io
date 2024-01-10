@@ -13,6 +13,16 @@
   position:absolute; bottom:180px; left:110px;
   border: 3px solid #fff; border-radius: 10px;
 }
+#title {
+ position: absolute; top:80px; left:150px;
+ z-index:100;
+ font-family: sans-serif;
+ font-size: 36px;
+ text-color:white;
+ overflow:hidden;
+ color:white;
+ text-shadow: 0 0 5px #ff0000;
+}
 </style>
 </head>
 
@@ -28,6 +38,7 @@
       <input type="submit" value="skal 2024" id="skal-back"/>
     </form>
     <br/>
+    <div id="title">WebGPU Monte-Carlo simulation<br/>3D Cubic Ising Model</div>
     <canvas id="sample-canvas"></canvas>
     <canvas id="side-canvas"></canvas>
   </center>
