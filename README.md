@@ -16,6 +16,14 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    Some LBG algorithm live action, with a lot of parameters to play with.
 
+## [Ising Model](https://skal65535.github.io/ising/index.html) simulated with WebGPU
+
+   ![Ising-Model](https://skal65535.github.io/ising/ising.thumb.webp)
+
+   Using WebGPU compute-shader, we can perform Monte-Carlo sampling (aka Metropolis method)
+   for the 3D cubic Ising model of magnetic spins, at interactive frame-rate!
+   Back in the days, these sort of computations would require <i>days</i> of work on a Pentium!
+
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 
    A short demo in HTML showing convex hull and Welzl's
