@@ -10,18 +10,12 @@
 <style>
 #sample-canvas {
   background:#000; color:#fff; outline: 1px solid black; display: inline-block;
-  position:absolute; bottom:180px; left:110px;
+  position:absolute; bottom:10%; left:5%;
   border: 3px solid #fff; border-radius: 10px;
 }
 #title {
- position: absolute; top:80px; left:150px;
- z-index:100;
- font-family: sans-serif;
- font-size: 36px;
- text-color:white;
- overflow:hidden;
- color:white;
- text-shadow: 0 0 5px #ff0000;
+ position: absolute; top:80px; left:140px; overflow:hidden;
+ font-size: 36px; color:white; text-shadow: 0 0 5px #ff0000;
 }
 </style>
 </head>
@@ -134,7 +128,7 @@ const params = {
   stats_every: parse_arg_int("every", 6),     // extract stats every XX cycles
   stats_for: parse_arg_int("stats-for", 4),   // how many cycles of stats extraction per scan
 
-  wsize: 1,            // maxComputeInvocationsPerWorkgroup,
+  wsize: 256,            // maxComputeInvocationsPerWorkgroup,
   wsize_max: 65535,    // maxComputeWorkgroupsPerDimension
   max_buffer_size: 268435456,
 
@@ -160,6 +154,7 @@ const params = {
          freeze: parse_arg_bool("freeze"),
          visu: !parse_arg_bool("no-visu"),
        },
+  no_gui: parse_arg_bool('no-gui'),
   reset: () => init({stats:true, temperature:true, start:true}),
 };
 
@@ -215,7 +210,8 @@ const GUI_init = () => {
   dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
   render.gui.add(render, 'txt_info').name('spins').listen().disable();
-  render.gui.add(render, 'txt_info2').name('').listen().disable();
+  render.gui.add(render, 'txt_info2').name('kspins/ms').listen().disable();
+  render.gui.add(render, 'txt_info3').name('').listen().disable();
 
   render.gui.domElement.style.top = '5%';
   render.gui.domElement.style.right = '3%';
@@ -323,14 +319,14 @@ const GPU_init = async () => {
 ////////////////////////////////////////////////////////////////////////////////
 // Pipelines & Shaders (the cool stuff!)
 
-const UNIFORMS_SIZE = (8 + 256);
+const UNIFORMS_SIZE = (8 + 8);
 const uniforms_struct_code = `
-    struct Uniforms {  // 9 * 4 bytes + ptable[]
+    struct Uniforms {  // 8 * 4 bytes + ptable[]
       L: vec4u,  // lattice dim + total number of spins
       beta: f32,
       p: f32,
-      parity: u32,
-      ptable: array<vec4f, 256 / 4>,   // proba-table, offset 36
+      dummy: vec2u,
+      ptable: array<vec4f, 2>,   // proba-table exp(beta * nn), offset 32
     }
   `;
 const rng_code = `
@@ -341,10 +337,18 @@ const rng_code = `
   }
   // fn LCG_step(v: u32, A: u32, B: u32) -> u32 { return (v * A + B); }
   fn update_seed(s: vec4u) -> vec4u {
+/*
     return vec4u(Tausworthe_step(s.x,  13, 19, 12, 0xfffffffe),
                  Tausworthe_step(s.y,   2, 25,  4, 0xfffffff8),
                  Tausworthe_step(s.z,   3, 11, 17, 0xfffffff0),
                  s.w,  /* no LCG_step, we store the spin here instead */);
+*/
+    // equivalent version:
+    let S0 = s & vec4u(0xfffffffe, 0xfffffff8, 0xfffffff0, 1);
+    let S1 = S0 << vec4u(12, 4, 17, 0);
+    let S2 = (s << vec4u(13, 2, 3,  0)) ^ s;
+    let S3  = S2 >> vec4u(19, 25, 11, 0);
+    return S1 ^ S3;
   }
   fn rand(seed: vec4u) -> f32 {
     // return 2.3283064365387e-10 * f32(seed.x ^ seed.y ^ seed.z);
@@ -357,6 +361,7 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
     return `
       ${uniforms_struct_code}
       ${rng_code}
+      override parity: u32;
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read_write> spins: array<vec4u>;
@@ -364,7 +369,7 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
       fn get_spin(x: u32, y: u32, z: u32) -> u32 {
         return spins[(z * params.L[1] + y) * params.L[0] + x].w & 1;
       }
-      fn get_nn(pos: vec3u) -> f32 {
+      fn count_nn(pos: vec3u) -> u32 {
         let L = params.L;
         let x = pos.x;
         let y = pos.y;
@@ -376,10 +381,14 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
               + get_spin(x, y, (z + 1) % L[2])
               + get_spin(x, y, (z - 1) % L[2])
         ;
-        var nn = f32(m) - 3;  // in [-3, 3]
-        if (get_spin(x, y, z) != 0) { nn = -nn; }
+        return m;
+      }
+/*
+      fn get_nn(pos: vec3u) -> f32 {
+        let nn = f32(count_nn(pos)) - 3;  // in [-3, 3]
         return nn * params.beta;
       }
+*/
       @compute @workgroup_size(${wsize})
       fn main(@builtin(global_invocation_id) global_id : vec3u) {
         let nb_spins = params.L[3];
@@ -390,46 +399,47 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
         let pos = vec3u(idx                   % L[0],
                         (idx / L[0])          % L[1],
                         (idx / (L[1] * L[0])) % L[2]);
-        if (((pos.x ^ pos.y ^ pos.z) & 1) == params.parity) { return; }
+        if (((pos.x ^ pos.y ^ pos.z) & 1) == parity) { return; }
 
         spins[idx] = update_seed(spins[idx]);
-        let E = get_nn(pos);
         let r = rand(spins[idx]);
-        if (E > 0 || r < exp(E)) { spins[idx].w ^= 1; }
+/*
+        var E = get_nn(pos);
+        if (spins[idx].w != 0) { E = -E; }
+        let do_flip = (E > 0 || r < exp(E));
+*/
+        var nn = count_nn(pos);
+        if (spins[idx].w != 0) { nn = 6 - nn; }
+        let do_flip = (r < params.ptable[nn >> 2][nn & 3]);
+        if (do_flip) { spins[idx].w ^= 1; }
       }
     `;
   };
-  render.sim_pipeline = render.device.createComputePipeline({
-    layout: "auto",
-    compute: {
-      module: render.device.createShaderModule(
+  const module = render.device.createShaderModule(
         {code: compute_sim_code(render.wsize,
                                 render.dim_x * render.wsize,
                                 render.dim_y * render.dim_x * render.wsize),
-        },),
-      entryPoint: "main",
-    },
-  });
-
-  // create COMPUTE binding groups
-  render.sim_bindings = [];
-  const sim_bind_group1 = render.device.createBindGroup({
-      layout: render.sim_pipeline.getBindGroupLayout(0),
+        },);
+  render.sim_pipelines = [];
+  for (let parity of [0, 1]) {
+    const pipeline = render.device.createComputePipeline({
+      layout: "auto",
+      compute: {
+        module: module,
+        entryPoint: "main",
+        constants: { parity: parity },
+      },
+    });
+    // create COMPUTE binding groups
+    const binding = render.device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
         { binding: 1, resource: { buffer: render.GPU.spins, }, },
       ],
-  });
-  render.sim_bindings.push(sim_bind_group1);
-
-  const sim_bind_group2 = render.device.createBindGroup({
-      layout: render.sim_pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: render.GPU.uniforms2, }, },
-        { binding: 1, resource: { buffer: render.GPU.spins, }, },
-      ],
-  });
-  render.sim_bindings.push(sim_bind_group2);
+    });
+    render.sim_pipelines.push([pipeline, binding]);
+  }
 }
 
 const visu_uniforms_struct_code = `
@@ -605,7 +615,7 @@ function find_worksize(size, wsize) {
 }
 
 function create_pipelines(render) {
-  render.wsize = 1;
+  render.wsize = 256;
   [render.dim_x, render.dim_y] = find_worksize(render.nb_spins, render.wsize);
   create_sim_pipeline(render);
   create_visu_pipeline(render);
@@ -632,7 +642,8 @@ function draw_mag(s, data, min, max, width, height = canvas.height / 8) {
   data || Oops("Internal data is undefined.");
   width = Math.min(width, canvas.width);
   side_canvas.style.display = 'inline-block';
-  side_canvas.style.bottom = '170px';
+  side_canvas.style.bottom = '10%';
+  side_canvas.style.right = '5%';
   side_canvas.width = width;
   side_canvas.height = height + 10;
   const ctx = side_canvas.getContext('2d');
@@ -813,10 +824,6 @@ async function init_buffers(render) {
     size: UNIFORMS_SIZE * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  render.GPU.uniforms2 = render.device.createBuffer({
-    size: UNIFORMS_SIZE * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
   render.GPU.visu_uniforms = render.device.createBuffer({
     size: 44 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -840,7 +847,7 @@ async function init_spins(render) {
 
   await init_buffers(render);
 
-  render.table_array = new Uint32Array(256);
+  render.ptable = new Float32Array(8);   // only 3 entries needed, actually
   render.GPU.mapped = false;
 
   trace(-1, "GPU: Sending", render.nb_spins, "initial spins");
@@ -917,13 +924,7 @@ function transmit_frame_params(render) {
 function transmit_uniforms() {
   render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.L);
   render.device.queue.writeBuffer(render.GPU.uniforms,  4 * 4, new Float32Array([render.beta, params.p]));
-  render.device.queue.writeBuffer(render.GPU.uniforms,  6 * 4, new Uint32Array([0]));
-  render.device.queue.writeBuffer(render.GPU.uniforms,  8 * 4, render.table_array);
-
-  render.device.queue.writeBuffer(render.GPU.uniforms2,  0 * 4, render.L);
-  render.device.queue.writeBuffer(render.GPU.uniforms2,  4 * 4, new Float32Array([render.beta, params.p]));
-  render.device.queue.writeBuffer(render.GPU.uniforms2,  6 * 4, new Uint32Array([1]));
-  render.device.queue.writeBuffer(render.GPU.uniforms2,  8 * 4, render.table_array);
+  render.device.queue.writeBuffer(render.GPU.uniforms,  8 * 4, render.ptable);
 }
 
 async function frame() {
@@ -936,21 +937,24 @@ async function frame() {
   ++render.cycle;
 
   const warming_up = (render.cycle < params.warmup);
-  const delta = render.cycle - params.warmup;
-  const need_stats = !warming_up && ((delta % params.stats_every) == 0) && !render.GPU.mapped;
+  const delta_cycles = render.cycle - params.warmup;
+  const need_stats = !warming_up && ((delta_cycles % params.stats_every) == 0) && !render.GPU.mapped;
   const total_cycles = params.stats_every * params.stats_for + params.warmup;
   if (render.cycle > total_cycles) render.cycle = 0;  // restart
 
+  let kspins_per_ms = 0.;
+  let delta_ms = 0.;
   if (!params.dbg.freeze) {
+    delta_ms = performance.now();
     if (params.dbg.timing) console.time("GPU-sim");
     performance.mark("sim-webgpu start");
     transmit_uniforms();
     const encoder = render.device.createCommandEncoder();
     for (let iter = 0; iter < params.nb_sim_loops; ++iter) {
-      for (const bind_group of render.sim_bindings) {
+      for (const [pipeline, binding] of render.sim_pipelines) {
         const compute_pass = encoder.beginComputePass();
-        compute_pass.setPipeline(render.sim_pipeline);
-        compute_pass.setBindGroup(0, bind_group);
+        compute_pass.setPipeline(pipeline);
+        compute_pass.setBindGroup(0, binding);
         compute_pass.dispatchWorkgroups(render.dim_x, render.dim_y);
         compute_pass.end();
       }
@@ -961,6 +965,10 @@ async function frame() {
           render.GPU.mapped_spins, 0, render.nb_spins * 4 * UINT32_SIZE);
     }
     render.device.queue.submit([encoder.finish()]);
+    delta_ms = (performance.now() - delta_ms);  // in milliseconds
+    if (delta_ms > 0.) {
+      kspins_per_ms = Math.floor(render.nb_spins / delta_ms / 1000.);
+    }
     performance.mark("sim-webgpu end");
     if (params.dbg.timing) console.timeEnd("GPU-sim");
     if (need_stats) draw_stats(render);
@@ -1003,7 +1011,9 @@ async function frame() {
   render.loop_id = requestAnimationFrame(frame);
 
   render.txt_info = render.nb_spins;
-  render.txt_info2 = "scan:" + render.scan + "/" + params.scan_period
+  if (kspins_per_ms > 0) render.txt_info2 = kspins_per_ms + " (" +
+  delta_ms.toFixed(3) + " ms/call)";
+  render.txt_info3 = "scan:" + render.scan + "/" + params.scan_period
                    + "   T:" + render.kT_J.toFixed(4);
 }
 
@@ -1028,13 +1038,12 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
     uniforms:     null,
     visu_uniforms:null,
   },
-  sim_pipeline: null,
-  sim_bindings: [],
+  sim_pipelines: [],
   dim_x: 0,
   dim_y: 0,
   wsize: 1,
 
-  table_array: undefined,   // Float32Array[256]
+  ptable: undefined,   // Float32Array[8]
 
   // per-frame params
   frame: {
@@ -1047,6 +1056,7 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   // side info
   txt_info: "",
   txt_info2: "",
+  txt_info3: "",
   loop_id: undefined,  // id for animation loop
 
   // simulation
@@ -1072,6 +1082,9 @@ function set_temperature(T) {
   render.kT_J = T;
   render.beta = 4. / render.kT_J;
   render.warmup = 0;
+  for (let nn = 0; nn <= 6; ++nn) {
+    render.ptable[nn] = Math.exp((nn - 3.) * render.beta);
+  }
 }
 
 function init_stats(render) {
