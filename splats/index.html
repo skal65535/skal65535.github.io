@@ -17,7 +17,7 @@
     (WIP)</b><br/>
     On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
     the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <div><canvas id="main-canvas"'></canvas>
+    <div><canvas id="main-canvas"></canvas>
       <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
       <form action="https://skal65535.github.io/">
         <input type="submit" value="skal 2023" id="skal-back"/>
@@ -39,8 +39,6 @@
     KNOWN BUGS / LIMITATIONS:
     <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering.
     The bottleneck is the writeBuffer() to send back the sorted id back to the GPU.</li>
-    <li>the vertex-shader needs rather big buffers, that's too much for the GPU.
-    They should at least be packed further, but.. fp16... <a href='https://developer.chrome.com/blog/new-in-webgpu-120'>where art thou</a>?
     <li>No Spherical Harmonics for now.</li>
     </ul>
 </div>
@@ -101,11 +99,9 @@ function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
 const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const UINT32_SIZE = Uint32Array.BYTES_PER_ELEMENT;
 
-const is_safari_185 = navigator.userAgent.includes("Version/17.4 Safari/605.1.15");
-const use_packed_fp16 = !is_safari_185 && !parse_arg_bool("fp32");
-const STRIDE_POS = 4;
-const STRIDE_COV3 = use_packed_fp16 ? 3 : 6;   // cov3d (upper half), as six f16 packs as vec4u
-const STRIDE_COV2 = use_packed_fp16 ? 2 : 4;   // axis 2x2, as four f16 packed as vec2u
+const STRIDE_POS  = 3;
+const STRIDE_COV3 = 3;   // cov3d (upper half), packed as six f16
+const STRIDE_COV2 = 2;   // axis 2x2, as four f16 packed as vec2u
 
 // stride for .splat files, in bytes
 const STRIDE_SPLAT = (3 + 3 + 1 + 1) * 4;
@@ -130,7 +126,8 @@ const params = {
   znear: 0.1,
   zfar: 100.,
   auto_rotate: !parse_arg_bool("no-rotate"),
-  mouse: {on:false, x:0., y:0.},
+  mouse: {on:false, x:0., y:0.,
+          zoom:false, l0: 0., l1:0. },
 
   // Visual
   visu: kVisus['gaussian'],
@@ -243,32 +240,70 @@ function GUI_get(name) {
 ////////////////////////////////////////////////////////////////////////////////
 // event handling
 
-window.addEventListener('pointermove', (event) => {
-  if (event.target != canvas) return;
-//  event.preventDefault();
+function ScaleXY(x, y) {
   const bounds = canvas.getBoundingClientRect();
-  const mouse_x = (event.clientX - bounds.left) / canvas.width;
-  const mouse_y = (event.clientY -  bounds.top) / canvas.height;
+  x = (x - bounds.left) / canvas.width;
+  y = (y - bounds.top) / canvas.height;
+  return [x, y];
+}
+
+function TouchToXY(event) {
+  if (event.touches.length == 0) return [params.mouse.x, params.mouse.y];
+  event.preventDefault();
+  return ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
+}
+
+function DownEvent(event) { if (event.target != canvas) return;
+  if (event.touches && event.touches.length >= 2) {
+    if (params.mouse.zoom == false) {
+      params.mouse.on = false;
+      params.mouse.zoom = true;
+      const z_1 = ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
+      const z_2 = ScaleXY(event.touches[1].clientX, event.touches[1].clientY);
+      params.mouse.l0 = Math.hypot(z_1.x - z_2.x, z_1.y - z_2.y);
+      return;
+    }
+  }
+  params.mouse.on = true;
+}
+function UpEvent(event) {
+  if (params.mouse.zoom && event.touches.length >= 2) {
+    const z_1 = ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
+    const z_2 = ScaleXY(event.touches[1].clientX, event.touches[1].clientY);
+    params.mouse.l1 = Math.hypot(z_1.x - z_2.x, z_1.y - z_2.y);
+    console.log(params.mouse.l0, params.mouse.l1);
+  }
+  params.mouse.on = false;
+  params.mouse.zoom = false;
+}
+
+function MoveEvent([mouse_x, mouse_y]) {
   if (params.mouse.on) {
     params.phi   += (params.mouse.y - mouse_y) * 140.;
     params.theta += (params.mouse.x - mouse_x) * 140.;
   }
   params.mouse.x = mouse_x;
   params.mouse.y = mouse_y;
+}
+
+window.addEventListener('pointermove', (event) => {
+  if (event.target != canvas) return;
+//  event.preventDefault();
+  MoveEvent(ScaleXY(event.clientX, event.clientY));
 }, false);
-window.addEventListener('pointerdown', (event) => {
-  if (event.target == canvas) params.mouse.on = true;
-});
-window.addEventListener('pointerup', (event) => {
-  params.mouse.on = false;
-});
+
+window.addEventListener('pointerdown', (event) => DownEvent(event));
+window.addEventListener('pointerup', (event) => UpEvent(event));
+canvas.addEventListener('touchstart', (event) => DownEvent(event));
+canvas.addEventListener('touchend', (event) => UpEvent(event));
+canvas.addEventListener('touchmove', (event) => MoveEvent(TouchToXY(event)));
 window.addEventListener('wheel', (event) => {
   if (event.target != canvas) return;
   event.preventDefault();
   params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
 }, { passive: false });
 
-window.addEventListener("resize", (e) => {
+window.addEventListener("resize", (event) => {
   canvas.width = innerWidth * .9;
   canvas.height = innerHeight * .8;
   do_resize();
@@ -311,7 +346,6 @@ const GPU_init = async () => {
   render.device = await adapter.requestDevice();
   render.device || Oops("Couldn’t request WebGPU logical device.");
   console.log("WebGPU Device acquired.");
-  console.log(" Using", use_packed_fp16 ? "fp16." : "fp32.");
   for (const name of ['maxComputeInvocationsPerWorkgroup',
                       'maxComputeWorkgroupSizeX',
                       'maxComputeWorkgroupSizeY',
@@ -374,12 +408,12 @@ async function create_sort_pipeline(render) {
     ${uniforms_struct_code}
 
     @group(0) @binding(0) var<uniform> params: Uniforms;
-    @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
+    @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
     @group(0) @binding(2) var<storage, read_write> sorted_list: array<u32>;
 
     fn depth(idx: u32) -> f32 {
       let s = positions[idx];
-      var p = params.view * vec4f(positions[idx], 1.);
+      var p = params.view * vec4f(s[0], s[1], s[2], 1.);
       return p.z;  // note: .proj would use 'z-inverted' convention
     }
     // each work unit sorts ${ssize} idx[] in isolation
@@ -444,32 +478,21 @@ function create_update_pipeline(render) {
   trace(-1, "  positions:", pos_size);
   trace(-1, "     colors:", color_size);
   trace(-1, "        idx:", idx_size);
-  trace(-1, "      total:", s3d_size + s2d_size + idx_size + pos_size + color_size);
+  trace(-1, "      total:", s3d_size + s2d_size + pos_size + color_size + idx_size);
 
   // COMPUTE pipeline, projecting the splats
-  const unpack_f16 = `
-    let s01 = unpack2x16float(sigma[0]);
-    let s23 = unpack2x16float(sigma[1]);
-    let s45 = unpack2x16float(sigma[2]);
-  `;
-  const unpack_vec6f = `
-    let s01 = vec2f(sigma[0], sigma[1]);
-    let s23 = vec2f(sigma[2], sigma[3]);
-    let s45 = vec2f(sigma[4], sigma[5]);
-  `;
-
-  function compute_base_code(sigma_type, sigma_unpack, axis_type, axis_pack) {
+  function compute_base_code() {
     return `
       ${uniforms_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
-      @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
-      @group(0) @binding(2) var<storage, read> sigmas: array<${sigma_type}>;
-      @group(0) @binding(3) var<storage, read_write> axis: array<array<${axis_type}, 2>>;
+      @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
+      @group(0) @binding(2) var<storage, read> sigmas: array<array<u32, 3>>;
+      @group(0) @binding(3) var<storage, read_write> axis: array<vec2u>;
       @group(0) @binding(4) var<storage, read> sorted_idx: array<u32>;
 
       // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
-      fn get_cov2d(vpos: vec4f, sigma: ${sigma_type}) -> vec3f {
+      fn get_cov2d(vpos: vec4f, sigma: array<u32, 3>) -> vec3f {
         let focal = 0.5 * params.focal;
         let pz = 1. / vpos.z;
         // Jacobian (adjusted by a 'pz' factor)
@@ -483,7 +506,9 @@ function create_update_pipeline(render) {
         let T = transpose(params.view) * J;
 
         // Vk is actually mat3x3f
-        ${sigma_unpack}   // expands 'sigma' into s01/s23/s45
+        let s01 = unpack2x16float(sigma[0]);
+        let s23 = unpack2x16float(sigma[1]);
+        let s45 = unpack2x16float(sigma[2]);
         let Vk = mat4x4f(s01.x, s01.y, s23.x, 0.,
                          s01.y, s23.y, s45.x, 0.,
                          s23.x, s45.x, s45.y, 0.,
@@ -498,14 +523,8 @@ function create_update_pipeline(render) {
         return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
       }
 
-      fn vec2f_to_axis(a: vec2f, b:vec2f) -> array<${axis_type}, 2> {
-        var ret: array<${axis_type}, 2>;
-        ret[0] = ${axis_pack}(a);
-        ret[1] = ${axis_pack}(b);
-        return ret;
-      }
       // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
-      fn get_axis(vpos: vec4f, cov2d: vec3f) -> array<${axis_type}, 2> {
+      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec2u {
         let dist = 0.5 * (cov2d.x - cov2d.y);
         let trace = (cov2d.x + cov2d.y) * 0.5;
         let det = length(vec2f(dist, cov2d.z));
@@ -516,15 +535,16 @@ function create_update_pipeline(render) {
         let diag = haze * normalize(vec2f(cov2d.z, det - dist));
         let major = sqrt(lambda1) * diag;
         let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
-        return vec2f_to_axis(major, minor);
+        return vec2u(pack2x16float(major), pack2x16float(minor));  // vec2f_to_axis
       }
-      fn compute_axis(idx: u32) -> array<${axis_type}, 2> {
-        let vpos = params.view * vec4f(positions[idx], 1.);
+      fn compute_axis(idx: u32) -> vec2u {
+        let s = positions[idx];
+        let vpos = params.view * vec4f(s[0], s[1], s[2], 1.);
         let position = params.proj * vpos;
         let clip = 1.1 * position.w;
         if (any(position.xyz > vec3f( clip, clip, clip)) ||
             any(position.xyz < vec3f(-clip, -clip,  0.))) {
-          return vec2f_to_axis(vec2f(0.), vec2f(0.));   // discard
+          return vec2u(0);   // discard
         }
         let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
         return get_axis(position, cov2d);
@@ -543,11 +563,7 @@ function create_update_pipeline(render) {
       }
     `;
   };
-  const base_code =
-    compute_base_code(use_packed_fp16 ? 'array<u32, 3>' : 'array<f32, 6>',
-                      use_packed_fp16 ? unpack_f16 : unpack_vec6f,
-                      use_packed_fp16 ? 'u32' : 'vec2f',
-                      use_packed_fp16 ? 'pack2x16float' : '');
+  const base_code = compute_base_code();
 
   render.update_pipeline = render.device.createComputePipeline({
     layout: "auto",
@@ -587,14 +603,14 @@ function create_splats_pipeline(render) {
     };
   `;
 
-  function vs_splats_code(packed_type, unpack) {
+  function vs_splats_code() {
     return `
       ${uniforms_struct_code}
       ${SplatOut_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
-      @group(0) @binding(1) var<storage, read> positions: array<vec3f>;
-      @group(0) @binding(2) var<storage, read> axis: array<${packed_type}>;
+      @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
+      @group(0) @binding(2) var<storage, read> axis: array<vec2u>;
       @group(0) @binding(3) var<storage, read> colors: array<u32>;
 
       const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
@@ -605,22 +621,16 @@ function create_splats_pipeline(render) {
                           @location(0) idx: u32,   // <- sorted idx
       ) -> SplatOut {
         var output : SplatOut;
-        let major = ${unpack}(axis[idx][0]);
-        let minor = ${unpack}(axis[idx][1]);
+        let major = unpack2x16float(axis[idx].x);
+        let minor = unpack2x16float(axis[idx].y);
         // TODO(skal): if cov == 0 -> discard (cull)
         output.uv = kQuad[vtx_idx];
         let delta = output.uv.x * major + output.uv.y * minor;
-        let position = vec4f(positions[idx], 1.0);
+        let s = positions[idx];
+        let position = vec4f(s[0], s[1], s[2], 1.0);
         let vpos = params.proj * params.view * position;
         output.position = vpos + vec4f(delta, 0., 0.);
-        // Safari 185 Tech Preview has a bug with:
-        //   output.color = unpack4x8unorm(color);
-        // so here's a work-around:
-        let color = colors[idx];
-        output.color = vec4f(f32((color >>  0) & 0xff),
-                             f32((color >>  8) & 0xff),
-                             f32((color >> 16) & 0xff),
-                             f32((color >> 24) & 0xff)) / 255.;
+        output.color = unpack4x8unorm(colors[idx]);
         return output;
       }
   `};
@@ -649,9 +659,7 @@ function create_splats_pipeline(render) {
       }
     `;
   }
-  const vs_splats_render_module = render.device.createShaderModule({
-      code: vs_splats_code(use_packed_fp16 ? 'array<u32, 2>' : 'array<vec2f, 2>',
-                           use_packed_fp16 ? 'unpack2x16float' : '') });
+  const vs_splats_render_module = render.device.createShaderModule({ code: vs_splats_code() });
   const fs_code = fs_splats_code(kVisus[params.visu]);
   const fs_splats_render_module = render.device.createShaderModule({code: fs_code});
 
@@ -849,7 +857,7 @@ function SortingThread(self) {
   let positions = null;
   let idx = null;
   let fx = 1., fy = 1.;
-  const STRIDE_POS = 4;
+  const STRIDE_POS = 3;
   const SORT_MAX = 65536; // 16384;
 
   const RadixSort = (keys, size, min_depth, max_depth) => {
@@ -1177,8 +1185,7 @@ function f32To16(f32) {
 
 function f32To16x2(a, b) { return (f32To16(a) | (f32To16(b) << 16)) >>> 0; }
 function PackSigmas(s) {   // pack six fp32's sigmas as three u32's
-  return use_packed_fp16 ?
-    [f32To16x2(s[0], s[1]), f32To16x2(s[2], s[3]), f32To16x2(s[4], s[5])] : s;
+  return [f32To16x2(s[0], s[1]), f32To16x2(s[2], s[3]), f32To16x2(s[4], s[5])];
 }
 
 function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
@@ -1211,9 +1218,7 @@ function SigmaFromScaleRotation(s, [q0, q1, q2, q3]) {
 function allocate_splats(max_splats) {
   render.CPU.positions = new Float32Array(max_splats * STRIDE_POS);
   render.CPU.colors    = new Uint8Array(max_splats * UINT32_SIZE);   // view as 4 x uint8
-  render.CPU.sigmas    =
-    use_packed_fp16 ? new Uint32Array(max_splats * STRIDE_COV3)
-                    : new Float32Array(max_splats * STRIDE_COV3);
+  render.CPU.sigmas    = new Uint32Array(max_splats * STRIDE_COV3);
   render.max_splats = max_splats;
   render.num_splats = 0;     // initial CPU storing
   render.stored_splats = 0;  // restart GPU transfer
@@ -1453,7 +1458,7 @@ function center_model() {   // center positions w/ box
   let mins = [ Infinity, Infinity, Infinity];
   let maxs = [-Infinity,-Infinity,-Infinity];
   for (let i = 0; i < render.num_splats; ++i) {
-    let xyz = render.CPU.positions.slice(i * STRIDE_POS, i * STRIDE_POS + 3);
+    let xyz = render.CPU.positions.slice(i * STRIDE_POS + 0, i * STRIDE_POS + 3);
     for (let k = 0; k < 3; ++k) {
       mins[k] = Math.min(mins[k], xyz[k]);
       maxs[k] = Math.max(maxs[k], xyz[k]);
