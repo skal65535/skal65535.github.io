@@ -126,8 +126,7 @@ const params = {
   znear: 0.1,
   zfar: 100.,
   auto_rotate: !parse_arg_bool("no-rotate"),
-  mouse: {on:false, x:0., y:0.,
-          zoom:false, l0: 0., l1:0. },
+  mouse: {on:false, x:0., y:0., zoom:false, l0: 0. },
 
   // Visual
   visu: kVisus['gaussian'],
@@ -246,59 +245,53 @@ function ScaleXY(x, y) {
   y = (y - bounds.top) / canvas.height;
   return [x, y];
 }
-
-function TouchToXY(event) {
-  if (event.touches.length == 0) return [params.mouse.x, params.mouse.y];
-  event.preventDefault();
-  return ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
+function GetPinchScale(touches) {
+  const z_1 = ScaleXY(touches[0].clientX, touches[0].clientY);
+  const z_2 = ScaleXY(touches[1].clientX, touches[1].clientY);
+  return Math.hypot(z_1[0] - z_2[0], z_1[1] - z_2[1]);
 }
 
-function DownEvent(event) { if (event.target != canvas) return;
+function DownEvent(event) {
+  event.preventDefault();
   if (event.touches && event.touches.length >= 2) {
     if (params.mouse.zoom == false) {
       params.mouse.on = false;
       params.mouse.zoom = true;
-      const z_1 = ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
-      const z_2 = ScaleXY(event.touches[1].clientX, event.touches[1].clientY);
-      params.mouse.l0 = Math.hypot(z_1.x - z_2.x, z_1.y - z_2.y);
+      params.mouse.l0 = GetPinchScale(event.touches);
       return;
     }
   }
   params.mouse.on = true;
 }
 function UpEvent(event) {
-  if (params.mouse.zoom && event.touches.length >= 2) {
-    const z_1 = ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
-    const z_2 = ScaleXY(event.touches[1].clientX, event.touches[1].clientY);
-    params.mouse.l1 = Math.hypot(z_1.x - z_2.x, z_1.y - z_2.y);
-    console.log(params.mouse.l0, params.mouse.l1);
-  }
   params.mouse.on = false;
   params.mouse.zoom = false;
 }
 
-function MoveEvent([mouse_x, mouse_y]) {
+canvas.addEventListener('pointermove', (event) => {
+  const [mouse_x, mouse_y] = ScaleXY(event.clientX, event.clientY);
   if (params.mouse.on) {
     params.phi   += (params.mouse.y - mouse_y) * 140.;
     params.theta += (params.mouse.x - mouse_x) * 140.;
   }
   params.mouse.x = mouse_x;
   params.mouse.y = mouse_y;
-}
+}, { passive: false });
 
-window.addEventListener('pointermove', (event) => {
-  if (event.target != canvas) return;
-//  event.preventDefault();
-  MoveEvent(ScaleXY(event.clientX, event.clientY));
-}, false);
-
-window.addEventListener('pointerdown', (event) => DownEvent(event));
-window.addEventListener('pointerup', (event) => UpEvent(event));
-canvas.addEventListener('touchstart', (event) => DownEvent(event));
-canvas.addEventListener('touchend', (event) => UpEvent(event));
-canvas.addEventListener('touchmove', (event) => MoveEvent(TouchToXY(event)));
-window.addEventListener('wheel', (event) => {
-  if (event.target != canvas) return;
+canvas.addEventListener('pointerdown', (event) => DownEvent(event));
+canvas.addEventListener('pointerup',   (event) => UpEvent(event));
+canvas.addEventListener('touchstart',  (event) => DownEvent(event));
+canvas.addEventListener('touchend',    (event) => UpEvent(event));
+canvas.addEventListener('touchmove', (event) => {
+  if (params.mouse.zoom == false) return;
+  event.preventDefault();
+  if (event.touches && event.touches.length == 2) {
+    const l1 = GetPinchScale(event.touches);
+    params.radius *= (params.mouse.l0 / l1);
+    params.mouse.l0 = l1;
+  }
+}, { passive: false });
+canvas.addEventListener('wheel', (event) => {
   event.preventDefault();
   params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
 }, { passive: false });
