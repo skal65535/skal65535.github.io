@@ -115,6 +115,7 @@ const ctx = canvas.getContext("webgpu");
 const params = {
   // Model
   model_name: parse_arg_str('model', 'truck'),
+  use_compute_shader: !parse_arg_bool('vtx'),
 
   // Camera
   fov: 90.,
@@ -189,6 +190,7 @@ const GUI_init = () => {
                             name: 'WebGPU Gaussian Splatting demo'});
   render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').listen().onChange(GUI_reload);
   render.gui.add(params, 'visu', Object.keys(kVisus)).listen().onChange(GUI_change);
+  render.gui.add(params, 'use_compute_shader').name('use compute-shader').listen().onChange(GUI_change);
   render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   const fun_folder = render.gui.addFolder('fun').close();
   fun_folder.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(GUI_change);
@@ -395,6 +397,67 @@ const uniforms_struct_code = `
     }
   `;
 
+const compute_axis_code = `
+      // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
+      fn get_cov2d(vpos: vec4f, sigma: array<u32, 3>) -> vec3f {
+        let focal = 0.5 * params.focal;
+        let pz = 1. / vpos.z;
+        // Jacobian (adjusted by a 'pz' factor)
+        let J = mat4x4f(   // actually mat3x2f
+          -focal.x,      0., focal.x * vpos.x * pz, 0.,
+                0.,-focal.y, focal.y * vpos.y * pz, 0.,
+                0.,      0.,                    0., 0.,
+                0.,      0.,                    0., 0.,
+        );
+        // we'd need to extract mat2x3f from 'view' => T is actually mat3x3f
+        let T = transpose(params.view) * J;
+
+        // Vk is actually mat3x3f
+        let s01 = unpack2x16float(sigma[0]);
+        let s23 = unpack2x16float(sigma[1]);
+        let s45 = unpack2x16float(sigma[2]);
+        let Vk = mat4x4f(s01.x, s01.y, s23.x, 0.,
+                         s01.y, s23.y, s45.x, 0.,
+                         s23.x, s45.x, s45.y, 0.,
+                            0.,    0.,    0., 0.,
+        );
+        var cov2d = transpose(T) * Vk * T;
+
+        // low-pass filter: avoid degenerate cases of sub-pixel sizes
+        // cov2d[0][0] += 1e-8; cov2d[1][1] += 1e-8;
+
+        // only need the upper 2x2 matrix
+        return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
+      }
+
+      // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
+      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec2u {
+        let dist = 0.5 * (cov2d.x - cov2d.y);
+        let trace = (cov2d.x + cov2d.y) * 0.5;
+        let det = length(vec2f(dist, cov2d.z));
+        let lambda1 = clamp(trace + det, 0., 16383.);
+        let lambda2 = clamp(trace - det, 0., 16383.);
+        let dof = 1. + params.dof * smoothstep(0., 1., abs(vpos.z - params.z_dof));
+        let haze = params.haze * dof;
+        let diag = haze * normalize(vec2f(cov2d.z, det - dist));
+        let major = sqrt(lambda1) * diag;
+        let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
+        return vec2u(pack2x16float(major), pack2x16float(minor));  // vec2f_to_axis
+      }
+      fn compute_axis(idx: u32) -> vec2u {
+        let s = positions[idx];
+        let vpos = params.view * vec4f(s[0], s[1], s[2], 1.);
+        let position = params.proj * vpos;
+        let clip = 1.1 * position.w;
+        if (any(position.xyz > vec3f( clip, clip, clip)) ||
+            any(position.xyz < vec3f(-clip, -clip,  0.))) {
+          return vec2u(0);   // discard
+        }
+        let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
+        return get_axis(position, cov2d);
+      }
+`;
+
 async function create_sort_pipeline(render) {
   if (!render.depth_sort.gpu) return;
   const sort_code = (ssize, gsize) => `
@@ -460,11 +523,11 @@ function create_update_pipeline(render) {
   } while (dim_x > params.wsize_max);
   trace(-1, "Compute binding: wsize=", params.wsize, "dim_x=", dim_x, "dim_y=", dim_y);
   trace(-1, "  => total:", params.wsize * dim_x * dim_y, "for", max_splats, "splats");
-  const s3d_size = STRIDE_COV3 * UINT32_SIZE * max_splats;
-  const pos_size = STRIDE_POS * FLOAT32_SIZE * max_splats;
-  const color_size =             UINT32_SIZE * max_splats;
-  const s2d_size = STRIDE_COV2 * UINT32_SIZE * max_splats;
-  const idx_size =               UINT32_SIZE * max_splats;
+  const s3d_size   = render.GPU.sigmas.size;
+  const s2d_size   = render.GPU.axis ? render.GPU.axis.size : 0;
+  const pos_size   = render.GPU.positions.size;
+  const color_size = render.GPU.colors.size;
+  const idx_size   = render.GPU.idx.size;
   trace(-1, " Total buffer mem:");
   trace(-1, "   Splats3D:", s3d_size);
   trace(-1, "   Splats2D:", s2d_size);
@@ -473,107 +536,45 @@ function create_update_pipeline(render) {
   trace(-1, "        idx:", idx_size);
   trace(-1, "      total:", s3d_size + s2d_size + pos_size + color_size + idx_size);
 
-  // COMPUTE pipeline, projecting the splats
-  function compute_base_code() {
-    return `
-      ${uniforms_struct_code}
+  if (params.use_compute_shader) {
+    function compute_main_code(wsize, xsize, xysize, mapped_idx) {
+      return `
+        ${uniforms_struct_code}
 
-      @group(0) @binding(0) var<uniform> params: Uniforms;
-      @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
-      @group(0) @binding(2) var<storage, read> sigmas: array<array<u32, 3>>;
-      @group(0) @binding(3) var<storage, read_write> axis: array<vec2u>;
-      @group(0) @binding(4) var<storage, read> sorted_idx: array<u32>;
+        @group(0) @binding(0) var<uniform> params: Uniforms;
+        @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
+        @group(0) @binding(2) var<storage, read> sigmas: array<array<u32, 3>>;
+        @group(0) @binding(3) var<storage, read_write> axis: array<vec2u>;
+        @group(0) @binding(4) var<storage, read> sorted_idx: array<u32>;
 
-      // Zwicker & Al: https://www.cs.umd.edu/~zwicker/publications/EWASplatting-TVCG02.pdf
-      fn get_cov2d(vpos: vec4f, sigma: array<u32, 3>) -> vec3f {
-        let focal = 0.5 * params.focal;
-        let pz = 1. / vpos.z;
-        // Jacobian (adjusted by a 'pz' factor)
-        let J = mat4x4f(   // actually mat3x2f
-          -focal.x,      0., focal.x * vpos.x * pz, 0.,
-                0.,-focal.y, focal.y * vpos.y * pz, 0.,
-                0.,      0.,                    0., 0.,
-                0.,      0.,                    0., 0.,
-        );
-        // we'd need to extract mat2x3f from 'view' => T is actually mat3x3f
-        let T = transpose(params.view) * J;
+        ${compute_axis_code}
 
-        // Vk is actually mat3x3f
-        let s01 = unpack2x16float(sigma[0]);
-        let s23 = unpack2x16float(sigma[1]);
-        let s45 = unpack2x16float(sigma[2]);
-        let Vk = mat4x4f(s01.x, s01.y, s23.x, 0.,
-                         s01.y, s23.y, s45.x, 0.,
-                         s23.x, s45.x, s45.y, 0.,
-                            0.,    0.,    0., 0.,
-        );
-        var cov2d = transpose(T) * Vk * T;
-
-        // low-pass filter: avoid degenerate cases of sub-pixel sizes
-        // cov2d[0][0] += 1e-8; cov2d[1][1] += 1e-8;
-
-        // only need the upper 2x2 matrix
-        return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
-      }
-
-      // https://people.math.harvard.edu/~knill/teaching/math21b2004/exhibits/2dmatrices/index.html
-      fn get_axis(vpos: vec4f, cov2d: vec3f) -> vec2u {
-        let dist = 0.5 * (cov2d.x - cov2d.y);
-        let trace = (cov2d.x + cov2d.y) * 0.5;
-        let det = length(vec2f(dist, cov2d.z));
-        let lambda1 = clamp(trace + det, 0., 16383.);
-        let lambda2 = clamp(trace - det, 0., 16383.);
-        let dof = 1. + params.dof * smoothstep(0., 1., abs(vpos.z - params.z_dof));
-        let haze = params.haze * dof;
-        let diag = haze * normalize(vec2f(cov2d.z, det - dist));
-        let major = sqrt(lambda1) * diag;
-        let minor = sqrt(lambda2) * vec2f(diag.y, -diag.x);
-        return vec2u(pack2x16float(major), pack2x16float(minor));  // vec2f_to_axis
-      }
-      fn compute_axis(idx: u32) -> vec2u {
-        let s = positions[idx];
-        let vpos = params.view * vec4f(s[0], s[1], s[2], 1.);
-        let position = params.proj * vpos;
-        let clip = 1.1 * position.w;
-        if (any(position.xyz > vec3f( clip, clip, clip)) ||
-            any(position.xyz < vec3f(-clip, -clip,  0.))) {
-          return vec2u(0);   // discard
+        @compute @workgroup_size(${wsize})
+        fn main(@builtin(global_invocation_id) global_id : vec3u) {
+          let num_splats = u32(params.num_splats);
+          var idx = global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x;
+          if (idx >= num_splats) { return; }
+          ${mapped_idx} = sorted_idx[idx];
+          axis[idx] = compute_axis(idx);
         }
-        let cov2d = get_cov2d(vpos, sigmas[idx]);  // mat2x2 = [x, z][z, y]
-        return get_axis(position, cov2d);
-      }
-    `;
-  }
-  function compute_main_code(wsize, xsize, xysize, mapped_idx) {
-    return `
-      @compute @workgroup_size(${wsize})
-      fn main(@builtin(global_invocation_id) global_id : vec3u) {
-        let num_splats = u32(params.num_splats);
-        var idx = global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x;
-        if (idx >= num_splats) { return; }
-        ${mapped_idx} = sorted_idx[idx];
-        axis[idx] = compute_axis(idx);
-      }
-    `;
-  };
-  const base_code = compute_base_code();
+      `;
+    };
 
-  render.update_pipeline = render.device.createComputePipeline({
-    layout: "auto",
-    compute: {
-      module: render.device.createShaderModule(
-        {code: base_code +
-               compute_main_code(params.wsize,
-                                 dim_x * params.wsize,
-                                 dim_y * dim_x * params.wsize,
-                                 params.sort_culled ? "idx" : "_" /* wow!*/),
-        },),
-      entryPoint: "main",
-    },
-  });
+    render.update_pipeline = render.device.createComputePipeline({
+      layout: "auto",
+      compute: {
+        module: render.device.createShaderModule(
+          {code: compute_main_code(params.wsize,
+                                   dim_x * params.wsize,
+                                   dim_y * dim_x * params.wsize,
+                                   params.sort_culled ? "idx" : "_" /* wow!*/),
+          },),
+        entryPoint: "main",
+      },
+    });
 
-  // create COMPUTE binding groups
-  const update_bind_group = render.device.createBindGroup({
+    // create COMPUTE binding groups
+    const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
@@ -582,8 +583,9 @@ function create_update_pipeline(render) {
         { binding: 3, resource: { buffer: render.GPU.axis, }, },
         { binding: 4, resource: { buffer: render.GPU.idx, }, },
       ],
-  });
-  render.update_bindings = [dim_x, dim_y, update_bind_group];
+    });
+    render.update_bindings = [dim_x, dim_y, update_bind_group];
+  }
 }
 
 function create_splats_pipeline(render) {
@@ -596,27 +598,34 @@ function create_splats_pipeline(render) {
     };
   `;
 
-  function vs_splats_code() {
+  function vs_splats_code(use_compute_shader) {
     return `
       ${uniforms_struct_code}
       ${SplatOut_struct_code}
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
       @group(0) @binding(1) var<storage, read> positions: array<array<f32, 3>>;
-      @group(0) @binding(2) var<storage, read> axis: array<vec2u>;
-      @group(0) @binding(3) var<storage, read> colors: array<u32>;
-
-      const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
+      @group(0) @binding(2) var<storage, read> colors: array<u32>;
+      @group(0) @binding(3) var<storage, read> `
+    + (use_compute_shader ?
+        `axis: array<vec2u>;` :
+        `sigmas: array<array<u32, 3>>; ${compute_axis_code}`)
+    + `
+       const kQuad = array<vec2f, 4>(  // quad [-2,2]x[-2,2]
         vec2f(  2., -2.), vec2f(  2.,  2.),
         vec2f( -2., -2.), vec2f( -2.,  2.),
       );
       @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                           @location(0) idx: u32,   // <- sorted idx
-      ) -> SplatOut {
-        var output : SplatOut;
-        let major = unpack2x16float(axis[idx].x);
-        let minor = unpack2x16float(axis[idx].y);
+      ) -> SplatOut {`
+      + (use_compute_shader ? `let ax = axis[idx];` : `let ax = compute_axis(idx);`) +
+      // we pack / unpack even if we're not using the compute_shader, so we
+      // get the same bit-exact results in both cases.
+      `
+        let major = unpack2x16float(ax.x);
+        let minor = unpack2x16float(ax.y);
         // TODO(skal): if cov == 0 -> discard (cull)
+        var output : SplatOut;
         output.uv = kQuad[vtx_idx];
         let delta = output.uv.x * major + output.uv.y * minor;
         let s = positions[idx];
@@ -652,8 +661,9 @@ function create_splats_pipeline(render) {
       }
     `;
   }
-  const vs_splats_render_module = render.device.createShaderModule({ code: vs_splats_code() });
+  const vs_code = vs_splats_code(params.use_compute_shader);
   const fs_code = fs_splats_code(kVisus[params.visu]);
+  const vs_splats_render_module = render.device.createShaderModule({ code: vs_code });
   const fs_splats_render_module = render.device.createShaderModule({code: fs_code});
 
   let pipeline_descriptor = {
@@ -696,25 +706,23 @@ function create_splats_pipeline(render) {
       format: 'depth24plus',
     };
   }
-  render.splats_pipeline =
-      render.device.createRenderPipeline(pipeline_descriptor);
+  render.splats_pipeline = render.device.createRenderPipeline(pipeline_descriptor);
 
-  render.splats_bind_group = render.device.createBindGroup({
+  const bindGroup = {
     layout: render.splats_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
       { binding: 1, resource: { buffer: render.GPU.positions, }, },
-      { binding: 2, resource: { buffer: render.GPU.axis, }, },
-      { binding: 3, resource: { buffer: render.GPU.colors, }, },
+      { binding: 2, resource: { buffer: render.GPU.colors, }, },
+      { binding: 3, resource: { buffer: params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas, }, },
     ],
-  });
+  };
+  render.splats_bind_group = render.device.createBindGroup(bindGroup);
 }
 
-function create_axis_pipeline(render) {
+function create_axis_pipeline(render) {    // RENDER pipeline for axis
   if (!params.dbg.draw_axis) return;
-
-  // RENDER pipeline for axis
-  const axis_code = `
+  const draw_axis_code = `
       ${uniforms_struct_code}
       @group(0) @binding(0) var<uniform> params: Uniforms;
       struct TriOut { @builtin(position) position: vec4f,
@@ -734,7 +742,7 @@ function create_axis_pipeline(render) {
         return unpack4x8unorm(f.color);
       }
   `;
-  const axis_module = render.device.createShaderModule({code: axis_code});
+  const axis_module = render.device.createShaderModule({code: draw_axis_code});
   render.axis_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: { module: axis_module, entryPoint: 'vs_main', },
@@ -781,12 +789,6 @@ async function init_buffers(render) {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
 
-  // create the cov2x2 buffer to communicate between COMPUTE and VERTEX shaders
-  render.GPU.axis = render.device.createBuffer({
-    size: render.max_splats * STRIDE_COV2 * UINT32_SIZE,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
-  });
-
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
     size: 44 * FLOAT32_SIZE,
@@ -808,6 +810,21 @@ async function init_buffers(render) {
   });
   new Uint32Array(render.GPU.idx.getMappedRange()).set(render.CPU.idx);
   render.GPU.idx.unmap();
+}
+
+async function init_side_buffers(render) {
+  // create the cov2x2 buffer to communicate between COMPUTE and VERTEX shaders
+  if (params.use_compute_shader) {
+    render.GPU.axis = render.device.createBuffer({
+      size: render.max_splats * STRIDE_COV2 * UINT32_SIZE,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
+    });
+  } else {
+    if (render.GPU.axis != undefined) {
+      render.GPU.axis.destroy();
+      render.GPU.axis = undefined;
+    }
+  }
 }
 
 async function init_textures(render) {
@@ -1595,7 +1612,7 @@ async function frame() {
 
   if (params.dbg.timing) console.time("GPU");
 
-  if (render.tick > 0. && !params.dbg.skip_compute) {
+  if (render.tick > 0. && !params.dbg.skip_compute && params.use_compute_shader) {
     const [dim_x, dim_y, bind_group] = render.update_bindings;
     const compute_pass = encoder.beginComputePass();
     compute_pass.setPipeline(render.update_pipeline);
@@ -1769,6 +1786,7 @@ async function init(what) {
   if (what.buffers) {
     await init_buffers(render);
   }
+  await init_side_buffers(render);
   if (what.textures) {
     await init_textures(render);
   }
