@@ -77,8 +77,8 @@ const kNoise = { 'curl': 0, 'rotation axis': 1, };
 ////////////////////////////////////////////////////////////////////////////////
 
 const args = new URLSearchParams(location.search);
-function parse_arg_int(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
+function parse_arg(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
   if (min != undefined) v = Math.max(v, min);
   if (max != undefined) v = Math.min(v, max);
   return v;
@@ -99,18 +99,19 @@ const ctx = canvas.getContext("webgpu");
 const params = {
   poly: parse_arg_str('poly', 'icosahedron'),
   noise: parse_arg_str('noise', 'curl'),
-  noise_amp: parse_arg_int('amp', 0) / 10.,
-  depth: 9,
-  wireframe: parse_arg_bool('wireframe'),
+  noise_amp: parse_arg('amp', 8.),
+  spherify: parse_arg_bool('sph'),
+  depth: 60,
+  wireframe: !parse_arg_bool('no-wireframe'),
 
   // Camera
-  fov: 90.,
-  radius: 2.5,
-  theta: -91.,
+  fov: 110.,
+  radius: 0.525,
+  theta: 0.,
   phi: 30.0,
   target: [0., 0., 0.],
   up: [0., 1., 0.],
-  znear: 0.1,
+  znear: 0.05,
   zfar: 100.,
   auto_rotate: !parse_arg_bool("no-rotate"),
   mouse: {on:false, x:0., y:0.},
@@ -131,8 +132,8 @@ const GUI_change = async () => { await init({}); }  // parameter changed
 const GUI_reload = async () => { await init({poly:true}); }
 
 const GUI_init = () => {
-  canvas.width  = parse_arg_int("w", innerWidth * .9);
-  canvas.height = parse_arg_int("h", innerHeight * .8);
+  canvas.width  = parse_arg("w", innerWidth * .9);
+  canvas.height = parse_arg("h", innerHeight * .8);
 
   if (params.no_gui) {
     render.gui = undefined;
@@ -141,10 +142,11 @@ const GUI_init = () => {
   render.gui = new lil.GUI({container: document.getElementById('#main-area'),
                             name: 'Curl Noise'});
   render.gui.add(params, 'poly', kPolyhedrons).name('base polyhedron').listen().onChange(GUI_reload);
-  render.gui.add(params, 'depth', 1, 64, 1).name('sub-div level').listen().onChange(GUI_reload);
+  render.gui.add(params, 'depth', 1, 96, 1).name('sub-div level').listen().onChange(GUI_reload);
 //  render.gui.add(params, 'noise', Object.keys(kNoise)).listen().onChange(GUI_change);
-  render.gui.add(params, 'noise_amp', 0., 10.).name('noise amp').listen().onChange(GUI_change);
+  render.gui.add(params, 'noise_amp', 0., 20.).name('noise amp').listen().onChange(GUI_change);
   render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
+  render.gui.add(params, 'spherify').name('spherify').listen();
   render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
@@ -258,39 +260,39 @@ const GPU_init = async () => {
 ////////////////////////////////////////////////////////////////////////////////
 // Pipelines & Shaders (the cool stuff!)
 
-const uniforms_struct_code = `
-  struct Uniforms {  // 45 * 4 bytes
+const struct_code = `
+  struct Uniforms {  // 46 * 4 bytes
     // 38 * 4
     view: mat4x4f,
     proj: mat4x4f,
     light: vec4f,
     dim:  vec2f,   // screen dimension
 
-    // 7 * 4 bytes
+    // 9 * 4 bytes
     focal: vec2f,
     znear: f32,
     zfar:  f32,
     time:  f32,
     noise_amp:   f32,
     nb_idx: f32,
+    nb_faces: f32,
+    spherify: f32,
   }
+  struct Out {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) @interpolate(flat) color: vec4f,
+    @location(2) normal: vec4f,
+    @location(3) pos: vec4f,
+  };
+  struct Pos {
+    p: vec3f,
+    n: vec3f,
+  };
 `;
 
-function create_vtx_pipeline(render) {
-  const vtx_code = `
-    ${uniforms_struct_code}
-    struct Out {
-        @builtin(position) position: vec4f,
-        @location(0) uv: vec2f,
-        @location(1) @interpolate(flat) color: vec4f,
-        @location(2) normal: vec4f,
-        @location(3) pos: vec4f,
-    };
-    @group(0) @binding(0) var<uniform> params: Uniforms;
-    @group(0) @binding(1) var<storage, read> vtx: array<vec4f>;
-    @group(0) @binding(2) var<storage, read> faces: array<array<u32, 3>>;
-    @group(0) @binding(3) var<storage, read> uv: array<vec2f>;
-
+// displacement noise
+const noise_code = `
     const ex = vec3f(1.,0.,0.);
     const ey = vec3f(0.,1.,0.);
     const ez = vec3f(0.,0.,1.);
@@ -310,46 +312,67 @@ function create_vtx_pipeline(render) {
     fn noise3d(p: vec3f) -> vec3f {
       return vec3f(noise1d(p),
                    noise1d(p * vec3f(1.03, .98, 1.07)),
-                   noise1d(p * vec3f(1.01, .97, 1.99)));
+                   noise1d(p * vec3f(1.01, .97, 0.99)));
     }
-    fn rotation_matrix(axis: vec3f, angle: f32) -> mat4x4f {
+    fn rotation_matrix(axis: vec3f, angle: f32) -> mat3x3f {
       let c = cos(angle);
       let S = axis * sin(angle);
       let C = axis * (1. - c);
-      return mat4x4f(vec4f(C.x * axis + vec3f(   c, -S.z,  S.y), 0.),
-                     vec4f(C.y * axis + vec3f( S.z   , c, -S.x), 0.),
-                     vec4f(C.z * axis + vec3f(-S.y,  S.x,    c), 0.),
-                     vec4f(0., 0., 0., 1.));
+      return mat3x3f(vec3f(C.x * axis + vec3f(   c, -S.z,  S.y)),
+                     vec3f(C.y * axis + vec3f( S.z   , c, -S.x)),
+                     vec3f(C.z * axis + vec3f(-S.y,  S.x,    c)));
     }
-    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
-                        @builtin(instance_index) instance: u32,  ) -> Out {
+    // Rodrigues's formula: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
+    fn rotate3(p: vec3f, axis: vec3f, angle: f32) -> vec3f {
+      // return cos(angle) * p + sin(angle) * cross(axis, p) + (1. - cos(angle)) * dot(p, axis) * axis;
+      return rotation_matrix(axis, angle) * p;
+    }
+    fn displace(p: ptr<function, Pos>, t: f32) {
+      let axis = normalize(noise3d((*p).p * 3.53 + vec3f(t, t, t)));
+      let angle = 3.1415926 * noise1d((*p).p * 0.01) * params.noise_amp;
+      (*p).p = rotate3((*p).p, axis, angle);
+      (*p).n = normalize((*p).n + rotate3((*p).n, axis, angle));
+    }
+    fn GetPos(vtx_idx: u32, instance: u32) -> Pos {
       let face = faces[instance];
-      let m = mat3x4f(vtx[face[0]], vtx[face[1]], vtx[face[2]]);
+      let m = mat3x3f(vtx[face[0]].xyz, vtx[face[1]].xyz, vtx[face[2]].xyz);
       let UV = uv[vtx_idx];
       let w = vec3f(UV, 1. - UV.x - UV.y);
-      var pos = m * w;      // p0 * alpha + p1 * beta + p2 * gamma;
-      var n = normalize(pos.xyz);  // as a vec3f
-      pos = vec4f(n, 1.);
+      // interpolate to p0 * alpha + p1 * beta + p2 * gamma;
+      // (and maybe project on the unit sphere):
+      var p : Pos;
+      p.p = m * w;
+      p.n = normalize(p.p);
+      if (params.spherify > 0.) { p.p = p.n; }
+      // + rotational noise
+      displace(&p, params.time * 0.002);
+      return p;
+    }
+`;
 
-      // rotational noise
-      if (params.noise_amp > 0.) {
-        let t = params.time * 0.01;
-        let axis = normalize(noise3d(pos.xyz * 7.53 + vec3f(t, t, t)));
-        let angle = noise1d(pos.xyz * 0.01);
-        let R = rotation_matrix(axis, angle);
-        pos += params.noise_amp * 100. * R * pos;
-        n += (R * vec4f(n, 0.)).xyz;
-        n = normalize(n);
-      }
-      var vpos = params.proj * params.view * pos;
-      n = (params.view * vec4f(n, 0.)).xyz;
+function create_vtx_pipeline(render) {
+  const vtx_code = `
+    ${struct_code}
+
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<vec4f>;
+    @group(0) @binding(2) var<storage, read> faces: array<array<u32, 3>>;
+    @group(0) @binding(3) var<storage, read> uv: array<vec2f>;
+
+    ${noise_code}
+
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                        @builtin(instance_index) instance: u32,  ) -> Out {
+      var p = GetPos(vtx_idx, instance);
+      var vpos = params.proj * params.view * vec4f(p.p, 1.);
+      p.n = (params.view * vec4f(p.n, 0.)).xyz;
 
       var output : Out;
       output.position = vpos;
-      output.uv = UV;
+      output.uv = uv[vtx_idx];
       let g = f32(vtx_idx) / f32(params.nb_idx) + .2;
       output.color = vec4f(g, g, g + .1, 1.);
-      output.normal = vec4f(n, 0.);
+      output.normal = vec4f(p.n, 0.);
       output.pos = vpos;
       return output;
     }
@@ -359,7 +382,36 @@ function create_vtx_pipeline(render) {
       return vec4f(s.color.rgb * d, 1.);
     }
   `;
-  const vtx_module = render.device.createShaderModule({ code: vtx_code });
+  const vtx_code_wireframe = `
+    ${struct_code}
+
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<vec4f>;
+    @group(0) @binding(2) var<storage, read> faces: array<array<u32, 3>>;
+    @group(0) @binding(3) var<storage, read> uv: array<vec2f>;
+
+    ${noise_code}
+
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                        @builtin(instance_index) instance: u32,  ) -> Out {
+      let p = GetPos(vtx_idx, instance);
+
+      var output : Out;
+      output.position = params.proj * params.view * vec4f(p.p, 1.);
+      let g = f32(instance) / f32(params.nb_faces) + .8;
+      let color = abs(noise3d(vec3f(g, 1., g) * 32.153)) * .8 + .5;
+      // let color = vec3f(.3, .9, .4);
+      output.color = vec4f(color, 1.);
+      return output;
+    }
+    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      var d = s.position.w;
+      return vec4f(s.color.rgb * d, 1.);
+    }
+  `;
+
+  const vtx_module = render.device.createShaderModule(
+    { code: params.wireframe ? vtx_code_wireframe : vtx_code });
   render.vtx_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: {
@@ -515,7 +567,9 @@ function transmit_uniforms() {
                          params.znear, params.zfar,
                          render.tick,
                          params.noise_amp,
-                         render.nb_idx ]));
+                         render.nb_idx,
+                         render.nb_faces,
+                         params.spherify, ]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
