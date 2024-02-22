@@ -30,7 +30,7 @@ canvas { margin: 10px; box-shadow: 0 0 5px black; }
 <div id="drop-area" style='width:920px;'>
 
 <h1 align='center'>QR Code Generator</h1>
-<font size='-1'>Drag and Drop an image below</font><br/>
+<font size='-1'>Drag and Drop an image below, or click on it to open file dialog</font><br/>
 
 <form action="https://skal65535.github.io/"
       style='position: relative; top:-90px; left:0px;'>
@@ -41,7 +41,9 @@ canvas { margin: 10px; box-shadow: 0 0 5px black; }
          onmouseout='this.style.background="#cce"'/>
 </form>
 
-<canvas id="imageInput"></canvas>
+<canvas id="imageInput" onclick='document.getElementById("file_dialog").click()'>
+  <input id='file_dialog' type="file" style="display:none;" accept="image/*"/>
+</canvas>
 <canvas id="imagePixel"></canvas>
 <canvas id="imageDithered"></canvas>
 <a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
@@ -179,6 +181,9 @@ function SetupDragAndDrop() {
     name => { dropArea.addEventListener(name, unhighlight, false); }
   );
   dropArea.addEventListener('drop', HandleDrop, false)
+
+  document.getElementById("file_dialog").addEventListener('change',
+    e => HandleFile(document.getElementById('file_dialog').files[0]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -292,10 +297,10 @@ function DisableSmoothing(ctx) {
 }
 
 function Render() {
-  const canvasColour = document.querySelector('#imageInput');
-  const ctxColour = canvasColour.getContext('2d');
-  ctxColour.clearRect(0, 0, canvasColour.width, canvasColour.height);
-  ctxColour.drawImage(params.image, 0, 0, canvasColour.width, canvasColour.height);
+  const canvas_input = document.querySelector('#imageInput');
+  const ctx_input = canvas_input.getContext('2d');
+  ctx_input.clearRect(0, 0, canvas_input.width, canvas_input.height);
+  ctx_input.drawImage(params.image, 0, 0, canvas_input.width, canvas_input.height);
 
   const canvasPixel = document.querySelector('#imagePixel');
   const ctxPixel = canvasPixel.getContext('2d');
@@ -305,7 +310,7 @@ function Render() {
   canvasTmp.width = canvasTmp.height = canvasPixel.width / params.pixelSize;
   const ctxTmp = canvasTmp.getContext('2d');
   DisableSmoothing(ctxTmp);
-  ctxTmp.drawImage(canvasColour, 0, 0, canvasTmp.width, canvasTmp.height);
+  ctxTmp.drawImage(canvas_input, 0, 0, canvasTmp.width, canvasTmp.height);
   ctxPixel.drawImage(canvasTmp, 0, 0, canvasPixel.width, canvasPixel.height);
 
   // DitherImage
