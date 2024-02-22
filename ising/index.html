@@ -224,7 +224,7 @@ const GUI_init = () => {
 
 window.addEventListener('pointermove', (event) => {
   if (event.target != canvas) return;
-//  event.preventDefault();
+  event.preventDefault();
   const bounds = canvas.getBoundingClientRect();
   const mouse_x = (event.clientX - bounds.left) / canvas.width;
   const mouse_y = (event.clientY -  bounds.top) / canvas.height;
@@ -692,6 +692,7 @@ async function init_textures(render) {
 function draw_mag(s, data, min, max, width, height = canvas.height / 8) {
   data || Oops("Internal data is undefined.");
   width = Math.min(width, canvas.width);
+  height = Math.min(height, 300);
   side_canvas.style.display = 'inline-block';
   side_canvas.style.bottom = '10%';
   side_canvas.style.right = '5%';
@@ -720,7 +721,7 @@ function get_T(bin, max_bin) {
 }
 function draw_samples(render) {
   const width = params.Tbins;
-  const height = canvas.height / 6;
+  const height = Math.min(canvas.height / 6, 300);
   const H = 2 * height;
   sample_canvas.width = 2 * width;
   sample_canvas.height = H + 2 * 5;
