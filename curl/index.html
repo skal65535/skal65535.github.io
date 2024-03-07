@@ -101,13 +101,13 @@ const params = {
   noise: parse_arg_str('noise', 'curl'),
   noise_amp: parse_arg('amp', 8.),
   spherify: parse_arg_bool('sph'),
-  depth: 60,
+  depth: parse_arg('depth', 60),
   wireframe: !parse_arg_bool('no-wireframe'),
   light_color: 0xfadede,
 
   // Camera
-  fov: 110.,
-  radius: 1.25,
+  fov: parse_arg('fov', 110., 30., 170.),
+  radius: parse_arg('R', 1.25, 0.01, 10.),
   theta: 0.,
   phi: 30.0,
   target: [0., 0., 0.],
@@ -196,8 +196,8 @@ window.addEventListener('wheel', (event) => {
 }, { passive: false });
 
 window.addEventListener("resize", (e) => {
-  canvas.width = innerWidth * .9;
-  canvas.height = innerHeight * .8;
+  canvas.width = window.innerWidth * .9;
+  canvas.height = window.innerHeight * .8;
   do_resize();
 });
 
@@ -264,6 +264,7 @@ const GPU_init = async () => {
 
 const struct_code = `
   struct Uniforms {
+    model: mat4x3f,
     view: mat4x4f,
     proj: mat4x4f,
     light: vec4f,
@@ -337,18 +338,34 @@ const noise_code = `
       // return cos(angle) * p + sin(angle) * cross(axis, p) + (1. - cos(angle)) * dot(p, axis) * axis;
       return rotation_matrix(axis, angle) * p;
     }
+    fn Move(p: vec3f, phase: vec3f) -> vec3f {
+      let axis = normalize(fnoise(p * 2.53 + phase));
+      let angle = 2. * 3.1415926 * noise1d(p * 3.01 + phase);
+      return p + rotate3(p, axis, angle) * params.noise_amp;
+    }
+    fn MakeOrthogonal(v: vec3f) -> vec3f {   // http://sam.hocevar.net/blog/2013/09/
+      if (abs(v.x) > abs(v.z)) { return normalize(vec3f(-v.y, v.x, 0.)); }
+      return normalize(vec3f(0., -v.z, v.y));
+    }
     fn Displace(p: ptr<function, Pos>, t: f32) {
       let phase = vec3f(t, t * 1.01, t * .96);
-      let axis = normalize(fnoise((*p).p * 2.53 + phase));
-      let angle = 2. * 3.1415926 * noise1d((*p).p * 3.01 + phase);
-      (*p).p += rotate3((*p).p, axis, angle) * params.noise_amp;
-      (*p).n = normalize(rotate3((*p).n, axis, angle));
+      let P = (*p).p;
+      let N = (*p).n;
+      const eps : f32 = 1e-3;
+      let t1 = MakeOrthogonal(N);   // tangent
+      let t2 = cross(N, t1);        // bi-tangent
+      let p0 = Move(P, phase);
+      let p1 = Move(P + t1 * eps, phase);
+      let p2 = Move(P + t2 * eps, phase);
+      let n0 = normalize(cross(p1 - p0, p2 - p0));
+      (*p).p = p0;
+      (*p).n = n0;
     }
     fn GetPos(vtx_idx: u32, instance: u32) -> Pos {
       let face = faces[instance];
-      let p0 = vtx[face[0]].xyz;
-      let p1 = vtx[face[1]].xyz;
-      let p2 = vtx[face[2]].xyz;
+      let p0 = params.model * vtx[face[0]];
+      let p1 = params.model * vtx[face[1]];
+      let p2 = params.model * vtx[face[2]];
       let n = normalize(cross(p1 - p0, p2 - p0));
       let m = mat3x3f(p0, p1, p2);
       let UV = uv[vtx_idx];
@@ -562,6 +579,18 @@ function perspective(fx, fy, znear, zfar) {
       0.,  0.,  A, -1.,
       0.,  0.,  B,  0.]);
 }
+function rotation([ax, ay, az], angle) {
+  [ax, ay, az] = normalize([ax, ay, az]);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const [sx, sy, sz] = [ax * s, ay * s, az * s];
+  const [cx, cy, cz] = [ax * (1. - c), ay * (1. - c), az * (1. - c)];
+  return new Float32Array([
+    cx * ax +  c, cx * ay - sz, cx * az + sy, 0.,
+    cy * ax + sz, cy * ay +  c, cy * az - sx, 0.,
+    cz * ax - sy, cz * ay + sx, cz * az +  c, 0.,
+    0., 0., 0., 1.]);
+}
 
 function compute_frame_params() {
   const aspect = canvas.width / canvas.height;
@@ -570,26 +599,28 @@ function compute_frame_params() {
   render.proj = perspective(render.fx, render.fy, params.znear, params.zfar);
   render.light = new Float32Array([30., 30., 30.,   0.]);
   render.light_color = new Uint32Array([params.light_color]);
-  const theta = params.theta * Math.PI / 180.;
+  const theta = 0.; // params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
   render.view = look_at(
       [ params.radius * Math.cos(theta) * Math.cos(phi),
         params.radius *                   Math.sin(phi),
         params.radius * Math.sin(theta) * Math.cos(phi), ],
       params.target, params.up);
+  render.model = rotation([0., 1., 0.], params.theta * Math.PI / 180.);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // CPU -> GPU transfer
 
 function transmit_uniforms() {
-  render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.view);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.proj);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.light);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 36 * 4, render.light_color);
+  render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.model);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.view);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.proj);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4, render.light);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 52 * 4, render.light_color);
 
   render.device.queue.writeBuffer(
-    render.GPU.uniforms, 38 * 4,
+    render.GPU.uniforms, 54 * 4,
       new Float32Array([ canvas.width, canvas.height,
                          render.fx, render.fy,
                          params.znear, params.zfar,
@@ -697,6 +728,7 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   uv: undefined,
 
   // per-frame params
+  model: undefined,
   view: undefined,
   proj: undefined,
   light: undefined,
@@ -788,7 +820,7 @@ async function set_poly(polyhedron_name) {
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
-    size: 52 * 4,
+    size: 68 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
