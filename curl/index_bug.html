@@ -1,0 +1,858 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
+<!-- Curl Noise -->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Curl Noise using WebGPU</title>
+<link rel="stylesheet" href="../splats/style.css">
+</head>
+
+<body onload="main();">
+<div id='main-area'>
+  <center>
+    <b><a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Curl Noise</a> using WebGPU</b><br/>
+    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
+    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
+    <div><canvas id="main-canvas"></canvas>
+      <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
+      <form action="https://skal65535.github.io/">
+        <input type="submit" value="skal 2024" id="skal-back"/>
+      </form>
+      <canvas id="progress-canvas" height='10px'></canvas>
+    </div>
+    <br/>
+    <canvas id="side-canvas"></canvas>
+  </center>
+  Curl Noise
+</div>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script>
+"use strict";
+
+const icoX = 0.525731112119133606;
+const icoZ = 0.850650808352039932;
+const kIcoVertex = new Float32Array([  // 3 x 12 floats
+  -icoX, 0., icoZ, 1.,  icoX, 0., icoZ, 1.,   -icoX, 0.,-icoZ, 1.,
+   icoX, 0.,-icoZ, 1.,  0., icoZ, icoX, 1.,     0.,icoZ,-icoX, 1.,
+    0.,-icoZ,icoX, 1.,  0.,-icoZ,-icoX, 1.,   icoZ,icoX,   0., 1.,
+    -icoZ,icoX,0., 1.,  icoZ,-icoX, 0., 1.,   -icoZ,-icoX, 0., 1.,]);
+const kIcoFaces = new Uint32Array(
+[ 0, 4,1,   0,9, 4,   9, 5,4,    4,5,8,   4,8, 1,
+  8,10,1,   8,3,10,   5, 3,8,    5,2,3,   2,7, 3,
+  7,10,3,   7,6,10,   7,11,6,   11,0,6,   0,1, 6,
+  6,1,10,   9,0,11,   9,11,2,    9,2,5,   7,2,11, ]);
+
+const kOctaVertex = new Float32Array([
+  0., -1., 0., 1.,
+  1., 0., 0., 1.,   0., 0., 1., 1.,   -1., 0., 0., 1.,   0., 0., -1., 1.,
+  0., 1., 0., 1. ]);
+const kOctaFaces = new Uint32Array(
+[ 0,2,1,  0,3,2,  0,4,3,  0,1,4,
+  5,1,2,  5,2,3,  5,3,4,  5,4,1,]);
+
+const T0 = 1. / 3.;
+const T1 = Math.sqrt(8.) / 3.;
+const T2 = Math.sqrt(2.) / 3.;
+const T3 = Math.sqrt(6.) / 3.;
+const kTetraVertex = new Float32Array([
+  0., 1., 0., 1,   -T2, -T0, T3, 1,  -T2, -T0, -T3, 1,   T1, -T0, 0., 1, ]);
+const kTetraFaces = new Uint32Array([ 0,1,2,   0,2,3,   0,3,1,   3,2,1,]);
+
+const kPlaneVertex = new Float32Array([ 1., -0.1,  1., 1.,   1., -0.1, -1., 1.,
+                                       -1., -0.1, -1., 1.,  -1., -0.1,  1., 1. ]);
+const kPlaneFaces = new Uint32Array([ 0,2,1,  0,3,2 ]);
+
+const kPolys = {
+  'icosahedron': { vtx: kIcoVertex,   faces: kIcoFaces, },
+  'tetrahedron': { vtx: kTetraVertex, faces: kTetraFaces, },
+  'octahedron':  { vtx: kOctaVertex,  faces: kOctaFaces, },
+  'plane':       { vtx: kPlaneVertex, faces: kPlaneFaces,  },
+};
+
+const kPolyhedrons = Object.keys(kPolys);
+const kNoise = { 'curl': 0, 'rotation axis': 1, };
+
+////////////////////////////////////////////////////////////////////////////////
+
+const args = new URLSearchParams(location.search);
+function parse_arg(arg_value, default_value, min, max) {
+  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
+  if (min != undefined) v = Math.max(v, min);
+  if (max != undefined) v = Math.min(v, max);
+  return v;
+}
+function parse_arg_str(arg_value, default_value) {
+  return args.has(arg_value) ? args.get(arg_value) : default_value;
+}
+function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
+
+////////////////////////////////////////////////////////////////////////////////
+// constants
+
+const canvas = document.querySelector("#main-canvas");
+const ctx = canvas.getContext("webgpu");
+
+////////////////////////////////////////////////////////////////////////////////
+
+const params = {
+  poly: parse_arg_str('poly', 'icosahedron'),
+  noise: parse_arg_str('noise', 'curl'),
+  noise_amp: parse_arg('amp', 8.),
+  spherify: parse_arg_bool('sph'),
+  depth: parse_arg('depth', 60),
+  wireframe: !parse_arg_bool('no-wireframe'),
+  light_color: 0xfadede,
+
+  // Camera
+  fov: parse_arg('fov', 110., 30., 170.),
+  radius: parse_arg('R', 1.25, 0.01, 10.),
+  theta: 0.,
+  phi: 30.0,
+  target: [0., 0., 0.],
+  up: [0., 1., 0.],
+  znear: 0.05,
+  zfar: 100.,
+  auto_rotate: !parse_arg_bool("no-rotate"),
+  mouse: {on:false, x:0., y:0.},
+
+  use_MSAA: false,
+  no_gui: parse_arg_bool('no-gui'),
+  dbg: { trace: 0, timing: false, },
+};
+
+if (parse_arg_bool("dbg")) {
+  params.dbg.trace = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// GUI setup
+
+const GUI_change = async () => { await init({}); }  // parameter changed
+const GUI_reload = async () => { await init({poly:true}); }
+
+const GUI_init = () => {
+  canvas.width  = parse_arg("w", innerWidth * .9);
+  canvas.height = parse_arg("h", innerHeight * .8);
+
+  if (params.no_gui) {
+    render.gui = undefined;
+    return;
+  }
+  render.gui = new lil.GUI({container: document.getElementById('#main-area'),
+                            name: 'Curl Noise'});
+  render.gui.add(params, 'poly', kPolyhedrons).name('base polyhedron').listen().onChange(GUI_reload);
+  render.gui.add(params, 'depth', 1, 256, 1).name('sub-div level').listen().onChange(GUI_reload);
+//  render.gui.add(params, 'noise', Object.keys(kNoise)).listen().onChange(GUI_change);
+  render.gui.add(params, 'noise_amp', 0., 20.).name('noise amplitude').listen().onChange(GUI_change);
+  render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
+  render.gui.add(params, 'spherify').name('spherify').listen();
+  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
+  render.gui.addColor(params, 'light_color').name('light color').listen();
+  const cam_folder = render.gui.addFolder('camera').close();
+  cam_folder.add(params, 'fov', 0., 180., 5.).listen();
+  cam_folder.add(params, 'radius', 0.0001, 5., 0.01).listen();
+  cam_folder.add(params, 'theta', 0., 360., 1.).listen();
+  cam_folder.add(params, 'phi', -180., 180., 1.).listen();
+  cam_folder.add(params, 'auto_rotate').name('auto rotate').listen();
+  const dbg_folder = render.gui.addFolder('Debug').close();
+  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
+  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
+  render.gui.add(render, 'txt_info').name('info').listen().disable();
+
+  render.gui.domElement.style.top = '5%';
+  render.gui.domElement.style.right = '3%';
+
+  do_resize();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// event handling
+
+window.addEventListener('pointermove', (event) => {
+  if (event.target != canvas) return;
+//  event.preventDefault();
+  const bounds = canvas.getBoundingClientRect();
+  const mouse_x = (event.clientX - bounds.left) / canvas.width;
+  const mouse_y = (event.clientY -  bounds.top) / canvas.height;
+  if (params.mouse.on) {
+    params.phi   += (params.mouse.y - mouse_y) * 140.;
+    params.theta += (params.mouse.x - mouse_x) * 140.;
+  }
+  params.mouse.x = mouse_x;
+  params.mouse.y = mouse_y;
+}, false);
+window.addEventListener('pointerdown', (event) => {
+  if (event.target == canvas) params.mouse.on = true;
+});
+window.addEventListener('pointerup', (event) => {
+  params.mouse.on = false;
+});
+window.addEventListener('wheel', (event) => {
+  if (event.target != canvas) return;
+  event.preventDefault();
+  params.radius *= (event.deltaY > 0.) ? 1.05 : 1. / 1.05;
+}, { passive: false });
+
+window.addEventListener("resize", (e) => {
+  canvas.width = window.innerWidth * .9;
+  canvas.height = window.innerHeight * .8;
+  do_resize();
+});
+
+function do_resize() {
+  const pcanvas = document.getElementById("progress-canvas")
+  pcanvas.width = .93 * canvas.width;
+  init_textures(render);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////// WebGPU init //////
+
+const trace = (level, ...args) => {
+  if (params.dbg.trace > level) console.log(args.join(' '));
+}
+
+function Oops(e) {
+  // document.body.innerHTML = `Oops! <pre>${e}</pre>`;
+  const side_canvas = document.querySelector("#side-canvas");
+  side_canvas.style.display = 'inline-block';
+  side_canvas.width = canvas.width * .8;
+  const ctx = side_canvas.getContext('2d');
+  ctx.fillStyle = '#f33';
+  ctx.font = "bold 20px Arial";
+  ctx.fillText('Oops!', 15, 30);
+  ctx.font = "bold 12px Arial";
+  ctx.fillText(e, 15, 55);
+  throw Error(e);
+}
+
+const GPU_init = async () => {
+  navigator.gpu || Oops("WebGPU not supported.");
+  console.log("Navigator has GPU");
+
+  const adapter = await navigator.gpu.requestAdapter();
+  adapter || Oops("Couldn’t request WebGPU adapter.");
+  console.log("WebGPU Adapter ok");
+
+  render.device = await adapter.requestDevice();
+  render.device || Oops("Couldn’t request WebGPU logical device.");
+  console.log("WebGPU Device acquired.");
+
+  function onDeviceError(event) {
+    console.log("Something bad happened! Error type:", event.error.constructor.name);
+    console.log("Error message:", event.error.message);
+    if (render.device != undefined) {
+      render.device.destroy();
+      render.device = undefined;
+    }
+    stop_animation();
+    Oops("Error caught while constructing the WebGPU device. See console.");
+  }
+  render.device.addEventListener('uncapturederror', onDeviceError);
+
+  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({device: render.device,
+                 format: render.textureFormat,
+                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 alphaMode: 'premultiplied', });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Pipelines & Shaders (the cool stuff!)
+
+const struct_code = `
+  struct Uniforms {
+    model: mat4x3f,
+    view: mat4x4f,
+    proj: mat4x4f,
+    light: vec4f,
+    light_color: u32,
+
+    dim:  vec2f,   // screen dimension
+    focal: vec2f,
+    znear: f32,
+    zfar:  f32,
+    time:  f32,
+    noise_amp:   f32,
+    nb_idx: f32,
+    nb_faces: f32,
+    spherify: f32,
+  }
+  struct Out {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+    @location(1) @interpolate(flat) color: vec4f,
+    @location(2) normal: vec4f,
+  };
+  struct Pos {
+    p: vec3f,
+    n: vec3f,
+  };
+`;
+
+// displacement noise
+const noise_code = `
+    const ex = vec3i(1,0,0);
+    const ey = vec3i(0,1,0);
+    const ez = vec3i(0,0,1);
+
+    fn noise1f(p: vec3i) -> f32 { return Hash1f(u32(dot(p, vec3i(3, 113, 311)))); }
+    fn lerp(p: vec3i, alpha: f32) -> f32 { return mix(noise1f(p), noise1f(p + ex), alpha); }
+    fn noise1d(p: vec3f) -> f32 {
+      let X = vec3i(floor(p));
+      let dX = fract(p);
+      let n00 = lerp(X, dX.x);
+      let n10 = lerp(X + ey, dX.x);
+      let n01 = lerp(X + ez, dX.x);
+      let n11 = lerp(X + ey + ez, dX.x);
+      let m0 = mix(n00, n10, dX.y);
+      let m1 = mix(n01, n11, dX.y);
+      return mix(m0, m1, dX.z);
+    }
+    fn noise3d(p: vec3f) -> vec3f {
+      return vec3f(noise1d(p),
+                   noise1d(p * vec3f(1.03, 0.98, 1.07)),
+                   noise1d(p * vec3f(1.01, 0.97, 0.99)));
+    }
+    fn fnoise(p: vec3f) -> vec3f {
+      let m = rotation_matrix(normalize(vec3f(.4, .3, -.1)), .1);
+      var P = p;
+      var               out  =        noise3d(P);
+      P = m * P * 2.02; out += .500 * noise3d(P);
+      P = m * P * 2.05; out += .250 * noise3d(P);
+      P = m * P * 1.98; out += .125 * noise3d(P);
+      return out;
+    }
+    fn rotation_matrix(axis: vec3f, angle: f32) -> mat3x3f {
+      let c = cos(angle);
+      let S = axis * sin(angle);
+      let C = axis * (1. - c);
+      return mat3x3f(vec3f(C.x * axis + vec3f(   c, -S.z,  S.y)),
+                     vec3f(C.y * axis + vec3f( S.z   , c, -S.x)),
+                     vec3f(C.z * axis + vec3f(-S.y,  S.x,    c)));
+    }
+    // Rodrigues's formula: https://en.wikipedia.org/wiki/Rodrigues%27_rotation_formula
+    fn rotate3(p: vec3f, axis: vec3f, angle: f32) -> vec3f {
+      // return cos(angle) * p + sin(angle) * cross(axis, p) + (1. - cos(angle)) * dot(p, axis) * axis;
+      return rotation_matrix(axis, angle) * p;
+    }
+    fn Move(p: vec3f, phase: vec3f) -> vec3f {
+      let axis = normalize(fnoise(p * 2.53 + phase));
+      let angle = 2. * 3.1415926 * noise1d(p * 3.01 + phase);
+      return p + rotate3(p, axis, angle) * params.noise_amp;
+    }
+    fn MakeOrthogonal(v: vec3f) -> vec3f {   // http://sam.hocevar.net/blog/2013/09/
+      if (abs(v.x) > abs(v.z)) { return normalize(vec3f(-v.y, v.x, 0.)); }
+      return normalize(vec3f(0., -v.z, v.y));
+    }
+    fn Displace(p: ptr<function, Pos>, t: f32) {
+      let phase = vec3f(t, t * 1.01, t * .96);
+      let P = (*p).p;
+      let N = (*p).n;
+      const eps : f32 = 1e-3;
+      let t1 = MakeOrthogonal(N);   // tangent
+      let t2 = cross(N, t1);        // bi-tangent
+      let p0 = Move(P, phase);
+      let p1 = Move(P + t1 * eps, phase);
+      let p2 = Move(P + t2 * eps, phase);
+      let n0 = normalize(cross(p1 - p0, p2 - p0));
+      (*p).p = p0;
+      (*p).n = n0;
+    }
+    fn GetPos(vtx_idx: u32, instance: u32) -> Pos {
+      let face = faces[instance];
+      let p0 = params.model * vtx[face[0]];
+      let p1 = params.model * vtx[face[1]];
+      let p2 = params.model * vtx[face[2]];
+      let n = normalize(cross(p1 - p0, p2 - p0));
+      let m = mat3x3f(p0, p1, p2);
+      let UV = uv[vtx_idx];
+      let w = vec3f(UV, 1. - UV.x - UV.y);
+      // interpolate to p0 * alpha + p1 * beta + p2 * gamma;
+      // (and maybe project on the unit sphere):
+      var p : Pos;
+      p.p = m * w;
+      p.n = n;
+      if (params.spherify > 0.) {
+        p.p = normalize(p.p);
+        p.n = p.p;
+      }
+      // + rotational noise
+      Displace(&p, params.time * 0.002);
+      return p;
+    }
+    fn Hash1f(p: u32) -> f32 {
+      var P = (p << 13) ^ p;
+      P = P * (P * P * 15731 + 789221) + 1376312589;
+      return bitcast<f32>((P >> 9) | 0x3f800000) - 1.;
+    }
+    fn Hash3f(p: u32) -> vec3f {
+      return vec3f(Hash1f(p), Hash1f(p + 1423), Hash1f(p + 124453));
+    }
+`;
+
+function create_vtx_pipeline(render) {
+  const vtx_code = `
+    ${struct_code}
+
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<vec4f>;
+    @group(0) @binding(2) var<storage, read> faces: array<array<u32, 3>>;
+    @group(0) @binding(3) var<storage, read> uv: array<vec2f>;
+
+    ${noise_code}
+
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                        @builtin(instance_index) instance: u32,  ) -> Out {
+      var p = GetPos(vtx_idx, instance);
+      var vpos = params.proj * params.view * vec4f(p.p, 1.);
+
+      var output : Out;
+      output.position = vpos;
+      output.uv = uv[vtx_idx];
+      output.color = vec4f(Hash3f(instance), 1.);
+      output.normal = normalize(params.view * vec4f(p.n, 0.));
+      return output;
+    }
+    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      let ldir = normalize(params.light.xyz - s.position.xyz);
+      var d = max(0., dot(ldir, s.normal.xyz));
+      var color = vec4f(d, d, d, 1.);//.1 * s.color + d * unpack4x8unorm(params.light_color);
+      let r = normalize(reflect(s.position - params.view[3], s.normal).xyz);
+      let highlight = 1.5 * vec4f(1., 1., .8, 1.) * pow(max(0., dot(r, ldir)), 60.);
+      color += highlight;
+      return vec4f(color.rgb, 1.);
+    }
+  `;
+  const vtx_code_wireframe = `
+    ${struct_code}
+
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<vec4f>;
+    @group(0) @binding(2) var<storage, read> faces: array<array<u32, 3>>;
+    @group(0) @binding(3) var<storage, read> uv: array<vec2f>;
+
+    ${noise_code}
+
+    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+                        @builtin(instance_index) instance: u32,  ) -> Out {
+      let p = GetPos(vtx_idx, instance);
+
+      var output : Out;
+      output.position = params.proj * params.view * vec4f(p.p, 1.);
+      let g = f32(instance) / f32(params.nb_faces) + .8;
+      let color = abs(noise3d(vec3f(g, 1., g) * 32.153)) * .8 + .5;
+      output.color = vec4f(color, 1.);
+      return output;
+    }
+    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      var d = s.position.w;
+      return vec4f(s.color.rgb * d, 1.);
+    }
+  `;
+
+  const vtx_module = render.device.createShaderModule(
+    { code: params.wireframe ? vtx_code_wireframe : vtx_code });
+  render.vtx_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: vtx_module,
+      entryPoint: 'vtx_main',
+      buffers: [
+        { arrayStride: 4,
+          stepMode: 'instance',
+          attributes: [ { shaderLocation: 0, offset: 0, format: 'uint32', }, ],
+        },
+      ],
+    },
+    fragment: {
+      module: vtx_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: render.textureFormat,
+        blend: {
+          color: {srcFactor: 'one', dstFactor: 'one-minus-dst-alpha', operation: 'add'},
+          alpha: {srcFactor: 'one', dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: {
+      topology: params.wireframe ? 'line-strip' : 'triangle-strip',
+      stripIndexFormat: 'uint32',
+      cullMode: 'none',
+    },
+    depthStencil: {
+      depthWriteEnabled: true,
+      depthCompare: 'greater',
+      format: 'depth24plus',
+    },
+    multisample: { count: (params.use_MSAA ? 4 : 1), },
+  });
+  render.vtx_bind_group = render.device.createBindGroup({
+    layout: render.vtx_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
+      { binding: 1, resource: { buffer: render.GPU.vtx, }, },
+      { binding: 2, resource: { buffer: render.GPU.faces, }, },
+      { binding: 3, resource: { buffer: render.GPU.uv, }, },
+    ],
+  });
+}
+
+
+function create_pipelines(render) {
+  render.device || Oops("Can't create pipelines without a device!");
+  create_vtx_pipeline(render);
+  render.tick = 0;
+  render.time_stamp = undefined;
+  render.fps = 60.;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Create the data buffers
+
+async function init_textures(render) {
+  if (render.multisample_texture != undefined) {
+    render.multisample_texture.destroy();
+    render.multisample_texture = undefined;
+  }
+  if (params.use_MSAA) {
+    render.multisample_texture = render.device.createTexture({
+      label: 'multisample',
+      size: [canvas.width, canvas.height],
+      sampleCount: 4,
+      format: render.textureFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+  }
+  render.depthTexture = render.device.createTexture({
+    label: 'depth',
+    size: [canvas.width, canvas.height],
+    format: 'depth24plus',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    sampleCount: (params.use_MSAA ? 4 : 1),
+  });
+}
+
+// END OF GPU PART
+////////////////////////////////////////////////////////////////////////////////
+
+
+////////////////////////////////////////////////////////////////////////////////
+// utils for 3D
+
+function normalize([x, y, z]) {
+  const d = 1. / Math.hypot(x, y, z);
+  return [x * d, y * d, z * d];
+}
+function cross([Ax, Ay, Az], [Bx, By, Bz]) {
+  return [Ay * Bz - Az * By, Az * Bx - Ax * Bz, Ax * By - Ay * Bx];
+}
+function dot([Ax, Ay, Az], [Bx, By, Bz]) {
+  return Ax * Bx + Ay * By + Az * Bz;
+}
+function look_at([p_x, p_y, p_z],  // position relative to target
+                 [t_x, t_y, t_z],  // target
+                 [up_x, up_y, up_z]) {
+  const [f_x, f_y, f_z] = normalize([p_x, p_y, p_z]);
+  const [r_x, r_y, r_z] = normalize(cross([up_x, up_y, up_z], [f_x, f_y, f_z]));
+  const [d_x, d_y, d_z] = cross([f_x, f_y, f_z], [r_x, r_y, r_z]);
+  p_x += t_x;
+  p_y += t_y;
+  p_z += t_z;
+  return new Float32Array([
+      r_x, d_x, f_x, 0.,
+      r_y, d_y, f_y, 0.,
+      r_z, d_z, f_z, 0.,
+      -dot([r_x, r_y, r_z], [p_x, p_y, p_z]),
+      -dot([d_x, d_y, d_z], [p_x, p_y, p_z]),
+      -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
+}
+function perspective(fx, fy, znear, zfar) {
+  const A = znear / (zfar - znear);
+  const B = zfar * A;
+  return new Float32Array([
+     -fx,  0., 0.,  0.,
+      0., -fy, 0.,  0.,
+      0.,  0.,  A, -1.,
+      0.,  0.,  B,  0.]);
+}
+function rotation([ax, ay, az], angle) {
+  [ax, ay, az] = normalize([ax, ay, az]);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const [sx, sy, sz] = [ax * s, ay * s, az * s];
+  const [cx, cy, cz] = [ax * (1. - c), ay * (1. - c), az * (1. - c)];
+  return new Float32Array([
+    cx * ax +  c, cx * ay - sz, cx * az + sy, 0.,
+    cy * ax + sz, cy * ay +  c, cy * az - sx, 0.,
+    cz * ax - sy, cz * ay + sx, cz * az +  c, 0.,
+    0., 0., 0., 1.]);
+}
+
+function compute_frame_params() {
+  const aspect = canvas.width / canvas.height;
+  render.fx = 1. / Math.tan(params.fov * Math.PI / 360.);
+  render.fy = aspect * render.fx;
+  render.proj = perspective(render.fx, render.fy, params.znear, params.zfar);
+  render.light = new Float32Array([30., 30., 30.,   0.]);
+  render.light_color = new Uint32Array([params.light_color]);
+  const theta = 0.; // params.theta * Math.PI / 180.;
+  const phi = params.phi * Math.PI / 180.;
+  render.view = look_at(
+      [ params.radius * Math.cos(theta) * Math.cos(phi),
+        params.radius *                   Math.sin(phi),
+        params.radius * Math.sin(theta) * Math.cos(phi), ],
+      params.target, params.up);
+  render.model = rotation([0., 1., 0.], params.theta * Math.PI / 180.);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// CPU -> GPU transfer
+
+function transmit_uniforms() {
+  render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.model);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.view);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.proj);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4, render.light);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 52 * 4, render.light_color);
+
+  render.device.queue.writeBuffer(
+    render.GPU.uniforms, 54 * 4,
+      new Float32Array([ canvas.width, canvas.height,
+                         render.fx, render.fy,
+                         params.znear, params.zfar,
+                         render.tick,
+                         params.noise_amp / 50.,
+                         render.nb_idx,
+                         render.nb_faces,
+                         params.spherify, ]));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Animation loop
+
+async function frame() {
+  const time_stamp = performance.now();
+  if (render.time_stamp) {
+    const delta_t = time_stamp - render.time_stamp;
+    if (delta_t > 1.) {
+      const new_fps = 1000. / delta_t;
+      render.fps = Math.round(render.fps * 0.8 + new_fps * 0.2);
+    }
+    document.getElementById("fps").innerText = render.fps.toFixed(1) + " fps";
+  }
+  render.time_stamp = time_stamp;
+
+  performance.mark("webgpu start");
+
+  compute_frame_params();
+
+  transmit_uniforms();
+
+  const encoder = render.device.createCommandEncoder();
+
+  if (params.dbg.timing) console.time("GPU");
+
+  const pass_descriptor = {
+      colorAttachments: [
+        { view: undefined,
+          resolveTarget: undefined,
+          clearValue: {r:0., g:0., b:0., a:0.},
+          loadOp: 'clear', storeOp: 'store', },
+      ],
+  };
+  const canvas_view = ctx.getCurrentTexture().createView({label: 'CANVAS'});
+  if (params.use_MSAA) {
+    const MSAA_view = render.multisample_texture.createView({label: 'MULTISAMPLE'});
+    pass_descriptor.colorAttachments[0].view = MSAA_view;
+    pass_descriptor.colorAttachments[0].resolveTarget = canvas_view;
+  } else {
+    pass_descriptor.colorAttachments[0].view = canvas_view;
+  }
+  pass_descriptor.depthStencilAttachment = {
+    view: render.depthTexture.createView(),
+    depthClearValue: 0.0,
+    depthLoadOp: 'clear', depthStoreOp: 'store', };
+
+  if (render.nb_idx > 0) {
+    const render_pass = encoder.beginRenderPass(pass_descriptor);
+    render_pass.setPipeline(render.vtx_pipeline);
+    render_pass.setBindGroup(0, render.vtx_bind_group);
+    render_pass.setVertexBuffer(0, render.GPU.vtx);
+    render_pass.setIndexBuffer(render.GPU.idx, 'uint32');
+    render_pass.drawIndexed(render.nb_idx, render.nb_faces);
+    render_pass.end();
+  }
+
+  render.device.queue.submit([encoder.finish()]);
+
+  if (params.dbg.timing) console.timeEnd("GPU");
+  performance.mark("webgpu end");
+
+  performance.measure("webgpu", "webgpu start", "webgpu end");
+
+  if (params.auto_rotate) params.theta -= 0.07;
+  ++render.tick;
+  render.loop_id = requestAnimationFrame(frame);
+}
+
+function stop_animation() {
+  if (render.loop_id != undefined) {
+    cancelAnimationFrame(render.loop_id);
+    render.loop_id = undefined;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+var render = {  /* Run-time data: device, uniforms, pipeline... */
+  device: undefined,
+  textureFormat: undefined,
+
+  GPU: {   // data sent to GPU
+    vtx:     null,     // base vtx
+    faces:   null,     // faces
+    idx:     null,     // per-face tesselation sub-idx
+    uv:  null,         // barycentric coordinate of sub-idx
+    colors:    null,   // u32
+    uniforms:  null,
+  },
+  nb_vtx: 0,
+  nb_faces: 0,
+  nb_idx: 0,
+  idx: undefined,
+  nb_uv: 0,
+  uv: undefined,
+
+  // per-frame params
+  model: undefined,
+  view: undefined,
+  proj: undefined,
+  light: undefined,
+  fx: undefined,
+  fy: undefined,
+
+  // side info
+  fps: 60.,
+  time_stamp: undefined,
+  txt_info: "",
+  loop_id: undefined,  // id for animation loop
+  tick: 0.,
+
+  gui: undefined,
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+function MakeSubs(depth) {
+  const UVs = [];
+  for (let i = 0; i <= depth; ++i) {
+    for (let j = 0; j <= i; ++j) {
+      const u = i / depth, v = j / depth;
+      UVs.push(1 - u, u - v);
+    }
+  }
+  const nb_pts = UVs.length / 2;
+
+  // This one could be pre-calc'd up to max_depth
+  const idx = [];
+  for (let i = 0; i < depth; ++i) {
+    const s = i * (i + 1) / 2;
+    const t = (i + 2) * (i + 1) / 2;
+    idx.push(t);
+    if (i > 0) idx.push(t);
+    for (let j = 0; j <= i; ++j) {
+      idx.push(s + j, t + j + 1);
+    }
+    if (params.wireframe) {
+      for (let j = 0; j <= i; ++j) idx.push(t + i - j);
+      if (i + 1 < depth) idx.push(t);
+    } else {
+      if (i + 1 < depth) idx.push(t + i + 1);  // repeat last
+    }
+  }
+
+  return [idx.length, idx,  nb_pts, UVs];
+}
+
+async function set_poly(polyhedron_name) {
+  const poly = kPolys[polyhedron_name];
+
+  render.nb_vtx = poly.vtx.length / 4;
+  render.GPU.vtx = render.device.createBuffer({
+    size: poly.vtx.length * 4,  // vec4f
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
+    mappedAtCreation: true,
+  });
+  new Float32Array(render.GPU.vtx.getMappedRange()).set(poly.vtx);
+  render.GPU.vtx.unmap();
+
+  render.nb_faces = poly.faces.length / 3;
+  render.GPU.faces = render.device.createBuffer({
+    size: poly.faces.length * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Uint32Array(render.GPU.faces.getMappedRange()).set(poly.faces);
+  render.GPU.faces.unmap();
+
+  [render.nb_idx, render.idx, render.nb_pts, render.uv] = MakeSubs(params.depth);
+  render.GPU.idx = render.device.createBuffer({
+    size: render.idx.length * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.INDEX,
+    mappedAtCreation: true,
+  });
+  new Uint32Array(render.GPU.idx.getMappedRange()).set(render.idx);
+  render.GPU.idx.unmap();
+  render.idx = undefined;
+
+  render.GPU.uv = render.device.createBuffer({
+    size: render.uv.length * 2 * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Float32Array(render.GPU.uv.getMappedRange()).set(render.uv);
+  render.GPU.uv.unmap();
+  render.uv = undefined;
+
+  // Create uniforms buffer
+  render.GPU.uniforms = render.device.createBuffer({
+    size: 68 * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  render.txt_info = "vtx:" + render.nb_vtx + " faces:" + render.nb_faces
+                  + " idx:" + render.nb_idx + " uv:" + render.nb_uv;
+}
+
+async function init(what) {
+  render.device || Oops("Initialization failed. Is WebGPU supported and " +
+                        "<a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enabled</a>?");
+  stop_animation();
+
+  if (what.poly) {
+    await set_poly(params.poly);
+  }
+  if (what.textures) {
+    await init_textures(render);
+  }
+  create_pipelines(render);
+
+  frame();    // start animation loop
+}
+
+async function main() {
+  try {
+    await GPU_init();
+    GUI_init();
+    await init({poly:true, textures:true,});
+  } catch(e) { Oops(e); }
+}
+
+</script>
+
+</body>
+</html>
