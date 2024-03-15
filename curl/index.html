@@ -51,31 +51,32 @@ const params = {
   spherify: parse_arg_bool('sph'),
   depth: parse_arg('depth', 60),
   wireframe: !parse_arg_bool('no-wireframe'),
-  shadows: !parse_arg_bool('no-shadows'),
   sm_size: 1024,  // shadow-map size
   light_color: 0xfadede,
-  light_pos: [.6, .8, .9,   0.],
+  light_pos: [1.3, -1.8, 1.,   1.],
   animate: false,
+  post_proc: !parse_arg_bool('no-post'),
+  funky: parse_arg_bool('funky'),
+  specular: parse_arg('specular', 1.2),
 
   // Camera
   fov: parse_arg('fov', 110., 30., 170.),
   model: { theta: 0., phi: 0., scale: 1., },
   cam: {
-    dist: parse_arg('R', 1.25, 0.01, 10.),
+    dist: parse_arg('R', 1.50, 0.01, 10.),
     theta: 0.,
-    phi: 30.0,
+    phi: -15.0,
   },
   target: [0., 0., 0.],
   up: [0., 1., 0.],
   znear: 0.05,
-  zfar: 100.,
+  zfar: 20.,
   auto_rotate: !parse_arg_bool("no-rotate"),
   mouse: {on:false, x:0., y:0.},
 
   use_MSAA: parse_arg_bool('MSAA'),
   no_gui: parse_arg_bool('no-gui'),
   dbg: { trace: 0, timing: false,
-         light: parse_arg_bool('light'),
          ortho: parse_arg_bool('ortho'),
          animate_light: parse_arg_bool('animate-light'), },
 };
@@ -102,9 +103,11 @@ const GUI_init = () => {
   render.gui.add(params, 'noise_amp', 0., 20.).name('noise amplitude').listen().onChange(GUI_change);
   render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
   render.gui.add(params, 'spherify').name('spherify').listen();
-  render.gui.add(params, 'shadows').name('w/ shadows').listen().onChange(() => init({textures:true}));
-  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
+  render.gui.add(params, 'post_proc').name('post_processing').listen();
+//  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.addColor(params, 'light_color').name('light color').listen();
+  render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_change);
+  render.gui.add(params, 'specular', 0., 2., 0.1).name('specular').listen();
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params.cam, 'dist', 0.0001, 5., 0.01).name('distance').listen();
@@ -117,7 +120,6 @@ const GUI_init = () => {
   const dbg_folder = render.gui.addFolder('Debug').close();
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
   dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
-  dbg_folder.add(params.dbg, 'light').name('light depth').listen().onChange(GUI_reload);
   dbg_folder.add(params.dbg, 'ortho').name('ortho view').listen();
   dbg_folder.add(params.dbg, 'animate_light').name('animate light').listen();
   render.gui.add(render, 'txt_info').name('info').listen().disable();
@@ -168,10 +170,24 @@ window.addEventListener('wheel', (event) => {
   const change_factor = (event.wheelDelta > 0) ? 1.05 : 1. / 1.05;
   if (event.shiftKey) {
     params.model.scale *= change_factor;
+    params.model.scale = Math.max(Math.min(params.model.scale, 4.0), 0.1);
   } else {
     params.cam.dist *= change_factor;
+    params.cam.dist = Math.max(Math.min(params.cam.dist, 12.0), 0.1);
   }
 }, { passive: false });
+
+window.addEventListener('keyup', (e) => {
+//  console.log(e.keyCode);
+  if (e.keyCode == 70) {
+    params.funky = !params.funky;
+    params.depth = params.funky ? 30 : 256;
+    GUI_reload();
+  } else if (e.keyCode == 87) {
+    params.wireframe = !params.wireframe;
+    GUI_reload();
+  }
+});
 
 window.addEventListener("resize", (e) => {
   canvas.width = window.innerWidth * .9;
@@ -241,7 +257,8 @@ const GPU_init = async () => {
 
   ctx.configure({device: render.device,
                  format: render.textureFormat,
-                 usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 // usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+                 usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
                  alphaMode: 'premultiplied', });
 }
 
@@ -256,14 +273,18 @@ const VertexIndexBuffer = [  // common index buffer
 ];
 
 const struct_code = `
-  struct Uniforms {
+  struct Model {
     model: mat4x3f,
     view: mat4x4f,
+    proj: mat4x4f,      // projection * view
+    inv_proj: mat4x4f,  // inverse of 'proj'
+  };
+  struct Light {
     proj: mat4x4f,
-    light_proj: mat4x4f,
-    light_pos: vec4f,
-    light_color: u32,
-
+    pos: vec4f,
+    color: u32,
+  };
+  struct Params {
     dim:  vec2f,   // screen dimension
     focal: vec2f,
     znear: f32,
@@ -273,7 +294,8 @@ const struct_code = `
     nb_idx: f32,
     nb_faces: f32,
     spherify: f32,
-  }
+    specular: f32,
+  };
   struct Out {
     @builtin(position) position: vec4f,
     @location(0) uv: vec2f,
@@ -287,8 +309,21 @@ const struct_code = `
     n: vec3f,
   };
 `;
+const screen_code = `
+  fn ScreenToTexture(s: vec2f) -> vec2f {   // from [-1,1]^2 to [0,1]^2
+    return vec2f(.5, .5) + vec2f(.5, -.5) * s;
+  }
+  fn WorldFromScreen(uv : vec2f, w: f32) -> vec3f {
+    let ndc = vec4f(uv, w, 1.0);
+    let world_c = model.inv_proj * ndc;
+    return world_c.xyz / world_c.w;
+  }
+`;
+
 const group_0_code = `
-  @group(0) @binding(0) var<uniform> params: Uniforms;
+  @group(0) @binding(0) var<uniform> model: Model;
+  @group(0) @binding(1) var<uniform> light: Light;
+  @group(0) @binding(2) var<uniform> params: Params;
 `;
 const group_1_code = `
   @group(1) @binding(0) var<storage, read> vtx: array<vec4f>;
@@ -395,16 +430,16 @@ const displace_code = `
       p.n = n;
       if (params.spherify > 0.) {
         p.p = normalize(p.p);
-        p.n = p.p;
+        p.n = -p.p;
       }
       Displace(&p, params.time * 0.002);         // + rotational noise
-      p.p = params.model * vec4f(p.p, 1.);
-      p.n = params.model * vec4f(p.n, 0.);   // no scaling, so transp(inv(m)) = m
+      p.p = model.model * vec4f(p.p, 1.);
+      p.n = model.model * vec4f(p.n, 0.);   // no scaling, so transp(inv(m)) = m
       return p;
     }
 `;
 
-function create_vtx_pipeline(render) {
+function create_poly_pipeline(render) {
   const vtx_code = `
     ${struct_code}
     ${group_0_code}
@@ -415,10 +450,11 @@ function create_vtx_pipeline(render) {
 
     @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                         @builtin(instance_index) face_idx: u32,  ) -> Out {
-      var p = GetPos(vtx_idx, face_idx);
-      var pos3d = vec4f(p.p, 1.);
-      var normal = normalize(params.view * vec4f(p.n, 0.));
-      var vpos = params.proj * params.view * pos3d;
+      _ = params.dim;
+      let p = GetPos(vtx_idx, face_idx);
+      let pos3d = model.view * vec4f(p.p, 1.);
+      let vpos = model.proj * vec4f(p.p, 1.);
+      let normal = normalize(model.view * vec4f(p.n, 0.));
 
       var output : Out;
       output.position = vpos;
@@ -426,44 +462,25 @@ function create_vtx_pipeline(render) {
       output.normal = normal;
       output.uv = uv[vtx_idx];
       output.color = vec4f(Hash3f(face_idx), 1.);
-      let l = params.light_proj * vec4f(p.p, 1.);
-      output.lpos = vec4f(l.xy * .5 + vec2f(.5, .5), l.z, l.w);
       return output;
     }`;
   const fragment_code = `
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      let ldir = normalize(params.light_pos.xyz - s.pos3d.xyz);
-      let d = max(0., dot(ldir, s.normal.xyz));
-      var color = .3 * s.color + d * unpack4x8unorm(params.light_color);
+      let light_pos = model.view * light.pos;
+      let ldir = normalize(light_pos.xyz - s.pos3d.xyz);
       let r = normalize(reflect(s.pos3d, s.normal).xyz);
-      let highlight = 1.5 * vec4f(1., 1., .8, 1.) * pow(max(0., dot(r, ldir)), 60.);
-      color += highlight;
+      var d = max(0., -dot(ldir, s.normal.xyz));  // diffuse
+      d += params.specular * pow(max(0., dot(r, ldir)), 60.);   // specular highlight
+      let v = normalize(s.pos3d.xyz);
+      var color = .2 * s.color + d * unpack4x8unorm(light.color);
+      var sil = 1. - smoothstep(.12, .13, abs(dot(v, s.normal.xyz)));  // silhouette
+      color += sil * vec4f(1., .2, .3, 1.);
       return vec4f(color.rgb, 1.);
-    }
-  `;
-  const shadow_fragment_code = `
-    ${group_2_code}
-
-    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      _ = light_depth;
-      _ = cmp_sampler;
-      _ = depth_sampler;
-      var sum = 0.;
-      sum += textureSampleCompare(
-        light_depth, cmp_sampler, s.lpos.xy, s.lpos.z - 0.007);
-      sum /= 1.;
-
-      let ldir = normalize(params.light_pos.xyz - s.pos3d.xyz);
-      var d = 0.2 + sum * max(0., dot(ldir, s.normal.xyz));
-      // return vec4f(sum, sum, sum, 1.);
-      // return vec4f(s.color.rgb * min(d, 1.), 1.);
-      let z = textureSample(light_depth, depth_sampler, s.uv); // s.lpos.xy);
-      return vec4f(z, z, 1., 1.);
     }
   `;
 
   const vtx_module = render.device.createShaderModule(
-    { code: vtx_code + (params.shadows ? shadow_fragment_code : fragment_code) });
+    { code: vtx_code + fragment_code });
   render.pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: {
@@ -479,7 +496,7 @@ function create_vtx_pipeline(render) {
     primitive: {
       topology: 'triangle-strip',
       stripIndexFormat: 'uint32',
-      cullMode: 'none',
+      cullMode: (params.funky ? 'back' : 'none'),
     },
     depthStencil: {
       depthWriteEnabled: true,
@@ -496,54 +513,46 @@ function create_vtx_pipeline(render) {
     layout: render.pipeline.getBindGroupLayout(1),
     entries: render.GPU.base_entries,
   });
-  if (params.shadows) {
-    render.bind_group_2 = render.device.createBindGroup({
-      layout: render.pipeline.getBindGroupLayout(2),
-      entries: render.GPU.light_entries,
-    });
-  }
 }
 
-function create_cube_pipeline(render) {
+function create_cube_pipeline(render) {   // draw the surrending cube box
   const vtx_code = `
     ${struct_code}
     ${group_0_code}
+    ${group_1_code}
+    ${group_2_code}
     ${noise_code}
-    const kVtxs = array<u32, 24>(
-        0, 1, 2, 3,
-        4, 6, 5, 7,
-        0, 4, 1, 5,
-        3, 7, 2, 6,
-        0, 2, 4, 6,
-        3, 1, 7, 5);
+    const kVtxs = array<u32, 24>(  // 6 faces, each 4 vtx (triangle strip)
+        0, 1, 2, 3,  4, 6, 5, 7,  0, 4, 1, 5,  3, 7, 2, 6,  0, 2, 4, 6,  3, 1, 7, 5);
     const kNormals = array<vec4f, 6>(
         vec4f( 0.,-1., 0., 0.), vec4f( 0., 1., 0., 0.),
         vec4f( 0., 0.,-1., 0.), vec4f( 0., 0., 1., 0.),
         vec4f(-1., 0., 0., 0.), vec4f( 1., 0., 0., 0.));
     const kColors = array<vec4f, 6>(
-        vec4f( 0., 1., 0., 1.), vec4f( 0., .5, 0., 1.),
-        vec4f( 0., 0., 1., 1.), vec4f( 0., 0., .5, 1.),
-        vec4f( 1., 0., 0., 1.), vec4f( .5, 0., 0., 1.));
-    @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
+        vec4f( 0., 1., 0., 1.), vec4f( .0, .6, .0, 1.),
+        vec4f( 0., 0., 1., 1.), vec4f( .0, .0, .6, 1.),
+        vec4f( 1., 0., 0., 1.), vec4f( .6, .0, .0, 1.));
+    @vertex fn vtx_main(@builtin(vertex_index) vtx: u32,
                         @builtin(instance_index) face: u32) -> Out {
-      let id = kVtxs[vtx_idx + face * 4];
+      _ = params.dim;
+      let id = kVtxs[vtx + face * 4];
       var pos = vec3f(1., 1., 1.) * 3.;
       if ((id & 1) != 0) { pos.x = -pos.x; }
       if ((id & 2) != 0) { pos.z = -pos.z; }
       if ((id & 4) != 0) { pos.y = -pos.y; }
       var output : Out;
       output.pos3d = vec4f(pos, 1.);
-      output.position = params.proj * params.view * output.pos3d;
+      output.position = model.proj * output.pos3d;
       output.normal = kNormals[face];
       output.color = kColors[face];
       return output;
     }`;
   const fragment_code = `
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      let ldir = normalize(params.light_pos.xyz - s.pos3d.xyz);
-      let d = 0.5 * max(0., dot(ldir, s.normal.xyz));
-      let lcol = unpack4x8unorm(params.light_color);
-      return vec4f(s.color.rgb * .6 + d * lcol.rgb, 1.);
+      let ldir = light.pos.xyz - s.pos3d.xyz;
+      let d = max(0., dot(ldir, s.normal.xyz)) * pow(length(ldir), -1.2);
+      let lcol = s.color + d * unpack4x8unorm(light.color);
+      return vec4f(lcol.rgb, 1.);
     }
   `;
 
@@ -575,6 +584,129 @@ function create_cube_pipeline(render) {
   });
 }
 
+function create_post_pipeline(render) {
+  const vtx_code = `
+    ${struct_code}
+    ${group_0_code}
+    @group(1) @binding(0) var zbuf: texture_depth_2d;
+    @group(1) @binding(1) var screen: texture_2d<f32>;
+    @group(1) @binding(2) var screen_sampler: sampler;
+    ${group_2_code}  // light-depth
+
+    const kVtx = array<vec4f, 3>(  // screen quad
+        vec4f( 3., -1., 0., 1.), vec4f( -1., 3., 0., 1.), vec4f(-1.,-1., 0., 1.));
+    @vertex fn vtx_main(@builtin(vertex_index) vtx: u32) -> Out {
+      let pos = kVtx[vtx];
+      var output : Out;
+      output.position = pos;
+      output.uv = pos.xy;
+      return output;
+    }`;
+  const fragment_code = `
+    ${screen_code}
+    fn GetHalo(pos_screen: vec2f) -> f32 {
+      let plight_3d = model.view * light.pos;
+      let plight_2d = model.proj * light.pos;
+      if (plight_2d.w < params.znear) { return 0.; }
+      let plight_screen = plight_2d.xy / plight_2d.w;  // in [-1,1] ^ 2
+      let plight_txt = ScreenToTexture(plight_screen);
+      let plight_depth = textureLoad(zbuf, vec2i(floor(plight_txt * params.dim)), 0);
+      var dlight = exp(-30. * length(plight_screen - pos_screen));
+      dlight *= step(plight_depth / plight_2d.z, 1.);
+      return dlight;
+    }
+    fn Blur(pos: vec2f, max_size: f32) -> vec3f {
+      let size : f32 = 8.;
+      var col = vec4f(0.);
+      for (var y : f32 = -size; y <= size; y += 1) {
+        for (var x : f32 = -size; x <= size; x += 1) {
+          let off = vec2f(x, y);
+          let coeff = exp(-length(off) / max_size);
+          col += coeff * textureSample(screen, screen_sampler, pos + off / params.dim);
+        }
+      }
+      return col.rgb / col.a;
+    }
+    fn Shadow(pos3d: vec3f) -> vec3f {
+      _ = cmp_sampler;
+      let light_uv = light.proj * vec4f(pos3d, 1.);
+      let light_pos = light_uv.xyz / light_uv.w;
+      let light_screen = ScreenToTexture(light_pos.xy); // in [0,1]^2
+      let l_depth = textureSample(light_depth, depth_sampler, light_screen);
+      var d = 0.;
+      var w = 0.;
+      let size = 1.;
+      let sample_dist = (1. / 1024.);
+      let l_ref = light_uv.z + 0.001;
+      for (var y : f32 = -size; y <= size; y += 1) {
+        for (var x : f32 = -size; x <= size; x += 1) {
+          let pos = light_screen + vec2f(x, y) * sample_dist;
+          let l_depth = textureSample(light_depth, depth_sampler, pos);
+          // occlusion if l_depth < l_ref
+          let delta = l_ref - l_depth;
+          let weight = 1.;//l_ref / l_depth;
+          d += step(0., delta) * weight;
+          w += weight;
+        }
+      }
+      d = max(.2, min(d / w, 1.));
+      if (light_uv.w < 0) { d = 1.; }
+      return vec3f(d, d, d);
+    }
+
+    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      // debug: if (length(s.uv) > 0.5) { discard; }
+      let pos = ScreenToTexture(s.uv);
+      let size0 = 0.01 + pow(length(s.uv), 2.) * 4.;
+      var col = Blur(pos, size0);
+
+      let screen_w = textureLoad(zbuf, vec2i(floor(pos * params.dim)), 0);
+      let pos3d = WorldFromScreen(s.uv, screen_w);
+      col *= Shadow(pos3d);
+      col += unpack4x8unorm(light.color).rgb * GetHalo(s.uv);
+// debug light-depth:
+//      let d0 = textureSample(light_depth, depth_sampler, pos / .5);
+//      if (pos.x < .5 && pos.y < .5) { col = vec3f(0., d0 * 300., 0.); }
+      return vec4f(col, 1.);
+    }
+  `;
+
+  const vtx_module = render.device.createShaderModule(
+    { code: vtx_code + fragment_code });
+  render.post_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: { module: vtx_module, entryPoint: 'vtx_main', },
+    fragment: {
+      module: vtx_module,
+      entryPoint: 'frag_main',
+      targets: render.target,
+    },
+    primitive: {
+      topology: 'triangle-list',
+      cullMode: 'none',
+    },
+    multisample: { count: 1, },
+  });
+  render.post_bind_group_0 = render.device.createBindGroup({
+    layout: render.post_pipeline.getBindGroupLayout(0),
+    entries: render.GPU.uniform_entries,
+  });
+  render.post_bind_group_1 = render.device.createBindGroup({
+    layout: render.post_pipeline.getBindGroupLayout(1),
+    entries: [
+      { binding: 0, resource: render.depth_texture.createView(), },
+      { binding: 1, resource: render.post_texture.createView(), },
+      { binding: 2, resource:
+          render.device.createSampler({magFilter: "linear", minFilter: "linear" }),
+      },
+    ],
+  });
+  render.post_bind_group_2 = render.device.createBindGroup({
+    layout: render.post_pipeline.getBindGroupLayout(2),
+    entries: render.GPU.light_entries,
+  });
+}
+
 function create_wireframe_pipeline(render) {
   const code = `
     ${struct_code}
@@ -587,9 +719,9 @@ function create_wireframe_pipeline(render) {
     @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                         @builtin(instance_index) face_idx: u32,  ) -> Out {
       let p = GetPos(vtx_idx, face_idx);
-
+      _ = light.proj;
       var output : Out;
-      output.position = params.proj * params.view * vec4f(p.p, 1.);
+      output.position = model.proj * vec4f(p.p, 1.);
       let g = f32(face_idx) / f32(params.nb_faces) + .8;
       let color = abs(noise3d(vec3f(g, 1., g) * 32.153)) * .8 + .5;
       output.color = vec4f(color, 1.);
@@ -647,9 +779,9 @@ function create_light_pipeline(render) {
     @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                         @builtin(instance_index) face_idx: u32,  )
         -> @builtin(position) vec4f {
+      _ = params.dim;
       var p = GetPos(vtx_idx, face_idx);
-//      return vec4f(p.p, 1.);
-      return params.light_proj * vec4f(p.p, 1.);
+      return light.proj * vec4f(p.p, 1.);
     }
   `;
   const shadow_module = render.device.createShaderModule({ code: shadow_code });
@@ -663,7 +795,7 @@ function create_light_pipeline(render) {
     primitive: {
       topology: params.wireframe ? 'line-strip' : 'triangle-strip',
       stripIndexFormat: 'uint32',
-      cullMode: 'none',  // 'back'?
+      cullMode: params.funky ? 'back' : 'none',
     },
     depthStencil: {
       depthWriteEnabled: true,
@@ -682,81 +814,14 @@ function create_light_pipeline(render) {
   });
 }
 
-function create_dbg_pipeline(render) {
-  const dbg_code = `
-    ${struct_code}
-    ${group_0_code}
-    ${group_1_code}
-    ${group_2_code}
-
-    struct Vtx {
-      @builtin(position) pos: vec4f,
-      @location(0) uv: vec2f,
-    }
-    @vertex fn vtx_main(@location(0) pos: vec3f,
-                        @location(1) uvw: vec3f, ) -> Vtx {
-      _ = cmp_sampler;
-      _ = vtx[0];
-      _ = faces[0];
-      _ = uv[0];
-      return Vtx(params.proj * params.view * vec4f(pos, 1.), uvw.xy);
-    }
-    @fragment fn frag_main(@location(0) uv: vec2f, ) -> @location(0) vec4f {
-      let z = textureSample(light_depth, depth_sampler, uv);
-      return vec4f(z, z, 1., 1.);
-    }
-  `;
-
-  const dbg_module = render.device.createShaderModule({ code: dbg_code });
-  render.dbg_pipeline = render.device.createRenderPipeline({
-    layout: 'auto',
-    vertex: {
-      module: dbg_module,
-      entryPoint: 'vtx_main',
-      buffers: [ { arrayStride: 6 * 4,
-                   attributes: [ { shaderLocation: 0, offset: 0 * 4, format: 'float32x3', },
-                                 { shaderLocation: 1, offset: 3 * 4, format: 'float32x3', }, ],
-                 } ],
-    },
-    fragment: {
-      module: dbg_module,
-      entryPoint: 'frag_main',
-      targets: render.target,
-    },
-    primitive: {
-      topology: 'triangle-strip',
-      cullMode: 'none',  // 'back'?
-    },
-    depthStencil: {
-      depthWriteEnabled: true,
-      depthCompare: 'greater',
-      format: 'depth24plus',
-    },
-    multisample: { count: (params.use_MSAA ? 4 : 1), },
-  });
-  render.dbg_bind_group_0 = render.device.createBindGroup({
-    layout: render.dbg_pipeline.getBindGroupLayout(0),
-    entries: render.GPU.uniform_entries,
-  });
-  render.dbg_bind_group_1 = render.device.createBindGroup({
-    layout: render.dbg_pipeline.getBindGroupLayout(1),
-    entries: render.GPU.base_entries,
-  });
-  render.dbg_bind_group_2 = render.device.createBindGroup({
-    layout: render.dbg_pipeline.getBindGroupLayout(2),
-    entries: render.GPU.light_entries,
-  });
-}
 
 function create_pipelines(render) {
   render.device || Oops("Can't create pipelines without a device!");
   if (params.wireframe) create_wireframe_pipeline(render);
-  else create_vtx_pipeline(render);
+  else create_poly_pipeline(render);
   create_cube_pipeline(render);
-  if (params.shadows) {
-    create_light_pipeline(render);
-    if (params.dbg.light) create_dbg_pipeline(render);
-  }
+  create_post_pipeline(render);
+  create_light_pipeline(render);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -780,33 +845,35 @@ async function init_textures(render) {
     label: 'depth',
     size: [canvas.width, canvas.height],
     format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     sampleCount: (params.use_MSAA ? 4 : 1),
   });
+  render.post_texture = render.device.createTexture({
+    label: 'post',
+    size: [canvas.width, canvas.height],
+    format: render.textureFormat,
+    sampleCount: (params.use_MSAA ? 4 : 1),
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
 
-  if (params.shadows) {
-    render.light_depth = render.device.createTexture({
-      label: 'light-depth',
-      size: [params.sm_size, params.sm_size, 1],
-      format: 'depth32float',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-      sampleCount: 1,
-    });
-    render.GPU.light_entries = [
-        { binding: 0, resource: render.light_depth.createView(), },
-        { binding: 1, resource: render.device.createSampler({ compare: 'greater', }), },
-        { binding: 2, resource: render.device.createSampler({
+  render.light_depth = render.device.createTexture({
+    label: 'light-depth',
+    size: [params.sm_size, params.sm_size, 1],
+    format: 'depth32float',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  render.GPU.light_entries = [
+    { binding: 0, resource: render.light_depth.createView(), },
+    { binding: 1, resource: render.device.createSampler({ compare: 'greater', }), },
+    { binding: 2, resource: render.device.createSampler({
             addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
             magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
-          }), },
-    ];
-  } else if (render.light_depth) {
-    render.light_depth.destroy();
-    render.light_depth = null;
-    render.GPU.light_entries = null;
-  }
+    }), },
+  ];
+
   if (render.gui) {
-    GUI_Get('light').enable(params.shadows);
+//    GUI_Get('light').enable(params.shadows);
   }
 }
 
@@ -814,13 +881,13 @@ async function init_textures(render) {
 ////////////////////////////////////////////////////////////////////////////////
 
 function compute_frame_params() {
-  const aspect = canvas.width / canvas.height;
-  render.fx = 1. / Math.tan(params.fov * Math.PI / 360.);
-  render.fy = aspect * render.fx;
-  render.proj =
-    params.dbg.ortho ? ortho(render.fx, render.fy, params.znear, params.zfar)
-                     : perspective(render.fx, render.fy, params.znear, params.zfar);
+  // Model rotation and scaling
+  render.model = multiply4(
+    multiply4(rotation([0.,-1., 0.], params.model.theta * Math.PI / 180.),
+              rotation([0., 0., 1.], params.model.phi * Math.PI / 180.)),
+    id4([params.model.scale, params.model.scale, params.model.scale]));
 
+  // Camera view
   const theta = params.cam.theta * Math.PI / 180.;
   const phi = params.cam.phi * Math.PI / 180.;
   const cam_pos = [ params.cam.dist * Math.cos(theta) * Math.cos(phi),
@@ -828,39 +895,47 @@ function compute_frame_params() {
                     params.cam.dist * Math.sin(theta) * Math.cos(phi), ];
   render.view = look_at(cam_pos, params.target, params.up);
 
-  render.model = multiply4(
-    multiply4(rotation([0.,-1., 0.], params.model.theta * Math.PI / 180.),
-              rotation([0., 0., 1.], params.model.phi * Math.PI / 180.)),
-    id4([params.model.scale, params.model.scale, params.model.scale]));
+  // Camera projection
+  const aspect = canvas.width / canvas.height;
+  render.fx = 1. / Math.tan(params.fov * Math.PI / 360.);
+  render.fy = aspect * render.fx;
+  const proj =
+    params.dbg.ortho ? ortho(render.fx, render.fy, params.znear, params.zfar)
+                     : perspective(render.fx, render.fy, params.znear, params.zfar);
+  render.proj = multiply4(proj, render.view);
 
+  // Light position
   render.light_pos = new Float32Array(params.light_pos);
   if (params.dbg.animate_light) {
     render.light_pos =
-      multiply4(rotation([0., 1., 0.], render.tick * Math.PI / 180.),
-                render.light_pos);
-console.log(render.tick);
+      multiply(rotation([0., 1., 0.], .3 * render.tick * Math.PI / 180.), render.light_pos);
   }
-  render.light_proj = multiply4(
-    look_at(cam_pos, params.target, params.up),
-    ortho(1., 1., 0., 2.),
-  );
-//  render.light_proj = ortho(1., 1., .0, 2.);
-  render.light_color = new Uint32Array([params.light_color]);
+//  const light_proj = ortho(1., 1., 0., 4.);
+  const light_proj = perspective(1., 1., 0.01, 9.);
+  const light_view = look_at(render.light_pos, params.target, params.up);
+  render.light_proj = multiply4(light_proj, light_view);
+
+  const l_r = (params.light_color >> 16) & 0xff;
+  const l_g = (params.light_color >>  8) & 0xff;
+  const l_b = (params.light_color >>  0) & 0xff;
+  render.light_color = new Uint8Array([l_r, l_g, l_b, 0xff]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // CPU -> GPU transfer
 
 function transmit_uniforms() {
-  render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.model);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.view);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.proj);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4, render.light_proj);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 64 * 4, render.light_pos);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 68 * 4, render.light_color);
+  render.device.queue.writeBuffer(render.GPU.m_uniforms,  0 * 4, render.model);
+  render.device.queue.writeBuffer(render.GPU.m_uniforms, 16 * 4, render.view);
+  render.device.queue.writeBuffer(render.GPU.m_uniforms, 32 * 4, render.proj);
+  render.device.queue.writeBuffer(render.GPU.m_uniforms, 48 * 4, inverse(render.proj));
+
+  render.device.queue.writeBuffer(render.GPU.l_uniforms,  0 * 4, render.light_proj);
+  render.device.queue.writeBuffer(render.GPU.l_uniforms, 16 * 4, render.light_pos);
+  render.device.queue.writeBuffer(render.GPU.l_uniforms, 20 * 4, render.light_color);
 
   render.device.queue.writeBuffer(
-    render.GPU.uniforms, 70 * 4,
+    render.GPU.p_uniforms, 0 * 4,
       new Float32Array([ canvas.width, canvas.height,
                          render.fx, render.fy,
                          params.znear, params.zfar,
@@ -868,7 +943,8 @@ function transmit_uniforms() {
                          params.noise_amp / 50.,
                          render.nb_idx,
                          render.nb_faces,
-                         params.spherify, ]));
+                         params.spherify,
+                         params.specular, ]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -896,7 +972,7 @@ async function frame() {
 
   if (params.dbg.timing) console.time("GPU");
 
-  if (params.shadows) {
+  if (true) {
     const light_depth_view = render.light_depth.createView({label: 'LIGHT-DEPTH'});
     const light_pass_descriptor = {
       colorAttachments: [],
@@ -915,6 +991,7 @@ async function frame() {
     light_pass.end();
   }
 
+  const canvas_view = ctx.getCurrentTexture().createView({label: 'CANVAS'});
   if (render.nb_idx > 0) {
     const pass_descriptor = {
       colorAttachments: [
@@ -927,7 +1004,7 @@ async function frame() {
         depthClearValue: 0.0, depthLoadOp: 'clear', depthStoreOp: 'store',
       },
     };
-    const canvas_view = ctx.getCurrentTexture().createView({label: 'CANVAS'});
+
     if (params.use_MSAA) {
       const MSAA_view = render.multisample_texture.createView({label: 'MULTISAMPLE'});
       pass_descriptor.colorAttachments[0].view = MSAA_view;
@@ -940,7 +1017,6 @@ async function frame() {
       render_pass.setPipeline(render.pipeline);
       render_pass.setBindGroup(0, render.bind_group_0);
       render_pass.setBindGroup(1, render.bind_group_1);
-      if (params.shadows) render_pass.setBindGroup(2, render.bind_group_2);
       render_pass.setVertexBuffer(0, render.GPU.vtx);
       render_pass.setIndexBuffer(render.GPU.idx, 'uint32');
       render_pass.drawIndexed(render.nb_idx, render.nb_faces);
@@ -954,20 +1030,29 @@ async function frame() {
       const render_pass = encoder.beginRenderPass(pass_descriptor);
       render_pass.setPipeline(render.cube_pipeline);
       render_pass.setBindGroup(0, render.cube_bind_group_0);
-//      if (params.shadows) render_pass.setBindGroup(2, render.cube_bind_group_2);
       render_pass.draw(4, 6);
       render_pass.end();
     }
-    if (params.shadows && params.dbg.light) {
-      const render_pass = encoder.beginRenderPass(pass_descriptor);
-      render_pass.setPipeline(render.dbg_pipeline);
-      render_pass.setBindGroup(0, render.dbg_bind_group_0);
-      render_pass.setBindGroup(1, render.dbg_bind_group_1);
-      render_pass.setBindGroup(2, render.dbg_bind_group_2);
-      render_pass.setVertexBuffer(0, render.GPU.dbg_plane);
-      render_pass.draw(4);
-      render_pass.end();
-    }
+  }
+  if (params.post_proc) {
+    encoder.copyTextureToTexture(
+      { texture: ctx.getCurrentTexture() },
+      { texture: render.post_texture },
+      [canvas.width, canvas.height]
+    );
+    const post_pass_descriptor = {
+      colorAttachments: [
+        { view: canvas_view,
+          clearValue: {r:0., g:0., b:0., a:0.}, loadOp: 'load', storeOp: 'store', },
+      ],
+    };
+    const render_pass = encoder.beginRenderPass(post_pass_descriptor);
+    render_pass.setPipeline(render.post_pipeline);
+    render_pass.setBindGroup(0, render.post_bind_group_0);
+    render_pass.setBindGroup(1, render.post_bind_group_1);
+    render_pass.setBindGroup(2, render.post_bind_group_2);
+    render_pass.draw(3);
+    render_pass.end();
   }
 
   render.device.queue.submit([encoder.finish()]);
@@ -1013,7 +1098,6 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
 
   pipeline: null,
   light_pipeline: null,
-  dbg_pipeline: null,
 
   // per-frame params
   model: undefined,
@@ -1094,13 +1178,23 @@ async function set_poly(polyhedron_name) {
   render.GPU.idx = Create_GPU_Buffer(render, idx, GPUBufferUsage.INDEX, true);
   render.GPU.uv = Create_GPU_Buffer(render, uv);
 
-  // uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: 84 * 4,
+  // uniforms buffers
+  render.GPU.m_uniforms = render.device.createBuffer({
+    size: 64 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+  render.GPU.l_uniforms = render.device.createBuffer({
+    size: 24 * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  render.GPU.p_uniforms = render.device.createBuffer({
+    size: 12 * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  })
   render.GPU.uniform_entries = [
-    { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
+    { binding: 0, resource: { buffer: render.GPU.m_uniforms, }, },
+    { binding: 1, resource: { buffer: render.GPU.l_uniforms, }, },
+    { binding: 2, resource: { buffer: render.GPU.p_uniforms, }, },
   ];
 
   render.GPU.base_entries = [
