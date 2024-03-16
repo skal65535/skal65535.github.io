@@ -104,7 +104,7 @@ const GUI_init = () => {
   render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
   render.gui.add(params, 'spherify').name('spherify').listen();
   render.gui.add(params, 'post_proc').name('post_processing').listen();
-//  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
+  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.addColor(params, 'light_color').name('light color').listen();
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_change);
   render.gui.add(params, 'specular', 0., 2., 0.1).name('specular').listen();
