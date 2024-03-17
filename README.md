@@ -76,6 +76,12 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 
+## My custom [MPU9255 Gyro / AK8963 Magnetometer / MCP2221 micro](https://github.com/skal65535/sklmpu9255) library
+
+   I couldn't find a library for this IMU, so i rewrote one.
+   I also rewrote some I2C functions for a MCP2221 USB<->I2C micro-controller, so i could play
+   with my IMU directly from my MacBook Laptop. No more have to use a Raspberry Pi!
+
 ## Some shaders made with ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
