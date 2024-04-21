@@ -4,10 +4,9 @@
 
 <head>
 <title>WebGPU simulating particles</title>
-
 </head>
 
-<body onload="init_GUI(); init(true);">
+<body onload="init_all();">
 
 <body>
 <div>
@@ -19,43 +18,38 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
+<script src="../common/args.js"></script>
+<script src="../common/utils.js"></script>
 
 <script>
 "use strict";
 
-const args = new URLSearchParams(location.search);
-
-function parse_arg_f(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-function parse_arg_i(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-
-const FLOAT32_SIZE = Float32Array.BYTES_PER_ELEMENT;
 const params = {
-  num_balls: parse_arg_i("balls", 12000, 1, 1000000),
-  rmin: parse_arg_f("rmin", 2., 1., 10.),
-  rmax: parse_arg_f("rmax", 5., 1., 10.),
-  dt: parse_arg_f("dt", 0.003, 1e-6, .1),
-  gravity: parse_arg_f("g", 10.),
-  viscosity: parse_arg_f("viscosity", 0.01),
-  collisions: parse_arg_i("collisions", 1, 0, 1) ? true : false,
-  force: parse_arg_f("force", 0.1, 0.0, 0.2),
-  cohesive_coeff: parse_arg_f("c", .98, .5, 1.01),
-  do_force: false,
+  num_balls: parse_arg("n", 12000, 1, 1000000),
+  rmin: parse_arg("rmin", 2., 1., 10.),
+  rmax: parse_arg("rmax", 5., 1., 10.),
+  dt: parse_arg("dt", 0.003, 1e-6, .1),
+  gravity: parse_arg("g", 10.),
+  viscosity: parse_arg("viscosity", 0.01),
+  collisions: parse_arg("collisions", 1, 0, 1) ? true : false,
+  force: parse_arg("force", 0.1, 0.0, 0.2),
+  cohesive_coeff: parse_arg("c", .98, .5, 1.01),
+  density: Math.max(1, Math.floor(parse_arg("density", 4.))),
+  do_force: parse_arg_bool("force"),
+  draw: !parse_arg_bool("no-draw"),
+  animate_particles: !parse_arg_bool("no-anim"),
+  use_proxy: parse_arg_bool("proxy"),
+  use_LJ: parse_arg_bool("LJ"),
+  debug: parse_arg("debug", 0),
+  wsize: 128,
+  wsize_max: 65535,
   mouse_x: 0.,
   mouse_y: 0.,
   target_x: 0.,
   target_y: 0.,
 
   fps: 0.,
+  frame: 0.,
   req_id: -1,
   last_t: 0.,
   record_fps: () => {
@@ -73,17 +67,19 @@ const params = {
 
 const canvas = document.querySelector("#canvas");
 const ctx = canvas.getContext("webgpu");
-const W = parse_arg_i("w", 800);
-const H = parse_arg_i("h", 800);
-canvas.width  = W;
-canvas.height = H;
+canvas.width  = parse_arg("w", 800);
+canvas.height = parse_arg("h", 800);
 
 // Mouse handling
 window.addEventListener('pointermove', (event) => {
   const bounds = canvas.getBoundingClientRect();
   params.mouse_x = (event.clientX - bounds.left) / canvas.width;
   params.mouse_y = (event.clientY - bounds.top) / canvas.height;
-//  console.log("x=" + params.mouse_x + " y=" + params.mouse_y + " button: " + params.do_mouse);
+  if (params.do_mouse) {
+    params.target_x += (params.mouse_x - params.target_x) * .3;
+    params.target_y += (params.mouse_y - params.target_y) * .3;
+  }
+
 }, false);
 window.addEventListener('pointerdown', (event) => {
   if (event.target === canvas) params.do_mouse = true;
@@ -97,20 +93,21 @@ function Oops(e) {
   throw Error(e);
 }
 
-async function render_init(render) {
+async function init_GPU(render) {
   if (render.device != undefined) render.device.destroy();
   render.device = undefined;
 
   navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
 
   const adapter = await navigator.gpu.requestAdapter();
   adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("Adapter ok");
 
   render.device = await adapter.requestDevice();
   render.device || Oops("Couldn’t request WebGPU logical device.");
-  console.log("Device acquired");
+  console.log("GPU Device acquired");
+
+  params.wsize = render.device.limits['maxComputeInvocationsPerWorkgroup'];
+  params.wsize_max = render.device.limits['maxComputeWorkgroupsPerDimension'];
 
   render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
@@ -118,58 +115,140 @@ async function render_init(render) {
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
                  alphaMode: 'premultiplied'});
 
-  const uniforms_struct_code = `
+  render.uniforms_buffer = render.device.createBuffer({
+    size: 16 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+}
+
+function init_particles(render) {
+  const balls = new Float32Array(params.num_balls * 6);
+  for (let i = 0; i < params.num_balls; ++i) {
+    balls[i * 6 + 0] = RandomRange( 0.0, 1.);  // position.x
+    balls[i * 6 + 1] = RandomRange( 0.0, 1.);  // position.y
+//    let t = i / params.num_balls * 2 * Math.PI;
+//    balls[i * 6 + 0] = .5 + .48 * Math.cos(t);
+//    balls[i * 6 + 1] = .5 + .48 * Math.sin(t);
+    balls[i * 6 + 2] = RandomRange(-1.0, 1.);  // velocity.x
+    balls[i * 6 + 3] = RandomRange(-1.0, 1.);  // velocity.y
+    balls[i * 6 + 4] = RandomRange(params.rmin, params.rmax) / 800.; // radius
+    balls[i * 6 + 5] = RandomRange( 0.2, 1.);  // brightness
+  }
+  render.balls_buffers = new Array(2);
+  render.balls_buffers[0] = Create_GPU_Buffer(render.device, balls, GPUBufferUsage.VERTEX);
+  render.balls_buffers[1] = Create_GPU_Buffer(render.device, balls, GPUBufferUsage.VERTEX);
+
+  // proxy
+  render.cell_x = Math.ceil(canvas.width * 4 / params.density);
+  render.cell_y = Math.ceil(canvas.height * 4 / params.density);
+  render.num_cells = render.cell_x * render.cell_y;
+  const proxy = new Int32Array(render.num_cells * 4);  // as vec4i[]
+  for (let i = 0; i < 4 * render.num_cells; ++i) proxy[i] = -1;
+  let missed = 0;
+  for (let i = 0; i < params.num_balls; ++i) {
+    let pos_x = Math.floor(balls[i * 6 + 0] * render.cell_x);
+    let pos_y = Math.floor(balls[i * 6 + 1] * render.cell_y);
+    let idx = pos_x + pos_y * render.cell_x;
+    for (let j = 0; j < 4; ++j) {
+      if (proxy[4 * idx + j] == -1) {
+        proxy[4 * idx + j] = i;
+        break;
+      }
+      if (j == 4) {  // uh oh
+        ++missed;
+      }
+    }
+  }
+  render.proxy_buffers = new Array(2);
+  render.proxy_buffers[0] = Create_GPU_Buffer(render.device, proxy, 0, true);
+  render.proxy_buffers[1] = Create_GPU_Buffer(render.device, proxy, 0, true);
+
+  [render.dim_x, render.dim_y] = find_worksize(render.num_cells, params.wsize);
+  [render.b_dim_x, render.b_dim_y] = find_worksize(params.num_balls, params.wsize);
+}
+
+const struct_code = `
     struct Uniforms {
       dim: vec2f,   // dimension W x H
+      cell_dim: vec2f,  // with/height for cells
       dt: f32,
       gravity: f32,
       viscosity: f32,
       num_balls: f32,
-      do_collisions: u32,
+      num_cells: f32,
+      do_collisions: f32,
+      cohesive: f32,
       force_R: f32,
       force_src: vec2f,
-      cohesive: f32,
-      pad2: f32,
     }
-  `;
-  const ball_struct_code = `
     struct Ball {
       position: vec2f,
       velocity: vec2f,
       radius:   f32,
       brightness: f32,
     }
-    struct Balls {
-      balls: array<Ball>,
-    }
-  `;
+`;
 
-  // COMPUTE pipeline, updating the particles' positions / velocity
-  const update_module = render.device.createShaderModule({
-    code: `
-      ${ball_struct_code}
-      ${uniforms_struct_code}
+function init_update(render) {    // COMPUTE pipeline, updating the particles' positions / velocity
+  function particle_code(update_function, potentiel_code, wsize) {
+    return `
+      ${struct_code}
       @group(0) @binding(0) var<uniform> params: Uniforms;
-      @group(0) @binding(1) var<storage, read> balls: Balls;
-      @group(0) @binding(2) var<storage, read_write> out_balls: Balls;
+      @group(0) @binding(1) var<storage, read> proxy: array<vec4i>;
+      @group(0) @binding(2) var<storage, read> balls: array<Ball>;
+      @group(0) @binding(3) var<storage, read_write> out_balls: array<Ball>;
 
-      @compute @workgroup_size(128)
+      fn LJ_move(id: i32, R: f32, pos: ptr<function, vec2f>, spd: ptr<function, vec2f>) {
+        if (id < 0) { return; }
+        let b2 = balls[id];
+        var n = *pos - b2.position;
+        var d2 = R * R / dot(n, n);
+        var d6 = d2 * d2 * d2;  // 1/r^6
+        var a = (1 - d6) * d6 * d2;
+        *spd = *spd + 1e-10 * params.dt * a * n;
+      }
+      fn collision_move(id: i32, R: f32, pos: ptr<function, vec2f>, spd: ptr<function, vec2f>) {
+        if (id < 0) { return; }
+        let b2 = balls[id];
+        var n = *pos - b2.position;
+        let d = length(n);
+        let overlap = R + b2.radius - d;
+        if (overlap <= 0) { return; }  // no contact
+        n = normalize(n);
+        *pos += n * overlap / 8.;  // partial push-back
+        let ratio = 1. + pow(R / b2.radius, 2.0);
+        let c = 2. * dot(n, b2.velocity - *spd) / ratio;
+        *spd += c * n * params.cohesive;
+      }
+      fn check_all_particles(idx: i32, R: f32,
+                             pos: ptr<function, vec2f>, spd: ptr<function, vec2f>) {
+        for (var i = 0; i < i32(params.num_balls); i = i + 1) {
+          if (i != idx) { ${potentiel_code}(i, R, pos, spd); }
+        }
+      }
+      fn check_neighbours(idx: i32, R: f32,
+                          pos: ptr<function, vec2f>, spd: ptr<function, vec2f>) {
+        let cell_id = vec2i(floor((*pos) * params.cell_dim));
+        let cell = proxy[cell_id.x + cell_id.y * i32(params.cell_dim.x)];
+        for (var k = 0; k < 4; k = k + 1) {
+          if (cell[k] == -1) { break; }
+          if (cell[k] != idx) { ${potentiel_code}(cell[k], R, pos, spd); }
+        }
+      }
+      @compute @workgroup_size(${wsize})
       fn main(@builtin(global_invocation_id) global_id : vec3u) {
-        let num_balls = u32(params.num_balls);
-        let idx = global_id.x;
-        if (idx >= num_balls) { return; }
-        var b = balls.balls[idx];
-        let dt = params.dt;
-        let g = params.gravity;
+        _ = proxy[0];
+        let idx = i32(global_id.x);
+        if (idx >= i32(params.num_balls)) { return; }
+        var b = balls[idx];
         let R = b.radius;
         var spd = b.velocity;
         var pos = b.position;
-        var f = vec2(0., g);
+        var f = vec2(0., params.gravity);
         if (params.force_R != 0.) {
           var delta = pos - params.force_src;
           let d = length(delta);
           let overlap = R + params.force_R - d;
-          if (overlap > 0) { 
+          if (overlap > 0) {
             delta = normalize(delta);
             pos = pos + delta * overlap / 2.;
             spd -= 2. * dot(delta, spd) * delta;
@@ -177,25 +256,14 @@ async function render_init(render) {
         }
 
         if (params.do_collisions > 0) {
-          for (var i = 0u; i < num_balls; i = i + 1u) {
-            if (i == idx) { continue; }
-            let b2 = balls.balls[i];
-            var n = pos - b2.position;
-            let d = length(n);
-            let overlap = R + b2.radius - d;
-            if (overlap <= 0) { /* no contact */ continue; }
-            n = normalize(n);
-            pos = pos + n * overlap / 8.;  // partial push-back
-            let ratio = 1. + pow(R / b2.radius, 2.0);
-            let c = 2. * dot(n, b2.velocity - spd) / ratio;
-            spd += c * n * params.cohesive;
-          }
+          ${update_function}(idx, R, &pos, &spd);
         }
-        spd += dt * f;
+
+        spd += params.dt * f;
         if (length(spd) > 1.) { spd -= params.viscosity * spd; }
 
-        pos += dt * spd;
-
+        let dpos = min(vec2f(1.), max(vec2f(-1.), params.dt * spd));
+        pos += dpos;
         if (pos.x < R) { pos.x = 2. * R - pos.x; spd.x = -spd.x; }
         if (pos.x > 1. - R) { pos.x = 2. * (1. - R) - pos.x; spd.x = -spd.x; }
         if (pos.y < R) { pos.y = 2. * R - pos.y; spd.y = -spd.y; }
@@ -203,11 +271,17 @@ async function render_init(render) {
 
         b.position = pos;
         b.velocity = spd;
-        out_balls.balls[idx] = b;
+        out_balls[idx] = b;
       }
-    `,
-  });
+    `;
+  }
 
+  const update_module = render.device.createShaderModule(
+    { code: particle_code(
+        params.use_proxy ? 'check_neighbours' : 'check_all_particles',
+        params.use_LJ ? 'LJ_move' : 'collision_move',
+        params.wsize) },
+  );
   render.update_pipeline = render.device.createComputePipeline({
     layout: "auto",
     compute: {
@@ -215,16 +289,267 @@ async function render_init(render) {
       entryPoint: "main",
     },
   });
+  render.balls_bind_groups = new Array(2);
+  for (var B = 0; B <= 1; ++B) {
+    render.balls_bind_groups[B] = render.device.createBindGroup({
+      layout: render.update_pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+        { binding: 1, resource: { buffer: render.proxy_buffers[B], }, },
+        { binding: 2, resource: { buffer: render.balls_buffers[B], }, },
+        { binding: 3, resource: { buffer: render.balls_buffers[1 - B], }, },
+      ],
+    });
+  }
+}
 
-  // RENDER pipeline drawing the particles
-  const particles_code = `
-      ${uniforms_struct_code}
+function init_proxy(render) {  // COMPUTE pipeline for updating the proxy[] map
+  function module_code(wsize, xsize, xysize) {
+    return `
+      ${struct_code}
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+      @group(0) @binding(1) var<storage, read> balls: array<Ball>;
+      @group(0) @binding(2) var<storage, read> proxy: array<vec4i>;
+      @group(0) @binding(3) var<storage, read_write> out_proxy: array<vec4i>;
+
+      fn insert(idx: i32, dist: f32,
+                proxy: ptr<function, vec4i>, dists: ptr<function, vec4f>) {
+        var l_dist = *dists;   // local copy
+        var l_proxy = *proxy;
+        if (l_proxy.x == idx || l_proxy.y == idx || l_proxy.z == idx || l_proxy.w == idx) {
+          return;
+        }
+        if (dist < l_dist.x) {
+          l_proxy = vec4i(idx, l_proxy.xyz);
+          l_dist = vec4f(dist, l_dist.xyz);
+        } else if (dist < l_dist.y) {
+          l_proxy = vec4i(l_proxy.x, idx, l_proxy.yz);
+          l_dist = vec4f(l_dist.x, dist, l_dist.yz);
+        } else if (dist < l_dist.z) {
+          l_proxy = vec4i(l_proxy.xy, idx, l_proxy.z);
+          l_dist = vec4f(l_dist.xy, dist, l_dist.z);
+        } else if (dist < l_dist.w) {
+          l_proxy = vec4i(l_proxy.xyz, idx);
+          l_dist = vec4f(l_dist.xyz, dist);
+        }
+        *proxy = l_proxy;
+        *dists = l_dist;
+      }
+      fn check_proxy(center: vec2f,
+                     prev_proxy: vec4i,
+                     proxy: ptr<function, vec4i>,
+                     dists: ptr<function, vec4f>) {
+        for (var i = 0; i < 4; i = i + 1) {
+          let particle = prev_proxy[i];
+          if (particle < 0) { break; }
+          let delta = balls[particle].position - center;
+          let distance = dot(delta, delta);
+          insert(particle, distance, proxy, dists);
+        }
+      }
+      fn Hash(p: u32) -> u32 {
+        var P = (p << 13) ^ p;
+        P = P * (P * P * 15731 + 789221) + 1376312589;
+        return (P >> 9) | P;
+      }
+
+      @compute @workgroup_size(${wsize})
+      fn main(@builtin(global_invocation_id) global_id : vec3u) {
+        let idx = i32(global_id.z * ${xysize} + global_id.y * ${xsize} + global_id.x);
+        if (idx >= i32(params.num_cells)) { return; }
+        var p = vec4i(-1);
+        var dists = vec4f(.001);
+        let W = i32(params.cell_dim.x);
+        let H = i32(params.cell_dim.y);
+        let X = idx % W;
+        let Y = idx / W;
+        let center = vec2f(f32(X) + .5, f32(Y) + .5) / params.cell_dim;
+/*
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            let x = max(min(X + dx, W - 1), 0);
+            let y = max(min(Y + dy, H - 1), 0);
+            check_proxy(center, proxy[x + y * W], &p, &dists);
+          }
+        }
+*/
+        check_proxy(center, proxy[idx], &p, &dists);
+        if (Y     > 0) { check_proxy(center, proxy[idx - W], &p, &dists); }
+        if (Y + 1 < H) { check_proxy(center, proxy[idx + W], &p, &dists); }
+        if (X     > 0) { check_proxy(center, proxy[idx - 1], &p, &dists); }
+        if (X + 1 < W) { check_proxy(center, proxy[idx + 1], &p, &dists); }
+        for (var k : u32 = 0; k < 2u; k = k + 1u) {
+          let rand_idx = Hash(u32(idx) + 5 + k) % u32(params.num_cells);
+          check_proxy(center, proxy[rand_idx], &p, &dists);
+        }
+        out_proxy[idx] = p;
+      }
+    `;
+  };
+
+  const proxy_module = render.device.createShaderModule({ code:
+    module_code(params.wsize,
+                render.dim_x * params.wsize,
+                render.dim_y * render.dim_x * params.wsize),
+  });
+
+  render.proxy_pipeline = render.device.createComputePipeline({
+    layout: "auto",
+    compute: {
+      module: proxy_module,
+      entryPoint: "main",
+    },
+  });
+  render.proxy_bind_groups = new Array(2);
+  for (var B = 0; B <= 1; ++B) {
+    render.proxy_bind_groups[B] = render.device.createBindGroup({
+      layout: render.proxy_pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+                { binding: 1, resource: { buffer: render.balls_buffers[1 - B], }, },
+                { binding: 2, resource: { buffer: render.proxy_buffers[B], }, },
+                { binding: 3, resource: { buffer: render.proxy_buffers[1 - B], }, },],
+    });
+  }
+}
+
+// DEBUG pipeline drawing the proxy[] array
+function init_debug_proxy(render) {
+  const debug_code = `
+      ${struct_code}
 
       struct VertexOutput {
         @builtin(position) position: vec4f,
-        @location(0) color: vec4f,
-        @location(1) center: vec2f,
-        @location(2) radius: f32,
+        @location(1) uv: vec2f,
+      };
+
+      @group(0) @binding(0) var<uniform> params: Uniforms;
+      @group(0) @binding(1) var<storage, read> proxy: array<vec4i>;
+      @group(0) @binding(2) var<storage, read> balls: array<Ball>;
+
+      @vertex
+      fn vtx_main(@builtin(vertex_index) vtx_idx: u32,) -> @builtin(position) vec4f {
+        const kQuad = array<vec2f, 4>(vec2f(-1.,1.), vec2f(1.,1.), vec2f(-1.,-1.), vec2f(1.,-1.));
+        return vec4f(kQuad[vtx_idx], 1., 1.);
+      }
+
+      fn Hash(p: u32) -> f32 {
+        var P = (p << 13) ^ p;
+        P = P * (P * P * 15731 + 789221) + 1376312589;
+        return bitcast<f32>((P >> 9) | 0x3f800000) - 1.;
+      }
+      fn ParticuleColor(id: u32, pos: vec2f) -> vec4f {
+        var color = vec3f(Hash(id + 0u), Hash(id + 1u), Hash(id + 2u));
+        let r = length(balls[id].position * params.dim - pos);
+        let pp = smoothstep(5., 0., r);
+        return vec4f(mix(color, vec3f(pp), pp), 1.);
+      }
+  `;
+  const debug_baseline_code = `
+      @fragment
+      fn frag_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        _ = proxy[0];
+        let p = pos.xy / params.dim;
+        var r0 : f32 = 1e20;
+        var idx : i32 = -1;
+        for (var id = 0; id < i32(params.num_balls); id = id + 1) {
+          let r = length(balls[id].position * params.dim - pos.xy);
+          if (r < r0) {
+            r0 = r;
+            idx = id;
+          }
+        }
+        return ParticuleColor(u32(idx), pos.xy);
+      }
+  `;
+  const debug_count_code = `
+      const kColors = array<vec4f, 5>(
+          vec4f(.0, .0, .0, 1.),
+          vec4f(.4, .6, .9, 1.),
+          vec4f(1., .0, .0, 1.),
+          vec4f(.0, .7, .0, 1.),
+          vec4f(.0, .0, .9, 1.),);
+
+      @fragment
+      fn frag_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        let p = pos.xy / params.dim;
+        let cell_idx = vec2u(floor(p * params.cell_dim));
+        let cell = proxy[cell_idx.x + cell_idx.y * u32(params.cell_dim.x)];
+        var count = 0u;
+        for (count = 0; count < 4; count = count + 1) {
+          if (cell[count] == -1) { break; }
+        }
+        _ = balls[0];
+        return kColors[count];
+      }
+  `;
+  const debug_regular_code = `
+      @fragment
+      fn frag_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        let p = pos.xy / params.dim;
+        let cell_idx = vec2i(floor(p * params.cell_dim));
+        let cell = proxy[cell_idx.x + cell_idx.y * i32(params.cell_dim.x)];
+        var r0 : f32 = 1e20;
+        var idx : i32 = -1;
+        for (var j : u32 = 0; j < 4; j = j + 1u) {
+          let id = cell[j];
+          if (id == -1) { break; }
+          let r = length(balls[id].position * params.dim - pos.xy);
+          if (r < r0) {
+            r0 = r;
+            idx = id;
+          }
+        }
+        // let idx = cell.x;
+        if (idx == -1) { return vec4f(0., 0., 1., 1.); }
+        return ParticuleColor(u32(idx), pos.xy);
+      }
+  `;
+  const debug_module = render.device.createShaderModule(
+    { code: debug_code
+              + (params.debug == 2 ? debug_baseline_code :
+                 params.debug == 3 ? debug_count_code :
+                                     debug_regular_code)
+    }
+  );
+  render.debug_pipeline = render.device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: debug_module,
+      entryPoint: 'vtx_main',
+    },
+    fragment: {
+      module: debug_module,
+      entryPoint: 'frag_main',
+      targets: [{
+        format: render.textureFormat,
+        blend: {
+          color: {srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add'},
+          alpha: {srcFactor: 'one',      dstFactor: 'one', operation: 'add'},
+        },
+      },],
+    },
+    primitive: { topology: 'triangle-strip', },
+  });
+  render.debug_bind_groups = new Array(2);
+  for (let B = 0; B <= 1; ++B) {
+    render.debug_bind_groups[B] = render.device.createBindGroup({
+      layout: render.debug_pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: render.uniforms_buffer, }, },
+                { binding: 1, resource: { buffer: render.proxy_buffers[B], }, },
+                { binding: 2, resource: { buffer: render.balls_buffers[B], }, },],
+    });
+  }
+};
+
+function init_particles_drawing(render) {
+  // RENDER pipeline drawing the particles
+  const particles_code = `
+      ${struct_code}
+
+      struct VertexOutput {
+        @builtin(position) position: vec4f,
+        @location(0) @interpolate(flat) color: vec4f,
+        @location(1) uv: vec2f,
       };
 
       @group(0) @binding(0) var<uniform> params: Uniforms;
@@ -232,37 +557,36 @@ async function render_init(render) {
       @vertex
       fn vtx_main(
           @builtin(vertex_index) vtx_idx: u32,
-          @builtin(instance_index) instance_idx: u32,
+          // @builtin(instance_index) instance_idx: u32,
           // Ball:
           @location(0) pos: vec2f,
           @location(1) spd: vec2f,
-          @location(2) radius: vec2f,
+          @location(2) radius: vec2f,  // radius + brightness
       ) -> VertexOutput {
-        var kVtxCoords = array<vec2f, 3>(  // arrow shape
-          vec2f( 0., -1.),
-          vec2f( 1.,  1.),
-          vec2f(-1.,  1.),
-        );
-        let vtx = kVtxCoords[vtx_idx];
-        let center = pos.xy * vec2f(2., -2.) + vec2f(-1., 1.);
-        let R = radius.x * 20;
+        var kQuad = array<vec2f, 4>(vec2f(-1.,1.), vec2f(1.,1.), vec2f(-1.,-1.), vec2f(1.,-1.));
+        let vtx = kQuad[vtx_idx];
+        let aspect = vec2f(1., params.dim.x / params.dim.y);
+        let center = pos.xy * vec2f(2., -2.) + vec2f(-1., 1.);  // map [0,1]^2 to [-1,1]^2
+        var R = radius.x;
+        if (length((pos.xy - params.force_src)) < params.force_R) { R = 0.; }
         var output : VertexOutput;
-        output.position = vec4f(center + vtx * R, 0., 1.);
-        let gray = min(radius.y / 2., 1.);
-        output.color = vec4f(0.2, .50 + 0.25 * gray, 1. - gray, 1.);
-        output.center = pos.xy;
-        output.radius = R / 8.;
+        output.position = vec4f(center + vtx * R * aspect, 0., 1.);
+        // let gray = min(0.5 * radius.y, 1.);
+        let gray = min(1., length(spd));
+        // color = vec4f(0.2, .50 + 0.25 * gray, 1. - gray, 1.);
+        let color = vec4f(length(spd) / 2., .3, .5, 1.);
+        output.color = color;
+        output.uv = vtx;
         return output;
       }
 
       @fragment
       fn frag_main(vtx: VertexOutput) -> @location(0) vec4f {
-        var pos = vtx.position.xy / params.dim;
-        if (length(pos - params.force_src) < params.force_R) {
-          return vec4f(.0, .0, .0, 1.);
-        }
-        var d = 1. - smoothstep(0., vtx.radius, length(pos - vtx.center));
-        return vtx.color * d;
+        let r = length(vtx.uv);
+        if (r >= 1.) { discard; }
+        let d = smoothstep(1., .9, r);
+        return vec4f(vtx.color.rgb * d, 1.);
+        // return vtx.color * d;
       }
   `;
   const particles_module = render.device.createShaderModule({code: particles_code});
@@ -273,12 +597,12 @@ async function render_init(render) {
       module: particles_module,
       entryPoint: 'vtx_main',
       buffers: [
-        { arrayStride: 6 * FLOAT32_SIZE,
+        { arrayStride: 6 * 4,
           stepMode: 'instance',
           attributes: [
-            { shaderLocation: 0, offset: 0 * FLOAT32_SIZE, format: 'float32x2', },  // x, y
-            { shaderLocation: 1, offset: 2 * FLOAT32_SIZE, format: 'float32x2', },  // dx, dy
-            { shaderLocation: 2, offset: 4 * FLOAT32_SIZE, format: 'float32x2', },  // radius, brightness
+            { shaderLocation: 0, offset: 0 * 4, format: 'float32x2', },  // x, y
+            { shaderLocation: 1, offset: 2 * 4, format: 'float32x2', },  // dx, dy
+            { shaderLocation: 2, offset: 4 * 4, format: 'float32x2', },  // radius, brightness
           ],
         },
       ],
@@ -294,68 +618,36 @@ async function render_init(render) {
         },
       },],
     },
-    primitive: { topology: 'triangle-list', },
+    primitive: { topology: 'triangle-strip', },
   });
-
-  // Create and write the uniforms once for all
-  render.uniforms_buffer = render.device.createBuffer({
-    size: 12 * FLOAT32_SIZE,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-
-  // Create the data buffers and the binding groups
-  render.balls_buffers = new Array(2);
-  render.balls_buffers[0] = init_balls(render.device, true);
-  render.balls_buffers[1] = init_balls(render.device, false);
-
-  // create bind groups
-  render.balls_bind_groups = new Array(2);
-  for (var B = 0; B <= 1; ++B) {
-    render.balls_bind_groups[B] = render.device.createBindGroup({
-      layout: render.update_pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
-        { binding: 1, resource: { buffer: render.balls_buffers[B], }, },
-        { binding: 2, resource: { buffer: render.balls_buffers[1 - B], }, },
-      ],
-    });
-  }
   render.particles_bind_group = render.device.createBindGroup({
     layout: render.particles_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
-    ],
+    entries: [{ binding: 0, resource: { buffer: render.uniforms_buffer, }, },],
   });
 };
 
+function find_worksize(size, wsize) {
+  let dim_x = 1, dim_y = 0;
+  do {
+    ++dim_y;
+    dim_x = Math.ceil(size / wsize / dim_y);
+  } while (dim_x > params.wsize_max);
+  console.log("Compute binding: wsize=", wsize, "dim_x=", dim_x, "dim_y=", dim_y);
+  console.log("  => total:", wsize * dim_x * dim_y, "for", size, "work items");
+  return [dim_x, dim_y];
+}
 
-function RandomRange(a, b) { return Math.random() * (b - a) + a; }
-
-function init_balls(device, do_init) {
-  const BUFFER_SIZE = params.num_balls * 6 * FLOAT32_SIZE;
-  const balls = new Float32Array(new ArrayBuffer(BUFFER_SIZE));
-  if (do_init) {
-    for (let i = 0; i < params.num_balls; ++i) {
-      balls[i * 6 + 0] = RandomRange( 0.0, 1.);  // position.x
-      balls[i * 6 + 1] = RandomRange( 0.0, 1.);  // position.y
-      balls[i * 6 + 2] = RandomRange(-1.0, 1.);  // velocity.x
-      balls[i * 6 + 3] = RandomRange(-1.0, 1.);  // velocity.y
-      balls[i * 6 + 4] = RandomRange(params.rmin, params.rmax) / 800.; // radius
-      balls[i * 6 + 5] = RandomRange( 0.2, 1.);  // brightness
-    }
-  }
-  const buffer = render.device.createBuffer({
-    size: balls.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
-    mappedAtCreation: true,
-  });
-  new Float32Array(buffer.getMappedRange()).set(balls);
-  buffer.unmap();
-  return buffer;
+function init_pipelines(render) {
+  init_update(render);
+  init_proxy(render);
+  init_debug_proxy(render);
+  init_particles_drawing(render);
 }
 
 function init_GUI() {
   const gui = new lil.GUI({name: 'WebGPU particle demo'});
   gui.add(params, 'num_balls', 1, 100000, 1).listen().onChange(params.reset);
+  gui.add(params, 'density', 1, 32, 1).name('cell density (in 1/4th)').listen().onChange(params.reset);
   gui.add(params, 'rmin', 1., 10., .1).name('min radius').listen().onChange(params.reset);
   gui.add(params, 'rmax', 1., 10., .1).name('max radius').listen().onChange(params.reset);
   gui.add(params, 'dt', .000001, 0.01, .001).listen().onChange(params.change);
@@ -364,49 +656,70 @@ function init_GUI() {
   gui.add(params, 'cohesive_coeff', 0.5, 1.01, .01).name('cohesive coefficient').listen().onChange(params.change);
   gui.add(params, 'force', 0.0, .2, .01).name('force radius').listen().onChange(params.change);
   gui.add(params, 'collisions').listen().onChange(params.change);
+  gui.add(params, 'do_force').name('w/ force').listen();
+  gui.add(params, 'draw').name('draw particules').listen();
+  gui.add(params, 'animate_particles').name('animate particles').listen();
+  gui.add(params, 'use_proxy').name('use proxy').listen().onChange(params.change);
+  gui.add(params, 'use_LJ').name('use Lennard-Jones').listen().onChange(params.change);
+  gui.add(params, 'debug', {'none':0, 'proxy':1, 'Voronoi':2, 'count': 3}).name('debug').listen().onChange(params.change);
   gui.add(params, 'reset').name('Reset');
   gui.add(params, 'fps').name('fps').listen().disable();
+  gui.add(params, 'frame').name('frame #').listen().disable();
+}
+
+function transmit_uniforms() {
+  render.device.queue.writeBuffer(render.uniforms_buffer, 0,
+    new Float32Array([canvas.width, canvas.height,  // <- dim
+                      render.cell_x, render.cell_y,   // <- cells dim
+                      params.dt, params.gravity, params.viscosity,
+                      params.num_balls, render.num_cells,
+                      params.collisions,
+                      params.cohesive_coeff,
+                      params.do_mouse ? params.force : 0.,
+                      params.target_x, params.target_y,
+    ]));
 }
 
 function frame() {
+  ++params.frame;
   performance.mark("webgpu start");
 
-  // update target_x/y
-  if (params.do_mouse) {
-    params.target_x += (params.mouse_x - params.target_x) * .3;
-    params.target_y += (params.mouse_y - params.target_y) * .3;
-  }
-  // transmit uniforms
-  render.device.queue.writeBuffer(render.uniforms_buffer, 0,
-    new Float32Array([
-        W, H,  /* <- dim */
-        params.dt, params.gravity, params.viscosity,
-        params.num_balls,
-        params.collisions,
-        params.do_mouse ? params.force : 0.,
-        params.target_x,
-        params.target_y,
-        params.cohesive_coeff,
-    ]));
+  transmit_uniforms();
 
   const encoder = render.device.createCommandEncoder();
 
-  const compute_pass = encoder.beginComputePass();
-  compute_pass.setPipeline(render.update_pipeline);
-  compute_pass.setBindGroup(0, render.balls_bind_groups[render.tick]);
-  compute_pass.dispatchWorkgroups(Math.ceil(render.balls_buffers[0].size / 128));
-  compute_pass.end();
+  if (params.animate_particles) {
+    const compute_pass = encoder.beginComputePass();
+    compute_pass.setPipeline(render.update_pipeline);
+    compute_pass.setBindGroup(0, render.balls_bind_groups[render.tick]);
+    compute_pass.dispatchWorkgroups(render.b_dim_x, render.b_dim_y);
+    compute_pass.end();
+  }
 
+  if (params.use_proxy || params.debug > 0) {
+    const compute_pass = encoder.beginComputePass();
+    compute_pass.setPipeline(render.proxy_pipeline);
+    compute_pass.setBindGroup(0, render.proxy_bind_groups[render.tick]);
+    compute_pass.dispatchWorkgroups(render.dim_x, render.dim_y);
+    compute_pass.end();
+  }
   const render_pass = encoder.beginRenderPass({
-      colorAttachments: [
-        { view: ctx.getCurrentTexture().createView(),
-          clearValue: {r:0., g:0., b:0., a:1.}, loadOp: 'clear',
-          storeOp: 'store', }
-      ]});
-  render_pass.setPipeline(render.particles_pipeline);
-  render_pass.setBindGroup(0, render.particles_bind_group);
-  render_pass.setVertexBuffer(0, render.balls_buffers[1 - render.tick]);
-  render_pass.draw(3, params.num_balls, 0, 0);
+    colorAttachments: [
+      { view: ctx.getCurrentTexture().createView(),
+        clearValue: {r:0., g:0., b:0., a:1.}, loadOp: 'clear',
+        storeOp: 'store', }
+    ]});
+
+  if (params.debug > 0) {
+    render_pass.setPipeline(render.debug_pipeline);
+    render_pass.setBindGroup(0, render.debug_bind_groups[render.tick]);
+    render_pass.draw(4);
+  } else if (params.draw) {
+    render_pass.setPipeline(render.particles_pipeline);
+    render_pass.setBindGroup(0, render.particles_bind_group);
+    render_pass.setVertexBuffer(0, render.balls_buffers[render.tick]);
+    render_pass.draw(4, params.num_balls);
+  }
   render_pass.end();
 
   render.device.queue.submit([encoder.finish()]);
@@ -414,21 +727,33 @@ function frame() {
   performance.mark("webgpu end");
 
   performance.measure("webgpu", "webgpu start", "webgpu end");
-  render.tick = 1 - render.tick;
+  if (params.animate_particles) render.tick = 1 - render.tick;
 
   params.record_fps();
   params.req_id = requestAnimationFrame(frame);
 }
 
-var render = {  /* device, uniforms, pipeline... */ };
+var render = {
+  /* device, uniforms, pipeline... */
+};
+
 async function init(do_init) {
-  if (params.req_id != -1) cancelAnimationFrame(params.req_id);  
-  if (do_init == true) await render_init(render);
+  if (params.req_id != -1) cancelAnimationFrame(params.req_id);
+  if (do_init == true) { init_particles(render); }
+  init_pipelines(render);
+
   params.last_t = Date.now();
   render.tick = 0;
+  params.frame = 0;
   // start main loop
   params.req_id = requestAnimationFrame(frame);
 //  setInterval(() => { frame(); }, 1000);
+}
+
+async function init_all() {
+  init_GUI();
+  await init_GPU(render);
+  await init(true);
 }
 
 </script>

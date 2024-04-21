@@ -5,7 +5,7 @@
 <html>
 
 <head>
-<title>Curl Noise using WebGPU</title>
+<title>Curly thing using WebGPU</title>
 <link rel="stylesheet" href="../splats/style.css">
 </head>
 
@@ -25,12 +25,12 @@
     <br/>
     <canvas id="side-canvas"></canvas>
   </center>
-  Curl Noise
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script src="../common/matrix.js"></script>
 <script src="../common/polyhedrons.js"></script>
 <script src="../common/args.js"></script>
+<script src="../common/utils.js"></script>
 <script>
 "use strict";
 
@@ -50,7 +50,7 @@ const params = {
   noise_amp: parse_arg('amp', 8.),
   spherify: parse_arg_bool('sph'),
   depth: parse_arg('depth', 60),
-  wireframe: !parse_arg_bool('no-wireframe'),
+  wireframe: parse_arg_bool('wireframe'),
   sm_size: 1024,  // shadow-map size
   light_color: 0xfadede,
   light_pos: [1.3, -1.8, 1.,   1.],
@@ -104,9 +104,9 @@ const GUI_init = () => {
   render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
   render.gui.add(params, 'spherify').name('spherify').listen();
   render.gui.add(params, 'post_proc').name('post_processing').listen();
-  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
+//  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.addColor(params, 'light_color').name('light color').listen();
-  render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_change);
+  render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
   render.gui.add(params, 'specular', 0., 2., 0.1).name('specular').listen();
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params, 'fov', 0., 180., 5.).listen();
@@ -496,7 +496,7 @@ function create_poly_pipeline(render) {
     primitive: {
       topology: 'triangle-strip',
       stripIndexFormat: 'uint32',
-      cullMode: (params.funky ? 'back' : 'none'),
+      cullMode: params.funky ? 'none' : 'front',
     },
     depthStencil: {
       depthWriteEnabled: true,
@@ -795,7 +795,7 @@ function create_light_pipeline(render) {
     primitive: {
       topology: params.wireframe ? 'line-strip' : 'triangle-strip',
       stripIndexFormat: 'uint32',
-      cullMode: params.funky ? 'back' : 'none',
+      cullMode: (params.wireframe || params.funky) ? 'none' : 'front',
     },
     depthStencil: {
       depthWriteEnabled: true,
@@ -1122,61 +1122,53 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
 ////////////////////////////////////////////////////////////////////////////////
 // Sub-divisions
 
-function MakeSubs(depth) {
+function MakeSubUV(depth) {
   const UVs = [];
   for (let i = 0; i <= depth; ++i) {
     for (let j = 0; j <= i; ++j) {
       const u = i / depth, v = j / depth;
-      UVs.push(1 - u, u - v);
+      UVs.push(u - v, 1 - u);
     }
   }
+  return UVs;
+}
 
+function TriIdx(i) { return i * (i + 1) / 2; }
+function MakeSubIdx(depth) {
   const idx = [];   // This one could be pre-calc'd up to max_depth
   for (let i = 0; i < depth; ++i) {
-    const s = i * (i + 1) / 2;
-    const t = (i + 2) * (i + 1) / 2;
-    idx.push(t);
-    if (i > 0) idx.push(t);
-    for (let j = 0; j <= i; ++j) {
-      idx.push(s + j, t + j + 1);
-    }
+    const s = TriIdx(i), t = TriIdx(i + 1);
     if (params.wireframe) {
+      idx.push(t);
+      for (let j = 0; j <= i; ++j) idx.push(s + j, t + j + 1);  // zig-zag
       for (let j = 0; j <= i; ++j) idx.push(t + i - j);
-      if (i + 1 < depth) idx.push(t);
     } else {
+      if (params.funky && ((i % 2) == 1)) continue;
+      idx.push(t);
+      if (i > 0) {
+        idx.push(t); 
+        idx.push(t);
+      }
+      for (let j = 0; j <= i; ++j) idx.push(s + j, t + j + 1);
       if (i + 1 < depth) idx.push(t + i + 1);  // repeat last
     }
   }
-  return [idx, UVs];
-}
-
-function Create_GPU_Buffer(render, src_buf, buf_usage = 0, as_u32 = false) {
-  const gpu_buf = render.device.createBuffer({
-    size: src_buf.length * 4,
-    usage: buf_usage | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    mappedAtCreation: true,
-  });
-  if (as_u32) {
-    new Uint32Array(gpu_buf.getMappedRange()).set(src_buf);
-  } else {
-    new Float32Array(gpu_buf.getMappedRange()).set(src_buf);
-  }
-  gpu_buf.unmap();
-  return gpu_buf;
+  return idx;
 }
 
 async function set_poly(polyhedron_name) {
   const poly = kPolys[polyhedron_name];
 
   render.nb_vtx = poly.vtx.length / 4;
-  render.GPU.vtx = Create_GPU_Buffer(render, poly.vtx, GPUBufferUsage.VERTEX);
+  render.GPU.vtx = Create_GPU_Buffer(render.device, poly.vtx, GPUBufferUsage.VERTEX);
   render.nb_faces = poly.faces.length / 3;
-  render.GPU.faces = Create_GPU_Buffer(render, poly.faces, 0, true);
+  render.GPU.faces = Create_GPU_Buffer(render.device, poly.faces, 0, true);
 
-  const [idx, uv] = MakeSubs(params.depth);
+  const uv = MakeSubUV(params.depth);
+  const idx = MakeSubIdx(params.depth);
   render.nb_idx = idx.length;
-  render.GPU.idx = Create_GPU_Buffer(render, idx, GPUBufferUsage.INDEX, true);
-  render.GPU.uv = Create_GPU_Buffer(render, uv);
+  render.GPU.idx = Create_GPU_Buffer(render.device, idx, GPUBufferUsage.INDEX, true);
+  render.GPU.uv = Create_GPU_Buffer(render.device, uv);
 
   // uniforms buffers
   render.GPU.m_uniforms = render.device.createBuffer({
@@ -1205,15 +1197,15 @@ async function set_poly(polyhedron_name) {
 
   // Background Cube
   const cube = kPolys['cube'];
-  render.GPU.cube_vtx = Create_GPU_Buffer(render, cube.vtx, GPUBufferUsage.VERTEX);
-  render.GPU.cube_faces = Create_GPU_Buffer(render, cube.faces, 0, true);
+  render.GPU.cube_vtx = Create_GPU_Buffer(render.device, cube.vtx, GPUBufferUsage.VERTEX);
+  render.GPU.cube_faces = Create_GPU_Buffer(render.device, cube.faces, 0, true);
   render.GPU.cube_entries = [
     { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
   ];
 
   if (params.dbg.light) {
     const Y = 0.3;
-    render.GPU.dbg_plane = Create_GPU_Buffer(render,
+    render.GPU.dbg_plane = Create_GPU_Buffer(render.device,
       new Float32Array([ -1, Y, -1.,  0., 0.,    0.,
                           1, Y, -1.,  1., 0.,    0.,
                          -1, Y,  1.,  0., 1.,    0.,
