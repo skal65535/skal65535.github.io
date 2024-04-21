@@ -24,6 +24,13 @@ open-sourced code for fun :) Here are some side-projects demo pages:
    for the 3D cubic Ising model of magnetic spins, at interactive frame-rate!
    Back in the days, these sort of computations would require <i>days</i> of work on a Pentium!
 
+## [Curly thing](https://skal65535.github.io/curl/index.html?funky)
+
+   ![Curly thing!](https://skal65535.github.io/curl/curl.thumb.webp)
+
+   An experimental WebGPU demo with some dynamic tesselation generated during the
+   compute-shader pass. Kind of fun and demomaker-ish.
+
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 
    A short demo in HTML showing convex hull and Welzl's
@@ -80,7 +87,7 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    I couldn't find a library for this IMU, so i rewrote one.
    I also rewrote some I2C functions for a MCP2221 USB<->I2C micro-controller, so i could play
-   with my IMU directly from my MacBook Laptop. No more have to use a Raspberry Pi!
+   with my IMU directly from my MacBook laptop. No longer have to use a Raspberry Pi!
 
 ## Some shaders made with ShaderToy...
 
