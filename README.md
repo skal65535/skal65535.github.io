@@ -8,7 +8,8 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    ![3DGS](https://skal65535.github.io/splats/splats.thumb.webp)
 
-   Gaussian splats are the new cool in scene rendering, here's my WebGPU version!
+   Gaussian splats are the new cool in scene rendering, here's my WebGPU version...
+   It's a good opportunity to use the compute pass on GPU.
 
 ## [Stippling](https://skal65535.github.io/stipple/index.html) toy
 
@@ -28,8 +29,8 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    ![Curly thing!](https://skal65535.github.io/curl/curl.thumb.webp)
 
-   An experimental WebGPU demo with some dynamic tesselation generated during the
-   compute-shader pass. Kind of fun and demomaker-ish.
+   An experimental WebGPU [demo](https://skal65535.github.io/curl/index.html?funky) with some
+   dynamic tesselation generated during the compute-shader pass. Kind of fun and demomaker-ish.
 
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 
@@ -40,7 +41,7 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 ## [Kruskal algorithm](https://skal65535.github.io/network/kruskal.html) demo
 
    Very simple and elegant way to extract the Minimum-Spanning Tree out
-   of a set of points!
+   of a set of points.
 
 ## [Triangle-based compression](https://skal65535.github.io/triangle/index.html) demo
 
@@ -79,15 +80,15 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    Embed pictures in QR codes
 
-## [Particles](https://skal65535.github.io/particle_life/particle_life.html#91651088029) from [life_code](https://github.com/skal65535/life_code) project
-
-   Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
-
 ## My custom [MPU9255 Gyro / AK8963 Magnetometer / MCP2221 micro](https://github.com/skal65535/sklmpu9255) library
 
    I couldn't find a library for this IMU, so i rewrote one.
    I also rewrote some I2C functions for a MCP2221 USB<->I2C micro-controller, so i could play
    with my IMU directly from my MacBook laptop. No longer have to use a Raspberry Pi!
+
+## [Particles](https://skal65535.github.io/particle_life/particle_life.html#91651088029) from [life_code](https://github.com/skal65535/life_code) project
+
+   Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 
 ## Some shaders made with ShaderToy...
 
