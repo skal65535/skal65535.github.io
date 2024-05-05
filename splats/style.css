@@ -35,6 +35,18 @@
   position:absolute; bottom:120px; right:70px;
   border: 3px solid #fff; border-radius: 10px;
 }
+.my_button {
+  display: inline-block;
+  padding: 8px;
+  background: #bbc;
+  cursor: pointer;
+  border-radius: 5px;
+  border: 3px solid #334;
+  z-index:1;
+  position:relative;
+  font-size: 14px;
+}
+.my_button:hover { background: #cce; }
 
 .lil-gui {
   border-radius: 15px; padding: 5px;

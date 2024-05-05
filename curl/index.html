@@ -51,13 +51,15 @@ const params = {
   spherify: parse_arg_bool('sph'),
   depth: parse_arg('depth', 60),
   wireframe: parse_arg_bool('wireframe'),
-  sm_size: 1024,  // shadow-map size
+  sm_size: parse_arg('sm', 1024),  // shadow-map size
   light_color: 0xfadede,
   light_pos: [1.3, -1.8, 1.,   1.],
-  animate: false,
+  animate: parse_arg_bool('animate'),
   post_proc: !parse_arg_bool('no-post'),
   funky: parse_arg_bool('funky'),
   specular: parse_arg('specular', 1.2),
+  do_shadow: !parse_arg_bool('no-shadow'),
+  show_box: !parse_arg_bool('no-box'),
 
   // Camera
   fov: parse_arg('fov', 110., 30., 170.),
@@ -78,7 +80,9 @@ const params = {
   no_gui: parse_arg_bool('no-gui'),
   dbg: { trace: 0, timing: false,
          ortho: parse_arg_bool('ortho'),
-         animate_light: parse_arg_bool('animate-light'), },
+         animate_light: parse_arg_bool('animate-light'),
+         show_sm: parse_arg_bool('show-sm'),
+       },
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -122,6 +126,7 @@ const GUI_init = () => {
   dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
   dbg_folder.add(params.dbg, 'ortho').name('ortho view').listen();
   dbg_folder.add(params.dbg, 'animate_light').name('animate light').listen();
+  dbg_folder.add(params.dbg, 'show_sm').name('show Shadow Map').listen();
   render.gui.add(render, 'txt_info').name('info').listen().disable();
 
   render.gui.domElement.style.top = '5%';
@@ -257,7 +262,6 @@ const GPU_init = async () => {
 
   ctx.configure({device: render.device,
                  format: render.textureFormat,
-                 // usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
                  usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
                  alphaMode: 'premultiplied', });
 }
@@ -814,6 +818,47 @@ function create_light_pipeline(render) {
   });
 }
 
+function create_show_sm_pipeline(render) {
+  const show_sm_code = `
+    @group(0) @binding(0) var light_depth: texture_depth_2d;
+    @group(0) @binding(1) var depth_sampler: sampler;
+    const kVtx = array<vec4f, 3>(  // screen quad
+        vec4f( 3., -1., 0., 1.), vec4f( -1., 3., 0., 1.), vec4f(-1.,-1., 0., 1.));
+    @vertex fn vtx_main(@builtin(vertex_index) vtx: u32) -> @builtin(position) vec4f {
+      return kVtx[vtx];
+    }
+    @fragment fn frag_main(@builtin(position) position : vec4f) -> @location(0) vec4f {
+      let uv = position.xy / 512.;
+      if (any(uv >= vec2(1.))) { discard; }
+      let l_depth = textureSample(light_depth, depth_sampler, uv);
+      return vec4f(1. - 0.001 / l_depth, 0., 0., 1.);
+    }
+  `;
+
+  const module = render.device.createShaderModule({ code: show_sm_code });
+  render.show_sm_pipeline = render.device.createRenderPipeline({
+    layout: render.device.createPipelineLayout({
+              bindGroupLayouts: [
+                render.device.createBindGroupLayout({
+                  entries: [
+                    { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', } },
+                    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering', } },
+                  ],
+                }),
+              ],
+            }),
+    vertex: { module: module, entryPoint: 'vtx_main', },
+    fragment: { module: module, entryPoint: 'frag_main', targets: render.target, },
+    primitive: { topology: 'triangle-list', cullMode: 'none', },
+    multisample: { count: 1, },
+  });
+  render.show_sm_bind_group = render.device.createBindGroup({
+    layout: render.show_sm_pipeline.getBindGroupLayout(0),
+    entries:
+      [ { binding: 0, resource: render.light_depth.createView(), },
+        { binding: 1, resource: render.device.createSampler({}), }, ],
+  });
+}
 
 function create_pipelines(render) {
   render.device || Oops("Can't create pipelines without a device!");
@@ -822,6 +867,7 @@ function create_pipelines(render) {
   create_cube_pipeline(render);
   create_post_pipeline(render);
   create_light_pipeline(render);
+  create_show_sm_pipeline(render);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -972,7 +1018,7 @@ async function frame() {
 
   if (params.dbg.timing) console.time("GPU");
 
-  if (true) {
+  if (params.do_shadow) {
     const light_depth_view = render.light_depth.createView({label: 'LIGHT-DEPTH'});
     const light_pass_descriptor = {
       colorAttachments: [],
@@ -992,6 +1038,9 @@ async function frame() {
   }
 
   const canvas_view = ctx.getCurrentTexture().createView({label: 'CANVAS'});
+  const post_texture_view = render.post_texture.createView({label: 'POST-PROC'});
+  const render_view = params.post_proc ? post_texture_view : canvas_view;
+
   if (render.nb_idx > 0) {
     const pass_descriptor = {
       colorAttachments: [
@@ -1008,9 +1057,9 @@ async function frame() {
     if (params.use_MSAA) {
       const MSAA_view = render.multisample_texture.createView({label: 'MULTISAMPLE'});
       pass_descriptor.colorAttachments[0].view = MSAA_view;
-      pass_descriptor.colorAttachments[0].resolveTarget = canvas_view;
+      pass_descriptor.colorAttachments[0].resolveTarget = render_view;
     } else {
-      pass_descriptor.colorAttachments[0].view = canvas_view;
+      pass_descriptor.colorAttachments[0].view = render_view;
     }
     {
       const render_pass = encoder.beginRenderPass(pass_descriptor);
@@ -1026,7 +1075,7 @@ async function frame() {
     pass_descriptor.depthStencilAttachment.depthLoadOp = 'load';
     pass_descriptor.colorAttachments[0].loadOp = 'load';
 
-    if (true) {
+    if (params.show_box) {
       const render_pass = encoder.beginRenderPass(pass_descriptor);
       render_pass.setPipeline(render.cube_pipeline);
       render_pass.setBindGroup(0, render.cube_bind_group_0);
@@ -1035,11 +1084,6 @@ async function frame() {
     }
   }
   if (params.post_proc) {
-    encoder.copyTextureToTexture(
-      { texture: ctx.getCurrentTexture() },
-      { texture: render.post_texture },
-      [canvas.width, canvas.height]
-    );
     const post_pass_descriptor = {
       colorAttachments: [
         { view: canvas_view,
@@ -1051,6 +1095,19 @@ async function frame() {
     render_pass.setBindGroup(0, render.post_bind_group_0);
     render_pass.setBindGroup(1, render.post_bind_group_1);
     render_pass.setBindGroup(2, render.post_bind_group_2);
+    render_pass.draw(3);
+    render_pass.end();
+  }
+  if (params.do_shadow && params.dbg.show_sm) {
+    const show_sm_pass_descriptor = {
+      colorAttachments: [
+        { view: canvas_view,
+          clearValue: {r:0., g:0., b:0., a:0.}, loadOp: 'load', storeOp: 'store', },
+      ],
+    };
+    const render_pass = encoder.beginRenderPass(show_sm_pass_descriptor);
+    render_pass.setPipeline(render.show_sm_pipeline);
+    render_pass.setBindGroup(0, render.show_sm_bind_group);
     render_pass.draw(3);
     render_pass.end();
   }
@@ -1146,7 +1203,7 @@ function MakeSubIdx(depth) {
       if (params.funky && ((i % 2) == 1)) continue;
       idx.push(t);
       if (i > 0) {
-        idx.push(t); 
+        idx.push(t);
         idx.push(t);
       }
       for (let j = 0; j <= i; ++j) idx.push(s + j, t + j + 1);

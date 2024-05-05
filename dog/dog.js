@@ -50,7 +50,7 @@ function HandleFile(file) {
   }
 }
 function SetupDragAndDrop() {
-  const dropArea = document.getElementById('drop-area');
+  const dropArea = document.getElementById('main-area');
   function highlight(e) { dropArea.classList.add('highlight'); }
   function unhighlight(e) { dropArea.classList.remove('highlight'); }
 

@@ -4,21 +4,9 @@
 
 <head>
 <title>DoG: difference of Gaussians</title>
-
+<link rel="stylesheet" href="../splats/style.css">
 <style>
-#drop-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
-  margin: 10px auto;
-  padding: 10px;
-  width: 1024px;
-  height: 930px;
-  background: #eef;
-}
-#drop-area.highlight {
-  border-color: purple;
-}
+#main-area.highlight { border-color: purple; }
 .button {
   display: inline-block;
   padding: 8px;
@@ -33,16 +21,6 @@
 .button:hover {
   background: #cce;
 }
-#main-canvas {
-  z-index:0;
-  border: 2px solid #000;
-  border-radius: 20px;
-  position: relative;
-  left:-2px;
-  background: #000;
-  margin: 0px;
-  box-shadow: 0 0 5px black;
-}
 #gui {
  position: relative;
  top: -230px;
@@ -53,7 +31,7 @@
 
 <body onload="main();">
 
-<div id="drop-area">
+<div id="main-area" style='width: 1024px; height: 930px;'>
   <form class="my-form">
     <input type="file" id="FileElmt" style='display:none;'
            multiple accept="image/*" onchange="HandleFile(this.files[0])">
@@ -74,17 +52,10 @@
   <label class='button' for="FileElmt"
          style='top:80px; left:750px;'>select an image</label>
   <div id="gui-container">
-    <canvas id="main-canvas" width='1024px' height='800px'></canvas>
+    <canvas id="main-canvas" width='1024px' height='800px' style='left:-2px; position:relative;'></canvas>
   </div>
-  Note: The kernel used by the shader has 17x17 size, hence the limited Sigma range.
-  <br/>
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-30px; left:950px;'>
-    <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 1px solid #112;'
-           onmouseover='this.style.background="#cdf"'
-           onmouseout='this.style.background="#cce"'/>
+  <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
+    <input type="submit" value="skal 2024" id="skal-back"/>
   </form>
 </div>
 
