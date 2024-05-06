@@ -37,19 +37,19 @@ const kPlaneVertex = new Float32Array([ 1., -0.1,  1., 1.,   1., -0.1, -1., 1.,
 const kPlaneFaces = new Uint32Array([ 0,2,1,  0,3,2 ]);
 
 const kCubeVertex = new Float32Array([
-    1., 1.,  1., 1.,
-   -1., 1.,  1., 1.,
-    1., 1., -1., 1.,
-   -1., 1., -1., 1.,
-    1.,-1.,  1., 1.,
-   -1.,-1.,  1., 1.,
-    1.,-1., -1., 1.,
-   -1.,-1., -1., 1.,]);
+    .5, .5,  .5, .5,
+   -.5, .5,  .5, .5,
+    .5, .5, -.5, .5,
+   -.5, .5, -.5, .5,
+    .5,-.5,  .5, .5,
+   -.5,-.5,  .5, .5,
+    .5,-.5, -.5, .5,
+   -.5,-.5, -.5, .5,]);
 
 function MakeQuad(a, b, c, d) { return [ a, b, c, c, b, d ]; }
 const kCubeFaces = new Uint32Array([
   MakeQuad(0, 1, 2, 3), MakeQuad(4, 6, 5, 7),
-  MakeQuad(0, 1, 4, 5), MakeQuad(3, 2, 7, 6),
+  MakeQuad(1, 0, 5, 4), MakeQuad(2, 3, 6, 7),
   MakeQuad(0, 2, 4, 6), MakeQuad(3, 1, 7, 5),
 ].flat());
 
