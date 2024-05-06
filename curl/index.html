@@ -117,7 +117,7 @@ const GUI_init = () => {
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
   const light_folder = render.gui.addFolder('light').close();
   light_folder.addColor(params, 'light_color').name('color').listen();
-  light_folder.add(params, 'specular', 0., 2., 0.1).name('specular').listen();
+  light_folder.add(params, 'specular', 0., 2., 0.01).name('specular').listen();
   light_folder.add(params, 'nb_shadow_samples', 1., 256., 1.).name('shadow samples').listen();
   light_folder.add(params, 'shadow_extent', 1., 64., 1.).name('shadow extent').listen();
   light_folder.add(params, 'shadow_jitter', 0., 10., .01).name('shadow jitter').listen();
