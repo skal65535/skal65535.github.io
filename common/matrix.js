@@ -37,6 +37,7 @@ function look_at([p_x, p_y, p_z],  // position relative to target
       -dot([d_x, d_y, d_z], [p_x, p_y, p_z]),
       -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
 }
+
 function perspective(fx, fy, znear, zfar) {
   const A = znear / (zfar - znear);
   const B = zfar * A;
@@ -46,6 +47,7 @@ function perspective(fx, fy, znear, zfar) {
       0.,  0.,  A, -1.,
       0.,  0.,  B,  0.]);
 }
+
 function ortho(fx, fy, znear, zfar) {
   const A = 1. / (zfar - znear);
   const B = znear * A;
