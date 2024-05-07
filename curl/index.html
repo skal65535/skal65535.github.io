@@ -60,9 +60,11 @@ const params = {
     shadow_extent: parse_arg('shadow-extent', 30.),
     shadow_jitter: parse_arg('shadow-jitter', 1.),
     animate: parse_arg_bool('animate-light'),
+    algo: 0,
   },
   post_proc: !parse_arg_bool('no-post'),
   funky: parse_arg_bool('funky'),
+  circle: 1.414,
 
   model: {
     theta: 0., phi: 0., scale: 1.,
@@ -117,11 +119,13 @@ const GUI_init = () => {
   render.gui.add(params, 'post_proc').name('post_processing').listen();
 //  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
+  render.gui.add(params, 'circle', 0., 2., .01).name('funkiness!').listen().onChange();
   const light_folder = render.gui.addFolder('light').close();
   light_folder.addColor(params.light, 'color').name('color').listen();
   light_folder.add(params.light, 'shadow_nb_samples', 1., 256., 1.).name('shadow samples').listen();
   light_folder.add(params.light, 'shadow_extent', 1., 64., 1.).name('shadow extent').listen();
   light_folder.add(params.light, 'shadow_jitter', 0., 10., .01).name('shadow jitter').listen();
+  light_folder.add(params.light, 'algo', { 'optimized': 0, 'basic': 1, }).name('shadow algorithm').listen().onChange(GUI_change);
   light_folder.add(params.light, 'animate').name('animate').listen();
 
   const cam_folder = render.gui.addFolder('camera').close();
@@ -320,6 +324,7 @@ const struct_code = `
     shadow_nb_samples: f32,
     shadow_extent: f32,
     shadow_jitter: f32,
+    circle_radius: f32,
   };
   struct Out {
     @builtin(position) position: vec4f,
@@ -573,9 +578,12 @@ function create_cube_pipeline(render) {   // draw the surrending cube box
     }`;
   const fragment_code = `
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      let dist = length(2. * s.position.xy - params.dim) / (params.dim.x * params.circle_radius);
+      if (dist > 1.) { discard; }
       let ldir = light.pos.xyz - s.pos3d.xyz;
       let d = max(0., dot(ldir, s.normal.xyz)) * pow(length(ldir), -1.2);
-      let lcol = s.color + d * unpack4x8unorm(light.color);
+      var lcol = s.color + d * unpack4x8unorm(light.color);
+      lcol *= smoothstep(1., .0, dist);
       return vec4f(lcol.rgb, 1.);
     }
   `;
@@ -622,6 +630,71 @@ function create_post_pipeline(render) {
       output.uv = pos.xy;
       return output;
     }`;
+  const shadow_code_0 = `
+    fn Shadow(pos3d: vec3f) -> f32 {
+      _ = cmp_sampler;
+      let light_uv = light.proj * vec4f(pos3d, 1.);
+      if (light_uv.w < 0) { return 1.; }           // 'behind' the light
+      let light_pos = light_uv.xyz / light_uv.w;
+      let light_screen = ScreenToTexture(light_pos.xy);  // in [0,1]^2
+      let light_ref = light_pos.z + 0.001;
+
+      let sample_unit = 1. / vec2f(textureDimensions(light_depth));
+      var d = 0.;
+      var w = 0.;
+      let nb_samples = ceil(sqrt(params.shadow_nb_samples));
+      let phi_scale = 6.28318530718 / nb_samples;
+      let r_scale =  params.shadow_extent / sqrt(nb_samples);
+      // sample the [sqrt(r), theta] space uniformly
+      for (var layer = nb_samples; layer > 0.; layer -= 1.) {
+        let r = sqrt(layer) * r_scale;
+        var count = 0.;
+        for (var theta = 0.; theta < nb_samples; theta += 1.) {
+          let displace = (Hash_3f_3f(pos3d).xy - vec2f(.5, .5)) * params.shadow_jitter;
+          let R = r + displace.x;
+          let T = (theta + displace.y) * phi_scale;
+          var pos = vec2f(cos(T), sin(T));
+          pos = light_screen + pos * R * sample_unit;
+          let light_depth = textureSampleLevel(light_depth, depth_sampler, pos, 0);
+          count += step(light_depth, light_ref);   // occlusion if light_depth < light_ref
+          w += 1.;
+        }
+        if (layer == nb_samples) {  // early out on the outter layer
+          if (count == 0) { return 0.; }
+          if (count == w) { return 1.; }
+        }
+        d += count;
+      }
+      return d / w;
+    }`;
+  const shadow_code_1 = `
+    fn Shadow(pos3d: vec3f) -> f32 {
+      _ = cmp_sampler;
+      let light_uv = light.proj * vec4f(pos3d, 1.);
+      if (light_uv.w < 0) { return 1.; }           // 'behind' the light
+      let light_pos = light_uv.xyz / light_uv.w;
+      let light_screen = ScreenToTexture(light_pos.xy);  // in [0,1]^2
+      let light_ref = light_pos.z + 0.001;
+
+      let sample_unit = 1. / vec2f(textureDimensions(light_depth));
+      let nb_samples = params.shadow_nb_samples;
+      let sample_dist = params.shadow_extent / sqrt(nb_samples);
+      var sqrt_n = 0.;   // sqrt_n is an approx of sqrt(n)
+      const kGoldenAngle = 2.399963229;  // https://en.wikipedia.org/wiki/Golden_angle
+      const kRot = mat2x2f( cos(kGoldenAngle), sin(kGoldenAngle),
+                           -sin(kGoldenAngle), cos(kGoldenAngle));
+      var sample_dir = vec2f(0., sample_dist);
+      sample_dir += (Hash_3f_3f(pos3d).xy - vec2f(.5, .5)) * params.shadow_jitter;
+      var shadow = 0.;
+      for (var n = 0.; n < nb_samples; n += 1.) {
+        sqrt_n += 1. / (1. + sqrt_n);
+        sample_dir = kRot * sample_dir;
+        let pos = light_screen + sqrt_n * sample_dir * sample_unit;
+        let light_depth = textureSampleLevel(light_depth, depth_sampler, pos, 0);
+        shadow += step(light_depth, light_ref);   // occlusion if light_depth < light_ref
+      }
+      return shadow / nb_samples;
+    }`;
   const fragment_code = `
     ${screen_code}
     ${noise_code}
@@ -648,55 +721,22 @@ function create_post_pipeline(render) {
       }
       return col.rgb / col.a;
     }
-    fn Shadow(pos3d: vec3f) -> vec3f {
-      _ = cmp_sampler;
-      let light_uv = light.proj * vec4f(pos3d, 1.);
-      let light_pos = light_uv.xyz / light_uv.w;
-      let light_screen = ScreenToTexture(light_pos.xy); // in [0,1]^2
-      let l_depth = textureSample(light_depth, depth_sampler, light_screen);
-      var d = 0.;
-      var w = 0.;
-      let nb_samples = params.shadow_nb_samples;
-      let sample_dist = params.shadow_extent / sqrt(nb_samples);
-      let sample_unit = 1. / vec2f(textureDimensions(light_depth));
-      var sqrt_n = 0.;   // sqrt_n is an approx of sqrt(n)
-      const kGoldenAngle = 2.399963229;  // https://en.wikipedia.org/wiki/Golden_angle
-      const kRot = mat2x2f( cos(kGoldenAngle), sin(kGoldenAngle),
-                           -sin(kGoldenAngle), cos(kGoldenAngle));
-      var sample_dir = vec2f(0., sample_dist);
-      sample_dir += (Hash_3f_3f(pos3d).xy - vec2f(.5, .5)) * params.shadow_jitter;
-      let l_ref = light_pos.z + 0.001;
-      for (var n = 0.; n < nb_samples; n += 1.) {
-        sqrt_n += 1. / (1. + sqrt_n);
-        sample_dir = kRot * sample_dir;
-        let pos = light_screen + sqrt_n * sample_dir * sample_unit;
-        let l_depth = textureSample(light_depth, depth_sampler, pos);
-        // occlusion if l_depth < l_ref
-        let delta = l_ref - l_depth;
-        let weight = 1.; // l_ref / l_depth;
-        d += step(0., delta) * weight;
-        w += weight;
-      }
-      d = max(.2, min(d / w, 1.));
-      if (light_uv.w < 0) { d = 1.; }
-      return vec3f(d, d, d);
-    }
-
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      // debug: if (length(s.uv) > 0.5) { discard; }
       let pos = ScreenToTexture(s.uv);
       var col = Blur(pos, /*max_size = */0.01 + 4. * dot(s.uv, s.uv));
 
       var screen_w = textureLoad(zbuf, vec2i(floor(pos * params.dim)), 0);
       let pos3d = WorldFromScreen(s.uv, screen_w);
-      col *= Shadow(pos3d);
+      let shadow = Shadow(pos3d);   // 0. = full-shadow, 1. = full-lit
+      col *= clamp(shadow, .2, 1.);  // .2 = ambient factor
       col += unpack4x8unorm(light.color).rgb * GetHalo(s.uv);
       return vec4f(col, 1.);
     }
   `;
 
+  console.log("algo", params.light.algo);
   const vtx_module = render.device.createShaderModule(
-    { code: vtx_code + fragment_code });
+    { code: vtx_code + (params.light.algo == 0 ? shadow_code_0 : shadow_code_1) + fragment_code });
   render.post_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: { module: vtx_module, entryPoint: 'vtx_main', },
@@ -1016,7 +1056,8 @@ function transmit_uniforms() {
                          params.model.specular,
                          params.light.shadow_nb_samples,
                          params.light.shadow_extent,
-                         params.light.shadow_jitter, ]));
+                         params.light.shadow_jitter,
+                         params.circle, ]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1263,7 +1304,7 @@ async function set_poly(polyhedron_name) {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   render.GPU.p_uniforms = render.device.createBuffer({
-    size: 16 * 4,
+    size: 17 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   render.GPU.uniform_entries = [
