@@ -53,20 +53,24 @@ const params = {
   depth: parse_arg('depth', 60),
   wireframe: parse_arg_bool('wireframe'),
   sm_size: parse_arg('sm', 1024),  // shadow-map size
-  light_color: 0xfadede,
-  light_pos: [1.3, -1.8, 1.,   1.],
-  animate: parse_arg_bool('animate'),
+  light: {
+    color: 0xfadede,
+    pos: [1.3, -1.8, 1.,   1.],
+    shadow_nb_samples: parse_arg('shadow-samples', 64.),
+    shadow_extent: parse_arg('shadow-extent', 30.),
+    shadow_jitter: parse_arg('shadow-jitter', 1.),
+    animate: parse_arg_bool('animate-light'),
+  },
   post_proc: !parse_arg_bool('no-post'),
   funky: parse_arg_bool('funky'),
-  specular: parse_arg('specular', 1.2),
-  nb_shadow_samples: parse_arg('shadow-samples', 64.),
-  shadow_extent: parse_arg('shadow-extent', 30.),
-  shadow_jitter: parse_arg('shadow-jitter', 1.),
-  do_shadow: !parse_arg_bool('no-shadow'),
-  show_box: !parse_arg_bool('no-box'),
 
-  // Camera
-  model: { theta: 0., phi: 0., scale: 1., },
+  model: {
+    theta: 0., phi: 0., scale: 1.,
+    show_box: !parse_arg_bool('no-box'),
+    specular: parse_arg('specular', 1.2),
+    auto_rotate: !parse_arg_bool("no-rotate"),
+    hide: parse_arg_bool('hide-object'),
+  },
   cam: {
     dist: parse_arg('R', 2.0, 0.01, 10.),
     theta: parse_arg('theta', -5.),
@@ -74,19 +78,17 @@ const params = {
     fov: parse_arg('fov', 110., 30., 170.),
     znear: parse_arg('znear', 0.01),
     zfar: parse_arg('zfar', 20.),
+    target: [0., 0., 0.],
+    up: [0., 1., 0.],
   },
-  target: [0., 0., 0.],
-  up: [0., 1., 0.],
-  auto_rotate: !parse_arg_bool("no-rotate"),
   mouse: {on:false, x:0., y:0.},
-
+  animate: parse_arg_bool('animate'),
   use_MSAA: parse_arg_bool('MSAA'),
   no_gui: parse_arg_bool('no-gui'),
+
   dbg: { trace: 0, timing: false,
          ortho: parse_arg_bool('ortho'),
-         animate_light: parse_arg_bool('animate-light'),
          show_sm: kShowMaps[0],
-         no_object: parse_arg_bool('no-object'),
        },
 };
 
@@ -116,11 +118,12 @@ const GUI_init = () => {
 //  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
   const light_folder = render.gui.addFolder('light').close();
-  light_folder.addColor(params, 'light_color').name('color').listen();
-  light_folder.add(params, 'specular', 0., 2., 0.01).name('specular').listen();
-  light_folder.add(params, 'nb_shadow_samples', 1., 256., 1.).name('shadow samples').listen();
-  light_folder.add(params, 'shadow_extent', 1., 64., 1.).name('shadow extent').listen();
-  light_folder.add(params, 'shadow_jitter', 0., 10., .01).name('shadow jitter').listen();
+  light_folder.addColor(params.light, 'color').name('color').listen();
+  light_folder.add(params.light, 'shadow_nb_samples', 1., 256., 1.).name('shadow samples').listen();
+  light_folder.add(params.light, 'shadow_extent', 1., 64., 1.).name('shadow extent').listen();
+  light_folder.add(params.light, 'shadow_jitter', 0., 10., .01).name('shadow jitter').listen();
+  light_folder.add(params.light, 'animate').name('animate').listen();
+
   const cam_folder = render.gui.addFolder('camera').close();
   cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params.cam, 'dist', 0.0001, 5., 0.01).name('distance').listen();
@@ -128,17 +131,20 @@ const GUI_init = () => {
   cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
   cam_folder.add(params.cam, 'znear', 0.0001, 10., 0.01).listen();
   cam_folder.add(params.cam, 'zfar', 0.0001, 10., 0.01).listen();
+
   const model_folder = render.gui.addFolder('model').close();
+  model_folder.add(params.model, 'specular', 0., 2., 0.01).name('specular').listen();
   model_folder.add(params.model, 'theta', 0., 360., 1.).listen();
   model_folder.add(params.model, 'phi', -180., 180., 1.).listen();
-  model_folder.add(params, 'auto_rotate').name('auto rotate').listen();
+  model_folder.add(params.model, 'auto_rotate').name('auto rotate').listen();
+  model_folder.add(params.model, 'hide').name('hide').listen();
+
   const dbg_folder = render.gui.addFolder('Debug').close();
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
   dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
   dbg_folder.add(params.dbg, 'ortho').name('ortho view').listen();
-  dbg_folder.add(params.dbg, 'animate_light').name('animate light').listen();
   dbg_folder.add(params.dbg, 'show_sm', kShowMaps).name('map shown:').listen().onChange(GUI_change);
-  dbg_folder.add(params.dbg, 'no_object').name('hide object').listen();
+
   render.gui.add(render, 'txt_info').name('info').listen().disable();
 
   render.gui.domElement.style.top = '5%';
@@ -311,7 +317,7 @@ const struct_code = `
     nb_faces: f32,
     spherify: f32,
     specular: f32,
-    nb_shadow_samples: f32,
+    shadow_nb_samples: f32,
     shadow_extent: f32,
     shadow_jitter: f32,
   };
@@ -650,7 +656,7 @@ function create_post_pipeline(render) {
       let l_depth = textureSample(light_depth, depth_sampler, light_screen);
       var d = 0.;
       var w = 0.;
-      let nb_samples = params.nb_shadow_samples;
+      let nb_samples = params.shadow_nb_samples;
       let sample_dist = params.shadow_extent / sqrt(nb_samples);
       let sample_unit = 1. / vec2f(textureDimensions(light_depth));
       var sqrt_n = 0.;   // sqrt_n is an approx of sqrt(n)
@@ -956,7 +962,7 @@ function compute_frame_params() {
   const cam_pos = [ params.cam.dist * Math.cos(theta) * Math.cos(phi),
                     params.cam.dist *                   Math.sin(phi),
                     params.cam.dist * Math.sin(theta) * Math.cos(phi), ];
-  render.view = look_at(cam_pos, params.target, params.up);
+  render.view = look_at(cam_pos, params.cam.target, params.cam.up);
 
   // Camera projection
   const aspect = canvas.width / canvas.height;
@@ -968,19 +974,19 @@ function compute_frame_params() {
   render.proj = multiply4(proj, render.view);
 
   // Light position
-  render.light_pos = new Float32Array(params.light_pos);
-  if (params.dbg.animate_light) {
+  render.light_pos = new Float32Array(params.light.pos);
+  if (params.light.animate) {
     render.light_pos =
       multiply(rotation([0., 1., 0.], .3 * render.tick * Math.PI / 180.), render.light_pos);
   }
 //  const light_proj = ortho(1., 1., 0., 5.);
   const light_proj = perspective(1., 1., 0.01, 5.);
-  const light_view = look_at(render.light_pos, params.target, params.up);
+  const light_view = look_at(render.light_pos, params.cam.target, params.cam.up);
   render.light_proj = multiply4(light_proj, light_view);
 
-  const l_r = (params.light_color >> 16) & 0xff;
-  const l_g = (params.light_color >>  8) & 0xff;
-  const l_b = (params.light_color >>  0) & 0xff;
+  const l_r = (params.light.color >> 16) & 0xff;
+  const l_g = (params.light.color >>  8) & 0xff;
+  const l_b = (params.light.color >>  0) & 0xff;
   render.light_color = new Uint8Array([l_r, l_g, l_b, 0xff]);
 }
 
@@ -1007,10 +1013,10 @@ function transmit_uniforms() {
                          render.nb_idx,
                          render.nb_faces,
                          params.spherify,
-                         params.specular,
-                         params.nb_shadow_samples,
-                         params.shadow_extent,
-                         params.shadow_jitter, ]));
+                         params.model.specular,
+                         params.light.shadow_nb_samples,
+                         params.light.shadow_extent,
+                         params.light.shadow_jitter, ]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1038,7 +1044,7 @@ async function frame() {
 
   if (params.dbg.timing) console.time("GPU");
 
-  if (params.do_shadow) {
+  if (params.post_proc) {   // need z-light buffer?
     const light_depth_view = render.light_depth.createView({label: 'LIGHT-DEPTH'});
     const light_pass_descriptor = {
       colorAttachments: [],
@@ -1081,7 +1087,7 @@ async function frame() {
     } else {
       pass_descriptor.colorAttachments[0].view = render_view;
     }
-    if (!params.dbg.no_object) {
+    if (!params.model.hide) {
       const render_pass = encoder.beginRenderPass(pass_descriptor);
       render_pass.setPipeline(render.pipeline);
       render_pass.setBindGroup(0, render.bind_group_0);
@@ -1095,7 +1101,7 @@ async function frame() {
     pass_descriptor.depthStencilAttachment.depthLoadOp = 'load';
     pass_descriptor.colorAttachments[0].loadOp = 'load';
 
-    if (params.show_box) {
+    if (params.model.show_box) {
       const render_pass = encoder.beginRenderPass(pass_descriptor);
       render_pass.setPipeline(render.cube_pipeline);
       render_pass.setBindGroup(0, render.cube_bind_group_0);
@@ -1118,7 +1124,7 @@ async function frame() {
     render_pass.draw(3);
     render_pass.end();
   }
-  if (params.do_shadow && params.dbg.show_sm != kShowMaps[0]) {
+  if (params.dbg.show_sm != kShowMaps[0]) {
     const show_sm_pass_descriptor = {
       colorAttachments: [
         { view: canvas_view,
@@ -1138,7 +1144,7 @@ async function frame() {
   performance.mark("webgpu end");
   performance.measure("webgpu", "webgpu start", "webgpu end");
 
-  if (params.auto_rotate) params.model.theta -= 0.07;
+  if (params.model.auto_rotate) params.model.theta -= 0.07;
   ++render.tick;
   render.loop_id = requestAnimationFrame(frame);
 }
