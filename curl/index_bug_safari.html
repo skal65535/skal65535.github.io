@@ -310,7 +310,7 @@ const struct_code = `
   struct Light {
     proj: mat4x4f,
     pos: vec4f,
-    color: vec4f,
+    color: u32,
   };
   struct Params {
     dim:  vec2f,   // screen dimension
@@ -513,7 +513,7 @@ function create_poly_pipeline(render) {
       let r = normalize(reflect(s.pos3d, s.normal).xyz);
       var d = max(0., -dot(ldir, s.normal.xyz));  // diffuse
       d += params.specular * pow(max(0., dot(r, ldir)), 60.);   // specular highlight
-      let color = .20 * s.color + d * light.color;
+      let color = .20 * s.color + d * unpack4x8unorm(light.color);
       return vec4f(color.rgb, 1.);
     }
   `;
@@ -581,7 +581,7 @@ function create_cube_pipeline(render) {   // draw the surrending cube box
       if (dist > 1.) { discard; }
       let ldir = light.pos.xyz - s.pos3d.xyz;
       let d = max(0., dot(ldir, s.normal.xyz)) * pow(length(ldir), -1.2);
-      var lcol = s.color + d * light.color;
+      var lcol = s.color + d * unpack4x8unorm(light.color);
       lcol *= smoothstep(1., .0, dist);
       return vec4f(lcol.rgb, 1.);
     }
@@ -750,7 +750,7 @@ function create_post_pipeline(render) {
       let pos3d = WorldFromScreen(s.uv, screen_w);
       let shadow = Shadow(pos3d);   // 0. = full-shadow, 1. = full-lit
       col *= clamp(shadow, .2, 1.);  // .2 = ambient factor
-      col += light.color.rgb * GetHalo(s.uv);
+      col += unpack4x8unorm(light.color).rgb * GetHalo(s.uv);
       return vec4f(col, 1.);
     }
   `;
@@ -1046,10 +1046,10 @@ function compute_frame_params() {
   const light_view = look_at(render.light_pos, params.cam.target, params.cam.up);
   render.light_proj = multiply4(light_proj, light_view);
 
-  const l_r = ((params.light.color >> 16) & 0xff) / 255.;
-  const l_g = ((params.light.color >>  8) & 0xff) / 255.;
-  const l_b = ((params.light.color >>  0) & 0xff) / 255.;
-  render.light_color = new Float32Array([l_r, l_g, l_b, 1.]);
+  const l_r = (params.light.color >> 16) & 0xff;
+  const l_g = (params.light.color >>  8) & 0xff;
+  const l_b = (params.light.color >>  0) & 0xff;
+  render.light_color = new Uint8Array([l_r, l_g, l_b, 0xff]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
