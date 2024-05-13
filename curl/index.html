@@ -63,6 +63,7 @@ const params = {
     algo: 0,
   },
   post_proc: !parse_arg_bool('no-post'),
+  blur: parse_arg('blur', 1),
   funky: parse_arg_bool('funky'),
   circle: 1.414,
 
@@ -117,6 +118,7 @@ const GUI_init = () => {
   render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
   render.gui.add(params, 'spherify').name('spherify').listen();
   render.gui.add(params, 'post_proc').name('post_processing').listen();
+  render.gui.add(params, 'blur', {'square': 0, 'optimized': 1}).name('Bokeh algo').listen().onChange(GUI_change);
 //  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
   render.gui.add(params, 'circle', 0., 2., .01).name('funkiness!').listen().onChange();
@@ -511,10 +513,7 @@ function create_poly_pipeline(render) {
       let r = normalize(reflect(s.pos3d, s.normal).xyz);
       var d = max(0., -dot(ldir, s.normal.xyz));  // diffuse
       d += params.specular * pow(max(0., dot(r, ldir)), 60.);   // specular highlight
-      let v = normalize(s.pos3d.xyz);
-      var color = .2 * s.color + d * unpack4x8unorm(light.color);
-      var sil = 1. - smoothstep(.12, .13, abs(dot(v, s.normal.xyz)));  // silhouette
-      color += sil * vec4f(1., .2, .3, 1.);
+      let color = .20 * s.color + d * unpack4x8unorm(light.color);
       return vec4f(color.rgb, 1.);
     }
   `;
@@ -634,7 +633,7 @@ function create_post_pipeline(render) {
     fn Shadow(pos3d: vec3f) -> f32 {
       _ = cmp_sampler;
       let light_uv = light.proj * vec4f(pos3d, 1.);
-      if (light_uv.w < 0) { return 1.; }           // 'behind' the light
+      if (light_uv.w < 1e-5) { return 1.; }           // 'behind' the light
       let light_pos = light_uv.xyz / light_uv.w;
       let light_screen = ScreenToTexture(light_pos.xy);  // in [0,1]^2
       let light_ref = light_pos.z + 0.001;
@@ -695,37 +694,59 @@ function create_post_pipeline(render) {
       }
       return shadow / nb_samples;
     }`;
-  const fragment_code = `
-    ${screen_code}
-    ${noise_code}
-    fn GetHalo(pos_screen: vec2f) -> f32 {
-      let plight_3d = model.view * light.pos;
-      let plight_2d = model.proj * light.pos;
-      if (plight_2d.w < params.znear) { return 0.; }
-      let plight_screen = plight_2d.xy / plight_2d.w;  // in [-1,1] ^ 2
-      let plight_txt = ScreenToTexture(plight_screen);
-      let plight_depth = textureLoad(zbuf, vec2i(floor(plight_txt * params.dim)), 0);
-      var dlight = exp(-30. * length(plight_screen - pos_screen));
-      dlight *= step(plight_depth / plight_2d.z, 1.);
-      return dlight;
-    }
-    fn Blur(pos: vec2f, max_size: f32) -> vec3f {
+  const blur_code_0 = `
+    fn Blur(pos: vec2f, coc: f32) -> vec3f {
       let size : f32 = 8.;
       var col = vec4f(0.);
       for (var y : f32 = -size; y <= size; y += 1) {
         for (var x : f32 = -size; x <= size; x += 1) {
           let off = vec2f(x, y);
-          let coeff = exp(-length(off) / max_size);
-          col += coeff * textureSample(screen, screen_sampler, pos + off / params.dim);
+          let coeff = exp(-length(off) / coc);
+          if (coeff > 1e-3) {
+            col += coeff * textureSampleLevel(screen, screen_sampler, pos + off / params.dim, 0);
+          }
         }
       }
       return col.rgb / col.a;
+    }`;
+  const blur_code_1 = `
+    fn Blur(pos: vec2f, coc: f32) -> vec3f {
+      const kSize : f32 = 8.;
+      const kGoldenAngle = 2.399963229;  // https://en.wikipedia.org/wiki/Golden_angle
+      const kRot = mat2x2f( cos(kGoldenAngle), sin(kGoldenAngle),
+                           -sin(kGoldenAngle), cos(kGoldenAngle));
+      let sample_units = 2. / vec2f(textureDimensions(screen)) / kSize;
+      var sample_dir = vec2f(0., coc);
+      var sqrt_n = 1.;   // sqrt_n - 1. is an approx of sqrt(n)
+      var col = vec4f(0.);
+      for (var i = 0.; i < kSize * kSize; i += 1.) {
+        sqrt_n += 1. / sqrt_n;
+        sample_dir = kRot * sample_dir;
+        let off = pos + sample_dir * (sqrt_n - 1.) * sample_units;
+        col += textureSample(screen, screen_sampler, off);
+      }
+      return col.rgb / col.a;
+    }`;
+  const halo_code = `
+    fn GetHalo(pos_screen: vec2f) -> f32 {
+      let plight_2d = model.proj * light.pos;
+      if (plight_2d.w < params.znear) { return 0.; }
+      let plight_screen = plight_2d.xyz / plight_2d.w;  // in [-1,1] ^ 2
+      let plight_txt = ScreenToTexture(plight_screen.xy);
+      let plight_depth = textureLoad(zbuf, vec2i(floor(plight_txt * params.dim)), 0);
+      var dlight = exp(-30. * length(plight_screen.xy - pos_screen));
+      dlight *= step(plight_depth / plight_screen.z, 1.);
+      return dlight;
     }
+  `;
+  const fragment_code = `
+    ${screen_code}
+    ${noise_code}
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
       let pos = ScreenToTexture(s.uv);
-      var col = Blur(pos, /*max_size = */0.01 + 4. * dot(s.uv, s.uv));
-
-      var screen_w = textureLoad(zbuf, vec2i(floor(pos * params.dim)), 0);
+      let screen_w = textureLoad(zbuf, vec2i(floor(pos * params.dim)), 0);
+      let coc = 0.01 + 4. * dot(s.uv, s.uv);
+      var col = Blur(pos, coc);
       let pos3d = WorldFromScreen(s.uv, screen_w);
       let shadow = Shadow(pos3d);   // 0. = full-shadow, 1. = full-lit
       col *= clamp(shadow, .2, 1.);  // .2 = ambient factor
@@ -734,9 +755,10 @@ function create_post_pipeline(render) {
     }
   `;
 
-  console.log("algo", params.light.algo);
   const vtx_module = render.device.createShaderModule(
-    { code: vtx_code + (params.light.algo == 0 ? shadow_code_0 : shadow_code_1) + fragment_code });
+    { code: (params.light.algo == 0 ? shadow_code_0 : shadow_code_1) +
+            (params.blur == 0 ? blur_code_0 : blur_code_1) +
+            halo_code + vtx_code + fragment_code });
   render.post_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: { module: vtx_module, entryPoint: 'vtx_main', },
