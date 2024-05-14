@@ -65,6 +65,7 @@ const params = {
   post_proc: !parse_arg_bool('no-post'),
   blur: parse_arg('blur', 1),
   funky: parse_arg_bool('funky'),
+  smoky: !parse_arg_bool('no-smoke'),
   circle: 1.414,
 
   model: {
@@ -120,6 +121,7 @@ const GUI_init = () => {
   render.gui.add(params, 'post_proc').name('post_processing').listen();
   render.gui.add(params, 'blur', {'square': 0, 'optimized': 1}).name('Bokeh algo').listen().onChange(GUI_change);
 //  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
+  render.gui.add(params, 'smoky').name('smoke!!').listen().onChange(GUI_reload);
   render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
   render.gui.add(params, 'circle', 0., 2., .01).name('funkiness!').listen().onChange();
   const light_folder = render.gui.addFolder('light').close();
@@ -306,6 +308,7 @@ const struct_code = `
     view: mat4x4f,
     proj: mat4x4f,      // projection * view
     inv_proj: mat4x4f,  // inverse of 'proj'
+    cam_pos: vec4f,     // camera position
   };
   struct Light {
     proj: mat4x4f,
@@ -409,6 +412,25 @@ const noise_code = `
       return vec3f(noise1d(p),
                    noise1d(p * vec3f(1.03, 0.98, 1.07)),
                    noise1d(p * vec3f(2.01, 0.97, 0.99)));
+    }
+
+    fn gyroid(p: vec3f) -> f32 { return abs(.04 + dot(sin(p), cos(p.zxy))); }
+    fn fbm(p: vec3f) -> f32 {
+      var a = 1.;
+      var v = 0.;
+      var q = p;
+      const Rot = mat2x2(cos(.3), sin(.3), -sin(.3), cos(.3));
+      for (var i = 0.; i < 8.; i += 1.) {
+        q = vec3f(Rot * q.xy, q.z + v * .4);
+        v += abs(gyroid(q / a)) * a;
+        a /= 2.;
+      }
+      return v;
+    }
+    fn fbm3d(p: vec3f) -> vec3f {
+      return vec3f(fbm(p),
+                   fbm(p * vec3f(1.03, 0.98, 1.07)),
+                   fbm(p * vec3f(2.01, 0.97, 0.99)));
     }
 `;
 const displace_code = `
@@ -575,20 +597,42 @@ function create_cube_pipeline(render) {   // draw the surrending cube box
       output.color = kColors[face];
       return output;
     }`;
-  const fragment_code = `
+  const fragment_code_0 = `
+    ${noise_code}
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
       let dist = length(2. * s.position.xy - params.dim) / (params.dim.x * params.circle_radius);
       if (dist > 1.) { discard; }
-      let ldir = light.pos.xyz - s.pos3d.xyz;
-      let d = max(0., dot(ldir, s.normal.xyz)) * pow(length(ldir), -1.2);
+
+      var normal = s.normal.xyz;
+      normal += fbm3d(s.pos3d.xyz + params.time * vec3f(.02)) * 0.2;
+      normal = normalize(normal);
+
+      let ldir = normalize(light.pos - s.pos3d).xyz;   // light direction
+      let diffuse = max(0., dot(ldir, normal));
+
+      let vdir = normalize(s.pos3d - model.cam_pos).xyz;   // view direction
+      let r = reflect(vdir, normal);
+      let specular = 0.4 * pow(max(0., dot(r, ldir)), 60.);
+      var lcol = s.color + (diffuse + specular) * light.color;
+      lcol *= smoothstep(1., .0, dist);   // vignetting
+      return vec4f(lcol.rgb, 1.);
+    }
+  `;
+  const fragment_code_1 = `
+    ${noise_code}
+    @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      let dist = length(2. * s.position.xy - params.dim) / (params.dim.x * params.circle_radius);
+      if (dist > 1.) { discard; }
+      let ldir = normalize(light.pos.xyz - s.pos3d.xyz);
+      let d = max(0., dot(ldir, s.normal.xyz));
       var lcol = s.color + d * light.color;
-      lcol *= smoothstep(1., .0, dist);
+      lcol *= smoothstep(1., .0, dist);   // vignetting
       return vec4f(lcol.rgb, 1.);
     }
   `;
 
   const vtx_module = render.device.createShaderModule(
-    { code: vtx_code + fragment_code });
+    { code: vtx_code + (params.smoky ? fragment_code_0 : fragment_code_1) });
   render.cube_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex:   { module: vtx_module, entryPoint: 'vtx_main', },
@@ -1023,10 +1067,11 @@ function compute_frame_params() {
   // Camera view
   const theta = params.cam.theta * Math.PI / 180.;
   const phi = params.cam.phi * Math.PI / 180.;
-  const cam_pos = [ params.cam.dist * Math.cos(theta) * Math.cos(phi),
-                    params.cam.dist *                   Math.sin(phi),
-                    params.cam.dist * Math.sin(theta) * Math.cos(phi), ];
-  render.view = look_at(cam_pos, params.cam.target, params.cam.up);
+  render.cam_pos = new Float32Array(
+    [ params.cam.dist * Math.cos(theta) * Math.cos(phi),
+      params.cam.dist *                   Math.sin(phi),
+      params.cam.dist * Math.sin(theta) * Math.cos(phi), 1.]);
+  render.view = look_at(render.cam_pos, params.cam.target, params.cam.up);
 
   // Camera projection
   const aspect = canvas.width / canvas.height;
@@ -1043,6 +1088,8 @@ function compute_frame_params() {
     render.light_pos =
       multiply(rotation([0., 1., 0.], .3 * render.tick * Math.PI / 180.), render.light_pos);
   }
+  render.light_pos[3] = 1.;
+
 //  const light_proj = ortho(1., 1., 0., 5.);
   const light_proj = perspective(1., 1., 0.01, 5.);
   const light_view = look_at(render.light_pos, params.cam.target, params.cam.up);
@@ -1062,6 +1109,7 @@ function transmit_uniforms() {
   render.device.queue.writeBuffer(render.GPU.m_uniforms, 16 * 4, render.view);
   render.device.queue.writeBuffer(render.GPU.m_uniforms, 32 * 4, render.proj);
   render.device.queue.writeBuffer(render.GPU.m_uniforms, 48 * 4, inverse(render.proj));
+  render.device.queue.writeBuffer(render.GPU.m_uniforms, 64 * 4, render.cam_pos);
 
   render.device.queue.writeBuffer(render.GPU.l_uniforms,  0 * 4, render.light_proj);
   render.device.queue.writeBuffer(render.GPU.l_uniforms, 16 * 4, render.light_pos);
@@ -1320,7 +1368,7 @@ async function set_poly(polyhedron_name) {
 
   // uniforms buffers
   render.GPU.m_uniforms = render.device.createBuffer({
-    size: 64 * 4,
+    size: 68 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   render.GPU.l_uniforms = render.device.createBuffer({
