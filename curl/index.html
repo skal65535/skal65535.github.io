@@ -733,9 +733,11 @@ function create_post_pipeline(render) {
       if (plight_2d.w < params.znear) { return 0.; }
       let plight_screen = plight_2d.xyz / plight_2d.w;  // in [-1,1] ^ 2
       let plight_txt = ScreenToTexture(plight_screen.xy);
-      let plight_depth = textureLoad(zbuf, vec2i(floor(plight_txt * params.dim)), 0);
-      var dlight = exp(-30. * length(plight_screen.xy - pos_screen));
-      dlight *= step(plight_depth / plight_screen.z, 1.);
+      let plight_depth = textureSampleLevel(zbuf, depth_sampler, plight_txt, 0);
+      let delta_l = (plight_2d.xy - pos_screen * plight_2d.w) * vec2(params.dim.x / params.dim.y, 1.);
+      var dlight = exp(-.5 * dot(abs(delta_l), vec2f(1., 8.)));
+//      var dlight = exp(-3. * length(delta_l));
+      dlight *= step(plight_depth, plight_screen.z);  // occlusion
       return dlight;
     }
   `;
@@ -744,8 +746,8 @@ function create_post_pipeline(render) {
     ${noise_code}
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
       let pos = ScreenToTexture(s.uv);
-      let screen_w = textureLoad(zbuf, vec2i(floor(pos * params.dim)), 0);
-      let coc = 0.01 + 4. * dot(s.uv, s.uv);
+      let screen_w = textureSampleLevel(zbuf, depth_sampler, pos, 0);
+      let coc = 0.01 + 4. * dot(s.uv, s.uv);   // Circle of Confusion
       var col = Blur(pos, coc);
       let pos3d = WorldFromScreen(s.uv, screen_w);
       let shadow = Shadow(pos3d);   // 0. = full-shadow, 1. = full-lit
