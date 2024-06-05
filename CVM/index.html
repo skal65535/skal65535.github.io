@@ -9,14 +9,43 @@
 <link rel="stylesheet" href="../splats/style.css">
 </head>
 
-<body onload="read_text(0);">
-<h1><a href='https://medium.com/@yourfuse/optimize-memory-and-performance-with-the-cvm-algorithm-in-javascript-a-comprehensive-guide-for-6bb33d1a5b63'>CVM algorithm</a> demo</h1>
+<body onload="ReadText(0);">
+<h1><center>A <a href='https://arxiv.org/abs/2301.10191'>CVM algorithm</a> demo</center></h1>
 
-Original <a href='https://arxiv.org/abs/2301.10191'>paper</a>.
-Quanta Magazine <a href='https://www.quantamagazine.org/computer-scientists-invent-an-efficient-new-way-to-count-20240516/'>article</a>.
+The CVM online algorithm <b>estimates the number of unique words</b> in a very very
+<b>long input stream</b> (think 'one day worth of Google queries' for
+instance. Or IP addresses.) in an space and time efficient manner.<br/>
+This is known as the <a href='https://en.wikipedia.org/wiki/Count-distinct_problem#CVM_Algorithm'>Count-distinct</a>
+problem.<br/>
+The CVM algorithm maintains a fixed-size buffer of unique words (see the 'Max buffering size' slider below)
+along with a decimation probability 'p'.<br/>
+The algorithm operates with 'rounds': unique words are collected in the buffer. When full,
+The buffer is partially flushed with a probability 'p' and another round starts with a lowered probability 'p'.
+<br/>
+Initially, the probability is halved, but we can adjust the flushing rate (and thus,
+the average number of rounds) by adjusting the 'rejection proba' parameter below.
+<br/>
+This allows different tradeoff in precision / rounds. Each round's flush has a higher
+computational cost than just looking up the set of unique words so far.
+<p>
+The demo below will take the input text below (which you can change) and
+run the algorithm 10000 times, collecting histogram of the estimated number
+of unique words (which depends on the parameters like 'Max buffering size').
+<br/>
+This can be compared to the expected exact value (drawn in red in the
+histogram). The deviation (sigma) and average number of rounds is collected
+too.<br/>
+Note: the algorithm doesn't return the list of unique words, not even a weighted
+estimation! It still is useful to estimate the space complexity of a proper
+second pass, e.g.<br/>
+<p>
 
+Predefined inputs: <input type='button' onclick='ReadText(0);' value='Hamlet'>
+<input type='button' onclick='ReadText(1);' value='DNA sequence'>
+<input type='button' onclick='ReadText(2);' value='Random 5-digit numbers'>
+<input type='button' onclick='ReadText(3);' value='Random "words"'>
+<p>
 <div>
-  <input type='button' onchange='process_text();' value='GO!'><br/>
   <input type="range" min="1" max="10000" value="50" id="max_size" 
     oninput="params.set_max_size(this.value);"
     onchange="main();">
@@ -26,33 +55,79 @@ Quanta Magazine <a href='https://www.quantamagazine.org/computer-scientists-inve
     onchange="main();">
   Rejection proba: <span id="reject_proba_value">.5</span><br/>  
 </div>
-<textarea id="input" name="input" rows="20" cols="80" onchange='main();'>
+<p>
+Distribution of estimates:<br/>
+<canvas id="histo" width="512" height="256"></canvas><br/>
+<input type="range" min="10" max="40" value="20" id="nb_bins"
+  oninput="params.set_nb_bins(this.value); Draw();"
+  onchange="params.set_nb_bins(this.value); Draw();">
+  number of bins: <span id="nb_bins_value"></span>
+
+<p>
+<h3>Input text: <input type='button' onclick='main();' value='Text has changed. GO!'><br/></h3>
+
+<textarea id="input" name="input" rows="8" cols="80" onchange='main();'>
 'Tis sweet and commendable in your nature, Hamlet,
 To give these mourning duties to your father:
 But, you must know, your father lost a father;
 ...
 </textarea><br/>
 You can copy-paste the entire 'Hamlet' play above from <a href='https://shakespeare.mit.edu/hamlet/full.html'>this page</a>.
-<br/>
-<input type='button' onclick='read_text(0);' value='Hamlet'>
-<input type='button' onclick='read_text(1);' value='DNA sequence'>
+
 <p>
-<canvas id="histo" width="400" height="200"></canvas><br/>
-<input type="range" min="10" max="40" value="20" id="nb_bins"
-  oninput="params.set_nb_bins(this.value); Draw();"
-  onchange="params.set_nb_bins(this.value); Draw();">
-  number of bins: <span id="nb_bins_value"></span>
-</p>
+
+<font size='-1'>
+<b>References</b>:
+<ul>
+<li><i><a href='https://arxiv.org/abs/2301.10191'>Distinct Elements in Streams: An Algorithm for the (Text)
+Book</a></i><br/>
+by Sourav Chakraborty, N.V. Vinodchandran, Kuldeep S. Meel.
+<br/>
+To appear in the Proceedings of 30th Annual European Symposium on Algorithms (ESA 2022).
+<br/>
+</li>
+<li>D. Knuth's <a href='https://cs.stanford.edu/~knuth/papers/cvm-note.pdf'>note</a> with
+alternate algorithm including some 'volatility'.</li>
+<li>Quanta Magazine <a href='https://www.quantamagazine.org/computer-scientists-invent-an-efficient-new-way-to-count-20240516/'>article</a>.</li>
+<li><a href='https://medium.com/@yourfuse/optimize-memory-and-performance-with-the-cvm-algorithm-in-javascript-a-comprehensive-guide-for-6bb33d1a5b63'>Explicative blog-post</a></li>
+<li>HN <a href='https://news.ycombinator.com/item?id=40379175#40399758'>thread</a></li>
+<li>another <a href='https://observablehq.com/@rreusser/counting-distinct-items-with-the-cvm-algorithm'>live demo</a> by Ricky Reusser.</li>
+</ul>
+</font>
 
 <script>
-const read_text = async (what) => {
+const ReadText = async (what) => {
+  ResetAnimation();
+  const input = document.getElementById('input');
+  const max_size = document.getElementById("max_size");
+  if (what == 2 || what == 3) {   // random 'words'
+    let str = "";
+    if (what == 2) {
+      for (let n = 0; n < 5000; ++n) {
+        str += Math.floor(Math.random() * 99999) + " ";
+        if ((n % 10) == 9) str += '\n';
+      }
+      max_size.value = 2000;
+    } else if (what == 3) {
+      for (let n = 0; n < 50000; ++n) {
+        const len = 1 + Math.floor(Math.random() * 3);
+        str += (Math.random() + 1).toString(36).substring(2, 2 + len);
+        if ((n % 10) == 9) str += '\n';
+        else str += " "
+      }
+      max_size.value = 2000;
+    }
+    input.innerHTML = str;
+    
+    main();
+    return;
+  }
   const url = (what == 0) ? "https://gist.githubusercontent.com/provpup/2fc41686eab7400b796b/raw/b575bd01a58494dfddc1d6429ef0167e709abf9b/hamlet.txt"
                           : "https://skal65535.github.io/CVM/DNA.txt";
-  console.log(url);
   await fetch(url).then(r => r.text()).then(
     (t) => {
-      console.log("Got text!", t.length);
-      document.getElementById('input').innerHTML = t;
+      input.innerHTML = t;
+      max_size.value = (what == 0 ? 100 : 2000);
       main();
     });
 };
@@ -110,7 +185,7 @@ function main() {
   params.set_nb_bins(document.getElementById("nb_bins").value);
   params.set_max_size(document.getElementById("max_size").value);
   params.set_reject_proba(document.getElementById("reject_proba").value / 100.);
-  process_text();
+  ProcessText();
 }
 
 function ChangeText() {
@@ -148,9 +223,7 @@ function Draw() {
   xmin -= 1.;
   const delta = 1. / (xmax - xmin);
   const nb_bins = Math.min(xmax + 1 - xmin, params.nb_bins);
-  let bins = new Array();
-  bins.length = nb_bins;
-  bins.fill(0);
+  let bins = Array(Math.floor(nb_bins)).fill(0);
   function bin(v) {
     return Math.round((v - xmin) * (bins.length - 1) * delta);
   }
@@ -184,14 +257,14 @@ function Draw() {
   const max_h = H - 20;
   const max_w = Math.max(1., unit - 1.);
   for (let n = 0; n < bins.length; ++n) {
-    const v = bins[n] * H / ymax;
+    const v = bins[n] * (max_h - 1) / ymax;
     ctx.fillRect(n * unit, max_h - v, max_w, v);
   }
   ctx.fillStyle = '#f33';
 
   const N = bin(params.expected_size);
   ctx.fillRect(N * unit, 5, unit / 2., max_h - 5);
-  ctx.fillText(params.expected_size + '(expected)', (N + 1.3) * unit, 15);
+  ctx.fillText(params.expected_size + ' (exact value)', (N + 1.3) * unit, 15);
 
   const dev = Deviation();
   ctx.fillStyle = '#000';
@@ -209,8 +282,13 @@ function Draw() {
 
 }
 
-function process_text() {
+function ResetAnimation() {
   params.id = -1;
+  params.total = 0;
+}
+
+function ProcessText() {
+  ResetAnimation();
   ChangeText();
 
   params.total = params.total_updates;
@@ -237,5 +315,7 @@ function Loop() {
 }
 
 </script>
+
+<a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
 </body>
 </html>
