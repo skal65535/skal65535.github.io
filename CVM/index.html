@@ -94,6 +94,30 @@ alternate algorithm including some 'volatility'.</li>
 <li>another <a href='https://observablehq.com/@rreusser/counting-distinct-items-with-the-cvm-algorithm'>live demo</a> by Ricky Reusser.</li>
 </ul>
 </font>
+<p>
+The CVM code itself is pretty straightforward:<br/>
+<pre><code><b>
+function CVM(words,       /* the stream */
+             max_size,    /* max buffer size */
+             reject_proba /* 0.5 by default */) {
+  let proba = 1.;
+  const words_set = new Set();
+  for (const w of words) {
+    words_set.delete(w);  // <- probably slow op overall
+    if (Math.random() < proba) words_set.add(w);
+    if (words_set.size == max_size) {   // buffer full?
+      const words_array = Array.from(words_set);
+      words_set.clear();
+      for (const W of words_array) {
+        if (Math.random() < reject_proba) words_set.add(W);
+      }
+      proba *= reject_proba;   // new round starts
+    }
+  }
+  return Math.floor(words_set.size / proba);  // estimate
+}
+</b></code></pre>
+
 
 <script>
 // The algo itself
@@ -325,7 +349,6 @@ function Loop() {
     ResetAnimation();
   }
 }
-
 </script>
 
 <a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
