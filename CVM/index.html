@@ -221,8 +221,13 @@ function Deviation() {
     sum += x;
     num += 1.;
   }
-  if (num > 1.) dev = (dev - sum * sum / num) / (num - 1.);
-  return Math.floor(Math.sqrt(dev) * 10.) / 10.;
+  if (num > 1.) {
+    dev = (dev - sum * sum / num) / (num - 1.);
+    sum /= num;
+  }
+  dev = Math.floor(Math.sqrt(dev) * 10.) / 10.;
+  sum = Math.floor(sum * 10.) / 10.;
+  return [sum, dev];
 }
 
 // simple Histogram drawing
@@ -242,6 +247,7 @@ function Draw() {
   const delta = 1. / (xmax - xmin);
   const nb_bins = Math.min(xmax + 1 - xmin, params.nb_bins);
   let bins = Array(Math.floor(nb_bins)).fill(0);
+
   function bin(v) {
     return Math.round((v - xmin) * (bins.length - 1) * delta);
   }
@@ -268,7 +274,7 @@ function Draw() {
   ctx.fillStyle = '#fefef0';
   ctx.fillRect(0, 0, W, H);
 
-  ctx.fillStyle = '#136';
+  ctx.fillStyle = '#358';
   const unit = W / bins.length;
   const max_h = H - 20;
   const max_w = Math.max(1., unit - 1.);
@@ -278,14 +284,27 @@ function Draw() {
   }
   ctx.fillStyle = '#f33';
 
-  const N = bin(params.expected_size);
-  ctx.fillRect(N * unit, 5, unit / 2., max_h - 5);
-  ctx.fillText(params.expected_size + ' (exact value)', (N + 1.3) * unit, 15);
+  // plot exact value
+  const N = Math.floor((params.expected_size - xmin) * W * delta);
+  ctx.fillRect(N, 5, 3, max_h - 5);
+  ctx.fillText(params.expected_size + ' (exact value)', N + 4, 15);
 
-  const dev = Deviation();
+  const [mean, dev] = Deviation();
   ctx.fillStyle = '#000';
+  ctx.fillText('mean:' + mean, 10, 15);
   ctx.fillText('sigma:' + dev, 10, 30);
   ctx.fillText('<rounds>:' + params.avg_rounds, 10, 45);
+
+  // plot confidence interval
+  ctx.fillStyle = '#3a4';
+  const L0 = (mean       - xmin) * W * delta;
+  const L1 = (mean - dev - xmin) * W * delta;
+  const L2 = (mean + dev - xmin) * W * delta;
+  const pos0 = 20;
+  ctx.fillRect(L0, pos0 + 10, 2, 30);
+  ctx.fillRect(L1, pos0 + 15, 2, 20);
+  ctx.fillRect(L2, pos0 + 15, 2, 20);
+  ctx.fillRect(L1, pos0 + 24, L2 - L1, 2);
 
   // ticks
   ctx.fillStyle = '#000';
