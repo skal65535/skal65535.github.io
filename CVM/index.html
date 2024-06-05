@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="../splats/style.css">
 </head>
 
-<body onload="ReadText(0);">
+<body onload="SetText('hamlet');">
 <h1><center>A <a href='https://arxiv.org/abs/2301.10191'>CVM algorithm</a> demo</center></h1>
 
 The CVM online algorithm <b>estimates the number of unique words</b> in a very very
@@ -40,33 +40,33 @@ estimation! It still is useful to estimate the space complexity of a proper
 second pass, e.g.<br/>
 <p>
 
-Predefined inputs: <input type='button' onclick='ReadText(0);' value='Hamlet'>
-<input type='button' onclick='ReadText(1);' value='DNA sequence'>
-<input type='button' onclick='ReadText(2);' value='Random 5-digit numbers'>
-<input type='button' onclick='ReadText(3);' value='Random "words"'>
+Predefined inputs: <input type='button' onclick='SetText("hamlet");' value='Hamlet'>
+<input type='button' onclick='SetText("DNA");' value='DNA sequence'>
+<input type='button' onclick='SetText("digits");' value='Random 5-digit numbers'>
+<input type='button' onclick='SetText("words");' value='Random "words"'>
 <p>
 <div>
   <input type="range" min="1" max="10000" value="50" id="max_size" 
     oninput="params.set_max_size(this.value);"
-    onchange="main();">
+    onchange="Main();">
   Max buffering size for unique words: <span id="max_size_value"></span><br/>
   <input type="range" min="0." max="100." value="50." id="reject_proba"
     oninput="params.set_reject_proba(this.value / 100.);"
-    onchange="main();">
+    onchange="Main();">
   Rejection proba: <span id="reject_proba_value">.5</span><br/>  
 </div>
 <p>
 Distribution of estimates:<br/>
-<canvas id="histo" width="512" height="256"></canvas><br/>
+<canvas id="histo" width="512" height="300"></canvas><br/>
 <input type="range" min="10" max="40" value="20" id="nb_bins"
   oninput="params.set_nb_bins(this.value); Draw();"
   onchange="params.set_nb_bins(this.value); Draw();">
   number of bins: <span id="nb_bins_value"></span>
 
 <p>
-<h3>Input text: <input type='button' onclick='main();' value='Text has changed. GO!'><br/></h3>
+<h3>Input text: <input type='button' onclick='Main();' value='Text has changed. GO!'><br/></h3>
 
-<textarea id="input" name="input" rows="8" cols="80" onchange='main();'>
+<textarea id="input" name="input" rows="8" cols="80" onchange='Main();'>
 'Tis sweet and commendable in your nature, Hamlet,
 To give these mourning duties to your father:
 But, you must know, your father lost a father;
@@ -94,21 +94,78 @@ alternate algorithm including some 'volatility'.</li>
 <li>another <a href='https://observablehq.com/@rreusser/counting-distinct-items-with-the-cvm-algorithm'>live demo</a> by Ricky Reusser.</li>
 </ul>
 </font>
+<p>
+The CVM code itself is pretty straightforward:<br/>
+<pre><code><b>
+function CVM(words,       /* the stream */
+             max_size,    /* max buffer size */
+             reject_proba /* 0.5 by default */) {
+  let proba = 1.;
+  const words_set = new Set();
+  for (const w of words) {
+    words_set.delete(w);  // <- probably slow op overall
+    if (Math.random() < proba) words_set.add(w);
+    if (words_set.size == max_size) {   // buffer full?
+      const words_array = Array.from(words_set);
+      words_set.clear();
+      for (const W of words_array) {
+        if (Math.random() < reject_proba) words_set.add(W);
+      }
+      proba *= reject_proba;   // new round starts
+    }
+  }
+  return Math.floor(words_set.size / proba);  // estimate
+}
+</b></code></pre>
+
 
 <script>
-const ReadText = async (what) => {
+// The algo itself
+function CVM(words, max_size, reject_proba) {
+  let proba = 1.;
+  let round = 0;
+  const words_set = new Set();
+  for (const w of words) {
+    words_set.delete(w);  // <- probably slow op overall
+    if (Math.random() < proba) words_set.add(w);
+    if (words_set.size == max_size) {
+      const words_array = Array.from(words_set);
+      words_set.clear();
+      for (const W of words_array) {
+        if (Math.random() < reject_proba) words_set.add(W);
+      }
+      proba *= reject_proba;
+      ++round;
+    }
+  }
+  return [round, Math.floor(words_set.size / proba)];
+}
+
+// Ground-truth
+function CountUniqueWords(words) {
+  let s = new Set();
+  for (let w of words) s.add(w);
+  return s.size;
+}
+</script>
+
+<script>
+
+///////////// less interesting stuff... ///////////
+
+async function SetText(what) {
   ResetAnimation();
   const input = document.getElementById('input');
   const max_size = document.getElementById("max_size");
-  if (what == 2 || what == 3) {   // random 'words'
+  if (what == "digits" || what == "words") {   // random 'words'
     let str = "";
-    if (what == 2) {
+    if (what == "digits") {
       for (let n = 0; n < 5000; ++n) {
         str += Math.floor(Math.random() * 99999) + " ";
         if ((n % 10) == 9) str += '\n';
       }
       max_size.value = 2000;
-    } else if (what == 3) {
+    } else if (what == "words") {
       for (let n = 0; n < 50000; ++n) {
         const len = 1 + Math.floor(Math.random() * 3);
         str += (Math.random() + 1).toString(36).substring(2, 2 + len);
@@ -119,18 +176,19 @@ const ReadText = async (what) => {
     }
     input.innerHTML = str;
     
-    main();
+    Main();
     return;
   }
-  const url = (what == 0) ? "https://gist.githubusercontent.com/provpup/2fc41686eab7400b796b/raw/b575bd01a58494dfddc1d6429ef0167e709abf9b/hamlet.txt"
-                          : "https://skal65535.github.io/CVM/DNA.txt";
+  let url = "https://www.education.gouv.fr/declaration-des-droits-de-l-homme-et-du-citoyen-du-26-aout-1789-10544";
+  if (what == "hamlet") url = "https://gist.githubusercontent.com/provpup/2fc41686eab7400b796b/raw/b575bd01a58494dfddc1d6429ef0167e709abf9b/hamlet.txt";
+  if (what == "DNA")    url = "https://skal65535.github.io/CVM/DNA.txt";
   await fetch(url).then(r => r.text()).then(
     (t) => {
       input.innerHTML = t;
       max_size.value = (what == 0 ? 100 : 2000);
-      main();
+      Main();
     });
-};
+}
 
 let params = {
   text: [],
@@ -153,48 +211,6 @@ let params = {
   avg_rounds: 0,
 };
 
-function FlipCoins(p) { return (Math.random() < p); }
-
-function CVM(words, max_size, reject_proba) {
-  let proba = 1.;
-  let round = 0;
-  const words_set = new Set();
-  for (const w of words) {
-    words_set.delete(w);
-    if (Math.random() < proba) words_set.add(w);
-    if (words_set.size == max_size) {
-      const words_array = Array.from(words_set);
-      words_set.clear();
-      for (const W of words_array) {
-        if (Math.random() < reject_proba) words_set.add(W);
-      };
-      proba *= reject_proba;
-      ++round;
-    }
-  }
-  return [round, Math.floor(words_set.size / proba)];
-}
-
-function CountUniqueWords(words) {
-  let s = new Set();
-  for (let w of words) s.add(w);
-  return s.size;
-}
-
-function main() {
-  params.set_nb_bins(document.getElementById("nb_bins").value);
-  params.set_max_size(document.getElementById("max_size").value);
-  params.set_reject_proba(document.getElementById("reject_proba").value / 100.);
-  ProcessText();
-}
-
-function ChangeText() {
-  let text = document.getElementById("input").value;
-  params.text = text.match(/\b\w+\b/g).map(x => x.toLowerCase()) || [];
-  params.expected_size = CountUniqueWords(params.text);
-  params.results = [];
-}
-
 /////////// VISU ///////////
 
 function Deviation() {
@@ -209,7 +225,9 @@ function Deviation() {
   return Math.floor(Math.sqrt(dev) * 10.) / 10.;
 }
 
+// simple Histogram drawing
 function Draw() {
+  // collect and bound histogram
   let xmin = 1e8, xmax = -1e8;
   for (const x of params.results) {
     xmin = Math.min(xmin, x);
@@ -240,16 +258,14 @@ function Draw() {
     return;
   }
 
-  console.log("Draw", nb_bins, xmin, xmax, ymax, params.expected_size);
+//  console.log("Draw", nb_bins, xmin, xmax, ymax, params.expected_size);
 
   const canvas = document.querySelector("#histo");
-  const W = canvas.width;
-  const H = canvas.height;
+  const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext('2d');
-  canvas.style.display = 'inline-block';
   ctx.font = "bold 15px Arial";
 
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = '#fefef0';
   ctx.fillRect(0, 0, W, H);
 
   ctx.fillStyle = '#136';
@@ -271,20 +287,40 @@ function Draw() {
   ctx.fillText('sigma:' + dev, 10, 30);
   ctx.fillText('<rounds>:' + params.avg_rounds, 10, 45);
 
+  // ticks
   ctx.fillStyle = '#000';
   const max_ticks = 5;
   for (let n = 0; n < max_ticks; ++n) {
     let v = xmin + n * (xmax - xmin) / max_ticks;
     v = Math.floor(v / 10) * 10;
     const X = (v - xmin) * W * delta;
-    ctx.fillText(v, X, max_h + 15);
+    ctx.fillText(v, X + 2, max_h + 15);
+    ctx.fillRect(X, max_h - 5, 1, 20);
   }
 
+  // progress bar
+  ctx.fillStyle = '#d46';
+  const l = (1. - params.total / params.total_updates) * W;
+  ctx.fillRect(0, H - 2, l, 2);
 }
 
 function ResetAnimation() {
   params.id = -1;
   params.total = 0;
+}
+
+function Main() {
+  params.set_nb_bins(document.getElementById("nb_bins").value);
+  params.set_max_size(document.getElementById("max_size").value);
+  params.set_reject_proba(document.getElementById("reject_proba").value / 100.);
+  ProcessText();
+}
+
+function ChangeText() {
+  let text = document.getElementById("input").value;
+  params.text = text.match(/\b\w+\b/g).map(x => x.toLowerCase()) || [];
+  params.expected_size = CountUniqueWords(params.text);
+  params.results = [];
 }
 
 function ProcessText() {
@@ -310,10 +346,9 @@ function Loop() {
   if (params.total > 0 && params.id >= 0) {
     window.requestAnimationFrame(Loop);
   } else {
-    params.id = -1;
+    ResetAnimation();
   }
 }
-
 </script>
 
 <a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
