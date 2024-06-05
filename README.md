@@ -90,6 +90,13 @@ open-sourced code for fun :) Here are some side-projects demo pages:
 
    Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 
+## animation of the [CVM algorithm](https://github.com/skal65535/CVM) library
+
+   ![CVM](https://github.com/skal65535/CVM/cvm.thumb.webp) The CVM algorithm
+   produces an online [estimate of the number of unique elements](https://en.wikipedia.org/wiki/Count-distinct_problem#CVM_Algorithm)
+   in an input stream. This [javascript animation](https://github.com/skal65535/CVM) shows how the
+   estimation histogram evolves depending on the parameters.
+
 ## Some shaders made with ShaderToy...
 
   * [Voronoi experiments](https://www.shadertoy.com/view/ftByDD)
