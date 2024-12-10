@@ -41,9 +41,10 @@
     <font size='-1'>Drag and drop image on the canvas below.</font>
   </div>
   <label class='button' for="FileElmt"
-         style='top:80px; left:750px;'>select an image</label>
+         style='top:80px; left:50px;'>select an image</label>
   <div>
-    <canvas id="input-image" width='512px' height='912px' style='display:none;'>
+    <center>
+    <canvas id="input-image" width='256px' height='400px' style='display:none;'>
       <input type="file" id="FileElmt" style='display:none;'
              multiple accept="image/*" onchange="HandleFile(this.files[0])">
     </canvas>
@@ -59,6 +60,7 @@
       <td><canvas id="H2-canvas" width='256px' height='200px'></canvas></td>
     </tr>
     </table>
+    </center>
   </div>
   <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
     <input type="submit" value="skal 2024" id="skal-back"/>
