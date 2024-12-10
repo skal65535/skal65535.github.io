@@ -1,0 +1,230 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Show me the deltas!</title>
+<link rel="stylesheet" href="../splats/style.css">
+<style>
+#main-area.highlight { border-color: purple; }
+.button {
+  display: inline-block;
+  padding: 8px;
+  background: #bbc;
+  cursor: pointer;
+  border-radius: 5px;
+  border: 3px solid #334;
+  z-index:1;
+  position:relative;
+  font-size: 14px;
+}
+.button:hover {
+  background: #cce;
+}
+#delta-canvas {
+  z-index:0;
+  border: 2px solid #000; border-radius: 20px;
+  margin: 0px;
+  background: #000;
+  box-shadow: 0 0 8px black;
+  outline: 1px solid black;
+}
+</style>
+</head>
+
+<body onload="main();">
+
+<div id="main-area" style='width: 1024px; height: 930px;'>
+  <div height='100px'>
+    This is a small tool for showing the image's delta
+    <br/>
+    <font size='-1'>Drag and drop image on the canvas below.</font>
+  </div>
+  <label class='button' for="FileElmt"
+         style='top:80px; left:750px;'>select an image</label>
+  <div>
+    <canvas id="input-image" width='512px' height='912px' style='display:none;'>
+      <input type="file" id="FileElmt" style='display:none;'
+             multiple accept="image/*" onchange="HandleFile(this.files[0])">
+    </canvas>
+    <table>
+    <tr>
+      <td><canvas id="main-canvas" width='512px' height='912px'></canvas></td>
+      <td width='100px'></td>
+      <td><canvas id="delta-canvas" width='512px' height='912px'></canvas></td>
+    </tr>
+    <tr>
+      <td><canvas id="H1-canvas" width='256px' height='200px'></canvas></td>
+      <td width='100px'></td>
+      <td><canvas id="H2-canvas" width='256px' height='200px'></canvas></td>
+    </tr>
+    </table>
+  </div>
+  <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
+    <input type="submit" value="skal 2024" id="skal-back"/>
+  </form>
+</div>
+
+<script>
+"use strict";
+
+////////////////////////////////////////////////////////////////////////////////
+
+const params = {  // Global parameters
+  original: null,
+  image: null,
+  delta: null,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Drag'n'Drop
+
+function PreventDefaults (e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+function HandleDrop(e) {
+  HandleFile(e.dataTransfer.files[0]);
+}
+function HandleFile(file) {
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onloadend = function() {
+    params.original = new Image();
+    params.original.onload = function() { Render(); };
+    params.original.src = reader.result;
+  }
+}
+
+function SetupDragAndDrop() {
+  const dropArea = document.getElementById('main-area');
+  function highlight(e) { dropArea.classList.add('highlight'); }
+  function unhighlight(e) { dropArea.classList.remove('highlight'); }
+
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
+    name => { dropArea.addEventListener(name, PreventDefaults, false); }
+  );
+  ['dragenter', 'dragover'].forEach(
+    name => { dropArea.addEventListener(name, highlight, false); }
+  );
+  ['dragleave', 'drop'].forEach(
+    name => { dropArea.addEventListener(name, unhighlight, false); }
+  );
+  dropArea.addEventListener('drop', HandleDrop, false)
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function main() {
+  params.original = new Image();
+  params.original.src = "./SF.webp";
+  params.original.onload = function() { Render(); };
+
+  SetupDragAndDrop();
+}
+
+function Render() {
+  const image = params.original;
+  const canvas = document.querySelector("#input-image");
+  let Wo = canvas.width, Ho = canvas.height;
+  let W = image.width, H = image.height;
+  if (W > Wo || H > Ho) {   // needs resizing?
+    if (W * Ho > Wo * H) {
+      H = Math.floor(H * Wo / W);
+      W = Wo;
+    } else {
+      W = Math.floor(W * Ho / H);
+      H = Ho;
+    }
+  }
+  image.width = W;
+  image.height = H;
+  canvas.width = W;
+  canvas.height = H;
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(image, 0, 0, W, H);
+
+  ShowDelta();
+}
+
+function ShowDelta() {
+  const input = document.querySelector("#input-image");
+  const input_ctx = input.getContext("2d");
+  let Wo = input.width, Ho = input.height;
+
+  const canvas1 = document.querySelector("#main-canvas");
+  const ctx1 = canvas1.getContext("2d");
+  const canvas2 = document.querySelector("#delta-canvas");
+  const ctx2 = canvas2.getContext("2d");
+  if (!ctx1 || !ctx2) return;
+
+  canvas1.width = Wo;
+  canvas1.height = Ho;
+  canvas2.width = Wo;
+  canvas2.height = Ho;
+
+  const pixels = input_ctx.getImageData(0, 0, Wo, Ho);
+  const d = pixels.data;
+  const pixels1 = ctx1.getImageData(0, 0, Wo, Ho);
+  const d1 = pixels1.data;
+  const pixels2 = ctx2.getImageData(0, 0, Wo, Ho);
+  const d2 = pixels2.data;
+
+  const H1 = new Array(256), H2 = new Array(256)
+  H1.fill(0);
+  H2.fill(0);
+  const stride = 4 * Wo;
+  for (let y = 0; y < Ho; ++y) {
+    for (let x = 0; x < Wo; ++x) {
+      const off0 = y * stride + x * 4;
+      const r = d[off0 + 0], g = d[off0 + 1], b = d[off0 + 2];
+      const gray = Math.floor(r * 0.2126 + g * 0.7152 + b * 0.0722);
+      d1[off0 + 0] = gray;
+      d1[off0 + 1] = gray;
+      d1[off0 + 2] = gray;
+      d1[off0 + 3] = 255;
+      H1[gray] += 1;
+      let A = (x > 0) ? d1[off0 - 4] : 128;
+      let B = (y > 0) ? d1[off0 - stride] : 128;
+      let C = (x > 0 && y > 0) ? d1[off0 - stride - 4] : 128;
+      function Swap([A, B]) { return (A < B) ? [A, B] : [B, A]; }
+      [A, B] = Swap([A, B]);
+      [B, C] = Swap([B, C]);
+      [A, B] = Swap([A, B]);
+      // -> A <= B <= C.   'B' is the median-of-3
+      const delta = Math.max(0, Math.min((gray - B) + 128, 255));
+      d2[off0 + 0] = delta;
+      d2[off0 + 1] = delta;
+      d2[off0 + 2] = delta;
+      d2[off0 + 3] = 255;
+      H2[delta] += 1;
+    }
+  }
+  ctx1.putImageData(pixels1, 0, 0);
+  ctx2.putImageData(pixels2, 0, 0);
+  DrawHisto(document.querySelector("#H1-canvas"), H1);
+  DrawHisto(document.querySelector("#H2-canvas"), H2);
+}
+
+function DrawHisto(canvas, H) {
+  const ctx = canvas.getContext("2d");
+  const Wo = canvas.width, Ho = canvas.height;
+  const max = Math.max(...H);
+
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, Wo, Ho);
+
+  ctx.fillStyle = 'black';
+  for (let i = 0; i < 256; ++i) {
+    const h = (max - H[i]) * (Ho - 1) / max;
+    ctx.fillRect(i * Wo / 256, h, 2, Ho - 1);
+  }
+}
+
+
+</script>
+
+</body>
+</html>
