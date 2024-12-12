@@ -38,9 +38,7 @@
     <h3>Arithmetic coding, visually</h3>
   </div>
   <div id="x"></div>
-  <br/>
   <canvas id="main-canvas" width='512px' height='512px'></canvas>
-  <br/>
   <div id="probas"></div>
   </center>
 </div>
@@ -207,12 +205,18 @@ function Render() {
     }
   }
   document.querySelector("#x").innerHTML =
-    "<b> x = " + state.toFixed(4) + "</b>, " +
-    "<b> coded x = " + coded_x + "</b>, " +
-    "<b> Message = " + message + "</b><br/>" +
-    "\u03B5 = " + eps.toFixed(4) + ", entropy = " + S.toFixed(2)
-    + "<br/> S0 = " + S0.toFixed(2) + "bits / letter => "
-    + (S0 * level).toFixed(2) + "bits total";
+    "<table width='800px'><tr>" +
+    "<td><b> x = " + state.toFixed(4) + "</b></td>" +
+    "<td><b> coded x = " + coded_x + "</b></td>" +
+    "<td><b> Message = " + message + "</b></td>" +
+    "</tr><tr>" +
+    "<td>\u03B5 = " + eps.toFixed(4) + "</td>" +
+    "<td>entropy = " + S.toFixed(2) + "</td>" +
+    "</tr><tr>" +
+    "<td colspan='3'>base theoretical entropy = " + S0.toFixed(2) + " bits / letter => " +
+    (S0 * level).toFixed(2) + "bits total</td>" +
+    "</tr><table>";
+
 
   document.querySelector("#probas").innerHTML =
     "pA = " + (pA * 100.).toFixed(1) + "%,  " +
