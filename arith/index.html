@@ -1,0 +1,226 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Arithmetic coding demo</title>
+<style>
+#main-canvas {
+  z-index:0;
+  border: 2px solid #000;
+  margin: 0px;
+  background: #000;
+  box-shadow: 0 0 8px black;
+  outline: 1px solid black;
+}
+.button {
+  display: inline-block;
+  padding: 8px;
+  background: #bbc;
+  cursor: pointer;
+  border-radius: 5px;
+  border: 3px solid #334;
+  z-index:1;
+  position:relative;
+  font-size: 14px;
+}
+.button:hover {
+  background: #cce;
+}
+</style>
+</head>
+
+<body onload="main();">
+
+<div id="main-area" style='width: 1024px; height: 700px; font-size:28px;'>
+  <center>
+  <div height='100px'>
+    <h3>Arithmetic coding, visually</h3>
+  </div>
+  <div id="x"></div>
+  <br/>
+  <canvas id="main-canvas" width='512px' height='512px'></canvas>
+  <br/>
+  <div id="probas"></div>
+  </center>
+</div>
+
+<script>
+"use strict";
+
+////////////////////////////////////////////////////////////////////////////////
+
+var state = 0.;
+var level = 1;
+var max_level = 5;
+var pA = .5, pB = .2, pC = .3;
+var message = "";
+var s_bounds = [0., 1.];   // state bounds
+
+////////////////////////////////////////////////////////////////////////////////
+
+function EventToXY(canvas, e) {
+  const bounds = canvas.getBoundingClientRect();
+  const x = (e.x - bounds.left) / canvas.width;
+  const y = (e.y - bounds.top) / canvas.height;
+  return [x, y];
+}
+
+function main() {
+  state = 0.;
+  const canvas = document.querySelector("#main-canvas");
+  canvas.addEventListener('mousemove', (e) => {
+    const canvas = document.querySelector("#main-canvas");
+    const [x, y] = EventToXY(canvas, e);
+    state = x;
+    level = Math.floor(y * max_level) + 1;
+    Render();
+  });
+  Render();
+}
+
+function get_color(A, B, state, xm, xM) {
+  return (state >= xm && state < xM) ? A : B;
+}
+
+function check_char(C, state, xm, xM) {
+  if (state >= xm && state < xM) {
+    message += C;
+    s_bounds = [xm, xM];
+  }
+}
+function FillRect(ctx, x0, y0, dx, dy, color, state, xm, xM, letter) {
+  const is_in = (state >= xm && state < xM);
+  ctx.fillStyle = color + (is_in ? 'ff' : 'a0');
+  ctx.strokeStyle = 'black';
+  ctx.beginPath();
+  ctx.rect(x0, y0, dx, dy);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x0, y0, dx, dy);
+  ctx.closePath();
+  ctx.fill();
+  if (is_in) {
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    const font = ctx.font;
+    const fsize = Math.min(Math.floor(3 * dx / 5), 4 * dy / 5);
+    ctx.font = fsize + "px Verdana";
+    ctx.fillStyle = 'black';
+    ctx.fillText(letter, x0 + dx / 2 - fsize / 2, y0 + 2 * dy / 3);
+    ctx.font = font;
+    check_char(letter, state, xm, xM);
+  }
+}
+
+function DrawPoint(ctx, x, y, size, color) {
+  ctx.beginPath();
+  ctx.fillStyle = color;
+  ctx.arc(x, y, size, 0, 2 * Math.PI, false);
+  ctx.fill();
+  ctx.closePath();
+  ctx.fill();
+}
+
+function Fill(l, max_l, xm, xM, ym, yM) {
+  const canvas = document.querySelector("#main-canvas");
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const dx = xM - xm;
+  const x0 = xm;
+  const x1 = pA * dx + x0;
+  const x2 = pB * dx + x1;
+  const x3 = pC * dx + x2;
+  if (l == max_l) {
+    FillRect(ctx, x0 * W, ym, (x1 - x0) * W, yM - ym, '#8af050', state, x0, x1, 'A');
+    FillRect(ctx, x1 * W, ym, (x2 - x1) * W, yM - ym, '#c05430', state, x1, x2, 'B');
+    FillRect(ctx, x2 * W, ym, (x3 - x2) * W, yM - ym, '#3480f4', state, x2, x3, 'C');
+  } else {
+    Fill(l + 1, max_l, x0, x1, ym, yM);
+    Fill(l + 1, max_l, x1, x2, ym, yM);
+    Fill(l + 1, max_l, x2, x3, ym, yM);
+  }
+  if (l == 0) {
+    ctx.lineWidth = 2;
+    ctx.stokeStyle = '#a0a0a0';
+    ctx.beginPath();
+    ctx.moveTo(xm * W, yM);
+    ctx.lineTo(xM * W, yM);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+}
+
+function Render() {
+  const canvas = document.querySelector("#main-canvas");
+  const W = canvas.width, H = canvas.height;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000000';
+  ctx.clearRect(0, 0, W, H);
+  message = "";
+  s_bounds = [0., 1.];
+  for (let l = 0; l < level; ++l) {
+    let ym = Math.floor(l * H / max_level);
+    let yM = Math.min(Math.floor((l + 1) * H / max_level), H);
+    Fill(0, l, 0., 1., ym, yM);
+  }
+
+  const eps = s_bounds[1] - s_bounds[0];
+  const S = -Math.log2(eps);
+  const S0 = -pA * Math.log2(pA) - pB * Math.log2(pB) - pC * Math.log2(pC);
+
+  // draw terminal points ('haystack')
+  const Y = level * H / max_level - 5;
+  for (let x = ((s_bounds[0] + s_bounds[1]) / 2) % eps; x < 1.; x += eps) {
+    const color = '#ffffff';
+    DrawPoint(ctx, W * x, Y, 3, color);
+    ctx.beginPath();
+    ctx.lineWidth = 2;
+    ctx.moveTo(W * (x - eps / 2), Y - 10);
+    ctx.lineTo(W * (x - eps / 2), Y + 5);
+    ctx.closePath();
+    ctx.strokeStyle = color;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+
+  ctx.fillStyle = '#ffffff60';
+  ctx.fillRect(s_bounds[0] * W, 0, eps * W, H);
+  ctx.fillStyle = '#ffffffff'
+  ctx.fillRect(state * W, 0, 3, H);
+  ctx.font = "32px Verdana";
+  ctx.fillText("0...", 5, 34);
+  ctx.fillText("...1", W - 60, 34);
+
+  // find the minimum number of digits to use for coding
+  let coded_x = s_bounds[0];
+  for (let d = 1; d < 8; ++d) {
+    const X0 = s_bounds[0].toFixed(d);
+    const X1 = s_bounds[1].toFixed(d);
+    if (X0 != X1) {
+      coded_x = ((s_bounds[0] + s_bounds[1]) / 2).toFixed(d);
+      break;
+    }
+  }
+  document.querySelector("#x").innerHTML =
+    "<b> x = " + state.toFixed(4) + "</b>, " +
+    "<b> coded x = " + coded_x + "</b>, " +
+    "<b> Message = " + message + "</b><br/>" +
+    "\u03B5 = " + eps.toFixed(4) + ", entropy = " + S.toFixed(2)
+    + "<br/> S0 = " + S0.toFixed(2) + "bits / letter => "
+    + (S0 * level).toFixed(2) + "bits total";
+
+  document.querySelector("#probas").innerHTML =
+    "pA = " + (pA * 100.).toFixed(1) + "%,  " +
+    "pB = " + (pB * 100.).toFixed(1) + "%,  " +
+    "pC = " + (pC * 100.).toFixed(1) + "%<br/>";
+}
+
+</script>
+
+</body>
+</html>
