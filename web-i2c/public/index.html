@@ -13,8 +13,10 @@
 
 <textarea id='interface' rows="20" cols="50" readOnly></textarea>
 <br/>
-<button id='connect' onclick='connect();'>CONNECT</button>
-<button id='disconnect' onclick='disconnect();'>DISCONNECT</button>
+<button id='connect' onclick='connect();' style='display: initial;';>CONNECT</button>
+<button id='WHOAMI' onclick='WHOAMI();' style='display: none;'>WHOAMI</button>
+<button id='infos' onclick='infos();' style='display: none;'>INFOS</button>
+<button id='disconnect' onclick='disconnect();' style='display: none;'>DISCONNECT</button>
 </br>
 
 <script src="./i2c.js"></script>
@@ -24,6 +26,8 @@
 
 const connect_button = document.getElementById('connect');
 const disconnect_button = document.getElementById('disconnect');
+const WHOAMI_button = document.getElementById('WHOAMI');
+const info_button = document.getElementById('infos');
 const text = document.getElementById('interface');
 
 var I2C = undefined;
@@ -35,6 +39,13 @@ function main() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+async function print_infos() {
+  const hdr = I2C.get_flash_status();
+  hdr.forEach(s => text.innerHTML += " == " + s + "\n");
+  const str = await I2C.get_status();
+  str.forEach(s => text.innerHTML += " = " + s + "\n");
+}
+
 async function connect() {
   if (I2C == undefined) {
     I2C = new I2C_Device();
@@ -44,12 +55,11 @@ async function connect() {
         return;  // error
       }
       connect_button.style.display = 'none';
+      WHOAMI_button.style.display = 'initial';
+      info_button.style.display = 'initial';
       disconnect_button.style.display = 'initial';
       text.innerHTML = "Started.\n";
-      const hdr = I2C.get_flash_status();
-      hdr.forEach(s => text.innerHTML += " == " + s + "\n");
-      const str = await I2C.get_status();
-      str.forEach(s => text.innerHTML += " = " + s + "\n");
+      await print_infos();
     });
   }
 }
@@ -57,10 +67,33 @@ async function connect() {
 async function disconnect() {
   if (I2C == undefined) return;
   connect_button.style.display = 'initial';
+  WHOAMI_button.style.display = 'none';
+  info_button.style.display = 'none';
   disconnect_button.style.display = 'none';
   await I2C.disconnect();
   I2C = undefined;
   text.innerHTML = "Disconnected.";
+}
+
+const LSM_ADDRESS = 0x6a;    // I2C: default LSMxxx device address
+const LSM_WHO_AM_I = 0x0f;
+const LSM_WAI = 0x6c;
+
+async function WHOAMI() {
+  if (I2C == undefined) return;
+  text.innerHTML = "WHO AM I?\n";
+  const ok = await I2C.is_connected();
+  const is_lsm = ok && await I2C.is_writable(LSM_ADDRESS);
+  const id = is_lsm ? (await I2C.read_byte(LSM_ADDRESS, LSM_WHO_AM_I)) : 0x00;
+
+  text.innerHTML += `Connected: ${ok}\n`;
+  text.innerHTML += `Is_LSM: ${is_lsm}\n`;
+  text.innerHTML += `id: ${id}\n`;
+}
+
+async function infos() {
+  if (I2C == undefined) return;
+  await print_infos();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
