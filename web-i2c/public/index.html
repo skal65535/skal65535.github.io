@@ -1,6 +1,5 @@
 <!-- I2C interface in a browser -->
 
-
 <!DOCTYPE html>
 <html>
 
@@ -71,27 +70,111 @@ class I2C_Device {
           this.device.addEventListener('inputreport', resolve, { once: true });
       });
   }
- 
+
+  async sleep(ms) {
+    await new Promise(r => setTimeout(r, ms));
+  }
+
   async send_flash_command(desc) {
     return to_string(await this.send_command(READ_FLASH, desc));
   }
 
-  async send_command(cmd, desc) {
-    this.report[0] = cmd;
-    this.report[1] = desc;
+  async finish_command() {
     await this.device.sendReport(this.reportId, this.report);
     const { reportId, data } = await this.make_response();
     return new Uint8Array(data.buffer);
   }
 
-  async reset_device() {
-    this.report[0] = RESET;
-    this.report[1] = 0xab;
-    this.report[2] = 0xcd;
-    this.report[3] = 0xef;
-    await this.device.sendReport(this.reportId, this.report);  // no answer expected!
-    await new Promise(r => setTimeout(r, 1000));   // 1s sleep
+  init_report(cmd, array) {
+    this.report.fill(0);
+    this.report[0] = cmd;
+    for (let (slot, v) of array) {
+      this.report[slot] = v;
+    }
   }
+
+  async send_command(cmd, desc) {
+    this.init_report(cmd, [(1, desc)]);
+    return await this.finish_command();
+  }
+
+  async reset_device() {
+    this.init_report(RESET, [(1, 0xab), (2, 0xcd), (3, 0xef)]);
+    await this.device.sendReport(this.reportId, this.report);  // no answer expected!
+    this.sleep(1000);
+  }
+
+  async set_clock(divider, duty) {
+    if (divider == 0 || divider > 7) divider = 4;   // 3MHz
+    const v2 = 0x80 | (duty & 0x18) | (divider & 7);  // table 3-37const
+    this.init_report(SET_SRAM, [(2, v2)]);
+    return await this.finish_command();
+  }
+
+  async set_divider(divider) {
+    this.init_report(STATUS_SET, [(3, 0x20), (4, divider)]);   // Table 3-1
+    return await this.finish_command();
+  }
+
+  async is_connected() {
+    const data = await this.send_command(STATUS_SET);
+    return (data[0] == STATUS_SET);
+  }
+
+  async is_writable(slave) {
+    if (slave >= 128) return false;
+    this.init_report(I2C_WRITE, [(3, slave * 2)]);
+    const data = this.finish_command();
+    if (data[1] != 0) return false;
+    if (this.get_state() != 0) this.cancel();
+    return true;
+  }
+
+  async get_state() {
+    const data = await this.send_command(STATUS_SET);
+    return data[0];
+  }
+
+  async cancel() {
+    this.init_report(STATUS_SET, [(2, 0x10)]);
+    await this.finish_command();
+  }
+
+  wait_state(expected, nb_try) {
+    while (nb_try-- > 0) {
+      const state = this.get_state();
+      if (state == expected) return true;
+      this.sleep(50);
+    }
+    return false;
+  }
+
+  read(slave, reg, out) {
+    if (reg >= 128 || data.len >= 60) return false;
+    this.cancel();
+
+    // Table 3-26:
+    this.init_report(I2C_WRITE, [(1, 1), (3, slave * 2), (4, reg)]);
+    await this.finish_command();
+    this.init_report(I2C_READ_RPT, [(1, data.len), (3, slave * 2 + 1)]);
+    await this.finish_command();
+    if (!this.wait_state(85, 10)) return false;
+
+    // Table 3-30 / 3-31:
+    let data = await this.send_command(I2C_READ_GET);
+    if (data[3] != data.len) return false;
+    out = data.slice(4, len);
+    return true;
+  }
+
+  write(slave, reg, data) {
+    if (reg >= 128) return false;
+    this.init_report(I2C_WRITE, [(1, 2), (3, slave * 2), (4, reg), (5, data)]);
+    await this.finish_command();
+    return true;
+  }
+
+////////////////////////////////////////////////////////////////////////////////
 
   async connect() {
     if (this.device == null) {
@@ -113,7 +196,9 @@ class I2C_Device {
 
     await this.device.open()
       .then(() => console.log("HID Device opened"))
-      .then(() => {
+      .then(async () => {
+        await this.set_clock((5 /* 1.5 MHz */, 0x18 /* duty < 75%*/);
+        await this.set_divider(26);
 /*
         console.log("COLLECTIONS:");
         for (let r of this.device.collections) {
