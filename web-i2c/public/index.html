@@ -11,268 +11,47 @@
 <body onload="main();">
 <h1><center>Web-I2C: an I2C interface in a browser</center></h1>
 
-<textarea id='interface' rows="10" cols="25" readOnly></textarea><br/>
-<button id='connect' onclick='connect();'>CONNECT</button></br>
-<button id='disconnect' onclick='disconnect();'>DISCONNECT</button></br>
+<textarea id='interface' rows="20" cols="50" readOnly></textarea>
+<br/>
+<button id='connect' onclick='connect();'>CONNECT</button>
+<button id='disconnect' onclick='disconnect();'>DISCONNECT</button>
+</br>
+
+<script src="./i2c.js"></script>
 
 <script>
 "use strict";
 
-////////////////////////////////////////////////////////////////////////////////
-// "MCP2221 USB-I2C/UART Combo"
-
 const connect_button = document.getElementById('connect');
 const disconnect_button = document.getElementById('disconnect');
+const text = document.getElementById('interface');
 
 var I2C = undefined;
 
 function main() {
   I2C = undefined;
-}
-
-const FLASH_MANUFACTURER   = 0x02;
-const FLASH_PRODUCT        = 0x03;
-const FLASH_SERIAL         = 0x04;
-const FLASH_FACTORY_SERIAL = 0x05;
-
-const STATUS_SET    = 0x10;   // Table 3-1 / 3-2
-const READ_FLASH    = 0xB0;   // Table 3-3
-const I2C_WRITE     = 0x90;   // Table 3-20 / 3-21
-const I2C_WRITE_RPT = 0x92;   // Table 3-22 / 3-23
-const I2C_READ      = 0x91;   // launch the 'read' command
-const I2C_READ_RPT  = 0x93;   // read w/ repeated start. Table 3-28 / 3-29
-const I2C_READ_GET  = 0x40;   // retrieve the read data once command is completed
-
-const SET_SRAM  = 0x60;       // table 3-36 / 3-37
-const GET_SRAM  = 0x61;       // table 3-38 / 3-39  
-const RESET     = 0x70;       // table 3-40
-
-function to_string(data) {
-  if (data[3] != 3) return "error";   // error
-  const len = data[2];
-  const string = new TextDecoder("utf-16").decode(data.slice(4, len));
-  return string;
-}
-function le_16s(data, off) { return (data[off + 1] << 8) | data[off]; }
-
-class I2C_Device {
-  constructor() {
-    this.device = null;
-    this.MCP2221_filter = [{ 'vendorId': 1240, 'productId': 221 }];
-    this.report = new Uint8Array(64);
-    this.reportId = 0;  // always
-  }
-
-  // prepare the promise that will wait for an inputreport event
-  // https://stackoverflow.com/questions/73137521/wait-for-webhid-response-to-be-ready
-  make_response() {
-    return new Promise((resolve) => {
-          this.device.addEventListener('inputreport', resolve, { once: true });
-      });
-  }
-
-  async sleep(ms) {
-    await new Promise(r => setTimeout(r, ms));
-  }
-
-  async send_flash_command(desc) {
-    return to_string(await this.send_command(READ_FLASH, desc));
-  }
-
-  async finish_command() {
-    await this.device.sendReport(this.reportId, this.report);
-    const { reportId, data } = await this.make_response();
-    return new Uint8Array(data.buffer);
-  }
-
-  init_report(cmd, array) {
-    this.report.fill(0);
-    this.report[0] = cmd;
-    for (let (slot, v) of array) {
-      this.report[slot] = v;
-    }
-  }
-
-  async send_command(cmd, desc) {
-    this.init_report(cmd, [(1, desc)]);
-    return await this.finish_command();
-  }
-
-  async reset_device() {
-    this.init_report(RESET, [(1, 0xab), (2, 0xcd), (3, 0xef)]);
-    await this.device.sendReport(this.reportId, this.report);  // no answer expected!
-    this.sleep(1000);
-  }
-
-  async set_clock(divider, duty) {
-    if (divider == 0 || divider > 7) divider = 4;   // 3MHz
-    const v2 = 0x80 | (duty & 0x18) | (divider & 7);  // table 3-37const
-    this.init_report(SET_SRAM, [(2, v2)]);
-    return await this.finish_command();
-  }
-
-  async set_divider(divider) {
-    this.init_report(STATUS_SET, [(3, 0x20), (4, divider)]);   // Table 3-1
-    return await this.finish_command();
-  }
-
-  async is_connected() {
-    const data = await this.send_command(STATUS_SET);
-    return (data[0] == STATUS_SET);
-  }
-
-  async is_writable(slave) {
-    if (slave >= 128) return false;
-    this.init_report(I2C_WRITE, [(3, slave * 2)]);
-    const data = this.finish_command();
-    if (data[1] != 0) return false;
-    if (this.get_state() != 0) this.cancel();
-    return true;
-  }
-
-  async get_state() {
-    const data = await this.send_command(STATUS_SET);
-    return data[0];
-  }
-
-  async cancel() {
-    this.init_report(STATUS_SET, [(2, 0x10)]);
-    await this.finish_command();
-  }
-
-  wait_state(expected, nb_try) {
-    while (nb_try-- > 0) {
-      const state = this.get_state();
-      if (state == expected) return true;
-      this.sleep(50);
-    }
-    return false;
-  }
-
-  read(slave, reg, out) {
-    if (reg >= 128 || data.len >= 60) return false;
-    this.cancel();
-
-    // Table 3-26:
-    this.init_report(I2C_WRITE, [(1, 1), (3, slave * 2), (4, reg)]);
-    await this.finish_command();
-    this.init_report(I2C_READ_RPT, [(1, data.len), (3, slave * 2 + 1)]);
-    await this.finish_command();
-    if (!this.wait_state(85, 10)) return false;
-
-    // Table 3-30 / 3-31:
-    let data = await this.send_command(I2C_READ_GET);
-    if (data[3] != data.len) return false;
-    out = data.slice(4, len);
-    return true;
-  }
-
-  write(slave, reg, data) {
-    if (reg >= 128) return false;
-    this.init_report(I2C_WRITE, [(1, 2), (3, slave * 2), (4, reg), (5, data)]);
-    await this.finish_command();
-    return true;
-  }
-
-////////////////////////////////////////////////////////////////////////////////
-
-  async connect() {
-    if (this.device == null) {
-      /*
-      this.device = await navigator.hid.requestDevice({ filters: this.MCP2221_filter, });
-      console.log(device);
-      */
-      const device_list = await navigator.hid.getDevices();
-      console.log(device_list);
-      let devices = await navigator.hid.requestDevice({ filters: this.MCP2221_filter, });
-      console.log("GOT:", devices);
-      this.device = devices[0];
-      this.flash_info = new Array();
-
-      this.response = new Promise((resolve) => {
-        this.device.addEventListener('inputreport', resolve, { once: true });
-      });
-    }
-
-    await this.device.open()
-      .then(() => console.log("HID Device opened"))
-      .then(async () => {
-        await this.set_clock((5 /* 1.5 MHz */, 0x18 /* duty < 75%*/);
-        await this.set_divider(26);
-/*
-        console.log("COLLECTIONS:");
-        for (let r of this.device.collections) {
-          // https://usb.org/sites/default/files/hut1_5.pdf page 18
-          // 0xff00 = vendor-defined
-          console.log(" USAGE PAGE: ", "0x" + r.usagePage.toString(16));
-          console.log(" USAGE: ", r.usage);
-        }
-*/
-      })
-      .then(async () => {
-        this.flash = {};
-        this.flash.manufacturer = await this.send_flash_command(FLASH_MANUFACTURER);
-        this.flash.product = await this.send_flash_command(FLASH_PRODUCT);
-        this.flash.serial = await this.send_flash_command(FLASH_SERIAL);
-        this.flash.factory_serial = await this.send_flash_command(FLASH_FACTORY_SERIAL);
-      }).then(async () => {
-        this.info = {};
-        const data = await this.send_command(STATUS_SET, 0);
-        this.info.hardware = [data[46], data[47]];  'A', '6'
-        this.info.firmware = [data[48], data[49]];  '1', '2'
-      }).then(async () => {
-        this.sram = {};
-        const data = await this.send_command(GET_SRAM, 0);
-        this.sram.vid = le_16s(data,  8);
-        this.sram.pid  = le_16s(data, 10);
-        this.sram.self_powered  = (data[12] & 0x40) ? true : false;
-        this.sram.remote_wakeup = (data[12] & 0x20) ? true : false;
-        this.sram.milliamps = data[13] * 2;
-        this.sram.divider   = data[5] & 0x07;
-        this.sram.duty      = data[5] & 0x18;
-      }
-    );
-    this.print_status();
-  }
-
-  print() {
-    console.log(this.flash);
-    console.log(this.info);
-    console.log(this.sram);
-  }
-
-  async print_status() {
-    this.print();
-    const r = await this.send_command(STATUS_SET, 0);
-    console.log(` [ 1] success = 0x${r[1].toString(16)} (success = 0x00)`);
-    console.log(` [ 2] cancel state = 0x${r[2].toString(16)} (!= 0x00 ?)`);
-    console.log(` [ 3] speed state = 0x${r[3].toString(16)}`);
-    if (r[4]) console.log(` [ 4] new speed divider = ${r[4]}`);
-    console.log(` [ 8] chip comm state = ${r[8]}`);
-    console.log(` [ 9] length requested = ${le_16s(r, 9)}`);
-    console.log(` [11] length transfered = ${le_16s(r, 11)}`);
-    console.log(` [14] speed divider = ${r[14]}`);
-    console.log(` [16] slave address = 0x${le_16s(r, 16).toString(16)}`);
-    console.log(` [20] ACK = ${!(r[20] & 0x40)}`);
-    console.log(` [22-23] pin values: SCL=${r[22]} SDA=${r[23]}`);
-    console.log(` [25] pending value? ${r[25]}`);
-  }
-
-  async disconnect() {
-    this.device.close();
-    this.device = null;
-  }
+  text.innerHTML = "READY";
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 async function connect() {
-  if (I2C != undefined) return;
-  I2C = new I2C_Device();
-  I2C.connect().then(() => {
-    connect_button.style.display = 'none';
-    disconnect_button.style.display = 'initial';
-  });
+  if (I2C == undefined) {
+    I2C = new I2C_Device();
+    I2C.connect().then(async () => {
+      if (I2C.device == undefined) {
+        I2C = null;
+        return;  // error
+      }
+      connect_button.style.display = 'none';
+      disconnect_button.style.display = 'initial';
+      text.innerHTML = "Started.\n";
+      const hdr = I2C.get_flash_status();
+      hdr.forEach(s => text.innerHTML += " == " + s + "\n");
+      const str = await I2C.get_status();
+      str.forEach(s => text.innerHTML += " = " + s + "\n");
+    });
+  }
 }
 
 async function disconnect() {
@@ -281,6 +60,7 @@ async function disconnect() {
   disconnect_button.style.display = 'none';
   await I2C.disconnect();
   I2C = undefined;
+  text.innerHTML = "Disconnected.";
 }
 
 ////////////////////////////////////////////////////////////////////////////////
