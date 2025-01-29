@@ -17,7 +17,7 @@ const I2C_READ_RPT  = 0x93;   // read w/ repeated start. Table 3-28 / 3-29
 const I2C_READ_GET  = 0x40;   // retrieve the read data once command is completed
 
 const SET_SRAM  = 0x60;       // table 3-36 / 3-37
-const GET_SRAM  = 0x61;       // table 3-38 / 3-39  
+const GET_SRAM  = 0x61;       // table 3-38 / 3-39
 const RESET     = 0x70;       // table 3-40
 
 function to_string(data) {
@@ -32,7 +32,21 @@ function stringify(obj) {
   return str;
 }
 
-function le_16s(data, off) { return (data[off + 1] << 8) | data[off]; }
+function le_16s(data, off) {
+  const tmp = new ArrayBuffer(2);
+  const a = new DataView(tmp);
+  a.setUint8(0, data[off + 1]);
+  a.setUint8(1, data[off + 0]);
+  return a.getInt16(0);
+}
+
+function be_16s(data, off) {
+  const tmp = new ArrayBuffer(2);
+  const a = new DataView(tmp);
+  a.setUint8(0, data[off + 0]);
+  a.setUint8(1, data[off + 1]);
+  return a.getInt16(0);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -42,6 +56,10 @@ class I2C_Device {
     this.MCP2221_filter = [{ 'vendorId': 1240, 'productId': 221 }];
     this.report = new Uint8Array(64);
     this.reportId = 0;  // always
+    this.gyro_scale = 0.;
+    this.gyro_bias = [0., 0., 0.];
+    this.accel_scale = 0.;
+    this.accel_bias = [0., 0., 0.];
   }
 
   // prepare the promise that will wait for an inputreport event
@@ -96,7 +114,7 @@ class I2C_Device {
   }
 
   async is_connected() {
-    const data = await this.send_command(STATUS_SET);
+    const data = await this.send_command(STATUS_SET, 0);
     return (data[0] == STATUS_SET);
   }
 
@@ -104,15 +122,19 @@ class I2C_Device {
     if (slave >= 128) return false;
     this.init_report(I2C_WRITE, [[3, slave * 2]]);
     const data = await this.finish_command();
-    if (data[1] != 0) return false;
+    //if (data[1] != 0) return false;
+    //console.log("addr: " + slave + "  -> ", data);
     const state = await this.get_state();
-    if (state != 0) await this.cancel();
+    if (state != 0) {
+      await this.cancel();
+      return false;
+    }
     return true;
   }
 
   async get_state() {
-    const data = await this.send_command(STATUS_SET);
-    return data[0];
+    const data = await this.send_command(STATUS_SET, 0);
+    return data[8];
   }
 
   async cancel() {
@@ -141,17 +163,16 @@ class I2C_Device {
     if (!await this.wait_state(85, 10)) return null;
 
     // Table 3-30 / 3-31:
-    let data = await this.send_command(I2C_READ_GET);
-    if (data[3] != data.len) return false;
-    return new Uint8Array(data.slice(4, len));
+    const data = await this.send_command(I2C_READ_GET, 0);
+    if (data[3] != len) return null;
+    return new Uint8Array(data.slice(4));
   }
 
   async read_byte(slave, reg) {
-    let out = await this.read(slave, reg, 1);
-    console.log(out);
-    return out ? out[0] : 0x00;
+    let data = await this.read(slave, reg, 1);
+    if (data == null) return 0x00;
+    return data[0];
   }
-    
 
   async write(slave, reg, data) {
     if (reg >= 128) return false;
@@ -220,15 +241,7 @@ class I2C_Device {
         this.sram.duty      = data[5] & 0x18;
       }
     );
-    this.print();
   }
-
-  print() {
-    console.log(this.flash);
-    console.log(this.info);
-    console.log(this.sram);
-  }
-
 
   get_flash_status() {
     let str = new Array();
