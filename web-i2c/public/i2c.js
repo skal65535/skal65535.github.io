@@ -48,6 +48,23 @@ function be_16s(data, off) {
   return a.getInt16(0);
 }
 
+function get_3f_le(data, off, scale, bias) {
+  return [scale * (be_16s(data, off + 0) - bias[0]),
+          scale * (be_16s(data, off + 2) - bias[1]),
+          scale * (be_16s(data, off + 4) - bias[2])];
+}
+
+function get_3f_le(data, off, scale, bias) {
+  // TODO(skal): fix bias <-> scale order!! cf. get_3f_le()
+  return [scale * le_16s(data, off + 0) - bias[0],
+          scale * le_16s(data, off + 2) - bias[1],
+          scale * le_16s(data, off + 4) - bias[2]];
+}
+
+async function sleep(ms) {
+  await new Promise(r => setTimeout(r, ms));
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 class I2C_Device {
@@ -68,10 +85,6 @@ class I2C_Device {
     return new Promise((resolve) => {
           this.device.addEventListener('inputreport', resolve, { once: true });
       });
-  }
-
-  async sleep(ms) {
-    await new Promise(r => setTimeout(r, ms));
   }
 
   async send_flash_command(desc) {
@@ -98,7 +111,7 @@ class I2C_Device {
   async reset_device() {
     this.init_report(RESET, [[1, 0xab], [2, 0xcd], [3, 0xef]]);
     await this.device.sendReport(this.reportId, this.report);  // no answer expected!
-    this.sleep(1000);
+    sleep(1000);
   }
 
   async set_clock(divider, duty) {
@@ -146,7 +159,7 @@ class I2C_Device {
     while (nb_try-- > 0) {
       const state = await this.get_state();
       if (state == expected) return true;
-      this.sleep(50);
+      sleep(50);
     }
     return false;
   }

@@ -18,13 +18,15 @@
 <button id='infos' onclick='print_infos();' style='display: none;'>INFOS</button>
 <button id='state' onclick='print_state();' style='display: none;'>STATE</button>
 <button id='reset' onclick='reset_device();' style='display: none; background-color:#e88;'>RESET</button>
-<button id='mpu' onclick='loop_mpu();' style='display: none;'>MPU</button>
+<button id='run' style='display: none;'>RUN!</button>
 <button id='disconnect' onclick='disconnect();' style='display: none;'>DISCONNECT</button>
 </br>
 <span id='status'>[status]</span>
 
 <script src="./i2c.js"></script>
 <script src="./lsm.js"></script>
+<script src="./mpu9255.js"></script>
+<script src="./ak8963.js"></script>
 
 <script>
 "use strict";
@@ -34,7 +36,7 @@ const disconnect_button = document.getElementById('disconnect');
 const WHOAMI_button = document.getElementById('WHOAMI');
 const info_button = document.getElementById('infos');
 const state_button = document.getElementById('state');
-const mpu_button = document.getElementById('mpu');
+const run_button = document.getElementById('run');
 const reset_button = document.getElementById('reset');
 const text = document.getElementById('interface');
 
@@ -43,14 +45,11 @@ var I2C = undefined;
 function main() {
   I2C = undefined;
   text.innerHTML = "READY";
+  stop();
 }
 
-function set_status(...msg) {
-  document.getElementById('status').innerHTML = "";
-  for (const s of msg) {
-    document.getElementById('status').innerHTML += s + " ";
-  }
-  document.getElementById('status').innerHTML += "\n";
+function set_status(msg) {
+  document.getElementById('status').innerHTML = msg + "<br/>";
 }
 
 var timer_id = -1;
@@ -82,7 +81,8 @@ async function connect() {
         return;  // error
       }
       connect_button.style.display = 'none';
-      for (const b of [disconnect_button, WHOAMI_button, info_button, state_button, reset_button, mpu_button]) {
+      for (const b of [disconnect_button, WHOAMI_button, info_button,
+                       state_button, reset_button, run_button]) {
         b.style.display = 'initial';
       }
       text.innerHTML = "Started.\n";
@@ -93,38 +93,53 @@ async function connect() {
 
 async function reset_device() {
   if (I2C == undefined) return;
-  reset_timer();
+  stop();
   await I2C.reset_device();
   await disconnect();
 }
 
 async function disconnect() {
   if (I2C == undefined) return;
-  reset_timer();
+  stop();
   await I2C.disconnect();
 
   connect_button.style.display = 'initial';
-  for (const b of [disconnect_button, WHOAMI_button, info_button, state_button, reset_button, mpu_button]) {
+  for (const b of [disconnect_button, WHOAMI_button, info_button,
+                   state_button, reset_button, run_button]) {
     b.style.display = 'none';
   }
   I2C = undefined;
   text.innerHTML = "Disconnected.";
 }
 
-async function WHOAMI() {
-  const LSM_ADDRESS = 0x6a;    // I2C: default LSMxxx device address
-  const LSM_WHO_AM_I = 0x0f;
+async function ping_id(address, who_am_i) {
+  const is_ok = await I2C.is_writable(address);
+  return is_ok ? await I2C.read_byte(address, who_am_i) : 0;
+}
 
+async function WHOAMI() {
   if (I2C == undefined) return;
   text.innerHTML = "WHO AM I?\n";
   const ok = await I2C.is_connected();
-  const is_lsm = ok && await I2C.is_writable(LSM_ADDRESS);
-  const id = is_lsm ? (await I2C.read_byte(LSM_ADDRESS, LSM_WHO_AM_I)) : -1;
-  const LSM_name = (id == 0x6c || id == 0x69) ? "LSM6DSOX" : "LSM???";
 
-  text.innerHTML += `Connected: ${ok}\n`;
-  text.innerHTML += `Is_LSM: ${is_lsm}\n`;
-  text.innerHTML += `id: 0x${id.toString(16)} => name: ${LSM_name}\n`;
+  const lsm_id = await ping_id(0x6a, 0x0f);
+  const lsm_name = (lsm_id == 0x6c || lsm_id == 0x69) ? "LSM6DSOX" : "none";
+  const lsm_ok = (LSM != undefined) ? "(running)" : "(not running)";
+
+  const mpu_id = await ping_id(0x68, 0x75);
+  const mpu_name = (mpu_id == 0x71) ? "MPU9250" :
+                   (mpu_id == 0x73) ? "MPU9255" :
+                   (mpu_id == 0x70) ? "MPU6500" : "none";
+  const mpu_ok = (MPU != undefined) ? "(running)" : "(not running)";
+
+  const mag_id = await ping_id(0x0c, 0x00);
+  const mag_name = (mag_id == 0x48) ? "AK8963" : "none";
+  const mag_ok = (AK != undefined) ? "(running)" : "(not running)";
+
+  text.innerHTML += `MCP2221: ${ok}\n`;
+  text.innerHTML += ` - address 0x6a: ${lsm_name}  id: 0x${lsm_id.toString(16)} ${lsm_ok}\n`;
+  text.innerHTML += ` - address 0x68: ${mpu_name}  id: 0x${mpu_id.toString(16)} ${mpu_ok}\n`;
+  text.innerHTML += ` - address 0x0c: ${mag_name}  id: 0x${mag_id.toString(16)} ${mag_ok}\n`;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -151,42 +166,97 @@ async function print_state() {
 ////////////////////////////////////////////////////////////////////////////////
 
 var MPU = undefined;
+var LSM = undefined;
+var AK = undefined;
 
 async function print_mpu() {
   if (I2C == undefined) return
   const state = await I2C.get_state();
   const ok = await I2C.is_connected();
 
-  if (MPU == undefined) return;
-  const [accel, gyro, temperature] = await MPU.get_measurement();
-
-  set_status("[status] connected:" + ok,
-             " accel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "]",
-             " gyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "]",
-             " temperature:" + temperature.toFixed(1));
+  let status = "[status] connected:" + ok + "<br/>";
+  if (MPU != undefined) {
+    const [accel, gyro, temperature] = await MPU.get_measurement();
+    status += "[MPU9255]" +
+              " accel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "]" +
+              " gyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "]" +
+              " temperature:" + temperature.toFixed(1) + "<br/>";
+  }
+  if (LSM != undefined) {
+    const [accel, gyro, temperature] = await LSM.get_measurement();
+    status += "[LSM6DSOX]" +
+              " accel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "] " +
+              " gyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "] " +
+              " temperature:" + temperature.toFixed(1) + "<br/>";
+  }
+  if (AK != undefined) {
+    const mag = await AK.get_measurement();
+    status += "[AK8963]" +
+              " mag:[" + mag[0].toFixed(2) + ", " + mag[1].toFixed(2) + ", " + mag[2].toFixed(2) + "]"
+              + "<br/>";
+  }
+  set_status(status);
 }
 
-async function loop_mpu() {
+async function run() {
   if (I2C == undefined) return;
   if (MPU == undefined) {
-    MPU = new LSM(I2C);
+    MPU = new MPU9255(I2C);
     if (MPU == undefined) {
-      set_status("couldn't create a LSM device");
-      return;
-    }
-    if (!await MPU.init()) {
-      set_status("couldn't init the LSM device");
+      set_status("couldn't create the MPU device");
+    } else if (!await MPU.init()) {
+      set_status("couldn't init the MPU device");
       await MPU.close();
       MPU = undefined;
-      return;
+    } else {
+      set_status("MPU ok.");
+      sleep(100);
     }
-    if (timer_id < 0) timer_id = setInterval(print_mpu, 200);
-  } else {
-    reset_timer();
-    await MPU.close();
-    MPU = undefined;
-    set_status("MPU closed");
   }
+  if (LSM == undefined) {
+    LSM = new LSM6DSOX(I2C);
+    if (LSM == undefined) {
+      set_status("couldn't create the LSM device");
+    } else if (!await LSM.init()) {
+      set_status("couldn't init the LSM device");
+      await LSM.close();
+      LSM = undefined;
+    } else {
+      set_status("LSM ok.");
+      sleep(100);
+    }
+  }
+  if (AK == undefined) {
+    AK = new AK8963(I2C);
+    if (AK == undefined) {
+      set_status("couldn't create the AK device");
+    } else if (!await AK.init()) {
+      set_status("couldn't init the AK device");
+      await AK.close();
+      AK = undefined;
+    } else {
+      set_status("AK ok.");
+      sleep(100);
+    }
+  }
+  if (MPU || LSM || AK) {
+    if (timer_id < 0) timer_id = setInterval(print_mpu, 200);
+    run_button.innerText = "STOP!";
+    run_button.onclick = async (e) => { await stop(); };
+  }
+}
+
+async function stop() {
+  reset_timer();
+  if (MPU) await MPU.close();
+  if (LSM) await LSM.close();
+  if (AK) await AK.close();
+  MPU = undefined;
+  LSM = undefined;
+  AK = undefined;
+  set_status("Devices closed");
+  run_button.innerText = "RUN!";
+  run_button.onclick = async (e) => { await run(); };
 }
 
 ////////////////////////////////////////////////////////////////////////////////
