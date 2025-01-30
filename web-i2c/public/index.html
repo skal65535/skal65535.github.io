@@ -11,10 +11,9 @@
 <body onload="main();">
 <h1><center>Web-I2C: an I2C interface in a browser</center></h1>
 
-<textarea id='interface' rows="20" cols="64" readOnly></textarea>
+<textarea id='interface' rows="25" cols="64" readOnly></textarea>
 <br/>
 <button id='connect' onclick='connect();' style='display: initial;';>CONNECT</button>
-<button id='WHOAMI' onclick='WHOAMI();' style='display: none;'>WHOAMI</button>
 <button id='infos' onclick='print_infos();' style='display: none;'>INFOS</button>
 <button id='state' onclick='print_state();' style='display: none;'>STATE</button>
 <button id='reset' onclick='reset_device();' style='display: none; background-color:#e88;'>RESET</button>
@@ -33,7 +32,6 @@
 
 const connect_button = document.getElementById('connect');
 const disconnect_button = document.getElementById('disconnect');
-const WHOAMI_button = document.getElementById('WHOAMI');
 const info_button = document.getElementById('infos');
 const state_button = document.getElementById('state');
 const run_button = document.getElementById('run');
@@ -64,14 +62,6 @@ function reset_timer() {
 
 function hex(v, n) { return v.toString(16).padStart(n,'0'); }
 
-async function print_infos() {
-  text.innerHTML = "";
-  if (I2C == undefined) return;
-  const hdr = I2C.get_flash_status();
-  hdr.forEach(s => text.innerHTML += " == " + s + "\n");
-
-}
-
 async function connect() {
   if (I2C == undefined) {
     I2C = new I2C_Device();
@@ -81,7 +71,7 @@ async function connect() {
         return;  // error
       }
       connect_button.style.display = 'none';
-      for (const b of [disconnect_button, WHOAMI_button, info_button,
+      for (const b of [disconnect_button, info_button,
                        state_button, reset_button, run_button]) {
         b.style.display = 'initial';
       }
@@ -104,7 +94,7 @@ async function disconnect() {
   await I2C.disconnect();
 
   connect_button.style.display = 'initial';
-  for (const b of [disconnect_button, WHOAMI_button, info_button,
+  for (const b of [disconnect_button, info_button,
                    state_button, reset_button, run_button]) {
     b.style.display = 'none';
   }
@@ -117,10 +107,14 @@ async function ping_id(address, who_am_i) {
   return is_ok ? await I2C.read_byte(address, who_am_i) : 0;
 }
 
-async function WHOAMI() {
+async function print_infos() {
   if (I2C == undefined) return;
-  text.innerHTML = "WHO AM I?\n";
   const ok = await I2C.is_connected();
+
+  text.innerHTML = "WHO AM I?\n";
+  text.innerHTML += `MCP2221: ${ok ? 'connected' : 'not found??'}.\n\n`;
+
+  if (!ok) return;
 
   const lsm_id = await ping_id(0x6a, 0x0f);
   const lsm_name = (lsm_id == 0x6c || lsm_id == 0x69) ? "LSM6DSOX" : "none";
@@ -136,10 +130,13 @@ async function WHOAMI() {
   const mag_name = (mag_id == 0x48) ? "AK8963" : "none";
   const mag_ok = (AK != undefined) ? "(running)" : "(not running)";
 
-  text.innerHTML += `MCP2221: ${ok}\n`;
   text.innerHTML += ` - address 0x6a: ${lsm_name}  id: 0x${lsm_id.toString(16)} ${lsm_ok}\n`;
   text.innerHTML += ` - address 0x68: ${mpu_name}  id: 0x${mpu_id.toString(16)} ${mpu_ok}\n`;
   text.innerHTML += ` - address 0x0c: ${mag_name}  id: 0x${mag_id.toString(16)} ${mag_ok}\n`;
+
+  text.innerHTML += "\n";
+  const hdr = I2C.get_flash_status();
+  hdr.forEach(s => text.innerHTML += " == " + s + "\n");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -159,6 +156,7 @@ async function print_state() {
     if ((address & 0xf) == 0) s += `\n${addr}:`;
     if (await I2C.is_writable(address)) s += ` ${addr}`;
     else s += " --";
+    sleep(10);
   }
   text.innerHTML += s;
 }
@@ -198,46 +196,36 @@ async function print_mpu() {
   set_status(status);
 }
 
+async function open_device(ctor, name) {
+  await I2C.wait_state(85, 10);
+
+  let dev = new ctor(I2C);
+  if (dev == undefined) {
+    set_status(`couldn't create the ${name} device`);
+    return null;
+  }
+  sleep(100);
+  if (!await dev.init()) {
+    set_status(`couldn't init the ${name} device`);
+    await dev.close();
+    return null;
+  }
+  sleep(100);
+
+  set_status(`${name} ok.`);
+  return dev;
+}
+
 async function run() {
   if (I2C == undefined) return;
-  if (MPU == undefined) {
-    MPU = new MPU9255(I2C);
-    if (MPU == undefined) {
-      set_status("couldn't create the MPU device");
-    } else if (!await MPU.init()) {
-      set_status("couldn't init the MPU device");
-      await MPU.close();
-      MPU = undefined;
-    } else {
-      set_status("MPU ok.");
-      sleep(100);
-    }
-  }
   if (LSM == undefined) {
-    LSM = new LSM6DSOX(I2C);
-    if (LSM == undefined) {
-      set_status("couldn't create the LSM device");
-    } else if (!await LSM.init()) {
-      set_status("couldn't init the LSM device");
-      await LSM.close();
-      LSM = undefined;
-    } else {
-      set_status("LSM ok.");
-      sleep(100);
-    }
+    LSM = await open_device(LSM6DSOX, "LSM6DSOX");
+  }
+  if (MPU == undefined) {
+    MPU = await open_device(MPU9255, "MPU9255");
   }
   if (AK == undefined) {
-    AK = new AK8963(I2C);
-    if (AK == undefined) {
-      set_status("couldn't create the AK device");
-    } else if (!await AK.init()) {
-      set_status("couldn't init the AK device");
-      await AK.close();
-      AK = undefined;
-    } else {
-      set_status("AK ok.");
-      sleep(100);
-    }
+    AK = await open_device(AK8963, "AK8963");
   }
   if (MPU || LSM || AK) {
     if (timer_id < 0) timer_id = setInterval(print_mpu, 200);

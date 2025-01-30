@@ -48,7 +48,7 @@ function be_16s(data, off) {
   return a.getInt16(0);
 }
 
-function get_3f_le(data, off, scale, bias) {
+function get_3f_be(data, off, scale, bias) {
   return [scale * (be_16s(data, off + 0) - bias[0]),
           scale * (be_16s(data, off + 2) - bias[1]),
           scale * (be_16s(data, off + 4) - bias[2])];
@@ -178,7 +178,7 @@ class I2C_Device {
     // Table 3-30 / 3-31:
     const data = await this.send_command(I2C_READ_GET, 0);
     if (data[3] != len) return null;
-    return new Uint8Array(data.slice(4));
+    return new Uint8Array(data.slice(4, 4 + len));
   }
 
   async read_byte(slave, reg) {
