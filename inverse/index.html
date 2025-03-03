@@ -1,0 +1,383 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
+<!-- Matrix Inversion algo -->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Matrix Inversion algorithm</title>
+<link rel="stylesheet" href="../splats/style.css">
+</head>
+
+<body onload="init();">
+<h1><center>Matrix inversion algorithm</center></h1>
+
+Solving <code>A.B = C</code> for the matrix B, when A and C are a known matrices<br/>
+<p>
+
+<input type='button' onclick='solve();' value='randomize'>
+<input type='button' onclick='main();' value='new matrix A'>
+<p>
+<div>
+  <input type="range" min="1" max="10" value="2" id="size"
+    onchange="params.size = this.value; main();">
+    <label for='size' id='size_label'>size</label>
+  <br/>
+  <input type="range" min="10" max="1000" value="100" id="iter"
+    onchange="params.max_iters = this.value; solve();">
+    <label for='iter' id='iter_label'>max iter</label>
+  <br/>
+  <input type="range" min="1" max="1000" value="200" id="lambda"
+    onchange="params.lambda = this.value / 1000.; solve();">
+    <label for='lambda' id='lambda_label'>...</label>
+  <br/>
+  <input type="checkbox" id="two_stages" onchange='params.two_stages = checked; solve();'/>
+  <label for="two_stages">use two stages</label>
+  <br/>
+</div>
+<p>
+<textarea id="input" name="input" rows="10" cols="120" readOnly></textarea>
+<br/>
+<canvas id='main-canvas' width='800px' height='200px'></canvas>
+<br/>
+
+
+<script>
+let params = {
+  size: 2,
+  max_iters: 100,
+  lambda: .2,
+  two_stages: true,
+  eps: 1.e-4,
+  A: null,  // matrix
+  B: null,  // inverse
+  C: null,  // A.B = C
+  B0: null,  // reference inverse
+  debug: false,
+}
+
+function RandomRange(a, b) { return Math.random() * (b - a) + a; }
+
+function RandomArray(v, amp = 1.) {
+  for (let i = 0; i < v.length; ++i) v[i] = RandomRange(-amp, amp);
+}
+
+function print_matrix(A, S, name = null) {
+  if (name) console.log(`matrix [${name}]`);
+  for (let j = 0; j < S; ++j) {
+    let str = "";
+    for (let i = 0; i < S; ++i) str += format(A[i + j * S]);
+    console.log(str);
+  }
+  console.log("---------------");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Gaussian elimination
+
+function swap_rows(A, i, j, S) {
+  if (i == j) return;
+  if (params.debug) console.log(`swap rows ${i} and ${j}`);
+  for (let k = 0; k < S; ++k) {
+    const tmp = A[k + i * S];
+    A[k + i * S] = A[k + j * S];
+    A[k + j * S] = tmp;
+  }
+}
+
+// Ai[..] *= scale
+function mul_row(A, i, scale, S) {
+  if (scale == 1.) return;
+  if (params.debug) console.log(`mul rows ${i} by ${format(scale)}`);
+  for (let k = 0; k < S; ++k) A[k + i * S] *= scale;
+}
+
+// Ai[..] -= scale * Aj[..]
+function sub_scaled_row(A, src, scale, dst, S) {
+  if (scale == 0.) return;
+  if (params.debug) console.log(`sub scaled rows ${src} to row ${dst} (scale=${format(scale)})`);
+  for (let k = 0; k < S; ++k) A[k + dst * S] -= scale * A[k + src * S];
+}
+
+function Gauss_one_back_row(A, B, i, S) {
+  // remove row #i from rows [0..i)
+  const norm = 1. / A[i + i * S];
+  for (let I = 0; I < i; ++I) {
+    const scale = A[i + I * S] * norm;
+    sub_scaled_row(A, i, scale, I, S);
+    sub_scaled_row(B, i, scale, I, S);
+  }
+}
+
+function Gauss_one_row(A, B, i, S) {
+  let p0 = Math.abs(A[i + i * S]);
+  let row = i;
+  for (let I = i + 1; I < S; ++I) {
+    const p = Math.abs(A[i + I * S]);
+    if (p > p0) {
+      p0 = p;
+      row = I;
+    }
+  }
+  if (p0 == 0.) {
+    alert("non inversible matrix!");
+    return false;
+  }
+  // swap rows 'i' and 'row':
+  swap_rows(A, i, row, S);
+  swap_rows(B, i, row, S);
+
+  // unify row 'i'
+  const scale = 1. / A[i + i * S];
+  mul_row(A, i, scale, S);
+  mul_row(B, i, scale, S);
+
+  // update rows [i+1 ... S)
+  for (let j = i + 1; j < S; ++j) {
+    const scale = A[i + j * S];
+    sub_scaled_row(A, i, scale, j, S);
+    sub_scaled_row(B, i, scale, j, S);
+  }
+  return true;
+}
+
+function Gauss_inverse(input_matrix, S) {
+  let B = Id(S);
+  let A = new Float32Array(input_matrix);  // copy original
+  for (let i = 0; i < S; ++i) {
+    if (!Gauss_one_row(A, B, i, S)) return null;
+  }
+  // back-prop
+  for (let i = S - 1; i >= 0; --i) {
+    Gauss_one_back_row(A, B, i, S);  // back-prop
+
+  }
+  if (params.debug) {
+    console.log("Result:");
+    print_matrix(B, S);
+  }
+  return B;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function generate_random_A() {
+  params.A = new Float32Array(params.size * params.size);
+  RandomArray(params.A);
+  // normalize
+  let m = 1e38;
+  for (const v of params.A) if (1. < Math.abs(m * v)) m = 1. / v;
+  for (let i = 0; i < params.A.length; ++i) params.A[i] *= m;
+
+  params.B0 = Gauss_inverse(params.A, params.size);
+}
+
+function prod_AB(A, j, B, i, S) {
+  let v = 0.;
+  for (let k = 0; k < S; ++k) {
+    v += A[j * S + k] * B[k * S + i];
+  }
+  return v;
+}
+
+function find_max(A, j, S) {
+  let s = 0.;
+  for (let k = 0; k < S; ++k) {
+    const v = A[j * S + k];
+    if (Math.abs(v) > Math.abs(s)) {
+      s = v;
+    }
+  }
+  return s;
+}
+
+function format(v) {
+  let str = (v >= 0) ? "+" : "";
+  str += v.toFixed(2).toString(10) + " ";
+  return str;
+}
+
+function set_param_text() {
+  document.getElementById('size').value = params.size;
+  document.getElementById('size_label').innerHTML = `size: ${params.size}`;
+
+  document.getElementById('iter').value = params.max_iters;
+  document.getElementById('iter_label').innerHTML = `max iter.: ${params.max_iters}`;
+
+  document.getElementById('lambda').value = Math.floor(params.lamda * 1000.);
+  document.getElementById('lambda_label').innerHTML = `learning rate: ${params.lambda}`;
+
+  document.getElementById('two_stages').checked = params.two_stages;
+}
+
+function set_text() {
+  const S = params.size;
+  let str = `A(${S}x${S}):\n  |`;
+  for (let j = 0; j < S; ++j) {
+    const mid = (j == Math.floor(S/2));
+    for (let i = 0; i < S; ++i) {
+      str += format(params.A[j * S + i]);
+    }
+    str += mid ? "| x |" : "|   |";
+    for (let i = 0; i < S; ++i) {
+      str += format(params.B[j * S + i]);
+    }
+    str += mid ? "| = |" : "|   |";
+    for (let i = 0; i < S; ++i) {
+      const v = prod_AB(params.A, j, params.B, i, S);
+      str += format(v);
+    }
+    str += mid ? "|    ref => |" : "|           |";
+    for (let i = 0; i < S; ++i) {
+      str += format(params.B0[i + j * S]);
+    }
+    str += "|\n  |";
+  }
+  str += "\n-----\n";
+  document.getElementById('input').innerHTML = str;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function find_best_row(A, B, C, i, S) {
+  let best_j = -1;
+  let best_delta = 0.;
+  let best_diff = 0.;
+  for (let j = 0; j < S; ++j) {
+    const Cij = C[j * S + i];
+    const a = find_max(A, j, S);
+    const w = prod_AB(A, j, B, i, S);
+    const delta = (w - Cij) / a;
+    if (best_j < 0 || Math.abs(delta) > Math.abs(best_delta)) {
+      best_j = j;
+      best_delta = delta;
+      best_diff = w - Cij;
+    }
+  }
+  return [best_j, best_diff];
+}
+
+function find_best_col(B, j, A, C, S) {
+  let best_i = -1;
+  let best_delta = 0.;
+  let best_diff = 0.;
+  for (let i = 0; i < S; ++i) {
+    const Cij = C[j * S + i];
+    const a = find_max(B, j, S);
+    const w = prod_AB(B, j, A, i, S);
+    const delta = (w - Cij) / a;
+    if (best_i < 0 || Math.abs(delta) > Math.abs(best_delta)) {
+      best_i = i;
+      best_delta = delta;
+      best_diff = w - Cij;
+    }
+  }
+  return [best_i, best_diff];
+}
+
+// on iteration for solving A.v = B[i] for v
+function invert(A, B, C, S) {
+  let max_diff = 0.;
+  for (let i = 0; i < S; ++i) {  // all columns of C
+    // find best row of A
+    const [best_j, best_diff] = find_best_row(A, B, C, i, S);
+    const incr = -params.lambda * best_diff / S;
+    for (let k = 0; k < S; ++k) {
+      const dV = incr / A[best_j * S + k];
+      B[k * S + i] += dV;
+      max_diff = Math.max(max_diff, Math.abs(dV));
+
+      if (params.two_stages) {
+        const [best_i, best_diff2] = find_best_col(B, A, C, k, S);
+        const Cij = prod_AB(B, k, A, best_i, S);// - B[k * S + i] * A[best_i + i * S];
+        const diff = -params.lambda * (Cij - C[k * S + best_i]) / S;
+        for (let l = 0; l < S; ++l) {
+          if (l != i) B[k * S + l] += diff / A[l * S + best_i];
+        }
+      }
+    }
+  }
+  return max_diff;
+}
+
+function compute_ref_diff(A, B, S) {
+  let err = 0.;
+  for (let k = 0; k < S * S; ++k) err += (A[k] - B[k]) * (A[k] - B[k]);
+  return Math.sqrt(err / (S * S));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function solve() {    // solve A.B = C, with C = Id as an example
+  set_param_text();
+  const W = params.canvas.width;
+  const H = params.canvas.height;
+  params.ctx.fillStyle = '#000';
+  params.ctx.fillRect(0, 0, W, H);
+
+  // fresh start
+  const S = params.size;
+  params.B = new Float32Array(S * S);
+  RandomArray(params.B);
+
+  const log_scale = H / Math.log(2.);
+  const path1 = new Path2D();
+  const path2 = new Path2D();
+  for (let iter = 0; iter < params.max_iters; ++iter) {
+    const max_diff = invert(params.A, params.B, params.C, S);
+    const max_ref_diff = compute_ref_diff(params.B, params.B0, S);
+    const x = Math.floor(iter * W / params.max_iters);
+    const y1 = H - Math.log(1. + max_diff) * log_scale;
+    const y2 = H - Math.log(1. + .3 * max_ref_diff) * log_scale;
+    if (iter == 0) {
+      path1.moveTo(x, y1);
+      path2.moveTo(x, y2);
+    } else {
+      path1.lineTo(x, y1);
+      path2.lineTo(x, y2);
+    }
+    if (params.debug) console.log(`iter:${iter}  max_diff:${max_diff.toFixed(2)}`);
+    if (max_diff < params.eps) break;
+  }
+  params.ctx.lineWidth = 3;
+  params.ctx.strokeStyle = '#f33';
+  params.ctx.stroke(path1);
+  params.ctx.strokeStyle = '#56f';
+  params.ctx.stroke(path2);
+
+  set_text();
+}
+
+function Id(S) {
+  let I = new Float32Array(S * S);
+  for (let j = 0; j < S; ++j) {
+    for (let i = 0; i < S; ++i) {
+      I[i + j * S] = (i == j) ? 1. : 0.;
+    }
+  }
+  return I;
+}
+
+function main() {
+  generate_random_A();
+  solve();
+}
+
+function init() {
+  const S = params.size;
+  params.C = Id(S);
+  for (let j = 0; j < S; ++j) {
+    for (let i = 0; i < S; ++i) {
+      params.C[i + j * S] = (i == j) ? 1. : 0.;
+    }
+  }
+  params.canvas = document.getElementById('main-canvas');
+  params.ctx = params.canvas.getContext("2d");
+  main();
+}
+
+</script>
+
+<a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
+</body>
+</html>

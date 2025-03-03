@@ -28,6 +28,8 @@ class LSM6DSOX {
     this.ACCEL_OUT = 0x28;   // 0x28 -> 0x2d : linear accel
     this.GYRO_OUT = 0x22;    // 0x22 -> 0x27 : angular rate
     this.TEMPERATURE_OUT = 0x20;   // 0x20 / 0x21
+
+    this.filter = new Filter(false);
   }
 
   async write(reg, v) {
@@ -73,7 +75,7 @@ class LSM6DSOX {
       case "2000DPS": v |= 6 << 1; dps = 2000.; break;
     }
     if (!await this.write(this.CTRL2_G, v)) return false;
-    this.gyro_scale = dps * 35. / 1000000.;
+    this.gyro_scale = dps * 35. / 1000000.; //  * Math.PI / 180.;
     return true;
   }
 
@@ -93,6 +95,12 @@ class LSM6DSOX {
     return true;
   }
 
+  reset() {
+    this.filter.reset();
+    this.gyro_bias = [0., 0., 0.];
+    this.accel_bias = [0., 0., 0.];
+  }
+
   async get_measurement() {
     // read all GYRO / ACCEL / T bytes in one call
     const status_bits = await this.read(this.STATUS_REG);
@@ -103,7 +111,10 @@ class LSM6DSOX {
           this.accel = get_3f_le(data, 6, this.accel_scale, this.accel_bias);
         }
         if (status_bits & 2) {
-          this.gyro = get_3f_le(data, 0, this.gyro_scale, this.gyro_bias);
+          const d_gyro = get_3f_le(data, 0, this.gyro_scale, this.gyro_bias);
+          if (this.filter.update(d_gyro, performance.now())) {
+            this.gyro = this.filter.get_rpy();  // in degrees
+          }
         }
         if (status_bits & 4) {
           this.temperature = le_16s(data, 12) / 256.0 + 25.0;

@@ -1,3 +1,4 @@
+// Product: I2C
 "use strict";
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -49,13 +50,12 @@ function be_16s(data, off) {
 }
 
 function get_3f_be(data, off, scale, bias) {
-  return [scale * (be_16s(data, off + 0) - bias[0]),
-          scale * (be_16s(data, off + 2) - bias[1]),
-          scale * (be_16s(data, off + 4) - bias[2])];
+  return [scale * be_16s(data, off + 0) - bias[0],
+          scale * be_16s(data, off + 2) - bias[1],
+          scale * be_16s(data, off + 4) - bias[2]];
 }
 
 function get_3f_le(data, off, scale, bias) {
-  // TODO(skal): fix bias <-> scale order!! cf. get_3f_le()
   return [scale * le_16s(data, off + 0) - bias[0],
           scale * le_16s(data, off + 2) - bias[1],
           scale * le_16s(data, off + 4) - bias[2]];

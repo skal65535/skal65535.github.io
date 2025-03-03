@@ -11,21 +11,37 @@
 <body onload="main();">
 <h1><center>Web-I2C: an I2C interface in a browser</center></h1>
 
-<textarea id='interface' rows="25" cols="64" readOnly></textarea>
+<textarea id='interface' rows="21" cols="120" readOnly></textarea>
 <br/>
 <button id='connect' onclick='connect();' style='display: initial;';>CONNECT</button>
 <button id='infos' onclick='print_infos();' style='display: none;'>INFOS</button>
 <button id='state' onclick='print_state();' style='display: none;'>STATE</button>
-<button id='reset' onclick='reset_device();' style='display: none; background-color:#e88;'>RESET</button>
-<button id='run' style='display: none;'>RUN!</button>
+<button id='run' style='display: none; background-color:#9e8;''>RUN!</button>
+<button id='calibrate' onclick='calibrate_call();' style='display: none;'>calibrate</button>
 <button id='disconnect' onclick='disconnect();' style='display: none;'>DISCONNECT</button>
-</br>
+<button id='reset' onclick='reset_device();' style='display: none; background-color:#e88;'>RESET</button>
+<br/>
 <span id='status'>[status]</span>
+<br/>
+<center><table><tr>
+  <td><canvas id='canvas_MPU' width='640px' height='480px'></canvas></td>
+  <td><canvas id='canvas_LSM' width='640px' height='480px'></canvas></td>
+</tr>
+<tr>
+  <td><canvas id='canvas_MPU_histo' width='640px' height='150px'></canvas></td>
+  <td><canvas id='canvas_LSM_histo' width='640px' height='150px'></canvas></td>
+</tr></table>
+</center>
+<br/>
 
 <script src="./i2c.js"></script>
 <script src="./lsm.js"></script>
 <script src="./mpu9255.js"></script>
 <script src="./ak8963.js"></script>
+<script src="./matrix.js"></script>
+<script src="./filter.js"></script>
+<script src="./plane.js"></script>
+<script src="./histo.js"></script>
 
 <script>
 "use strict";
@@ -35,15 +51,21 @@ const disconnect_button = document.getElementById('disconnect');
 const info_button = document.getElementById('infos');
 const state_button = document.getElementById('state');
 const run_button = document.getElementById('run');
+const calibrate_button = document.getElementById('calibrate');
 const reset_button = document.getElementById('reset');
 const text = document.getElementById('interface');
 
+const view_MPU = new GyroView(document.getElementById('canvas_MPU'));
+const view_LSM = new GyroView(document.getElementById('canvas_LSM'));
+const view_MPU_histo = new HistoView(document.getElementById('canvas_MPU_histo'), "MPU9250");
+const view_LSM_histo = new HistoView(document.getElementById('canvas_LSM_histo'), "LSM6DSOX");
+
 var I2C = undefined;
 
-function main() {
+async function main() {
   I2C = undefined;
   text.innerHTML = "READY";
-  stop();
+  await stop();
 }
 
 function set_status(msg) {
@@ -72,7 +94,8 @@ async function connect() {
       }
       connect_button.style.display = 'none';
       for (const b of [disconnect_button, info_button,
-                       state_button, reset_button, run_button]) {
+                       state_button, reset_button, run_button,
+                       calibrate_button]) {
         b.style.display = 'initial';
       }
       text.innerHTML = "Started.\n";
@@ -83,19 +106,19 @@ async function connect() {
 
 async function reset_device() {
   if (I2C == undefined) return;
-  stop();
+  await stop();
   await I2C.reset_device();
   await disconnect();
 }
 
 async function disconnect() {
   if (I2C == undefined) return;
-  stop();
+  await stop();
   await I2C.disconnect();
 
   connect_button.style.display = 'initial';
   for (const b of [disconnect_button, info_button,
-                   state_button, reset_button, run_button]) {
+                   state_button, reset_button, run_button, calibrate_button]) {
     b.style.display = 'none';
   }
   I2C = undefined;
@@ -111,8 +134,7 @@ async function print_infos() {
   if (I2C == undefined) return;
   const ok = await I2C.is_connected();
 
-  text.innerHTML = "WHO AM I?\n";
-  text.innerHTML += `MCP2221: ${ok ? 'connected' : 'not found??'}.\n\n`;
+  text.innerHTML = `MCP2221: ${ok ? 'connected' : 'not found??'}.\n`;
 
   if (!ok) return;
 
@@ -130,9 +152,9 @@ async function print_infos() {
   const mag_name = (mag_id == 0x48) ? "AK8963" : "none";
   const mag_ok = (AK != undefined) ? "(running)" : "(not running)";
 
-  text.innerHTML += ` - address 0x6a: ${lsm_name}  id: 0x${lsm_id.toString(16)} ${lsm_ok}\n`;
-  text.innerHTML += ` - address 0x68: ${mpu_name}  id: 0x${mpu_id.toString(16)} ${mpu_ok}\n`;
-  text.innerHTML += ` - address 0x0c: ${mag_name}  id: 0x${mag_id.toString(16)} ${mag_ok}\n`;
+  text.innerHTML += ` - address 0x6a: ${lsm_name}  \tid: 0x${lsm_id.toString(16)} ${lsm_ok}\n`;
+  text.innerHTML += ` - address 0x68: ${mpu_name}  \tid: 0x${mpu_id.toString(16)} ${mpu_ok}\n`;
+  text.innerHTML += ` - address 0x0c: ${mag_name}  \tid: 0x${mag_id.toString(16)} ${mag_ok}\n`;
 
   text.innerHTML += "\n";
   const hdr = I2C.get_flash_status();
@@ -172,28 +194,34 @@ async function print_mpu() {
   const state = await I2C.get_state();
   const ok = await I2C.is_connected();
 
-  let status = "[status] connected:" + ok + "<br/>";
+  let status = "[status] connected:" + ok;
+  set_status(status);
+  let info = "";
   if (MPU != undefined) {
     const [accel, gyro, temperature] = await MPU.get_measurement();
-    status += "[MPU9255]" +
-              " accel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "]" +
-              " gyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "]" +
-              " temperature:" + temperature.toFixed(1) + "<br/>";
+    info += "[MPU9255]" +
+            " \taccel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "]" +
+            " \tgyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "]" +
+            " \ttemperature:" + temperature.toFixed(1) + "\n\n";
+    await view_MPU.render(MPU);
+    await view_MPU_histo.render(MPU);
   }
   if (LSM != undefined) {
     const [accel, gyro, temperature] = await LSM.get_measurement();
-    status += "[LSM6DSOX]" +
-              " accel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "] " +
-              " gyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "] " +
-              " temperature:" + temperature.toFixed(1) + "<br/>";
+    info += "[LSM6DSOX]" +
+            " \taccel:[" + accel[0].toFixed(2) + ", " + accel[1].toFixed(2) + ", " + accel[2].toFixed(2) + "] " +
+            " \tgyro:[" + gyro[0].toFixed(2) + ", " + gyro[1].toFixed(2) + ", " + gyro[2].toFixed(2) + "] " +
+            " \ttemperature:" + temperature.toFixed(1) + "\n\n";
+    await view_LSM.render(LSM);
+    await view_LSM_histo.render(LSM);
   }
   if (AK != undefined) {
     const mag = await AK.get_measurement();
-    status += "[AK8963]" +
-              " mag:[" + mag[0].toFixed(2) + ", " + mag[1].toFixed(2) + ", " + mag[2].toFixed(2) + "]"
-              + "<br/>";
+    info += "[AK8963]" +
+            " \tmag:[" + mag[0].toFixed(2) + ", " + mag[1].toFixed(2) + ", " + mag[2].toFixed(2) + "]"
+            + "\n\n";
   }
-  set_status(status);
+  text.innerHTML = info;
 }
 
 async function open_device(ctor, name) {
@@ -204,7 +232,7 @@ async function open_device(ctor, name) {
     set_status(`couldn't create the ${name} device`);
     return null;
   }
-  sleep(100);
+  sleep(50);
   if (!await dev.init()) {
     set_status(`couldn't init the ${name} device`);
     await dev.close();
@@ -216,19 +244,49 @@ async function open_device(ctor, name) {
   return dev;
 }
 
+function add3(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function scale3(a, s) { return [s * a[0], s * a[1], s * a[2]]; }
+function add_biases(imu, accel_b, gyro_b) {
+  imu.accel_bias = add3(imu.accel_bias, accel_b);
+  imu.gyro_bias = add3(imu.gyro_bias, gyro_b);
+}
+function print3(a) { return `[${a[0].toFixed(2)},${a[1].toFixed(2)},${a[2].toFixed(2)}]`; }
+async function calibrate(imu, num_iters) {
+    imu.reset();
+    if (imu == undefined || num_iters <= 0) return;
+    let acc = [0., 0., 0.];
+    let gyr = [0., 0., 0.];
+    for (let n = 0; n < num_iters; ++n) {
+      const gyro = await imu.get_measurement();
+      acc = add3(acc, gyro[0]);
+      gyr = add3(gyr, gyro[1]);
+      sleep(20);
+    }
+    const norm = 1. / num_iters;
+    add_biases(imu, scale3(acc, norm), scale3(gyr, norm));
+    console.log(`Calibrated: accel-bias: ${print3(imu.accel_bias)}, gyro-bias: ${print3(imu.gyro_bias)}`);
+}
+
+async function calibrate_call() {
+  if (LSM != undefined) await calibrate(LSM, 10);
+  if (MPU == undefined) await calibrate(MPU, 10);
+}
+
 async function run() {
   if (I2C == undefined) return;
   if (LSM == undefined) {
     LSM = await open_device(LSM6DSOX, "LSM6DSOX");
+    if (LSM) await calibrate(LSM, 10);
   }
   if (MPU == undefined) {
     MPU = await open_device(MPU9255, "MPU9255");
+    if (MPU) await calibrate(MPU, 10);
   }
   if (AK == undefined) {
     AK = await open_device(AK8963, "AK8963");
   }
   if (MPU || LSM || AK) {
-    if (timer_id < 0) timer_id = setInterval(print_mpu, 200);
+    if (timer_id < 0) timer_id = setInterval(print_mpu, 100);
     run_button.innerText = "STOP!";
     run_button.onclick = async (e) => { await stop(); };
   }
