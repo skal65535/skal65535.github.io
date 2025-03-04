@@ -73,28 +73,12 @@
     <br/>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script src="../common/args.js"></script>
 <script>
 "use strict";
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const args = new URLSearchParams(location.search);
-function parse_arg_int(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-function parse_arg_float(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseFloat(args.get(arg_value)) : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-function parse_arg_str(arg_value, default_value) {
-  return args.has(arg_value) ? args.get(arg_value) : default_value;
-}
-function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
 
 const trace = (level, ...args) => {
   if (params.dbg.trace > level) console.log(args.join(' '));
@@ -115,19 +99,19 @@ const ctx = canvas.getContext("webgpu");
 
 const params = {
   // physics / simulation
-  nb_spins: parse_arg_int("spins", 48),  // number of spins per dimensions
+  nb_spins: parse_arg("spins", 48),  // number of spins per dimensions
   use_2d: parse_arg_bool("2d"),
-  kT_J: parse_arg_float("T", 2.0),   // = J/kT
-  Tmin: parse_arg_float("Tmin", -6.),   // temperature range
-  Tmax: parse_arg_float("Tmax",  6.),
-  Tbins: parse_arg_int("bins", 256),  // for stats
+  kT_J: parse_arg("T", 2.0),   // = J/kT
+  Tmin: parse_arg("Tmin", -6.),   // temperature range
+  Tmax: parse_arg("Tmax",  6.),
+  Tbins: parse_arg("bins", 256),  // for stats
   auto_scan: !parse_arg_bool("no-scan"),
-  scan_period: parse_arg_int("scan-period", 200),
+  scan_period: parse_arg("scan-period", 200),
   p:  0.,
-  nb_sim_loops: parse_arg_int("loops", 32),   // number of simulation loops (before one of visu)
-  warmup: parse_arg_int("warmup", 5),
-  stats_every: parse_arg_int("every", 6),     // extract stats every XX cycles
-  stats_for: parse_arg_int("stats-for", 4),   // how many cycles of stats extraction per scan
+  nb_sim_loops: parse_arg("loops", 32),   // number of simulation loops (before one of visu)
+  warmup: parse_arg("warmup", 5),
+  stats_every: parse_arg("every", 6),     // extract stats every XX cycles
+  stats_for: parse_arg("stats-for", 4),   // how many cycles of stats extraction per scan
 
   wsize: 256,            // maxComputeInvocationsPerWorkgroup,
   wsize_max: 65535,      // maxComputeWorkgroupsPerDimension
@@ -151,7 +135,7 @@ const params = {
 
   // debugging
   dbg: { timing: false,
-         trace: parse_arg_int('trace', 0, 0, 3),
+         trace: parse_arg('trace', 0, 0, 3),
          freeze: parse_arg_bool("freeze"),
          visu: !parse_arg_bool("no-visu"),
        },
@@ -174,8 +158,8 @@ if (parse_arg_bool("dbg")) {
 const GUI_change = async () => { await init({}); }  // parameter changed
 
 const GUI_init = () => {
-  canvas.width  = parse_arg_int("w", innerWidth * .9);
-  canvas.height = parse_arg_int("h", innerHeight * .8);
+  canvas.width  = parse_arg("w", innerWidth * .9);
+  canvas.height = parse_arg("h", innerHeight * .8);
 
   if (params.no_gui) {
     render.gui = undefined;
