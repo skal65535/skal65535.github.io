@@ -345,7 +345,10 @@ const struct_code = `
   };
 `;
 const screen_code = `
-  fn ScreenToTexture(s: vec2f) -> vec2f {   // from [-1,1]^2 to [0,1]^2
+  fn ScreenToTexture(s: vec2f, tex: texture_depth_2d) -> vec2f {   // from [-1,1]^2 to [0,W) x [0,H)
+    return vec2f(textureDimensions(tex)) * ScreenToCoords(s);
+  }
+  fn ScreenToCoords(s: vec2f) -> vec2f {   // from [-1,1]^2 to [0,1]^2
     return vec2f(.5, .5) + vec2f(.5, -.5) * s;
   }
   fn WorldFromScreen(uv : vec2f, w: f32) -> vec3f {
@@ -368,7 +371,6 @@ const group_1_code = `
 const group_2_code = `
   @group(2) @binding(0) var light_depth: texture_depth_2d;
   @group(2) @binding(1) var cmp_sampler: sampler_comparison;
-  @group(2) @binding(2) var depth_sampler: sampler;
 `;
 // displacement noise
 const noise_code = `
@@ -675,31 +677,31 @@ function create_post_pipeline(render) {
     }`;
   const shadow_code_0 = `
     fn Shadow(pos3d: vec3f) -> f32 {
-      _ = cmp_sampler;
       let light_uv = light.proj * vec4f(pos3d, 1.);
       if (light_uv.w < 1e-5) { return 1.; }           // 'behind' the light
       let light_pos = light_uv.xyz / light_uv.w;
-      let light_screen = ScreenToTexture(light_pos.xy);  // in [0,1]^2
+      let light_screen = ScreenToCoords(light_pos.xy);
       let light_ref = light_pos.z + 0.001;
 
-      let sample_unit = 1. / vec2f(textureDimensions(light_depth));
       var d = 0.;
       var w = 0.;
+      let units = 1. / vec2f(textureDimensions(light_depth));
       let nb_samples = ceil(sqrt(params.shadow_nb_samples));
       let phi_scale = 6.28318530718 / nb_samples;
-      let r_scale =  params.shadow_extent / sqrt(nb_samples);
+      let r_scale = params.shadow_extent / sqrt(nb_samples);
+      let d_scale = params.shadow_jitter;
       // sample the [sqrt(r), theta] space uniformly
       for (var layer = nb_samples; layer > 0.; layer -= 1.) {
         let r = sqrt(layer) * r_scale;
         var count = 0.;
         for (var theta = 0.; theta < nb_samples; theta += 1.) {
-          let displace = (Hash_3f_3f(pos3d).xy - vec2f(.5, .5)) * params.shadow_jitter;
+          let displace = (Hash_3f_3f(pos3d).xy - vec2f(.5, .5)) * d_scale;
           let R = r + displace.x;
           let T = (theta + displace.y) * phi_scale;
-          var pos = vec2f(cos(T), sin(T));
-          pos = light_screen + pos * R * sample_unit;
-          let light_depth = textureSampleLevel(light_depth, depth_sampler, pos, 0);
-          count += step(light_depth, light_ref);   // occlusion if light_depth < light_ref
+          var pos = vec2f(cos(T), sin(T)) * units;
+          pos = light_screen + pos * R;
+          // occlusion if light_depth < light_ref
+          count += textureSampleCompareLevel(light_depth, cmp_sampler, pos, light_ref);
           w += 1.;
         }
         if (layer == nb_samples) {  // early out on the outter layer
@@ -712,14 +714,13 @@ function create_post_pipeline(render) {
     }`;
   const shadow_code_1 = `
     fn Shadow(pos3d: vec3f) -> f32 {
-      _ = cmp_sampler;
       let light_uv = light.proj * vec4f(pos3d, 1.);
       if (light_uv.w < 0) { return 1.; }           // 'behind' the light
       let light_pos = light_uv.xyz / light_uv.w;
-      let light_screen = ScreenToTexture(light_pos.xy);  // in [0,1]^2
+      let light_screen = ScreenToCoords(light_pos.xy);
       let light_ref = light_pos.z + 0.001;
 
-      let sample_unit = 1. / vec2f(textureDimensions(light_depth));
+      let units = 1. / vec2f(textureDimensions(light_depth));
       let nb_samples = params.shadow_nb_samples;
       let sample_dist = params.shadow_extent / sqrt(nb_samples);
       var sqrt_n = 0.;   // sqrt_n is an approx of sqrt(n)
@@ -732,9 +733,9 @@ function create_post_pipeline(render) {
       for (var n = 0.; n < nb_samples; n += 1.) {
         sqrt_n += 1. / (1. + sqrt_n);
         sample_dir = kRot * sample_dir;
-        let pos = light_screen + sqrt_n * sample_dir * sample_unit;
-        let light_depth = textureSampleLevel(light_depth, depth_sampler, pos, 0);
-        shadow += step(light_depth, light_ref);   // occlusion if light_depth < light_ref
+        let pos = light_screen + sqrt_n * sample_dir * units;
+        // occlusion if light_depth < light_ref
+        shadow += textureSampleCompareLevel(light_depth, cmp_sampler, pos, light_ref);
       }
       return shadow / nb_samples;
     }`;
@@ -746,9 +747,7 @@ function create_post_pipeline(render) {
         for (var x : f32 = -size; x <= size; x += 1) {
           let off = vec2f(x, y);
           let coeff = exp(-length(off) / coc);
-          if (coeff > 1e-3) {
-            col += coeff * textureSampleLevel(screen, screen_sampler, pos + off / params.dim, 0);
-          }
+          col += coeff * textureSample(screen, screen_sampler, pos + off / params.dim);
         }
       }
       return col.rgb / col.a;
@@ -776,8 +775,8 @@ function create_post_pipeline(render) {
       let plight_2d = model.proj * light.pos;
       if (plight_2d.w < params.znear) { return 0.; }
       let plight_screen = plight_2d.xyz / plight_2d.w;  // in [-1,1] ^ 2
-      let plight_txt = ScreenToTexture(plight_screen.xy);
-      let plight_depth = textureSampleLevel(zbuf, depth_sampler, plight_txt, 0);
+      let plight_txt = ScreenToTexture(plight_screen.xy, zbuf);
+      let plight_depth = textureLoad(zbuf, vec2u(plight_txt), 0);
       let delta_l = (plight_2d.xy - pos_screen * plight_2d.w) * vec2(params.dim.x / params.dim.y, 1.);
       var dlight = exp(-.5 * dot(abs(delta_l), vec2f(1., 8.)));
 //      var dlight = exp(-3. * length(delta_l));
@@ -789,10 +788,10 @@ function create_post_pipeline(render) {
     ${screen_code}
     ${noise_code}
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      let pos = ScreenToTexture(s.uv);
-      let screen_w = textureSampleLevel(zbuf, depth_sampler, pos, 0);
+      let pos = ScreenToTexture(s.uv, zbuf);
+      let screen_w = textureLoad(zbuf, vec2u(pos), 0);
       let coc = 0.01 + 4. * dot(s.uv, s.uv);   // Circle of Confusion
-      var col = Blur(pos, coc);
+      var col = Blur(ScreenToCoords(s.uv), coc);
       let pos3d = WorldFromScreen(s.uv, screen_w);
       let shadow = Shadow(pos3d);   // 0. = full-shadow, 1. = full-lit
       col *= clamp(shadow, .2, 1.);  // .2 = ambient factor
@@ -949,7 +948,6 @@ function create_show_sm_pipeline(render) {
   }
   const show_sm_code = `
     @group(0) @binding(0) var depth_map: texture_depth_2d;
-    @group(0) @binding(1) var depth_sampler: sampler;
     const kVtx = array<vec4f, 3>(  // screen quad
         vec4f( 3., -1., 0., 1.), vec4f( -1., 3., 0., 1.), vec4f(-1.,-1., 0., 1.));
     @vertex fn vtx_main(@builtin(vertex_index) vtx: u32) -> @builtin(position) vec4f {
@@ -957,9 +955,9 @@ function create_show_sm_pipeline(render) {
     }
     @fragment fn frag_main(@builtin(position) position : vec4f) -> @location(0) vec4f {
       const kReduction = 2.5;
-      let uv = (position.xy * kReduction) / vec2f(textureDimensions(depth_map));
-      if (any(uv >= vec2(1.))) { discard; }
-      let l_depth = textureSample(depth_map, depth_sampler, uv);
+      let uv = vec2u(position.xy * kReduction);
+      if (any(uv >= textureDimensions(depth_map))) { discard; }
+      let l_depth = textureLoad(depth_map, uv, 0);
       return vec4f(1. - 0.001 / l_depth, 0., 0., 1.);
     }
   `;
@@ -971,7 +969,6 @@ function create_show_sm_pipeline(render) {
                 render.device.createBindGroupLayout({
                   entries: [
                     { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth', } },
-                    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering', } },
                   ],
                 }),
               ],
@@ -987,7 +984,7 @@ function create_show_sm_pipeline(render) {
       [ { binding: 0,
           resource: (params.dbg.show_sm == kShowMaps[1]) ? render.light_depth.createView()
                                                          : render.depth_texture.createView(), },
-        { binding: 1, resource: render.device.createSampler({}), }, ],
+      ],
   });
 }
 
@@ -1043,10 +1040,6 @@ async function init_textures(render) {
   render.GPU.light_entries = [
     { binding: 0, resource: render.light_depth.createView(), },
     { binding: 1, resource: render.device.createSampler({ compare: 'greater', }), },
-    { binding: 2, resource: render.device.createSampler({
-            addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
-            magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
-    }), },
   ];
 
   if (render.gui) {
