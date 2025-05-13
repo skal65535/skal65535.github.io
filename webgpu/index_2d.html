@@ -16,38 +16,21 @@
     Ball simulation with WebGPU
   </center>
 </div>
-
+<script src="../common/args.js"></script>
 <script>
 "use strict";
 
-const args = new URLSearchParams(location.search);
-
-function parse_arg_f(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseFloat(args.get(arg_value))
-        : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-function parse_arg_i(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseInt(args.get(arg_value))
-        : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-
 const params = {
-  balls: parse_arg_i("balls", 100, 1, 10000),
-  min_r: parse_arg_f("min_radius", 2., 1., 100.),
-  max_r: parse_arg_f("max_radius", 5., 1., 100.),
-  render: parse_arg_i("render", 1),
-  dt: parse_arg_f("dt", 0.01, 1e-6, .1),
-  gravity: parse_arg_f("g", 1000.),
+  balls: parse_arg("balls", 100, 1, 10000),
+  min_r: parse_arg("min_radius", 2., 1., 100.),
+  max_r: parse_arg("max_radius", 5., 1., 100.),
+  render: parse_arg("render", 1),
+  dt: parse_arg("dt", 0.01, 1e-6, .1),
+  gravity: parse_arg("g", 1000.),
 }
 const ctx = document.querySelector("#canvas").getContext("2d");
-const W = parse_arg_i("width", 500);
-const H = parse_arg_i("height", 500);
+const W = parse_arg("width", 500);
+const H = parse_arg("height", 500);
 ctx.canvas.width  = W;
 ctx.canvas.height = H;
 

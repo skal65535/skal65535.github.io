@@ -43,6 +43,7 @@
     </ul>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script src="../common/args.js"></script>
 <script>
 "use strict";
 const kVisus = {  // mapping from name to shader function
@@ -77,20 +78,6 @@ const kSorts = {  // TODO(skal): simplify semantics!
   'CPU full': {cpu:true,  gpu:false, every:false,},
   'none':     {cpu:false, gpu:false, every:false,},
 };
-
-////////////////////////////////////////////////////////////////////////////////
-
-const args = new URLSearchParams(location.search);
-function parse_arg_int(arg_value, default_value, min, max) {
-  let v = args.has(arg_value) ? parseInt(args.get(arg_value)) : default_value;
-  if (min != undefined) v = Math.max(v, min);
-  if (max != undefined) v = Math.min(v, max);
-  return v;
-}
-function parse_arg_str(arg_value, default_value) {
-  return args.has(arg_value) ? args.get(arg_value) : default_value;
-}
-function parse_arg_bool(arg_value) { return (args.has(arg_value) == true); }
 
 ////////////////////////////////////////////////////////////////////////////////
 // constants
@@ -139,7 +126,7 @@ const params = {
   sort_name: parse_arg_str('sort', 'CPU'),
   sort_sortsize: 32,
   sort_groupsize: 128,
-  sort_every: parse_arg_int('every', 8),    // perform CPU-sort every xxx frame...
+  sort_every: parse_arg('every', 8),    // perform CPU-sort every xxx frame...
   sort_culled: !parse_arg_bool('no-cull'),  // cull splats during depth-sorting
   sort_wasm: parse_arg_bool('wasm'),
   sort_debug: parse_arg_bool('sdbg'),       // visualize sorted index and depths
@@ -154,7 +141,7 @@ const params = {
          use_localhost: parse_arg_bool('localhost'),
          draw_axis: parse_arg_bool('axis'),
          timing: false, synth_splats: 500,
-         trace: parse_arg_int('trace', 0, 0, 3),
+         trace: parse_arg('trace', 0, 0, 3),
          skip_compute: parse_arg_bool('no-compute'), },
 };
 
@@ -178,8 +165,8 @@ const GUI_change = async () => { await init({}); }  // parameter changed
 const GUI_reload = async () => { await init({model:true, sorting:true, buffers:true}); }    // (re)load a model
 
 const GUI_init = () => {
-  canvas.width  = parse_arg_int("w", innerWidth * .9);
-  canvas.height = parse_arg_int("h", innerHeight * .8);
+  canvas.width  = parse_arg("w", innerWidth * .9);
+  canvas.height = parse_arg("h", innerHeight * .8);
 
   if (params.no_gui) {
     render.gui = undefined;
