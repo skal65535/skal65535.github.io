@@ -42,18 +42,18 @@ function perspective(fx, fy, znear, zfar) {
   const A = znear / (zfar - znear);
   const B = zfar * A;
   return new Float32Array([
-     -fx,  0., 0.,  0.,
-      0., -fy, 0.,  0.,
-      0.,  0.,  A, -1.,
-      0.,  0.,  B,  0.]);
+     fx,  0., 0.,  0.,
+      0., fy, 0.,  0.,
+      0.,  0., A, -1.,
+      0.,  0., B,  0.]);
 }
 
 function ortho(fx, fy, znear, zfar) {
   const A = 1. / (zfar - znear);
   const B = znear * A;
   return new Float32Array([
-     -fx,  0., 0.,  0.,
-      0., -fy, 0.,  0.,
+      fx,  0., 0.,  0.,
+      0.,  fy, 0.,  0.,
       0.,  0.,  B,  0.,
       0.,  0.,  A,  1.]);
 }

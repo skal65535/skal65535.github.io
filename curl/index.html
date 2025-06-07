@@ -55,7 +55,7 @@ const params = {
   sm_size: parse_arg('sm', 1024),  // shadow-map size
   light: {
     color: 0xfadede,
-    pos: [1.3, -1.8, 1.,   1.],
+    pos: [1.3, 1.8, 1.,   1.],
     shadow_nb_samples: parse_arg('shadow-samples', 64.),
     shadow_extent: parse_arg('shadow-extent', 30.),
     shadow_jitter: parse_arg('shadow-jitter', 1.),
@@ -76,9 +76,9 @@ const params = {
     hide: parse_arg_bool('hide-object'),
   },
   cam: {
-    dist: parse_arg('R', 2.0, 0.01, 10.),
-    theta: parse_arg('theta', -5.),
-    phi: parse_arg('phi', -5.0),
+    dist: parse_arg('R', 3.0, 0.01, 10.),
+    theta: parse_arg('theta', 5.),
+    phi: parse_arg('phi', 5.0),
     fov: parse_arg('fov', 110., 30., 170.),
     znear: parse_arg('znear', 0.01),
     zfar: parse_arg('zfar', 20.),
@@ -179,11 +179,11 @@ window.addEventListener('pointermove', (event) => {
   const mouse_y = (event.clientY -  bounds.top) / canvas.height;
   if (params.mouse.on) {
     if (event.shiftKey) {
-      params.model.phi   += (params.mouse.y - mouse_y) * 140.;
-      params.model.theta += (params.mouse.x - mouse_x) * 140.;
+      params.model.phi   -= (params.mouse.y - mouse_y) * 140.;
+      params.model.theta -= (params.mouse.x - mouse_x) * 140.;
     } else {
-      params.cam.phi   += (params.mouse.y - mouse_y) * 140.;
-      params.cam.theta += (params.mouse.x - mouse_x) * 140.;
+      params.cam.phi   -= (params.mouse.y - mouse_y) * 140.;
+      params.cam.theta -= (params.mouse.x - mouse_x) * 140.;
     }
   }
   params.mouse.x = mouse_x;
@@ -550,7 +550,7 @@ function create_poly_pipeline(render) {
     fragment: { module: vtx_module, entryPoint: 'frag_main', targets: render.target, },
     primitive: {
       topology: 'triangle-strip',
-      stripIndexFormat: 'uint32',
+      stripIndexFormat: 'uint16',
       cullMode: params.funky ? 'none' : 'front',
     },
     depthStencil: {
@@ -641,7 +641,7 @@ function create_cube_pipeline(render) {   // draw the surrending cube box
     fragment: { module: vtx_module, entryPoint: 'frag_main', targets: render.target, },
     primitive: {
       topology: 'triangle-strip',
-      stripIndexFormat: 'uint32',
+      stripIndexFormat: 'uint16',
       cullMode: 'back',
     },
     depthStencil: {
@@ -878,7 +878,7 @@ function create_wireframe_pipeline(render) {
     },
     primitive: {
       topology: 'line-strip',
-      stripIndexFormat: 'uint32',
+      stripIndexFormat: 'uint16',
       cullMode: 'none',
     },
     depthStencil: {
@@ -920,7 +920,7 @@ function create_light_pipeline(render) {
     vertex: { module: shadow_module, entryPoint: 'vtx_main', buffers: VertexIndexBuffer, },
     primitive: {
       topology: params.wireframe ? 'line-strip' : 'triangle-strip',
-      stripIndexFormat: 'uint32',
+      stripIndexFormat: 'uint16',
       cullMode: (params.wireframe || params.funky) ? 'none' : 'front',
     },
     depthStencil: {
@@ -1070,9 +1070,13 @@ function compute_frame_params() {
   const aspect = canvas.width / canvas.height;
   render.fx = 1. / Math.tan(params.cam.fov * Math.PI / 360.);
   render.fy = aspect * render.fx;
-  const proj =
-    params.dbg.ortho ? ortho(render.fx, render.fy, params.cam.znear, params.cam.zfar)
-                     : perspective(render.fx, render.fy, params.cam.znear, params.cam.zfar);
+  const ortho_m = ortho(.5 * render.fx, .5 * render.fy, params.cam.znear, params.cam.zfar);
+  const persp_m = perspective(render.fx, render.fy, params.cam.znear, params.cam.zfar);
+  const proj = persp_m;
+  if (params.dbg.ortho) {
+    const t = Math.abs(Math.sin(render.tick * 0.01));
+    for (let i = 0; i < proj.length; ++i) proj[i] = t * ortho_m[i] + (1. - t) * persp_m[i];
+  }
   render.proj = multiply4(proj, render.view);
 
   // Light position
@@ -1164,7 +1168,7 @@ async function frame() {
     light_pass.setBindGroup(0, render.light_bind_group_0);
     light_pass.setBindGroup(1, render.light_bind_group_1);
     light_pass.setVertexBuffer(0, render.GPU.vtx);
-    light_pass.setIndexBuffer(render.GPU.idx, 'uint32');
+    light_pass.setIndexBuffer(render.GPU.idx, 'uint16');
     light_pass.drawIndexed(render.nb_idx, render.nb_faces);
     light_pass.end();
   }
@@ -1199,7 +1203,7 @@ async function frame() {
       render_pass.setBindGroup(0, render.bind_group_0);
       render_pass.setBindGroup(1, render.bind_group_1);
       render_pass.setVertexBuffer(0, render.GPU.vtx);
-      render_pass.setIndexBuffer(render.GPU.idx, 'uint32');
+      render_pass.setIndexBuffer(render.GPU.idx, 'uint16');
       render_pass.drawIndexed(render.nb_idx, render.nb_faces);
       render_pass.end();
     }
@@ -1319,7 +1323,7 @@ function MakeSubUV(depth) {
       UVs.push(u - v, 1 - u);
     }
   }
-  return UVs;
+  return new Float32Array(UVs);
 }
 
 function TriIdx(i) { return i * (i + 1) / 2; }
@@ -1342,7 +1346,7 @@ function MakeSubIdx(depth) {
       if (i + 1 < depth) idx.push(t + i + 1);  // repeat last
     }
   }
-  return idx;
+  return new Uint16Array(idx);
 }
 
 async function set_poly(polyhedron_name) {
@@ -1351,12 +1355,12 @@ async function set_poly(polyhedron_name) {
   render.nb_vtx = poly.vtx.length / 4;
   render.GPU.vtx = Create_GPU_Buffer(render.device, poly.vtx, GPUBufferUsage.VERTEX);
   render.nb_faces = poly.faces.length / 3;
-  render.GPU.faces = Create_GPU_Buffer(render.device, poly.faces, 0, true);
+  render.GPU.faces = Create_GPU_Buffer(render.device, poly.faces);
 
   const uv = MakeSubUV(params.depth);
   const idx = MakeSubIdx(params.depth);
   render.nb_idx = idx.length;
-  render.GPU.idx = Create_GPU_Buffer(render.device, idx, GPUBufferUsage.INDEX, true);
+  render.GPU.idx = Create_GPU_Buffer(render.device, idx, GPUBufferUsage.INDEX);
   render.GPU.uv = Create_GPU_Buffer(render.device, uv);
 
   // uniforms buffers
@@ -1387,7 +1391,7 @@ async function set_poly(polyhedron_name) {
   // Background Cube
   const cube = kPolys['cube'];
   render.GPU.cube_vtx = Create_GPU_Buffer(render.device, cube.vtx, GPUBufferUsage.VERTEX);
-  render.GPU.cube_faces = Create_GPU_Buffer(render.device, cube.faces, 0, true);
+  render.GPU.cube_faces = Create_GPU_Buffer(render.device, cube.faces);
   render.GPU.cube_entries = [
     { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
   ];
