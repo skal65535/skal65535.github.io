@@ -38,14 +38,22 @@ function look_at([p_x, p_y, p_z],  // position relative to target
       -dot([f_x, f_y, f_z], [p_x, p_y, p_z]), 1.]);
 }
 
+// axis convention :
+//  y (up)
+//  |
+//  |___x
+//  \
+//   \z
+//
+
 function perspective(fx, fy, znear, zfar) {
   const A = znear / (zfar - znear);
   const B = zfar * A;
   return new Float32Array([
-     fx,  0., 0.,  0.,
-      0., fy, 0.,  0.,
-      0.,  0., A, -1.,
-      0.,  0., B,  0.]);
+      fx,  0., 0.,  0.,
+      0.,  fy, 0.,  0.,
+      0.,  0.,  A, -1.,
+      0.,  0.,  B,  0.]);
 }
 
 function ortho(fx, fy, znear, zfar) {

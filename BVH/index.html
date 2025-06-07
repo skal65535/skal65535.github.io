@@ -44,7 +44,7 @@ const ctx = canvas.getContext("webgpu");
 // Params
 
 const params = {
-  method: parse_arg('method', 0),   // BVH method: 0 = none
+  method: parse_arg('method', 0),   // BVH method: 0 = triangle list, 1 = BVH
   tris: null,  // triangles struct, as UInt32Array
   vtx: null,  // vertex, as vec3f
 
@@ -207,35 +207,107 @@ const visu_uniforms_struct_code = `
       view: mat4x4f,
       proj: mat4x4f,
       nb_tris:     f32,   // 32 * 4
-      nb_vtx:      f32,
-      width:       f32,
-      aspect:      f32,
+      nb_vtx:      f32,   // 33
+      width:       f32,   // 34
+      aspect:      f32,   // 35
+      fxy:         vec2f, // 36
+
+      light:       vec4f, // 40
+      // 44
     }
   `;
-function create_visu_pipeline0(render) {  // RENDER pipeline drawing the tris
+
+const common_code = `
+    fn Hash1f(p: u32) -> f32 {
+      var P = (p << 13) ^ p;
+      P = P * (P * P * 15731 + 789221) + 1376312589;
+      return bitcast<f32>((P >> 9) | 0x3f800000) - 1.;
+    }
+    fn Hash3f(p: u32) -> vec3f {
+      return vec3f(Hash1f(p), Hash1f(p + 1423), Hash1f(p + 124453));
+    }
+    fn get_vtx(face_id: u32, vtx_id: u32) -> vec4f {
+      let id = 3 * faces[3 * face_id + vtx_id];
+      return vec4f(vtx[id + 0], vtx[id + 1], vtx[id + 2], 1.);
+    }
+  `;
+
+function create_visu_pipeline1(render) {  // BVH method
   const visu_code = `
     ${visu_uniforms_struct_code}
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<f32>;
+    @group(0) @binding(2) var<storage, read> faces: array<u32>;
+
+    ${common_code}
+
     struct Out {
         @builtin(position) position: vec4f,
         @location(0) uv: vec2f,
     };
-    @group(0) @binding(0) var<uniform> params: Uniforms;
+
     @vertex fn vtx_main(@builtin(vertex_index) idx: u32)
         -> Out {
         _ = params.width;
-        const kVtx = array<vec2f, 3>(
-            vec2f(-1.,3.), vec2f(3.,-1.), vec2f(-1.,-1.),
-        );
+        const kVtx = array<vec2f, 3>(vec2f(-1., 3.), vec2f(3., -1.), vec2f(-1., -1.));
         var s : Out;
         s.position = vec4f(kVtx[idx], 1., 1.);
         s.uv = s.position.xy;
         return s;
     }
+
+    struct Hit {
+      hit: bool,
+      pos: vec3f,
+      N: vec3f,
+      uv: vec2f,  // hit coordinate
+      z:  f32,    // distance along ray
+    };
+    // Möller and Trumbore, « Fast, Minimum Storage Ray-Triangle Intersection »
+    fn intersects(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> Hit {
+      var hit : Hit;
+      let d10 = p1 - p0;
+      let d20 = p0 - p2;
+      hit.N = cross(d20, d10);
+      let det = -dot(dir, hit.N);
+      let invdet = 1.0 / det;
+      let d0  = p0 - orig;
+      let nd = cross(d0, dir);
+      hit.uv = vec2f(dot(d20, nd), dot(d10, nd)) * invdet;
+      hit.z = dot(d0, hit.N) * invdet;
+      hit.hit = (det >= 1e-6 && hit.z >= 0.0 && hit.uv.x >= 0.0 && hit.uv.y >= 0.0 && (hit.uv.x + hit.uv.y) <= 1.0);
+      hit.pos = orig + hit.z * dir;
+      if (hit.hit) { hit.N = normalize(hit.N); }
+      return hit;
+    }
+    fn quick_reject(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f, best_z: f32) -> bool {
+      let z0 = dot(p0 - orig, dir);
+      let z1 = dot(p1 - orig, dir);
+      let z2 = dot(p2 - orig, dir);
+      return (min(min(z0, z1), z2) > best_z);
+    }
+    
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-//      let dir = normalize(vec3f(s.uv, params.fov));
-      let uv = s.uv;
-      if (dot(uv, uv) > 1.) { discard; }
-      return vec4f(1. - length(uv), length(uv), .1, 1.);
+      let dir = normalize(vec3f(-s.uv * params.fxy, 1.));
+      let orig = vec3f(0.);
+      var best_f : u32 = 0;
+      var best_z : f32 = 1e36;
+      var best_hit : Hit;
+      var best_col = vec3f(0.);
+      for (var face : u32 = 0; face < u32(params.nb_tris); face += 1) {
+        let p0 = (params.view * get_vtx(face, 0)).xyz;
+        let p1 = (params.view * get_vtx(face, 1)).xyz;
+        let p2 = (params.view * get_vtx(face, 2)).xyz;
+        // if (quick_reject(orig, dir, p0, p1, p2, best_z)) { continue; }
+        let hit = intersects(orig, dir, p0, p1, p2);
+        if (hit.hit && hit.z < best_z) {
+          best_z = hit.z;
+          best_f = face;
+          best_hit = hit;
+          best_col = Hash3f(best_f) * max(0.2,dot(hit.N, params.light.xyz));
+        }
+      }
+      return vec4f(best_col, 1.);
     }
   `;
   const visu_module = render.device.createShaderModule({ code: visu_code, });
@@ -270,29 +342,20 @@ function create_visu_pipeline0(render) {  // RENDER pipeline drawing the tris
     layout: render.visu_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
+      { binding: 1, resource: { buffer: render.GPU.vtx, }, },
+      { binding: 2, resource: { buffer: render.GPU.tris, }, },
     ],
   });
 }
 
-function create_visu_pipeline1(render) {
+function create_visu_pipeline0(render) {   // basic method
   const visu_code = `
     ${visu_uniforms_struct_code}
     @group(0) @binding(0) var<uniform> params: Uniforms;
     @group(0) @binding(1) var<storage, read> vtx: array<f32>;
     @group(0) @binding(2) var<storage, read> faces: array<u32>;
 
-    fn Hash1f(p: u32) -> f32 {
-      var P = (p << 13) ^ p;
-      P = P * (P * P * 15731 + 789221) + 1376312589;
-      return bitcast<f32>((P >> 9) | 0x3f800000) - 1.;
-    }
-    fn Hash3f(p: u32) -> vec3f {
-      return vec3f(Hash1f(p), Hash1f(p + 1423), Hash1f(p + 124453));
-    }
-    fn get_vtx(face_id: u32, vtx_id: u32) -> vec4f {
-      let id = 3 * faces[3 * face_id + vtx_id];
-      return vec4f(vtx[id + 0], vtx[id + 1], vtx[id + 2], 1.);
-    }
+    ${common_code}
       
     struct Out {
         @builtin(position) position: vec4f,
@@ -402,7 +465,7 @@ async function init_buffers(render) {
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
-    size: 36 * 4,
+    size: 44 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -432,12 +495,17 @@ function transmit_frame_params(render) {
         params.cam.radius * Math.sin(theta) * Math.cos(phi), ],
       [0., 0., 0.], [0., 1., 0.]);
 
+  const light_dir = new Float32Array(normalize([1., 1., 1.]), 1.);
   // transmit
   render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.frame.view);
   render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.frame.proj);
   render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4,
       new Float32Array([ render.nb_tris, render.nb_vtx,
-                         canvas.width, render.frame.fy / render.frame.fx, ]));
+                         canvas.width, render.frame.fy / render.frame.fx,
+                         1., render.frame.fx / render.frame.fy,
+                         0., 0.,
+                       ]));
+  render.device.queue.writeBuffer(render.GPU.uniforms, 40 * 4, light_dir);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -460,10 +528,9 @@ async function frame() {
   render_pass.setPipeline(render.visu_pipeline);
   render_pass.setBindGroup(0, render.visu_bind_group);
   if (params.method == 0) {
-    render_pass.draw(3);
-  } else {
-    // render_pass.setIndexBuffer(render.GPU.tris, 'uint32');
     render_pass.draw(3, render.nb_tris);
+  } else {
+    render_pass.draw(3);
   }
   render_pass.end();
 
