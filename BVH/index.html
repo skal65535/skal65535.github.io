@@ -24,7 +24,7 @@
 <script src="../common/args.js"></script>
 <script src="../common/matrix.js"></script>
 <script src="../common/utils.js"></script>
-<script src="./bunny.js"></script>
+<script src="./mesh.js"></script>
 <script>
 "use strict";
 
@@ -44,7 +44,7 @@ const ctx = canvas.getContext("webgpu");
 // Params
 
 const params = {
-  method: parse_arg('method', 0),   // BVH method: 0 = triangle list, 1 = BVH
+  method: parse_arg('method', 1),   // BVH method: 0 = triangle list, 1 = AA-BVH
   tris: null,  // triangles struct, as UInt32Array
   vtx: null,  // vertex, as vec3f
 
@@ -52,16 +52,20 @@ const params = {
   wsize_max: 65535,      // maxComputeWorkgroupsPerDimension
   max_buffer_size: 268435456,
 
+  show_mesh: !parse_arg_bool('no-mesh'),
+  show_boxes: !parse_arg_bool('no-boxes'),
+  shadows: !parse_arg_bool('no-shadows'),
+
   gui: null,
 
   // Camera / Visu
   cam: {
-    fov: 90.,
-    radius: 1.5,
-    theta: 0.,
-    phi: 30.0,
-    znear: 0.1,
-    zfar: 100.,
+    fov: parse_arg('fov', 90.),
+    radius: parse_arg('radius', 1.0),
+    theta: parse_arg('theta', 0.),
+    phi: parse_arg('phi', 30.0),
+    znear: parse_arg('znear', 0.1),
+    zfar: parse_arg('zfar', 100.),
     auto_rotate: !parse_arg_bool("no-rotate"),
   },
   mouse: {on:false, x:0., y:0.},
@@ -93,6 +97,9 @@ const GUI_init = () => {
   }
   params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
   params.gui.add(params, 'method', {'none': 0, 'BVH': 1}).listen().onChange(GUI_change);
+  params.gui.add(params, 'show_mesh').name("show mesh").listen().onChange(GUI_change);
+  params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
+  params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
   const cam_folder = params.gui.addFolder('camera / visu').close();
   cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
   cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen();
@@ -204,16 +211,18 @@ const GPU_init = async () => {
 
 const visu_uniforms_struct_code = `
     struct Uniforms {
-      view: mat4x4f,
-      proj: mat4x4f,
-      nb_tris:     f32,   // 32 * 4
-      nb_vtx:      f32,   // 33
-      width:       f32,   // 34
-      aspect:      f32,   // 35
-      fxy:         vec2f, // 36
+      view: mat4x4f,      //  0 * 4
+      iview: mat4x4f,     // 16 * 4
+      proj: mat4x4f,      // 32 * 4
+      nb_tris:     f32,   // 48 * 4
+      nb_vtx:      f32,   // 49
+      width:       f32,   // 50
+      aspect:      f32,   // 51
+      fxy:         vec2f, // 52
 
-      light:       vec4f, // 40
-      // 44
+      light:       vec4f, // 56
+      show_what:   u32,   // 60:  bit0: mesh, bit1: boxes, bit2: shadow
+      // 64
     }
   `;
 
@@ -256,58 +265,169 @@ function create_visu_pipeline1(render) {  // BVH method
         return s;
     }
 
+    struct Box {
+      min: vec3f,
+      max: vec3f,
+    }
+    // https://tavianator.com/fast-branchless-raybounding-box-intersections
+    fn intersect_box(orig: vec3f, inv_dir: vec3f, box_min: vec3f, box_max: vec3f, best_z: f32) -> bool {
+      let bm = inv_dir * (box_min - orig);
+      let bM = inv_dir * (box_max - orig);
+      let Tmin = min(bm, bM);
+      let Tmax = max(bm, bM);
+      let zmin = max(max(Tmin.x, Tmin.y), Tmin.z);
+      let zmax = min(min(Tmax.x, Tmax.y), Tmax.z);    
+      return (zmax >= 0.0) && (zmin <= zmax) && (zmin <= best_z);
+    }
+
+    // extract bounding box of 6 consecutive faces starting at 'face'
+    fn extract_box(face: u32) -> Box {
+      let p0 = get_vtx(face, 0).xyz;
+      var b = Box(p0, p0);
+      for (var i = 0u; i < 6; i += 1u) {
+        for (var j = 0u; j < 3; j += 1u) {
+          let v = get_vtx(face + i, j).xyz;
+          b.min = min(b.min, v);
+          b.max = max(b.max, v);
+        }
+      }
+      return b;
+    }
+
     struct Hit {
       hit: bool,
       pos: vec3f,
       N: vec3f,
       uv: vec2f,  // hit coordinate
       z:  f32,    // distance along ray
+      box: f32,   // number of boxes traversed
+      face: u32,  // face intersected
     };
+    fn init_hit(orig: vec3f, dir: vec3f) -> Hit {
+      var hit = Hit(false, orig, vec3f(0.), vec2f(0.), 1e36, 0., 0xffffffff);
+/*
+      let z = -(-1. - orig.y) / dir.y;
+      if (z > 0.) {
+        hit.hit = true;
+        hit.z = z;
+        hit.N = vec3f(0., 1., 0.);
+        hit.pos = orig + z * dir;
+        hit.face = 0xfffffffe;
+      }
+*/
+      return hit;
+    }
     // Möller and Trumbore, « Fast, Minimum Storage Ray-Triangle Intersection »
     fn intersects(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> Hit {
       var hit : Hit;
       let d10 = p1 - p0;
-      let d20 = p0 - p2;
-      hit.N = cross(d20, d10);
+      let d20 = p2 - p0;
+      hit.N = cross(d10, d20);
       let det = -dot(dir, hit.N);
       let invdet = 1.0 / det;
-      let d0  = p0 - orig;
+      let d0  = orig - p0;
       let nd = cross(d0, dir);
-      hit.uv = vec2f(dot(d20, nd), dot(d10, nd)) * invdet;
+      hit.uv = vec2f(dot(d20, nd), -dot(d10, nd)) * invdet;
       hit.z = dot(d0, hit.N) * invdet;
       hit.hit = (det >= 1e-6 && hit.z >= 0.0 && hit.uv.x >= 0.0 && hit.uv.y >= 0.0 && (hit.uv.x + hit.uv.y) <= 1.0);
-      hit.pos = orig + hit.z * dir;
-      if (hit.hit) { hit.N = normalize(hit.N); }
       return hit;
     }
     fn quick_reject(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f, best_z: f32) -> bool {
-      let z0 = dot(p0 - orig, dir);
-      let z1 = dot(p1 - orig, dir);
-      let z2 = dot(p2 - orig, dir);
-      return (min(min(z0, z1), z2) > best_z);
+      let z0 = dot(p0, dir);
+      let z1 = dot(p1, dir);
+      let z2 = dot(p2, dir);
+      return (min(min(z0, z1), z2) > best_z + dot(orig, dir));
+    }
+
+    // check 6 faces starting from 'face' and update 'hit'
+    fn update_hit(orig: vec3f, dir: vec3f, face: u32, hit: Hit) -> Hit {
+      var h = hit;
+      for (var j = 0u; j < 6u; j += 1u) {
+        let p0 = get_vtx(face + j, 0).xyz;
+        let p1 = get_vtx(face + j, 1).xyz;
+        let p2 = get_vtx(face + j, 2).xyz;
+        if (quick_reject(orig, dir, p0, p1, p2, hit.z)) { continue; }
+        let new_hit = intersects(orig, dir, p0, p1, p2);
+        if (new_hit.hit && new_hit.z < h.z) {
+          h = new_hit;
+          h.N = normalize(h.N);
+          h.face = face + j;
+          h.box = hit.box;
+          h.pos = orig + h.z * dir;
+        }
+      }
+      return h;
+    }
+
+    fn trace(orig: vec3f, dir: vec3f) -> Hit {
+      var best_hit = init_hit(orig, dir);
+      let inv_dir = 1. / dir;
+
+      var stack : array<vec2<u32>, 32>;
+      var stack_size = 1;
+      stack[0] = vec2<u32>(0u, u32(params.nb_tris));
+      while (stack_size > 0) {
+        stack_size -= 1;
+        let segment = stack[stack_size];
+        let b = extract_box(segment.x);
+        if (!intersect_box(orig, inv_dir, b.min, b.max, best_hit.z)) { continue; }
+        best_hit.box += 1.;
+        best_hit = update_hit(orig, dir, segment.x, best_hit);
+//        if (best_hit.hit) { break; }
+        let start = segment.x + 6;
+        if (start >= segment.y) { continue; }  // leaf
+        let split = u32((segment.y + start) / 12) * 6;
+
+        let dims = b.max - b.min;
+        var dir_i = 0;
+        var dir_v = dir.x;
+        if (dims[1] > dims[0]) { dir_i = 1; dir_v = dir.y; }
+        if (dims[2] > dims[dir_i]) { dir_i = 2; dir_v = dir.z; }
+        if (dir_v < 0.) {
+          stack[stack_size + 0] = vec2(start, split);
+          stack[stack_size + 1] = vec2(split, segment.y);
+        } else {
+          stack[stack_size + 0] = vec2(split, segment.y);
+          stack[stack_size + 1] = vec2(start, split);
+        }
+        stack_size += 2;
+      }
+      return best_hit;
+    }
+
+    // for debugging:
+    fn full_trace(orig: vec3f, dir: vec3f) -> Hit {
+      let inv_dir = 1. / dir;
+      var best_hit = init_hit(orig, dir);
+      for (var face = 0u; face < u32(params.nb_tris); face += 6u) {
+        let b = extract_box(face);
+        if (!intersect_box(orig, inv_dir, b.min, b.max, best_hit.z)) { continue; }
+        best_hit.box += 1.;
+        best_hit = update_hit(orig, dir, face, best_hit);
+      }
+      return best_hit;
     }
     
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      let dir = normalize(vec3f(-s.uv * params.fxy, 1.));
-      let orig = vec3f(0.);
-      var best_f : u32 = 0;
-      var best_z : f32 = 1e36;
-      var best_hit : Hit;
-      var best_col = vec3f(0.);
-      for (var face : u32 = 0; face < u32(params.nb_tris); face += 1) {
-        let p0 = (params.view * get_vtx(face, 0)).xyz;
-        let p1 = (params.view * get_vtx(face, 1)).xyz;
-        let p2 = (params.view * get_vtx(face, 2)).xyz;
-        // if (quick_reject(orig, dir, p0, p1, p2, best_z)) { continue; }
-        let hit = intersects(orig, dir, p0, p1, p2);
-        if (hit.hit && hit.z < best_z) {
-          best_z = hit.z;
-          best_f = face;
-          best_hit = hit;
-          best_col = Hash3f(best_f) * max(0.2,dot(hit.N, params.light.xyz));
-        }
+      let iview = params.iview;
+      let dir = (iview * vec4f(normalize(vec3f(s.uv * params.fxy, -1.)), 0.)).xyz;
+      let orig = (iview * vec4f(0., 0., 0., 1.)).xyz;
+      let hit = trace(orig, dir);
+      var col = vec3f(0., .3, .2);
+      if ((params.show_what & 2) != 0 && hit.box > 0.) {
+        col = vec3f(1. - exp(-hit.box / 30.));
       }
-      return vec4f(best_col, 1.);
+      if ((params.show_what & 1) != 0 && hit.hit) {
+        var l = max(0.3, dot(hit.N, params.light.xyz));
+        if ((params.show_what & 4) != 0) {
+          let sh_dir = params.light.xyz;
+          let sh_hit = trace(hit.pos + .0001 * hit.N, sh_dir);
+          if (sh_hit.hit) { l = 0.2; }
+        }
+        col = Hash3f(hit.face) * l;
+      }
+//      if (hit.hit) { col = vec3f(.2 / hit.z); }
+      return vec4f(col, 1.);
     }
   `;
   const visu_module = render.device.createShaderModule({ code: visu_code, });
@@ -369,9 +489,9 @@ function create_visu_pipeline0(render) {   // basic method
         let face = face_idx;
         var s : Out;
         s.position = params.proj * params.view * get_vtx(face, vtx_idx);
-        let p0 = (params.view * get_vtx(face, 0)).xyz;
-        let p1 = (params.view * get_vtx(face, 1)).xyz;
-        let p2 = (params.view * get_vtx(face, 2)).xyz;
+        let p0 = get_vtx(face, 0).xyz;
+        let p1 = get_vtx(face, 1).xyz;
+        let p2 = get_vtx(face, 2).xyz;
         s.n = normalize(cross(p1 - p0, p2 - p1));
         s.color = .4 * Hash3f(face_idx);
         return s;
@@ -401,7 +521,7 @@ function create_visu_pipeline0(render) {   // basic method
     },
     primitive: {
       topology: 'triangle-list',
-      cullMode: 'none',
+      cullMode: 'back',
     },
     depthStencil: {
       depthWriteEnabled: true,
@@ -458,14 +578,14 @@ function get_random_tris(nb_tris, nb_vtx = 10) {
 async function init_buffers(render) {
   trace(0, "Init buffers() => nb_tris:", render.nb_tris);
 
-  render.nb_tris = Math.floor(BunnyTris.length / 3);
-  render.GPU.tris = Create_GPU_Buffer(render.device, BunnyTris, GPUBufferUsage.INDEX);
-  render.nb_vtx = Math.floor(BunnyVtx.length / 3);
-  render.GPU.vtx = Create_GPU_Buffer(render.device, BunnyVtx, GPUBufferUsage.VERTEX);
+  render.nb_tris = Math.floor(MeshTris.length / 3);
+  render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
+  render.nb_vtx = Math.floor(MeshVtx.length / 3);
+  render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
-    size: 44 * 4,
+    size: 64 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -495,23 +615,43 @@ function transmit_frame_params(render) {
         params.cam.radius * Math.sin(theta) * Math.cos(phi), ],
       [0., 0., 0.], [0., 1., 0.]);
 
-  const light_dir = new Float32Array(normalize([1., 1., 1.]), 1.);
+  const ltheta = render.time_stamp * 0.0005;
+  const light = normalize([Math.cos(ltheta) * .5, 1., Math.sin(ltheta) * .4]);
+  const light_dir = new Float32Array(light, 1.);
+//  const light_dir = new Float32Array(normalize([1., 1., 1.]), 1.);
   // transmit
   render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.frame.view);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, render.frame.proj);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4,
+  render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, inverse(render.frame.view));
+  render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.frame.proj);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4,
       new Float32Array([ render.nb_tris, render.nb_vtx,
                          canvas.width, render.frame.fy / render.frame.fx,
                          1., render.frame.fx / render.frame.fy,
                          0., 0.,
                        ]));
-  render.device.queue.writeBuffer(render.GPU.uniforms, 40 * 4, light_dir);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 56 * 4, light_dir);
+  const what = (params.show_mesh ? 1 : 0) |
+               (params.show_boxes ? 2 : 0) |
+               (params.shadows ? 4 : 0);
+  render.device.queue.writeBuffer(render.GPU.uniforms, 60 * 4, new Uint32Array([what]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Animation loop
 
 async function frame() {
+  const time_stamp = performance.now();
+  if (render.time_stamp) {
+    const delta_t = time_stamp - render.time_stamp;
+    if (delta_t > 1.) {
+      const new_fps = 1000. / delta_t;
+      render.fps = Math.round(render.fps * 0.8 + new_fps * 0.2);
+    }
+    // document.getElementById("fps").innerText = render.fps.toFixed(1) + " fps";
+  }
+  render.txt_info = render.fps.toFixed(1) + " fps";
+  render.time_stamp = time_stamp;
+
   const encoder = render.device.createCommandEncoder();
   transmit_frame_params(render);
   const render_pass = encoder.beginRenderPass({
@@ -537,8 +677,6 @@ async function frame() {
   render.device.queue.submit([encoder.finish()]);
   if (params.cam.auto_rotate) params.cam.theta -= 0.07;
   render.loop_id = requestAnimationFrame(frame);
-
-  render.txt_info = render.nb_spins;
 }
 
 function stop_animation() {
@@ -571,6 +709,8 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
 
   // side info
   txt_info: "",
+  time_stamp: undefined,
+  fps: 60.,
   loop_id: undefined,  // id for animation loop
 };
 
