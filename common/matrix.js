@@ -66,13 +66,10 @@ function ortho(fx, fy, znear, zfar) {
       0.,  0.,  A,  1.]);
 }
 
-function rotation([ax, ay, az], angle) {
-  [ax, ay, az] = normalize([ax, ay, az]);
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  const [sx, sy, sz] = [ax * s, ay * s, az * s];
-  const [cx, cy, cz] = [ax * (1. - c), ay * (1. - c), az * (1. - c)];
-  return new Float32Array([
+function rotation([ax, ay, az], angle) { [ax, ay, az] = normalize([ax, ay,
+  az]); const c = Math.cos(angle); const s = Math.sin(angle); const [sx, sy,
+  sz] = [ax * s, ay * s, az * s]; const [cx, cy, cz] = [ax * (1.  - c), ay *
+  (1.  - c), az * (1.  - c)]; return new Float32Array([
     cx * ax +  c, cx * ay - sz, cx * az + sy, 0.,
     cy * ax + sz, cy * ay +  c, cy * az - sx, 0.,
     cz * ax - sy, cz * ay + sx, cz * az +  c, 0.,
