@@ -12,13 +12,20 @@
 <div id='main-area'>
   <center>
     <b>BVH</b><br/>
+  </center>
+  <p>
+    This is a variation over Zappy's <a href='https://www.codercorner.com/ZeroByteBVH.pdf'>Zero-Byte-BVH</a>.<br/>
+    We implement axis-aligned bounding boxes hierarchy at no cost by
+    reordering the triangles by group of 6, each group defining a bounding
+    box (with the min/max coordinates of each of the 18 vertices).<br/>
+    The dragon has 50k vertices and 100k triangles.<br/>
     <div><canvas id="main-canvas"'></canvas></div>
-    <form action="https://skal65535.github.io/">
+    <form action="https://skal65535.github.io/"
+          style='position: relative; top:-50px; right:15px;'>
       <input type="submit" value="skal 2025" id="skal-back"/>
     </form>
     <br/>
-  </center>
-    <br/>
+  </p>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script src="../common/args.js"></script>
@@ -101,17 +108,19 @@ const GUI_init = () => {
   params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
   params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
   const cam_folder = params.gui.addFolder('camera / visu').close();
-  cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
-  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen();
+  cam_folder.add(params.cam, 'fov', 5., 180., 5.).listen();
+  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen()
   cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
   cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
   cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
+/*
   const dbg_folder = params.gui.addFolder('Debug').close();
   dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
+*/
   params.gui.add(render, 'txt_info').name('fps').listen().disable();
 
-  params.gui.domElement.style.top = '5%';
+  params.gui.domElement.style.top = '15%';
   params.gui.domElement.style.right = '3%';
 }
 
@@ -257,7 +266,6 @@ function create_visu_pipeline1(render) {  // BVH method
 
     @vertex fn vtx_main(@builtin(vertex_index) idx: u32)
         -> Out {
-        _ = params.width;
         const kVtx = array<vec2f, 3>(vec2f(-1., 3.), vec2f(3., -1.), vec2f(-1., -1.));
         var s : Out;
         s.position = vec4f(kVtx[idx], 1., 1.);
@@ -418,13 +426,13 @@ function create_visu_pipeline1(render) {  // BVH method
         col = vec3f(1. - exp(-hit.box / 30.));
       }
       if ((params.show_what & 1) != 0 && hit.hit) {
-        var l = max(0.3, dot(hit.N, params.light.xyz));
-        if ((params.show_what & 4) != 0) {
+        var diffuse = dot(hit.N, params.light.xyz);
+        if ((params.show_what & 4) != 0 && diffuse > 0.) {
           let sh_dir = params.light.xyz;
-          let sh_hit = trace(hit.pos + .0001 * hit.N, sh_dir);
-          if (sh_hit.hit) { l = 0.2; }
+          let sh_hit = trace(hit.pos + .001 * hit.N, sh_dir);
+          if (sh_hit.hit) { diffuse = 0.; }
         }
-        col = Hash3f(hit.face) * l;
+        col = Hash3f(hit.face) * max(0.2, diffuse);
       }
 //      if (hit.hit) { col = vec3f(.2 / hit.z); }
       return vec4f(col, 1.);
@@ -485,7 +493,6 @@ function create_visu_pipeline0(render) {   // basic method
     @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                         @builtin(instance_index) face_idx: u32,
                        ) -> Out {
-        _ = params.width;
         let face = face_idx;
         var s : Out;
         s.position = params.proj * params.view * get_vtx(face, vtx_idx);
@@ -626,7 +633,7 @@ function transmit_frame_params(render) {
   render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4,
       new Float32Array([ render.nb_tris, render.nb_vtx,
                          canvas.width, render.frame.fy / render.frame.fx,
-                         1., render.frame.fx / render.frame.fy,
+                         1. / render.frame.fx, 1. / render.frame.fy,
                          0., 0.,
                        ]));
   render.device.queue.writeBuffer(render.GPU.uniforms, 56 * 4, light_dir);
