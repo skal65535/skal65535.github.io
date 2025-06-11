@@ -62,6 +62,7 @@ const params = {
   show_mesh: !parse_arg_bool('no-mesh'),
   show_boxes: !parse_arg_bool('no-boxes'),
   shadows: !parse_arg_bool('no-shadows'),
+  leaf_size: parse_arg('leaf-size', 6, 6, 6 * 20),
 
   gui: null,
 
@@ -107,6 +108,7 @@ const GUI_init = () => {
   params.gui.add(params, 'show_mesh').name("show mesh").listen().onChange(GUI_change);
   params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
   params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
+  params.gui.add(params, 'leaf_size', 6., 960., 6.).name("leaf size").listen().onChange(GUI_change);
   const cam_folder = params.gui.addFolder('camera / visu').close();
   cam_folder.add(params.cam, 'fov', 5., 180., 5.).listen();
   cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen()
@@ -231,7 +233,8 @@ const visu_uniforms_struct_code = `
 
       light:       vec4f, // 56
       show_what:   u32,   // 60:  bit0: mesh, bit1: boxes, bit2: shadow
-      // 64
+      leaf_size:   u32,   // 64: leaf size
+      // 68
     }
   `;
 
@@ -337,7 +340,7 @@ function create_visu_pipeline1(render) {  // BVH method
       let nd = cross(d0, dir);
       hit.uv = vec2f(dot(d20, nd), -dot(d10, nd)) * invdet;
       hit.z = dot(d0, hit.N) * invdet;
-      hit.hit = (det >= 1e-6 && hit.z >= 0.0 && hit.uv.x >= 0.0 && hit.uv.y >= 0.0 && (hit.uv.x + hit.uv.y) <= 1.0);
+      hit.hit = (det > 0. && hit.z >= 0.0 && hit.uv.x >= 0.0 && hit.uv.y >= 0.0 && (hit.uv.x + hit.uv.y) < 1.0);
       return hit;
     }
     fn quick_reject(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f, best_z: f32) -> bool {
@@ -371,7 +374,7 @@ function create_visu_pipeline1(render) {  // BVH method
       var best_hit = init_hit(orig, dir);
       let inv_dir = 1. / dir;
 
-      var stack : array<vec2<u32>, 32>;
+      var stack : array<vec2<u32>, 20>;
       var stack_size = 1;
       stack[0] = vec2<u32>(0u, u32(params.nb_tris));
       while (stack_size > 0) {
@@ -382,8 +385,13 @@ function create_visu_pipeline1(render) {  // BVH method
         best_hit.box += 1.;
         best_hit = update_hit(orig, dir, segment.x, best_hit);
 //        if (best_hit.hit) { break; }
+        if (segment.x + params.leaf_size >= segment.y) {  // leaf?
+          for (var i = 6u; i < params.leaf_size; i += 6u) {
+            best_hit = update_hit(orig, dir, segment.x + i, best_hit);
+          }
+          continue;
+        }  // leaf
         let start = segment.x + 6;
-        if (start >= segment.y) { continue; }  // leaf
         let split = u32((segment.y + start) / 12) * 6;
 
         let dims = b.max - b.min;
@@ -592,7 +600,7 @@ async function init_buffers(render) {
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
-    size: 64 * 4,
+    size: 68 * 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -640,7 +648,9 @@ function transmit_frame_params(render) {
   const what = (params.show_mesh ? 1 : 0) |
                (params.show_boxes ? 2 : 0) |
                (params.shadows ? 4 : 0);
-  render.device.queue.writeBuffer(render.GPU.uniforms, 60 * 4, new Uint32Array([what]));
+  const leaf_size = Math.floor((params.leaf_size + 5) / 6) * 6;
+  render.device.queue.writeBuffer(render.GPU.uniforms, 60 * 4, new
+               Uint32Array([what, leaf_size]));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
