@@ -31,7 +31,6 @@
 <script src="../common/args.js"></script>
 <script src="../common/matrix.js"></script>
 <script src="../common/utils.js"></script>
-<script src="./mesh.js"></script>
 <script>
 "use strict";
 
@@ -47,17 +46,16 @@ const trace = (level, ...args) => {
 const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 
+var MeshVtx = null, MeshTris = null;
+
 ////////////////////////////////////////////////////////////////////////////////
 // Params
 
 const params = {
   method: parse_arg('method', 1),   // BVH method: 0 = triangle list, 1 = AA-BVH
-  tris: null,  // triangles struct, as UInt32Array
-  vtx: null,  // vertex, as vec3f
-
-  wsize: 256,            // maxComputeInvocationsPerWorkgroup,
-  wsize_max: 65535,      // maxComputeWorkgroupsPerDimension
-  max_buffer_size: 268435456,
+  mesh: parse_arg('mesh', 0),
+  mesh_script: 0,
+  script: null,
 
   show_mesh: !parse_arg_bool('no-mesh'),
   show_boxes: !parse_arg_bool('no-boxes'),
@@ -105,6 +103,9 @@ const GUI_init = () => {
   }
   params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
   params.gui.add(params, 'method', {'none': 0, 'BVH': 1}).listen().onChange(GUI_change);
+  params.gui.add(params, 'mesh', {'Dragon': 0, 'Bunny': 1, 'Teddy': 2, 
+                                  'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5,  }
+                ).listen().onChange(async () => { await set_mesh(); });
   params.gui.add(params, 'show_mesh').name("show mesh").listen().onChange(GUI_change);
   params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
   params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
@@ -183,20 +184,6 @@ const GPU_init = async () => {
   render.device = await adapter.requestDevice();
   render.device || Oops("Couldn’t request WebGPU logical device.");
   console.log("WebGPU Device acquired.");
-  for (const name of ['maxComputeInvocationsPerWorkgroup',
-                      'maxComputeWorkgroupSizeX',
-                      'maxComputeWorkgroupSizeY',
-                      'maxComputeWorkgroupSizeZ',
-                      'maxComputeWorkgroupStorageSize',
-                      'maxComputeWorkgroupsPerDimension',
-                      'maxStorageBufferBindingSize']) {
-    console.log("  ->", name, ":", render.device.limits[name]);
-  }
-  params.wsize = render.device.limits['maxComputeInvocationsPerWorkgroup'];
-  params.wsize_max = render.device.limits['maxComputeWorkgroupsPerDimension'];
-
-  params.max_buffer_size = render.device.limits.maxBufferSize;
-  params.max_binding_size = render.device.limits.maxStorageBufferBindingSize;
 
   function onDeviceError(event) {
     console.log("Something bad happened! Error type:", event.error.constructor.name);
@@ -431,7 +418,7 @@ function create_visu_pipeline1(render) {  // BVH method
       let hit = trace(orig, dir);
       var col = vec3f(0., .3, .2);
       if ((params.show_what & 2) != 0 && hit.box > 0.) {
-        col = vec3f(1. - exp(-hit.box / 30.));
+        col += vec3f(1. - exp(-hit.box / 30.));
       }
       if ((params.show_what & 1) != 0 && hit.hit) {
         var diffuse = dot(hit.N, params.light.xyz);
@@ -593,11 +580,6 @@ function get_random_tris(nb_tris, nb_vtx = 10) {
 async function init_buffers(render) {
   trace(0, "Init buffers() => nb_tris:", render.nb_tris);
 
-  render.nb_tris = Math.floor(MeshTris.length / 3);
-  render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
-  render.nb_vtx = Math.floor(MeshVtx.length / 3);
-  render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
-
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
     size: 68 * 4,
@@ -612,6 +594,40 @@ async function init_buffers(render) {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     sampleCount: 1,  // no MSAA for now
   });
+}
+
+async function init_script(name) {
+  const head = document.getElementsByTagName('head')[0];
+  if (params.script != null) {
+    head.removeChild(params.script);
+    params.script = null;
+  }
+  params.script = document.createElement('script');
+
+  console.log(`mesh: ${name}`);
+//  params.script = document.getElementById('mesh_script');
+  params.script.onload = function() {
+    render.nb_tris = Math.floor(MeshTris.length / 3);
+    render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
+    MeshTris = null;
+
+    render.nb_vtx = Math.floor(MeshVtx.length / 3);
+    render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
+    MeshVtx = null;
+
+    console.log(`OK! tris: ${render.nb_tris} vtx:${render.nb_vtx}`);
+
+    create_pipelines(render);
+    render.ok = true;
+  }
+  render.ok = false;
+  params.script.src = name;
+  head.appendChild(params.script);
+}
+
+async function set_mesh() {
+  const kMeshes = ['./dragon.js', './bunny.js', './teddy.js', './tyranosaurus.js', './armadillo.js', './cruiser.js'];
+  await init_script(kMeshes[params.mesh]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -669,6 +685,8 @@ async function frame() {
   render.txt_info = render.fps.toFixed(1) + " fps";
   render.time_stamp = time_stamp;
 
+  render.loop_id = requestAnimationFrame(frame);
+  if (!render.ok) return;
   const encoder = render.device.createCommandEncoder();
   transmit_frame_params(render);
   const render_pass = encoder.beginRenderPass({
@@ -693,7 +711,6 @@ async function frame() {
 
   render.device.queue.submit([encoder.finish()]);
   if (params.cam.auto_rotate) params.cam.theta -= 0.07;
-  render.loop_id = requestAnimationFrame(frame);
 }
 
 function stop_animation() {
@@ -711,8 +728,11 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
 
   nb_tris:     0,   // final number of tris
   nb_vtx:      0,   // final number of vtx
+  ok: false,
+
   GPU: {   // data sent to GPU
     tris:         null,
+    vtx:          null,
     uniforms:     null,
   },
 
@@ -737,7 +757,7 @@ async function init() {
   stop_animation();
 
   init_buffers(render);
-  create_pipelines(render);
+  await set_mesh();
 
   frame();    // start animation loop
 }
