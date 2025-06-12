@@ -18,7 +18,6 @@
     We implement axis-aligned bounding boxes hierarchy at no cost by
     reordering the triangles by group of 6, each group defining a bounding
     box (with the min/max coordinates of each of the 18 vertices).<br/>
-    The dragon has 50k vertices and 100k triangles.<br/>
     <div><canvas id="main-canvas"'></canvas></div>
     <form action="https://skal65535.github.io/"
           style='position: relative; top:-50px; right:15px;'>
@@ -122,6 +121,8 @@ const GUI_init = () => {
   dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
 */
   params.gui.add(render, 'txt_info').name('fps').listen().disable();
+  params.gui.add(render, 'txt_info2').name('faces').listen().disable();
+  params.gui.add(render, 'txt_info3').name('points').listen().disable();
 
   params.gui.domElement.style.top = '15%';
   params.gui.domElement.style.right = '3%';
@@ -303,16 +304,15 @@ function create_visu_pipeline1(render) {  // BVH method
     };
     fn init_hit(orig: vec3f, dir: vec3f) -> Hit {
       var hit = Hit(false, orig, vec3f(0.), vec2f(0.), 1e36, 0., 0xffffffff);
-/*
-      let z = -(-1. - orig.y) / dir.y;
-      if (z > 0.) {
+      let z = (-0.5 - orig.y) / dir.y;
+      let pos = orig + z * dir;
+      if (z > 0. && length(pos.xz) < 0.8) {
         hit.hit = true;
         hit.z = z;
         hit.N = vec3f(0., 1., 0.);
-        hit.pos = orig + z * dir;
+        hit.pos = pos;
         hit.face = 0xfffffffe;
       }
-*/
       return hit;
     }
     // Möller and Trumbore, « Fast, Minimum Storage Ray-Triangle Intersection »
@@ -416,10 +416,7 @@ function create_visu_pipeline1(render) {  // BVH method
       let dir = (iview * vec4f(normalize(vec3f(s.uv * params.fxy, -1.)), 0.)).xyz;
       let orig = (iview * vec4f(0., 0., 0., 1.)).xyz;
       let hit = trace(orig, dir);
-      var col = vec3f(0., .3, .2);
-      if ((params.show_what & 2) != 0 && hit.box > 0.) {
-        col += vec3f(1. - exp(-hit.box / 30.));
-      }
+      var col = mix(vec3f(0., .3, .2), vec3f(0., .2, .4), dir.y);
       if ((params.show_what & 1) != 0 && hit.hit) {
         var diffuse = dot(hit.N, params.light.xyz);
         if ((params.show_what & 4) != 0 && diffuse > 0.) {
@@ -427,9 +424,18 @@ function create_visu_pipeline1(render) {  // BVH method
           let sh_hit = trace(hit.pos + .001 * hit.N, sh_dir);
           if (sh_hit.hit) { diffuse = 0.; }
         }
+        if (hit.face == 0xfffffffe) {
+          diffuse *= 1. / (1. + length(hit.pos.xz * 2.));
+        }
         col = Hash3f(hit.face) * max(0.2, diffuse);
       }
-//      if (hit.hit) { col = vec3f(.2 / hit.z); }
+      if ((params.show_what & 2) != 0 && hit.box > 0.) {
+        // col = mix(col, vec3f(1. - .8 * exp(-hit.box / 20.)), .2);
+        if ((params.show_what & 1) == 0 || hit.hit == false || hit.face == 0xfffffffe) {
+          // col = mix(col, vec3f(2. - 1.8 * exp(-hit.box / 20.)), .2);
+          col = col * .8 + .5 * vec3f(2. - 1.8 * exp(-hit.box / 20.));
+        }
+      }
       return vec4f(col, 1.);
     }
   `;
@@ -578,6 +584,7 @@ function get_random_tris(nb_tris, nb_vtx = 10) {
 }
 
 async function init_buffers(render) {
+  if (render.device == null) return;
   trace(0, "Init buffers() => nb_tris:", render.nb_tris);
 
   // Create uniforms buffer
@@ -596,33 +603,36 @@ async function init_buffers(render) {
   });
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+
 async function init_script(name) {
   const head = document.getElementsByTagName('head')[0];
   if (params.script != null) {
     head.removeChild(params.script);
     params.script = null;
   }
+  // new script
   params.script = document.createElement('script');
-
-  console.log(`mesh: ${name}`);
-//  params.script = document.getElementById('mesh_script');
   params.script.onload = function() {
     render.nb_tris = Math.floor(MeshTris.length / 3);
     render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
-    MeshTris = null;
 
     render.nb_vtx = Math.floor(MeshVtx.length / 3);
     render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
-    MeshVtx = null;
 
-    console.log(`OK! tris: ${render.nb_tris} vtx:${render.nb_vtx}`);
+    render.txt_info2 = `${render.nb_tris}`;
+    render.txt_info3 = `${render.nb_vtx}`;
 
     create_pipelines(render);
     render.ok = true;
+    MeshVtx = null;
+    MeshTris = null;
   }
   render.ok = false;
   params.script.src = name;
   head.appendChild(params.script);
+  console.log(`mesh to load: ${name}`);
 }
 
 async function set_mesh() {
@@ -746,6 +756,8 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
 
   // side info
   txt_info: "",
+  txt_info2: "",
+  txt_info3: "",
   time_stamp: undefined,
   fps: 60.,
   loop_id: undefined,  // id for animation loop
