@@ -24,6 +24,18 @@
       <input type="submit" value="skal 2025" id="skal-back"/>
     </form>
     <br/>
+    Triangles are pre-sorted by group of 6: such a group defines a bounding-box
+    if you sort the vertices' coordinates along x/y/z. This bounding box can
+    be cached or pre-calculated (see the 'Optimized BVH' method).
+    <br/>
+    The shader will launch a ray for each pixel to recursively test the bounding boxes.
+    If a box is hit by the ray, the remaining triangles a split in two exact halves
+    and thus generate two new boxes to test, etc. until we hit a leaf.
+    <br/>
+    If you don't cache the bounding boxes corresponding to a group of 6
+    triangles, this BVH is for free in memory space.
+    <b>The hierarchy is hard-coded within the triangles ordering.</b>
+    <br/>
   </p>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
@@ -51,7 +63,7 @@ var MeshVtx = null, MeshTris = null;
 // Params
 
 const params = {
-  method: parse_arg('method', 1),   // BVH method: 0 = triangle list, 1 = AA-BVH
+  method: parse_arg('method', 2),   // BVH method: 0 = triangle list, 1 = AA-BVH, 2 = bbox + AA-BVH
   mesh: parse_arg('mesh', 0),
   mesh_script: 0,
   script: null,
@@ -101,10 +113,11 @@ const GUI_init = () => {
     return;
   }
   params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
-  params.gui.add(params, 'method', {'none': 0, 'BVH': 1}).listen().onChange(GUI_change);
+  params.gui.add(params, 'method', {'none': 0, 'BVH': 1, 'Optimized BVH': 2})
+                .listen().onChange(GUI_change);
   params.gui.add(params, 'mesh', {'Dragon': 0, 'Bunny': 1, 'Teddy': 2, 
-                                  'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5,  }
-                ).listen().onChange(async () => { await set_mesh(); });
+                                  'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5, })
+                .listen().onChange(async () => { await set_mesh(); });
   params.gui.add(params, 'show_mesh').name("show mesh").listen().onChange(GUI_change);
   params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
   params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
@@ -164,6 +177,7 @@ window.addEventListener("resize", (e) => {
 
 function do_resize() {
   init_buffers(render);
+  create_pipelines(render);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -241,12 +255,37 @@ const common_code = `
     }
   `;
 
-function create_visu_pipeline1(render) {  // BVH method
+function create_visu_pipeline1(render, with_bbox) {  // BVH method
+  const extract_box_code = `
+    // extract bounding box of 6 consecutive faces starting at 'face'
+    fn extract_box(face: u32) -> Box {
+      let p0 = get_vtx(face, 0).xyz;
+      var b = Box(p0, p0);
+      for (var i = 0u; i < 6; i += 1u) {
+        for (var j = 0u; j < 3; j += 1u) {
+          let v = get_vtx(face + i, j).xyz;
+          b.min = min(b.min, v);
+          b.max = max(b.max, v);
+        }
+      }
+      return b;
+    }
+  `;
+
+  const extract_box_code_optim = `
+    fn extract_box(face: u32) -> Box {
+      let id = face;
+      return Box(vec3f(bbox[id + 0], bbox[id + 1], bbox[id + 2]),
+                 vec3f(bbox[id + 3], bbox[id + 4], bbox[id + 5]));
+    }
+  `;
+  
   const visu_code = `
     ${visu_uniforms_struct_code}
     @group(0) @binding(0) var<uniform> params: Uniforms;
     @group(0) @binding(1) var<storage, read> vtx: array<f32>;
     @group(0) @binding(2) var<storage, read> faces: array<u32>;
+    @group(0) @binding(3) var<storage, read> bbox: array<f32>;
 
     ${common_code}
 
@@ -277,20 +316,6 @@ function create_visu_pipeline1(render) {  // BVH method
       let zmin = max(max(Tmin.x, Tmin.y), Tmin.z);
       let zmax = min(min(Tmax.x, Tmax.y), Tmax.z);    
       return (zmax >= 0.0) && (zmin <= zmax) && (zmin <= best_z);
-    }
-
-    // extract bounding box of 6 consecutive faces starting at 'face'
-    fn extract_box(face: u32) -> Box {
-      let p0 = get_vtx(face, 0).xyz;
-      var b = Box(p0, p0);
-      for (var i = 0u; i < 6; i += 1u) {
-        for (var j = 0u; j < 3; j += 1u) {
-          let v = get_vtx(face + i, j).xyz;
-          b.min = min(b.min, v);
-          b.max = max(b.max, v);
-        }
-      }
-      return b;
     }
 
     struct Hit {
@@ -412,6 +437,7 @@ function create_visu_pipeline1(render) {  // BVH method
     }
     
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
+      _ = bbox[0];
       let iview = params.iview;
       let dir = (iview * vec4f(normalize(vec3f(s.uv * params.fxy, -1.)), 0.)).xyz;
       let orig = (iview * vec4f(0., 0., 0., 1.)).xyz;
@@ -439,7 +465,8 @@ function create_visu_pipeline1(render) {  // BVH method
       return vec4f(col, 1.);
     }
   `;
-  const visu_module = render.device.createShaderModule({ code: visu_code, });
+  const visu_module = render.device.createShaderModule(
+    { code: (with_bbox ? extract_box_code_optim : extract_box_code) + visu_code, });
   render.visu_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: {
@@ -473,6 +500,7 @@ function create_visu_pipeline1(render) {  // BVH method
       { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
       { binding: 1, resource: { buffer: render.GPU.vtx, }, },
       { binding: 2, resource: { buffer: render.GPU.tris, }, },
+      { binding: 3, resource: { buffer: render.GPU.bbox, }, },
     ],
   });
 }
@@ -554,7 +582,10 @@ function create_pipelines(render) {
       create_visu_pipeline0(render);
       break;
     case 1:
-      create_visu_pipeline1(render);
+      create_visu_pipeline1(render, false);
+    break;
+    case 2:
+      create_visu_pipeline1(render, true);
     break;
   }
 }
@@ -605,6 +636,33 @@ async function init_buffers(render) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+function FillBoxes(boxes, s, e, tris, vtx) {
+  if (s == e) return;
+  boxes[6 * s + 0] = boxes[6 * s + 1] = boxes[6 * s + 2] = +1e38;  // mins
+  boxes[6 * s + 3] = boxes[6 * s + 4] = boxes[6 * s + 5] = -1e38;  // maxs
+  for (let i = 0; i < 3 * 6; ++i) {  // 18 vtx
+    const v = 3 * tris[s * 6 * 3 + i];
+    for (let j = 0; j < 3; ++j) {
+      boxes[6 * s + 0 + j] = Math.min(boxes[6 * s + 0 + j], vtx[v + j]);
+      boxes[6 * s + 3 + j] = Math.max(boxes[6 * s + 3 + j], vtx[v + j]);
+    }
+  }
+  s += 1;
+  if (s == e) return;
+  const split = (e + s) >> 1;
+  FillBoxes(boxes, s, split, tris, vtx);
+  FillBoxes(boxes, split, e, tris, vtx);
+}
+
+function ComputeBoxes(tris, vtx) {
+  const nb_tris = tris.length / 3;
+  const size = nb_tris / 6;  // 6 triangles to form a box
+  const boxes = new Float32Array(size * 6);  // each box = six f32
+  FillBoxes(boxes, 0, size, tris, vtx);
+  return boxes;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 
 async function init_script(name) {
   const head = document.getElementsByTagName('head')[0];
@@ -620,6 +678,10 @@ async function init_script(name) {
 
     render.nb_vtx = Math.floor(MeshVtx.length / 3);
     render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
+
+    const bboxes = ComputeBoxes(MeshTris, MeshVtx);
+    render.nb_bbox = bboxes.length / 6;
+    render.GPU.bbox = Create_GPU_Buffer(render.device, bboxes, GPUBufferUsage.VERTEX);
 
     render.txt_info2 = `${render.nb_tris}`;
     render.txt_info3 = `${render.nb_vtx}`;
