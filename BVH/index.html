@@ -63,8 +63,8 @@ var MeshVtx = null, MeshTris = null;
 // Params
 
 const params = {
-  method: parse_arg('method', 2),   // BVH method: 0 = triangle list, 1 = AA-BVH, 2 = bbox + AA-BVH
-  mesh: parse_arg('mesh', 0),
+  method: parse_arg('method', 2, 0, 2),   // BVH method: 0 = triangle list, 1 = AA-BVH, 2 = bbox + AA-BVH
+  mesh: parse_arg('mesh', 0, 0, 5),
   mesh_script: 0,
   script: null,
 
@@ -75,7 +75,6 @@ const params = {
 
   gui: null,
 
-  // Camera / Visu
   cam: {
     fov: parse_arg('fov', 90.),
     radius: parse_arg('radius', 1.0),
