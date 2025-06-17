@@ -11,6 +11,12 @@ open-sourced code for fun :) Here are some side-projects demo pages:
    Gaussian splats are the new cool in scene rendering, here's my WebGPU version...
    It's a good opportunity to use the compute pass on GPU.
 
+## [Bounding Volume Hierarchy](https://skal65535.github.io/BVH/index.html) with zero memory cost
+
+   ![BVH](https://skal65535.github.io/BVH/BVH.thumb.webp)
+
+   By pre-sorting the triangles of a mesh nicely, one can have a BVH for free!
+
 ## [Stippling](https://skal65535.github.io/stipple/index.html) toy
 
    ![stipple](https://skal65535.github.io/stipple/stipple.thumb.webp)
