@@ -47,13 +47,6 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-const trace = (level, ...args) => {
-  if (params.dbg.trace > level) console.log(args.join(' '));
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// constants
-
 const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 
@@ -86,17 +79,8 @@ const params = {
   },
   mouse: {on:false, x:0., y:0.},
 
-  // debugging
-  dbg: { timing: parse_arg_bool('timing'),
-         trace: parse_arg('trace', 0, 0, 3),
-       },
   no_gui: parse_arg_bool('no-gui'),
 };
-
-if (parse_arg_bool("dbg")) {
-  params.dbg.trace = 0;
-  params.dbg.timing = false;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // GUI setup
@@ -112,7 +96,7 @@ const GUI_init = () => {
     return;
   }
   params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
-  params.gui.add(params, 'method', {'none': 0, 'BVH': 1, 'Optimized BVH': 2})
+  params.gui.add(params, 'method', {'none (triangle-list)': 0, 'BVH': 1, 'Optimized BVH': 2})
                 .listen().onChange(GUI_change);
   params.gui.add(params, 'mesh', {'Dragon': 0, 'Bunny': 1, 'Teddy': 2, 
                                   'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5, })
@@ -127,11 +111,7 @@ const GUI_init = () => {
   cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
   cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
   cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
-/*
-  const dbg_folder = params.gui.addFolder('Debug').close();
-  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
-  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
-*/
+
   params.gui.add(render, 'txt_info').name('fps').listen().disable();
   params.gui.add(render, 'txt_info2').name('faces').listen().disable();
   params.gui.add(render, 'txt_info3').name('points').listen().disable();
@@ -272,6 +252,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
   `;
 
   const extract_box_code_optim = `
+    // test against pre-calc'd bounding box
     fn extract_box(face: u32) -> Box {
       let id = face;
       return Box(vec3f(bbox[id + 0], bbox[id + 1], bbox[id + 2]),
@@ -326,11 +307,12 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       box: f32,   // number of boxes traversed
       face: u32,  // face intersected
     };
+
     fn init_hit(orig: vec3f, dir: vec3f) -> Hit {
       var hit = Hit(false, orig, vec3f(0.), vec2f(0.), 1e36, 0., 0xffffffff);
       let z = (-0.5 - orig.y) / dir.y;
       let pos = orig + z * dir;
-      if (z > 0. && length(pos.xz) < 0.8) {
+      if (z > 0. && length(pos.xz) < 0.8) {  // the default disc
         hit.hit = true;
         hit.z = z;
         hit.N = vec3f(0., 1., 0.);
@@ -339,6 +321,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       }
       return hit;
     }
+
     // Möller and Trumbore, « Fast, Minimum Storage Ray-Triangle Intersection »
     fn intersects(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> Hit {
       var hit : Hit;
@@ -354,6 +337,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       hit.hit = (det > 0. && hit.z >= 0.0 && hit.uv.x >= 0.0 && hit.uv.y >= 0.0 && (hit.uv.x + hit.uv.y) < 1.0);
       return hit;
     }
+
     fn quick_reject(orig: vec3f, dir: vec3f, p0: vec3f, p1: vec3f, p2: vec3f, best_z: f32) -> bool {
       let z0 = dot(p0, dir);
       let z1 = dot(p1, dir);
@@ -361,7 +345,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       return (min(min(z0, z1), z2) > best_z + dot(orig, dir));
     }
 
-    // check 6 faces starting from 'face' and update 'hit'
+    // check 6 faces starting from 'face', and update 'hit'
     fn update_hit(orig: vec3f, dir: vec3f, face: u32, hit: Hit) -> Hit {
       var h = hit;
       for (var j = 0u; j < 6u; j += 1u) {
@@ -381,6 +365,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       return h;
     }
 
+    // main ray-tracing loop
     fn trace(orig: vec3f, dir: vec3f) -> Hit {
       var best_hit = init_hit(orig, dir);
       let inv_dir = 1. / dir;
@@ -410,6 +395,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
         var dir_v = dir.x;
         if (dims[1] > dims[0]) { dir_i = 1; dir_v = dir.y; }
         if (dims[2] > dims[dir_i]) { dir_i = 2; dir_v = dir.z; }
+        // maximum the hit probabilityw by recursing the closest box first:
         if (dir_v < 0.) {
           stack[stack_size + 0] = vec2(start, split);
           stack[stack_size + 1] = vec2(split, segment.y);
@@ -422,7 +408,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
       return best_hit;
     }
 
-    // for debugging:
+    // for debugging (slow!):
     fn full_trace(orig: vec3f, dir: vec3f) -> Hit {
       let inv_dir = 1. / dir;
       var best_hit = init_hit(orig, dir);
@@ -504,7 +490,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
   });
 }
 
-function create_visu_pipeline0(render) {   // basic method
+function create_visu_pipeline0(render) {   // basic method with triangle-list
   const visu_code = `
     ${visu_uniforms_struct_code}
     @group(0) @binding(0) var<uniform> params: Uniforms;
@@ -592,30 +578,8 @@ function create_pipelines(render) {
 ////////////////////////////////////////////////////////////////////////////////
 // Create the data buffers
 
-// https://gist.github.com/tommyettinger/46a874533244883189143505d203312c?permalink_comment_id=4365431#gistcomment-4365431
-function splitmix32(seed) {
-  seed |= 0;
-  seed = seed + 0x9e3779b9 | 0;
-  let t = seed ^ seed >>> 16;
-  t = Math.imul(t, 0x21f0aaad);
-  t = t ^ t >>> 15;
-  t = Math.imul(t, 0x735a2d97);
-  return ((t = t ^ t >>> 15) >>> 0);  // in [0, 4294967296);
-}
-
-function get_random_tris(nb_tris, nb_vtx = 10) {
-  const tris = new Uint32Array(nb_tris * 3);
-  for (let i = 0; i < nb_tris * 3; i += 3) {
-    tris[i + 0] = splitmix32(i + 0) % nb_vtx;
-    tris[i + 1] = splitmix32(i + 1) % nb_vtx;
-    tris[i + 2] = splitmix32(i + 2) % nb_vtx;
-  }
-  return tris;
-}
-
 async function init_buffers(render) {
   if (render.device == null) return;
-  trace(0, "Init buffers() => nb_tris:", render.nb_tris);
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({
@@ -697,11 +661,13 @@ async function init_script(name) {
 }
 
 async function set_mesh() {
-  const kMeshes = ['./dragon.js', './bunny.js', './teddy.js', './tyranosaurus.js', './armadillo.js', './cruiser.js'];
+  const kMeshes = ['./dragon.js', './bunny.js', './teddy.js',
+                   './tyranosaurus.js', './armadillo.js', './cruiser.js'];
   await init_script(kMeshes[params.mesh]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// uniforms
 
 function transmit_frame_params(render) {
   const aspect = canvas.width / canvas.height;
@@ -751,7 +717,6 @@ async function frame() {
       const new_fps = 1000. / delta_t;
       render.fps = Math.round(render.fps * 0.8 + new_fps * 0.2);
     }
-    // document.getElementById("fps").innerText = render.fps.toFixed(1) + " fps";
   }
   render.txt_info = render.fps.toFixed(1) + " fps";
   render.time_stamp = time_stamp;
