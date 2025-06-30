@@ -11,6 +11,12 @@ open-sourced code for fun :) Here are some side-projects demo pages:
    Gaussian splats are the new cool in scene rendering, here's my WebGPU version...
    It's a good opportunity to use the compute pass on GPU.
 
+## [Triangle splats](https://skal65535.github.io/trisoup/index.html)
+
+   ![3DGS](https://skal65535.github.io/trisoup/trisoup.thumb.webp)
+
+   In the same vein, here is the triangle version.
+
 ## [Bounding Volume Hierarchy](https://skal65535.github.io/BVH/index.html) with zero memory cost
 
    ![BVH](https://skal65535.github.io/BVH/BVH.thumb.webp)
