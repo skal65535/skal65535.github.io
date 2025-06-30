@@ -16,6 +16,10 @@
   </center>
   <p>
     <a href="https://trianglesplatting.github.io/">Triangle Splatting</a>.  Still very experimental (please be patient, it's loading slowly!)<br/>
+    This is a quick demo to show the difference with the original weights (based on the distance to the
+    <b>edges</b>), and the barycentric weights (based on the distance to the <b>vertices</b>).
+    The latter are somewhat easier to compute in the shader (see the <code>vertex_values()</code> function in the shader's code).</br>
+    The 'sigma' slider is the a <b>global</b> sigma value (see paper), used instead of per-triangle values (NYI).<br/>
     <div><canvas id="main-canvas"'></canvas></div>
     <form action="https://skal65535.github.io/"
           style='position: relative; top:-50px; right:15px;'>
@@ -47,6 +51,8 @@ const params = {
   mesh_script: 0,
   script: null,
   sigma: parse_arg('sigma', 0.001, 0.001, 10.),
+  use_barycentric: parse_arg_bool('barycentric'),
+  use_length: parse_arg_bool('length'),
 
   gui: null,
 
@@ -55,7 +61,7 @@ const params = {
     radius: parse_arg('radius', 0.4),
     theta: parse_arg('theta', 0.),
     phi: parse_arg('phi', 22.0),
-    znear: parse_arg('znear', 0.1),
+    znear: parse_arg('znear', 0.01),
     zfar: parse_arg('zfar', 100.),
     auto_rotate: !parse_arg_bool("no-rotate"),
   },
@@ -68,6 +74,7 @@ const params = {
 // GUI setup
 
 const GUI_change = async () => { await init(); }  // parameter changed
+const param_change = () => { create_visu_pipeline0(render); }
 
 const GUI_init = () => {
   canvas.width  = parse_arg("w", innerWidth * .9);
@@ -78,11 +85,11 @@ const GUI_init = () => {
     return;
   }
   params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
-//  params.gui.add(params, 'method', {'none (triangle-list)': 0, 'BVH': 1, 'Optimized BVH': 2})
-//                .listen().onChange(GUI_change);
   params.gui.add(params, 'mesh', {'Room': 0, 'Garden': 1, })
                 .listen().onChange(async () => { await set_mesh(); });
   params.gui.add(params, 'sigma', .001, 5., .001).listen();
+  params.gui.add(params, 'use_barycentric').name('use barycentric coord').listen().onChange(param_change);
+  params.gui.add(params, 'use_length').name('use length').listen().onChange(param_change);
   const cam_folder = params.gui.addFolder('camera / visu').close();
   cam_folder.add(params.cam, 'fov', 5., 180., 5.).listen();
   cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen()
@@ -190,6 +197,7 @@ const visu_uniforms_struct_code = `
       aspect:      f32,   // 51
       fxy:         vec2f, // 52
       sigma:       f32,   // 54
+      what:        f32,   // 55
 
       light:       vec4f, // 56
       // 60
@@ -215,22 +223,16 @@ const common_code = `
     }
   `;
 
-function create_visu_pipeline0(render) {   // basic method with triangle-list
-  const visu_code = `
-    ${visu_uniforms_struct_code}
-    @group(0) @binding(0) var<uniform> params: Uniforms;
-    @group(0) @binding(1) var<storage, read> vtx: array<f32>;
-    @group(0) @binding(2) var<storage, read> faces: array<u32>;
-    @group(0) @binding(3) var<storage, read> colors: array<u32>;
-
-    ${common_code}
-      
-    struct Out {
-      @builtin(position) position: vec4f,
-      @location(0) n: vec4f,
-      @location(1) @interpolate(flat) color: vec4f,
-      @location(2) uvw: vec3f,
-    };
+function create_visu_pipeline0(render, vtx_code) {   // basic method with triangle-list
+  const barycentric_code = `
+    fn vertex_values(vtx_idx: u32, p: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> vec3f {
+      const kBarycentric = array<vec3f, 3>(
+        vec3f(0., 0., 1.), vec3f(1., 0., 0.), vec3f(0., 1., 0.),
+      );
+      return kBarycentric[vtx_idx];
+    }
+  `;
+  const normal_code = `
     fn get_distance(p: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
       let B = b - a;
       let C = c - a;
@@ -246,7 +248,42 @@ function create_visu_pipeline0(render) {   // basic method with triangle-list
       let s = .5 * (a + b + c);
       let R = sqrt((s - a) * (s - b) * (s - c) / s);
       return vec4f(C, R);
+    }  
+    fn vertex_values(vtx_idx: u32, p: vec3f, p0: vec3f, p1: vec3f, p2: vec3f) -> vec3f {
+      let circle = inCircle(p0, p1, p2);
+      let max_value = get_distance(circle.xyz, p0, p1, p2);
+      return vec3f(get_distance(p.xyz, p0, p1, p2),
+                   get_distance(p.xyz, p1, p2, p0),
+                   get_distance(p.xyz, p2, p0, p1)) / max_value;
     }
+  `;
+
+  const strength_code = `
+    fn get_strength(uvw: vec3f) -> f32 {
+      return min(min(uvw.x, uvw.y), uvw.z);
+    }
+  `;
+  const length_code = `
+    fn get_strength(uvw: vec3f) -> f32 {
+      return 1. - length(uvw);
+    }
+  `;
+
+  const visu_code = `
+    ${visu_uniforms_struct_code}
+    @group(0) @binding(0) var<uniform> params: Uniforms;
+    @group(0) @binding(1) var<storage, read> vtx: array<f32>;
+    @group(0) @binding(2) var<storage, read> faces: array<u32>;
+    @group(0) @binding(3) var<storage, read> colors: array<u32>;
+
+    ${common_code}
+      
+    struct Out {
+      @builtin(position) position: vec4f,
+      @location(0) n: vec4f,
+      @location(1) @interpolate(flat) color: vec4f,
+      @location(2) uvw: vec3f,
+    };
     @vertex fn vtx_main(@builtin(vertex_index) vtx_idx: u32,
                         @builtin(instance_index) face_idx: u32,
                        ) -> Out {
@@ -259,21 +296,21 @@ function create_visu_pipeline0(render) {   // basic method with triangle-list
         let p2 = get_vtx(face, 2).xyz;
         s.n = vec4f(normalize(cross(p1 - p0, p2 - p1)), 0.);
         s.color = get_color(face);
-        let circle = inCircle(p0, p1, p2);
-        let max_value = get_distance(circle.xyz, p0, p1, p2);
-        s.uvw = vec3f(get_distance(p.xyz, p0, p1, p2),
-                      get_distance(p.xyz, p1, p2, p0),
-                      get_distance(p.xyz, p2, p0, p1)) / max_value;
+        s.uvw = vertex_values(vtx_idx, p.xyz, p0, p1, p2);
         return s;
     }
     @fragment fn frag_main(s: Out) -> @location(0) vec4f {
-      let diffuse = max(0.0, dot(s.n, params.light));
-      let color = mix(s.color, vec4f(.3, .2, .1, 1.), diffuse);
-      let l = pow(min(min(s.uvw.x, s.uvw.y), s.uvw.z), params.sigma);
-      return l * color;
+      let diffuse = .3 * max(0., dot(s.n, params.light));
+      let color = .8 * s.color + vec4f(.8, .9, 1., 1.) * diffuse;
+      let l = get_strength(s.uvw);
+      return pow(l, params.sigma) * color;
     }
   `;
-  const visu_module = render.device.createShaderModule({ code: visu_code, });
+  const visu_module = render.device.createShaderModule({
+    code: (params.use_barycentric ? barycentric_code : normal_code)
+        + (params.use_length && params.use_barycentric ? length_code : strength_code)
+        + visu_code,
+  });
   render.visu_pipeline = render.device.createRenderPipeline({
     layout: 'auto',
     vertex: {
@@ -428,11 +465,13 @@ function transmit_frame_params(render) {
   render.device.queue.writeBuffer(render.GPU.uniforms,  0 * 4, render.frame.view);
   render.device.queue.writeBuffer(render.GPU.uniforms, 16 * 4, inverse(render.frame.view));
   render.device.queue.writeBuffer(render.GPU.uniforms, 32 * 4, render.frame.proj);
+  const what = (params.use_barycentric ? 1. : 0.)
+             + (params.use_length ? 2. : 0.);
   render.device.queue.writeBuffer(render.GPU.uniforms, 48 * 4,
       new Float32Array([ render.nb_tris, render.nb_vtx,
                          canvas.width, render.frame.fy / render.frame.fx,
                          1. / render.frame.fx, 1. / render.frame.fy,
-                         params.sigma, 0.,
+                         params.sigma, what,
                        ]));
   render.device.queue.writeBuffer(render.GPU.uniforms, 56 * 4, light_dir);
 }
