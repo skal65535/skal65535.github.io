@@ -62,12 +62,8 @@
       return (dp1.x * dp2.y - dp2.x * dp1.y);
     }
     function sortByAngle(points) {
-      let p = [];
-      let c = 0;   // find leftmost point
-      for (let i = 0; i < points.length; ++i) {
-        if (points[i].x < points[c].x) c = i;
-        p.push(i);
-      }
+      let p = [...points.keys()];
+      let c = points.reduce((best, P, i, points) => P.x < points[best].x ? i : best, 0);
       const C = points[c];
       p.sort((a, b) => {
         if (a == c) return -1;
@@ -78,8 +74,7 @@
       return p;
     }
     function sortLexicographically(points) {
-      let p = [];
-      for (let i = 0; i < points.length; ++i) p.push(i);
+      let p = [...points.keys()];
       p.sort((a, b) => {
         return (points[a].y != points[b].y) ? points[a].y - points[b].y
                                             : points[a].x - points[b].x;
@@ -198,18 +193,11 @@
     }
 
     // Randomize the input points
-    function shuffleConvex() {
-      let a = [];
-      for (let i of convex) a.push(points[i]);
-      return shuffle(a);
-    }
     function shuffle(pts) {
-      const l = pts.length;
-      for (let i = pts.length - 1; i > 0; --i) {
-        const j = Math.floor(Math.random() * (i + 1));
-        const tmp = pts[i];
-        pts[i] = pts[j];
-        pts[j] = tmp;
+      let i = pts.length;
+      while (i--> 1) {
+        const j = Math.floor(Math.random() * i);
+        [pts[i], pts[j]] = [pts[j], pts[i]];
       }
       return pts;
     }
@@ -292,9 +280,8 @@
         let px = mulberry32(), py = mulberry32();
         let norm = Math.sqrt(px * px + py * py);
         if (type == 1) {
-          norm = 1.0 / norm;
-          px *= norm;
-          py *= norm;
+          px /= norm;
+          py /= norm;
         } else if (type == 2) {
           if (norm > 1.0) { --i; continue; }
         } else if (type == 3) {
@@ -385,7 +372,7 @@
         C = findCircleWelzl(shuffle(points.slice()), points.length);
         // Normally using only the convex hull points as input
         // should give the same result:
-        // C = findCircleWelzl(shuffleConvex(convex), convex.length);
+        // C = findCircleWelzl(shuffle([...convex]), convex.length);
         drawCircle(C, 'red', Math.sqrt(C.r2));
         drawCircle(C, 'red', 5., true);
         m.fillText("area: " + C.area(), 165, canvas.height - 30);
