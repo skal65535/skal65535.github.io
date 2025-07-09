@@ -421,8 +421,8 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
     const binding = render.device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-        { binding: 1, resource: { buffer: render.GPU.spins, }, },
+        { binding: 0, resource: render.GPU.uniforms, },
+        { binding: 1, resource: render.GPU.spins, },
       ],
     });
     render.sim_pipelines.push([pipeline, binding]);
@@ -471,9 +471,9 @@ function create_stats_pipeline(render) {  // COMPUTE stats pipeline
   render.stats_binding = render.device.createBindGroup({
     layout: render.stats_pipeline.getBindGroupLayout(0),
     entries: [
-        { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-        { binding: 1, resource: { buffer: render.GPU.spins, }, },
-        { binding: 2, resource: { buffer: render.GPU.stats, }, },
+        { binding: 0, resource: render.GPU.uniforms, },
+        { binding: 1, resource: render.GPU.spins, },
+        { binding: 2, resource: render.GPU.stats, },
     ],
   });
 }
@@ -567,8 +567,8 @@ function create_visu_pipeline(render) {  // RENDER pipeline drawing the spins
   render.visu_bind_group = render.device.createBindGroup({
     layout: render.visu_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.GPU.visu_uniforms, }, },
-      { binding: 1, resource: { buffer: render.GPU.spins, }, },
+      { binding: 0, resource: render.GPU.visu_uniforms, },
+      { binding: 1, resource: render.GPU.spins, },
     ],
   });
 }
@@ -632,7 +632,7 @@ function create_cube_pipeline(render) {
   render.cube_bind_group = render.device.createBindGroup({
     layout: render.cube_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.GPU.visu_uniforms, }, },
+      { binding: 0, resource: render.GPU.visu_uniforms, },
     ],
   });
 }
@@ -999,9 +999,7 @@ async function frame() {
       compute_pass.setBindGroup(0, render.stats_binding);
       compute_pass.dispatchWorkgroups(render.dim_x, render.dim_y);
       compute_pass.end();
-      encoder.copyBufferToBuffer(
-          render.GPU.stats, 0,
-          render.GPU.mapped_stats, 0, render.GPU.mapped_stats.size);
+      encoder.copyBufferToBuffer(render.GPU.stats, render.GPU.mapped_stats);
     }
     render.device.queue.submit([encoder.finish()]);
     delta_ms = (performance.now() - delta_ms);  // in milliseconds

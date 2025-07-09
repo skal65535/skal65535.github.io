@@ -482,10 +482,10 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
   render.visu_bind_group = render.device.createBindGroup({
     layout: render.visu_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-      { binding: 1, resource: { buffer: render.GPU.vtx, }, },
-      { binding: 2, resource: { buffer: render.GPU.tris, }, },
-      { binding: 3, resource: { buffer: render.GPU.bbox, }, },
+      { binding: 0, resource: render.GPU.uniforms, },
+      { binding: 1, resource: render.GPU.vtx, },
+      { binding: 2, resource: render.GPU.tris, },
+      { binding: 3, resource: render.GPU.bbox, },
     ],
   });
 }
@@ -553,9 +553,9 @@ function create_visu_pipeline0(render) {   // basic method with triangle-list
   render.visu_bind_group = render.device.createBindGroup({
     layout: render.visu_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-      { binding: 1, resource: { buffer: render.GPU.vtx, }, },
-      { binding: 2, resource: { buffer: render.GPU.tris, }, },
+      { binding: 0, resource: render.GPU.uniforms, },
+      { binding: 1, resource: render.GPU.vtx, },
+      { binding: 2, resource: render.GPU.tris, },
     ],
   });
 }

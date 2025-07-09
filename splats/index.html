@@ -1,4 +1,4 @@
-<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+
 <!-- 3DGS renderer with WebGPU -->
 
 <!DOCTYPE html>
@@ -493,9 +493,9 @@ async function create_sort_pipeline(render) {
   render.sort_bind_group = render.device.createBindGroup({
       layout: render.sort_pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-        { binding: 1, resource: { buffer: render.GPU.positions, }, },
-        { binding: 2, resource: { buffer: render.GPU.idx, }, },
+        { binding: 0, resource: render.GPU.uniforms, },
+        { binding: 1, resource: render.GPU.positions, },
+        { binding: 2, resource: render.GPU.idx, },
       ],
     });
 }
@@ -563,11 +563,11 @@ function create_update_pipeline(render) {
     const update_bind_group = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-        { binding: 1, resource: { buffer: render.GPU.positions, }, },
-        { binding: 2, resource: { buffer: render.GPU.sigmas, }, },
-        { binding: 3, resource: { buffer: render.GPU.axis, }, },
-        { binding: 4, resource: { buffer: render.GPU.idx, }, },
+        { binding: 0, resource: render.GPU.uniforms, },
+        { binding: 1, resource: render.GPU.positions, },
+        { binding: 2, resource: render.GPU.sigmas, },
+        { binding: 3, resource: render.GPU.axis, },
+        { binding: 4, resource: render.GPU.idx, },
       ],
     });
     render.update_bindings = [dim_x, dim_y, update_bind_group];
@@ -697,10 +697,10 @@ function create_splats_pipeline(render) {
   const bindGroup = {
     layout: render.splats_pipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
-      { binding: 1, resource: { buffer: render.GPU.positions, }, },
-      { binding: 2, resource: { buffer: render.GPU.colors, }, },
-      { binding: 3, resource: { buffer: params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas, }, },
+      { binding: 0, resource: render.GPU.uniforms, },
+      { binding: 1, resource: render.GPU.positions, },
+      { binding: 2, resource: render.GPU.colors, },
+      { binding: 3, resource: params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas, },
     ],
   };
   render.splats_bind_group = render.device.createBindGroup(bindGroup);
@@ -739,7 +739,7 @@ function create_axis_pipeline(render) {    // RENDER pipeline for axis
   });
   render.axis_bind_group = render.device.createBindGroup({
     layout: render.axis_pipeline.getBindGroupLayout(0),
-    entries: [ { binding: 0, resource: { buffer: render.GPU.uniforms, }, }, ],
+    entries: [ { binding: 0, resource: render.GPU.uniforms, }, ],
   });
 }
 
