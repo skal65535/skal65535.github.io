@@ -165,16 +165,13 @@ async function init() {
   const bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
-      { binding: 0,
-        resource: { buffer: input_buffer, }, },
-      { binding: 1,
-        resource: { buffer: output_buffer, }, },
-      { binding: 2,
-        resource: { buffer: uniforms, }, },
+      { binding: 0, resource: input_buffer, },
+      { binding: 1, resource: output_buffer, },
+      { binding: 2, resource: uniforms, },
     ],
   });
 
-  // write the uniforms once for all
+  // write the uniforms once for 
   device.queue.writeBuffer(uniforms, 0,
       new Float32Array([W, H, params.dt, params.gravity]));
 
@@ -189,10 +186,7 @@ async function init() {
     pass.dispatchWorkgroups(Math.ceil(BUFFER_SIZE / 64));
     pass.end();
 
-    commandEncoder.copyBufferToBuffer(
-      output_buffer, 0 /* src_offset */,
-      staging_buffer, 0 /* dst_offset */,
-      BUFFER_SIZE);
+    commandEncoder.copyBufferToBuffer(output_buffer, staging_buffer);
     const commands = commandEncoder.finish();
     device.queue.submit([commands]);
 

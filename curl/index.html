@@ -570,7 +570,7 @@ function create_poly_pipeline(render) {
   });
 }
 
-function create_cube_pipeline(render) {   // draw the surrending cube box
+function create_cube_pipeline(render) {   // draw the surrounding cube box
   const vtx_code = `
     ${struct_code}
     ${group_0_code}
@@ -1377,23 +1377,15 @@ async function set_poly(polyhedron_name) {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
   render.GPU.uniform_entries = [
-    { binding: 0, resource: { buffer: render.GPU.m_uniforms, }, },
-    { binding: 1, resource: { buffer: render.GPU.l_uniforms, }, },
-    { binding: 2, resource: { buffer: render.GPU.p_uniforms, }, },
+    { binding: 0, resource: render.GPU.m_uniforms, },
+    { binding: 1, resource: render.GPU.l_uniforms, },
+    { binding: 2, resource: render.GPU.p_uniforms, },
   ];
 
   render.GPU.base_entries = [
-    { binding: 0, resource: { buffer: render.GPU.vtx, }, },
-    { binding: 1, resource: { buffer: render.GPU.faces, }, },
-    { binding: 2, resource: { buffer: render.GPU.uv, }, },
-  ];
-
-  // Background Cube
-  const cube = kPolys['cube'];
-  render.GPU.cube_vtx = Create_GPU_Buffer(render.device, cube.vtx, GPUBufferUsage.VERTEX);
-  render.GPU.cube_faces = Create_GPU_Buffer(render.device, cube.faces);
-  render.GPU.cube_entries = [
-    { binding: 0, resource: { buffer: render.GPU.uniforms, }, },
+    { binding: 0, resource: render.GPU.vtx, },
+    { binding: 1, resource: render.GPU.faces, },
+    { binding: 2, resource: render.GPU.uv, },
   ];
 
   if (params.dbg.light) {

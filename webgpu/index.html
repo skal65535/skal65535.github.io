@@ -294,10 +294,10 @@ function init_update(render) {    // COMPUTE pipeline, updating the particles' p
     render.balls_bind_groups[B] = render.device.createBindGroup({
       layout: render.update_pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: render.uniforms_buffer, }, },
-        { binding: 1, resource: { buffer: render.proxy_buffers[B], }, },
-        { binding: 2, resource: { buffer: render.balls_buffers[B], }, },
-        { binding: 3, resource: { buffer: render.balls_buffers[1 - B], }, },
+        { binding: 0, resource: render.uniforms_buffer, },
+        { binding: 1, resource: render.proxy_buffers[B], },
+        { binding: 2, resource: render.balls_buffers[B], },
+        { binding: 3, resource: render.balls_buffers[1 - B], },
       ],
     });
   }
@@ -404,10 +404,11 @@ function init_proxy(render) {  // COMPUTE pipeline for updating the proxy[] map
   for (var B = 0; B <= 1; ++B) {
     render.proxy_bind_groups[B] = render.device.createBindGroup({
       layout: render.proxy_pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: render.uniforms_buffer, }, },
-                { binding: 1, resource: { buffer: render.balls_buffers[1 - B], }, },
-                { binding: 2, resource: { buffer: render.proxy_buffers[B], }, },
-                { binding: 3, resource: { buffer: render.proxy_buffers[1 - B], }, },],
+      entries: [{ binding: 0, resource: render.uniforms_buffer, },
+                { binding: 1, resource: render.balls_buffers[1 - B], },
+                { binding: 2, resource: render.proxy_buffers[B], },
+                { binding: 3, resource: render.proxy_buffers[1 - B], },
+               ],
     });
   }
 }
