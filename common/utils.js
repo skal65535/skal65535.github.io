@@ -10,4 +10,15 @@ function Create_GPU_Buffer(device, src_buf, buf_usage = 0) {
   return gpu_buf;
 }
 
+function Create_Bind_Group(device, pipeline, buffers, layout = 0) {
+  let entries = [];
+  for (let i = 0; i < buffers.length; ++i) {
+    entries.push({ binding: i, resource: buffers[i],});
+  }
+  return device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(layout),
+    entries: entries,
+  });
+}
+
 function RandomRange(a, b) { return Math.random() * (b - a) + a; }

@@ -74,6 +74,7 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script src="../common/args.js"></script>
+<script src="../common/utils.js"></script>
 <script>
 "use strict";
 
@@ -418,13 +419,8 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
       },
     });
     // create COMPUTE binding groups
-    const binding = render.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: render.GPU.uniforms, },
-        { binding: 1, resource: render.GPU.spins, },
-      ],
-    });
+    const binding =
+      Create_Bind_Group(render.device, pipeline, [render.GPU.uniforms, render.GPU.spins]);
     render.sim_pipelines.push([pipeline, binding]);
   }
 }
@@ -468,14 +464,9 @@ function create_stats_pipeline(render) {  // COMPUTE stats pipeline
       entryPoint: "main",
     },
   });
-  render.stats_binding = render.device.createBindGroup({
-    layout: render.stats_pipeline.getBindGroupLayout(0),
-    entries: [
-        { binding: 0, resource: render.GPU.uniforms, },
-        { binding: 1, resource: render.GPU.spins, },
-        { binding: 2, resource: render.GPU.stats, },
-    ],
-  });
+  render.stats_binding =
+    Create_Bind_Group(render.device, render.stats_pipeline,
+                      [render.GPU.uniforms, render.GPU.spins, render.GPU.stats]);
 }
 const visu_uniforms_struct_code = `
     struct VisuUniforms {  // 44 * 4 bytes
@@ -564,13 +555,9 @@ function create_visu_pipeline(render) {  // RENDER pipeline drawing the spins
       format: 'depth24plus',
     },
   });
-  render.visu_bind_group = render.device.createBindGroup({
-    layout: render.visu_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: render.GPU.visu_uniforms, },
-      { binding: 1, resource: render.GPU.spins, },
-    ],
-  });
+  render.visu_bind_group =
+    Create_Bind_Group(render.device, render.visu_pipeline,
+                      [render.GPU.visu_uniforms, render.GPU.spins]);
 }
 
 function create_cube_pipeline(render) {
@@ -629,12 +616,8 @@ function create_cube_pipeline(render) {
       format: 'depth24plus',
     },
   });
-  render.cube_bind_group = render.device.createBindGroup({
-    layout: render.cube_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: render.GPU.visu_uniforms, },
-    ],
-  });
+  render.cube_bind_group =
+    Create_Bind_Group(render.device, render.cube_pipeline, [render.GPU.visu_uniforms]);
 }
 
 function find_worksize(size, wsize) {
@@ -839,15 +822,9 @@ async function init_buffers(render) {
   trace(0, "Init buffers() => nb_spins:", render.nb_spins);
 
   // Create the persistent GPU buffers that will be filled progressively
-  render.GPU.spins = render.device.createBuffer({
-    size: render.nb_spins * 4 * UINT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX |
-           GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    mappedAtCreation: true,
-  });
-  const spins = get_random_spins(render.nb_spins);
-  new Uint32Array(render.GPU.spins.getMappedRange()).set(spins);
-  render.GPU.spins.unmap();
+  render.GPU.spins =
+    Create_GPU_Buffer(render.device, get_random_spins(render.nb_spins),
+                      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
 
   // Create uniforms buffer
   render.GPU.uniforms = render.device.createBuffer({

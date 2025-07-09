@@ -44,6 +44,7 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script src="../common/args.js"></script>
+<script src="../common/utils.js"></script>
 <script>
 "use strict";
 const kVisus = {  // mapping from name to shader function
@@ -490,14 +491,9 @@ async function create_sort_pipeline(render) {
       entryPoint: 'main',
     }
   });
-  render.sort_bind_group = render.device.createBindGroup({
-      layout: render.sort_pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: render.GPU.uniforms, },
-        { binding: 1, resource: render.GPU.positions, },
-        { binding: 2, resource: render.GPU.idx, },
-      ],
-    });
+  render.sort_bind_group = Create_Bind_Group(
+    render.device, render.sort_pipeline,
+    [render.GPU.uniforms, render.GPU.positions, render.GPU.idx]);
 }
 
 function create_update_pipeline(render) {
@@ -560,16 +556,14 @@ function create_update_pipeline(render) {
     });
 
     // create COMPUTE binding groups
-    const update_bind_group = render.device.createBindGroup({
-      layout: render.update_pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: render.GPU.uniforms, },
-        { binding: 1, resource: render.GPU.positions, },
-        { binding: 2, resource: render.GPU.sigmas, },
-        { binding: 3, resource: render.GPU.axis, },
-        { binding: 4, resource: render.GPU.idx, },
-      ],
-    });
+    const update_bind_group = Create_Bind_Group(
+      render.device, render.update_pipeline,
+      [render.GPU.uniforms,
+       render.GPU.positions,
+       render.GPU.sigmas,
+       render.GPU.axis,
+       render.GPU.idx,]);
+
     render.update_bindings = [dim_x, dim_y, update_bind_group];
   }
 }
@@ -694,16 +688,10 @@ function create_splats_pipeline(render) {
   }
   render.splats_pipeline = render.device.createRenderPipeline(pipeline_descriptor);
 
-  const bindGroup = {
-    layout: render.splats_pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: render.GPU.uniforms, },
-      { binding: 1, resource: render.GPU.positions, },
-      { binding: 2, resource: render.GPU.colors, },
-      { binding: 3, resource: params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas, },
-    ],
-  };
-  render.splats_bind_group = render.device.createBindGroup(bindGroup);
+  render.splats_bind_group = Create_Bind_Group(
+    render.device, render.splats_pipeline,
+    [render.GPU.uniforms, render.GPU.positions, render.GPU.colors,
+     params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas]);
 }
 
 function create_axis_pipeline(render) {    // RENDER pipeline for axis
@@ -737,10 +725,7 @@ function create_axis_pipeline(render) {    // RENDER pipeline for axis
     depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus', },
     multisample: { count: (params.use_MSAA ? 4 : 1), },
   });
-  render.axis_bind_group = render.device.createBindGroup({
-    layout: render.axis_pipeline.getBindGroupLayout(0),
-    entries: [ { binding: 0, resource: render.GPU.uniforms, }, ],
-  });
+  render.axis_bind_group = Create_Bind_Group(render.device, render.axis_pipeline, [render.GPU.uniforms]);
 }
 
 function create_pipelines(render) {
@@ -788,14 +773,10 @@ async function init_buffers(render) {
 
   // work buffer on GPU, for storing ordered idx
   if (render.GPU.idx != undefined) render.GPU.idx.destroy();
-  render.GPU.idx = render.device.createBuffer({
-    size: render.max_splats * UINT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX |
-           GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    mappedAtCreation: true,
-  });
-  new Uint32Array(render.GPU.idx.getMappedRange()).set(render.CPU.idx);
-  render.GPU.idx.unmap();
+
+  // map new buffer
+  render.GPU.idx =
+    Create_GPU_Buffer(render.device, render.CPU.idx, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
 }
 
 async function init_side_buffers(render) {
