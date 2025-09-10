@@ -1,0 +1,473 @@
+<!--
+Explanation page for Sharp-YUV algorithm.
+skal/ (pascal.massimino@gmail.com) 2025
+ -->
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Sharp-YUV: sharp conversion to YUV420</title>
+<link rel="stylesheet" href="../splats/style.css">
+<style>
+.canvas {
+  z-index:0;
+  border: 2px solid #000; border-radius: 20px;
+  margin: 0px;
+  background: #000;
+  box-shadow: 0 0 8px black;
+  outline: 1px solid black;
+}
+
+#main-area.highlight { border-color: purple; }
+.button {
+  display: inline-block;
+  padding: 8px;
+  background: #bbc;
+  cursor: pointer;
+  border-radius: 5px;
+  border: 3px solid #334;
+  z-index:1;
+  position:relative;
+  font-size: 14px;
+}
+.button:hover {
+  background: #cce;
+}
+#gui {
+ position: relative;
+ top: -230px;
+ right: -6px;
+}
+</style>
+</head>
+
+<body onload="main();">
+
+<div id="main-area" style='width: 1024px; height: 930px;'>
+  <div height='100px'>
+    Illustration of the Sharp-YUV conversion technique.
+    <font size='-1'>Drag and drop image on the canvas below.</font>
+  </div>
+  <label class='button' for="FileElmt" style='top:80px; left:750px;'>select an image</label>
+  <form class="my-form">
+    <input type="file" id="FileElmt" style='display:none;'
+           multiple accept="image/*" onchange="HandleFile(this.files[0])">
+  </form>
+  <div id="gui-container">
+    <button class='button'>Source</button>
+    <button class='button'>Fast YUV</button>
+    <button class='button'>Sharp YUV</button>
+    <hr/>
+    <canvas id="main-canvas" style='left:-2px; position:relative;'></canvas>
+    <canvas id="ref-rgb" width='256px' height='256px'></canvas>
+    <br/>
+    <canvas id="fast-yuv" width='256px' height='384px'></canvas>
+    <canvas id="fast-rgb" width='256px' height='256px'></canvas>
+    <canvas id="fast-err" width='256px' height='256px'></canvas>
+    <br/>
+    <canvas id="sharp-yuv" width='256px' height='384px' style='left:-2px;'></canvas>
+    <canvas id="sharp-rgb" width='256px' height='256px' style='left:-2px;'></canvas>
+    <canvas id="sharp-err" width='256px' height='256px' style='left:-2px;'></canvas>
+    <br/>
+    <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
+      <input type="submit" value="skal 2025" id="skal-back"/>
+    </form>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script src="../common/args.js"></script>
+<script src="../common/utils.js"></script>
+
+<script>
+"use strict";
+
+const params = {
+  original: true,
+  iters: 6,
+  zoom: 3,
+  POI: {x: 0, y: 0},
+
+  RGB: undefined,  // reference input
+  Yf: undefined,   // Y-fast internal
+  Uf: undefined,   // U-fast internal
+  Vf: undefined,   // V-fast internal
+  Ys: undefined,   // Y-sharp internal
+  Us: undefined,   // U-sharp internal
+  Vs: undefined,   // V-sharp internal
+  RGBf: undefined,   // RGB-fast output
+  RGBs: undefined,   // RGB-sharp output
+  ERRf: undefined,   // RGB-fast error
+  ERRs: undefined,   // RGB-sharp error
+
+  gui: null,
+  txt_info: "info",
+  dbg: { timing: false, },
+
+  W: 0,
+  H: 0,
+  w: 0,
+  h: 0,
+  YUV_W: 256,
+
+  set_POI: (x, y) => {
+    const canvas = document.querySelector("#main-canvas");
+    const bounds = canvas.getBoundingClientRect();
+    params.POI.x = Math.floor(x - bounds.left);
+    params.POI.y = Math.floor(y - bounds.top);
+  },
+  get_box: () => {
+    const S = 1 << params.zoom;
+    const X = params.POI.x - S;
+    const Y = params.POI.y - S;
+    return [X, Y, 2 * S, 2 * S];
+  },
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+function compute_everything(image) {
+  const W = params.W, H = params.H, w = params.w, h = params.h;
+
+  params.Yf = new Uint8ClampedArray(W * H);
+  params.Uf = new Uint8ClampedArray(w * h);
+  params.Vf = new Uint8ClampedArray(w * h);
+  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, 1);
+  params.RGBf = new ImageData(W, H);
+  params.ERRf = new ImageData(W, H);
+  convert_to_rgb(params.Yf, params.Uf, params.Vf, params.RGBf, params.ERRf);
+
+  params.Ys = new Uint8ClampedArray(W * H);
+  params.Us = new Uint8ClampedArray(w * h);
+  params.Vs = new Uint8ClampedArray(w * h);
+  convert_to_yuv_fast(params.RGB.data, params.Ys, params.Us, params.Vs, 2);
+  params.RGBs = new ImageData(W, H);
+  params.ERRs = new ImageData(W, H);
+  convert_to_rgb(params.Ys, params.Us, params.Vs, params.RGBs, params.ERRs);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function clamp(v, m, M) { return Math.max(m, Math.min(M, v)); }
+function clamp8(v) { return Math.max(0, Math.min(255, v)); }
+
+function clamp_coord(x, y, w, h) {
+  x = clamp(x, 0, w - 1);
+  y = clamp(y, 0, h - 1);
+  return 4 * (x + y * w);
+}
+
+function to_rgb(y, u, v) {
+  const R = (19077 * y             + 26149 * v - (14234 << 8)) >> 14;
+  const G = (19077 * y -  6419 * u - 13320 * v +  (8708 << 8)) >> 14;
+  const B = (19077 * y + 33050 * u             - (17685 << 8)) >> 14;
+  return new Uint8ClampedArray([R, G, B]);
+}
+
+function get_rgb(Yo, Uo, Vo, x, y, w, h) {
+  x = clamp(x, 0, w - 1);
+  y = clamp(y, 0, h - 1);
+  const X = (x + 1) >> 1;
+  const Y = (y + 1) >> 1;
+  const W = (w + 1) >> 1;
+  const H = (h + 1) >> 1;
+  const off = x + y * w;
+  const OFF = X + Y * W;
+  return to_rgb(Yo[off], Uo[OFF], Vo[OFF]);
+}
+
+function convert_to_rgb(Y, U, V, RGB, ERR) {
+  for (let y = 0; y < RGB.height; ++y) {
+    for (let x = 0; x < RGB.width; ++x) {
+      const rgb = get_rgb(Y, U, V, x, y, RGB.width, RGB.height);
+      const off = 4 * (x + y * RGB.width);
+      RGB.data[off + 0] = rgb[0];
+      RGB.data[off + 1] = rgb[1];
+      RGB.data[off + 2] = rgb[2];
+      RGB.data[off + 3] = 0xff;
+
+      const err = get_err(x, y, rgb);
+      ERR.data[off + 0] = err;
+      ERR.data[off + 1] = err;
+      ERR.data[off + 2] = err;
+      ERR.data[off + 3] = 255;
+    }
+  }
+}
+
+function get_err(x, y, rgb) {
+  const off = 4 * (x + y * params.W);
+  const er = params.RGB.data[off + 0] - rgb[0];
+  const eg = params.RGB.data[off + 1] - rgb[1];
+  const eb = params.RGB.data[off + 2] - rgb[2];
+  const err = Math.floor(10 * Math.sqrt(er * er + eg * eg + eb * eb));
+  return clamp8(err);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function to_y(r, g, b) {
+  return (+16839 * r + 33059 * g + 6420 * b + (16 << 16) + (1 << 15)) >> 16; // in [16, 235] range
+}
+
+function to_uv(r, g, b) {
+  const U = ( -9719 * r - 19081 * g + 28800 * b + (128 << 16) + (1 << 16)) >> 16;
+  const V = (+28800 * r - 24116 * g - 4684 * b + (128 << 16) + (1 << 16)) >> 16;
+  return [U, V];  // in [16,240] range
+}
+
+function to_yuv(r, g, b) {
+  const Y = to_y(r, g, b);
+  const [U, V] = to_uv(r, g, b);
+  return new Uint8ClampedArray([Y, U, V]);
+}
+
+function get_yuv(RGB, x, y, w, h) {
+  const off = clamp_coord(x, y, w, h);
+  return to_yuv(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
+}
+
+function get_y(RGB, x, y, w, h) {
+  const off = clamp_coord(x, y, w, h);
+  return to_y(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
+}
+
+function get_uv(RGB, x, y, w, h) {
+  const off = clamp_coord(x, y, w, h);
+  return to_uv(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
+}
+
+function convert_to_yuv_fast(RGB, Yo, Uo, Vo, delta) {
+  for (let y = 0; y < params.H; ++y) {
+    for (let x = 0; x < params.W; ++x) {
+      Yo[x + y * params.W] = get_y(RGB, x, y, params.W, params.H);
+    }
+  }
+
+  const total = 4 * delta * delta;
+  const round = (total + 1) >> 1
+  for (let y = 0; y < params.h; ++y) {
+    for (let x = 0; x < params.w; ++x) {
+      let all_U = 0, all_V = 0;
+      for (let Y = -delta; Y < delta; ++Y) {
+        for (let X = -delta; X < delta; ++X) {
+          const yuv = get_yuv(RGB, 2 * x + X, 2 * y + Y, params.W, params.H);
+          all_U += yuv[1];
+          all_V += yuv[2];
+        }
+      }
+      all_U = Math.floor((all_U + round) / total);
+      all_V = Math.floor((all_V + round) / total);
+      const off = x + y * params.w;
+      Uo[off] = all_U;
+      Vo[off] = all_V;
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+const GUI_change = async () => { await render(); }
+const GUI_reload = async () => { await draw(); }
+
+const GUI_init = () => {
+  if (params.no_gui) {
+    params.gui = undefined;
+    return;
+  }
+  params.gui = new lil.GUI({container: document.querySelector("gui-container"), name: 'Sharp-YUV'});
+  params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
+  params.gui.add(params, 'zoom', 1, 8, 1).name('zoom level').listen().onChange(GUI_reload);
+
+  params.gui.add(params, 'txt_info').name('info').listen().disable();
+
+  params.gui.domElement.style.top = '5%';
+  params.gui.domElement.style.right = '3%';
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function draw_to(dst_name, src_data, x, y, w, h, text, is_img = false) {
+  const off_canvas = document.createElement('canvas');
+  off_canvas.width = src_data.width;
+  off_canvas.height = src_data.height;
+  const off_ctx = off_canvas.getContext("2d");
+  if (is_img) {
+    off_ctx.drawImage(src_data, 0, 0);
+  } else {
+    off_ctx.putImageData(src_data, 0, 0);
+  }
+
+  const dst = document.getElementById(dst_name);
+  const dst_ctx = dst.getContext("2d");
+  dst_ctx.imageSmoothingEnabled = false;
+  dst_ctx.drawImage(off_canvas, x, y, w, h, 0, 0, dst.width, dst.height);
+  if (text != undefined) {
+    dst_ctx.font = "16px serif";
+    dst_ctx.fillText(text, 2, 2 + 18);
+  }
+}
+
+function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
+  const dst = document.getElementById(dst_name);
+  const dst_ctx = dst.getContext("2d");
+  const y_dst = dst_ctx.getImageData(Xo, Yo, Wo, Ho);
+  for (let y = 0; y < Ho; ++y) {
+    const yy = Math.min(yo + Math.floor(y * h / Ho), Ho - 1);
+    for (let x = 0; x < Wo; ++x) {
+      const xx = Math.min(xo + Math.floor(x * w / Wo), Wo - 1);
+      const v = data[xx + yy * stride];
+      const off = (x + y * Wo) * 4;
+      y_dst.data[off + 0] = v;
+      y_dst.data[off + 1] = v;
+      y_dst.data[off + 2] = v;
+      y_dst.data[off + 3] = 255;
+    }
+  }
+  dst_ctx.putImageData(y_dst, Xo, Yo);
+  dst_ctx.fillStyle = '#000';
+  dst_ctx.strokeRect(Xo, Yo, Wo - 1, Ho - 1);
+  dst_ctx.font = "16px serif";
+  dst_ctx.fillText(text, Xo + 2, Yo + 2 + 18);
+}
+
+function draw() {
+  const canvas = document.querySelector("#main-canvas");
+  const [x, y, w, h] = params.get_box();
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(params.RGB, 0, 0)
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#eee";
+  ctx.strokeRect(x, y, w, h);
+
+  const S = params.YUV_W;
+  const s = (S + 1) >> 1;
+
+  draw_to('ref-rgb', params.RGB, x, y, w, h);
+
+  draw_yuv('fast-yuv', params.Yf, params.W, x, y, w, h,  0, 0, S, S, "Y");
+  draw_yuv('fast-yuv', params.Uf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
+  draw_yuv('fast-yuv', params.Vf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
+  draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
+  draw_to('fast-err', params.ERRf, x, y, w, h, "error");
+
+  draw_yuv('sharp-yuv', params.Ys, params.W, x, y, w, h,  0, 0, S, S, "Y");
+  draw_yuv('sharp-yuv', params.Us, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
+  draw_yuv('sharp-yuv', params.Vs, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
+  draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
+  draw_to('sharp-err', params.ERRs, x, y, w, h, "error");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function set_yuv_size(name) {
+  const S = (params.YUV_W + 1) & ~1;  // make even
+  const Suv = (S + 1) >> 1;
+  const canvas = document.getElementById('fast-yuv');
+  canvas.width = S;
+  canvas.height = S + Suv;
+  params.YUV_W = S;
+  params.YUV_Off = S * S;
+}
+
+function import_image(image) {
+  const canvas = document.querySelector("#main-canvas");
+  const ctx = canvas.getContext("2d");
+  let Wo = params.YUV_W, Ho = params.YUV_W;
+  let W = image.width, H = image.height;
+  console.log(`size in: ${W} x ${H} in canvas: ${Wo} x ${Ho}`);
+  if (W > Wo || H > Ho) {   // needs resizing?
+    if (W * Ho > Wo * H) {
+      H = Math.floor(H * Wo / W);
+      W = Wo;
+    } else {
+      W = Math.floor(W * Ho / H);
+      H = Ho;
+    }
+  }
+  canvas.width = W;
+  canvas.height = H;
+  console.log(`adjusting to size: ${W} x ${H}`);
+  draw_to('main-canvas', image, 0, 0, image.width, image.height, undefined, true);
+  params.RGB = ctx.getImageData(0, 0, W, H);  // save source for later
+
+  params.W = W;
+  params.H = H;
+  params.w = (W + 1) >>> 1;
+  params.h = (H + 1) >>> 1;
+  params.POI = { x: W/2, y: H/2 };
+  params.zoom = 3;
+
+  set_yuv_size('fast-yuv');
+  set_yuv_size('sharp-yuv');
+
+  render();
+}
+
+function set_image(src) {
+  let image = new Image();
+  image.onload = function() {
+    import_image(image);
+  };
+  image.src = src;
+}
+
+function render() {
+  compute_everything();
+  draw();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Drag'n'Drop
+
+function PreventDefaults (e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+function HandleDrop(e) {
+  HandleFile(e.dataTransfer.files[0]);
+}
+function HandleFile(file) {
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onloadend = function() { set_image(reader.result); }
+}
+
+async function init_image() {
+  set_image("./SF.webp");
+
+  const dropArea = document.getElementById('main-area');
+  function highlight(e) { dropArea.classList.add('highlight'); }
+  function unhighlight(e) { dropArea.classList.remove('highlight'); }
+
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
+    name => { dropArea.addEventListener(name, PreventDefaults, false); }
+  );
+  ['dragenter', 'dragover'].forEach(
+    name => { dropArea.addEventListener(name, highlight, false); }
+  );
+  ['dragleave', 'drop'].forEach(
+    name => { dropArea.addEventListener(name, unhighlight, false); }
+  );
+  dropArea.addEventListener('drop', HandleDrop, false)
+
+  const canvas = document.getElementById('main-canvas');
+  canvas.addEventListener('mousemove', (e) => {
+    params.set_POI(e.x, e.y);
+    draw();
+  });
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+async function main() {
+  try {
+    await init_image();
+    GUI_init();
+  } catch(e) { console.log(`Error: ${e};`); }
+}
+
+</script>
+
+</body>
+</html>
