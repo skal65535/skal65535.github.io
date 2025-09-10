@@ -45,8 +45,12 @@ skal/ (pascal.massimino@gmail.com) 2025
 
 <div id="main-area">
   <div height='100px'>
-    Illustration of the Sharp-YUV conversion technique.
-    <font size='-1'>Drag and drop image on the canvas below.</font>
+    Illustration of the Sharp-YUV conversion technique.<br/>
+    <font size='-1'>
+    Drag and drop image on the canvas below.<br/>
+    Mouse-click will move the zoom area.<br/>
+    Mouse-Wheel will change the zoom level<br/>
+    </font>
   </div>
   <label class='button' for="FileElmt" style='top:80px; left:750px;'>select an image</label>
   <form class="my-form">
@@ -54,10 +58,6 @@ skal/ (pascal.massimino@gmail.com) 2025
            multiple accept="image/*" onchange="HandleFile(this.files[0])">
   </form>
   <div id="gui-container">
-    <button class='button'>Source</button>
-    <button class='button'>Fast YUV</button>
-    <button class='button'>Sharp YUV</button>
-    <hr/>
     <canvas id="main-canvas" style='left:-2px; position:relative;'></canvas>
     <canvas id="ref-rgb" width='256px' height='256px'></canvas>
     <br/>
@@ -87,7 +87,9 @@ const params = {
   iters: 6,
   zoom: 3,
   fancy_upscaler: true,
+  gamma_aware: true,
   POI: {x: 0, y: 0},
+  show_src: false,
 
   RGB: undefined,  // reference input
   Yf: undefined,   // Y-fast internal
@@ -123,7 +125,7 @@ const params = {
     const S = 1 << params.zoom;
     const X = params.POI.x - S;
     const Y = params.POI.y - S;
-    return [X, Y, 2 * S, 2 * S];
+    return [X, Y, 2 * S, 2 * S];  // TODO: make coords even?
   },
 };
 
@@ -131,11 +133,42 @@ const params = {
 
 function PSNR(err2) {
   const x = 10. * Math.log10(255 * 255 * 3. / err2);
-  return (Math.round(x * 1000.) / 1000.).toFixed(3);
+  return (Math.round(x * 100.) / 100.).toFixed(2);
+}
+
+function set_yuv_size(name) {
+  const S = params.YUV_W;
+  const Suv = (S + 1) >> 1;
+  const canvas = document.getElementById(name);
+  canvas.width = S;
+  canvas.height = S + Suv;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.font = "18px serif";
+}
+
+function set_size(name) {
+  const canvas = document.getElementById(name);
+  canvas.width = params.YUV_W;
+  canvas.height = params.YUV_W;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.font = "17px serif";
 }
 
 function compute_everything(image) {
-  const W = params.W, H = params.H, w = params.w, h = params.h;
+  const W = params.W, H = params.H;
+  const w = params.w, h = params.h;
+
+  set_size('ref-rgb');
+
+  set_yuv_size('fast-yuv');
+  set_size('fast-rgb');
+  set_size('fast-err');
+
+  set_yuv_size('sharp-yuv');
+  set_size('sharp-rgb');
+  set_size('sharp-err');
 
   params.Yf = new Uint8ClampedArray(W * H);
   params.Uf = new Uint8ClampedArray(w * h);
@@ -161,13 +194,18 @@ function compute_everything(image) {
 function clamp(v, m, M) { return Math.max(m, Math.min(M, v)); }
 function clamp8(v) { return Math.max(0, Math.min(255, v)); }
 
+const GAMMA = 2.2;
+const GAMMA_INV = 1. / GAMMA;
+function to_linear(x) { return Math.floor(255. * Math.pow(x / 255., GAMMA)); }
+function from_linear(x) { return Math.floor(255. * Math.pow(x / 255., GAMMA_INV)); }
+
 function clamp_coord(x, y, w, h) {
   x = clamp(x, 0, w - 1);
   y = clamp(y, 0, h - 1);
   return 4 * (x + y * w);
 }
 
-function to_rgb(y, u, v) {
+function to_rgb(y, u, v) {  // BT.601
   const R = (19077 * y             + 26149 * v - (14234 << 8)) >> 14;
   const G = (19077 * y -  6419 * u - 13320 * v +  (8708 << 8)) >> 14;
   const B = (19077 * y + 33050 * u             - (17685 << 8)) >> 14;
@@ -193,12 +231,13 @@ function get_rgb(Yo, Uo, Vo, X, Y, W, H) {
   if (!params.fancy_upscaler) {
     return to_rgb(luma, u0, v0);
   }
-  // compute the 'far' X/Y coordinate:
+  // compute the 'far' X/Y coordinates (Xf,Yf):
   const Xf = clamp(X + dX, 0, W - 1);
   const Yf = clamp(Y + dY, 0, H - 1);
+  // get nearby samples
   const u1 = Uo[Xf + Y * W], u2 = Uo[X + Yf * W], u3 = Uo[Xf + Yf * W];
   const v1 = Vo[Xf + Y * W], v2 = Vo[X + Yf * W], v3 = Vo[Xf + Yf * W];
-  // the fancy upscaler:
+  // and apply the fancy upscaler:
   const u = filter_9331(u0, u1, u2, u3);
   const v = filter_9331(v0, v1, v2, v3);
   return to_rgb(luma, u, v);
@@ -242,7 +281,7 @@ function to_y(r, g, b) {
 
 function to_uv(r, g, b) {
   const U = ( -9719 * r - 19081 * g + 28800 * b + (128 << 16) + (1 << 16)) >> 16;
-  const V = (+28800 * r - 24116 * g - 4684 * b + (128 << 16) + (1 << 16)) >> 16;
+  const V = (+28800 * r - 24116 * g -  4684 * b + (128 << 16) + (1 << 16)) >> 16;
   return [U, V];  // in [16,240] range
 }
 
@@ -309,6 +348,8 @@ const GUI_init = () => {
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
   params.gui.add(params, 'zoom', 1, 8, 1).name('zoom level').listen().onChange(GUI_reload);
   params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_change);
+  params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
+  params.gui.add(params, 'YUV_W', 64, 384, 16).name('zoomed size').listen().onChange(GUI_change);
 
   params.gui.add(params, 'txt_info').name('info').listen().disable();
 
@@ -317,6 +358,16 @@ const GUI_init = () => {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+function draw_text(ctx, text, x, y, line_width = 4) {
+  if (text != undefined) {
+    ctx.lineWidth = line_width;
+    ctx.strokeStyle = '#fff';
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = '#000';
+    ctx.fillText(text, x, y);
+  }
+}
 
 function draw_to(dst_name, src_data, x, y, w, h, text, is_img = false) {
   const off_canvas = document.createElement('canvas');
@@ -331,15 +382,8 @@ function draw_to(dst_name, src_data, x, y, w, h, text, is_img = false) {
 
   const dst = document.getElementById(dst_name);
   const dst_ctx = dst.getContext("2d");
-  dst_ctx.imageSmoothingEnabled = false;
   dst_ctx.drawImage(off_canvas, x, y, w, h, 0, 0, dst.width, dst.height);
-  if (text != undefined) {
-    dst_ctx.font = "19px serif";
-    dst_ctx.fillStyle = '#fff';
-    dst_ctx.fillText(text, 2, 2 + 18);
-    dst_ctx.fillStyle = '#000';
-    dst_ctx.fillText(text, 3, 2 + 19);
-  }
+  draw_text(dst_ctx, text, 2, 20, 4);
 }
 
 function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
@@ -359,17 +403,18 @@ function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
     }
   }
   dst_ctx.putImageData(y_dst, Xo, Yo);
-  dst_ctx.fillStyle = '#000';
+  dst_ctx.strokeStyle = '#000';
+  dst_ctx.lineWidth = 1;
   dst_ctx.strokeRect(Xo, Yo, Wo - 1, Ho - 1);
-  dst_ctx.font = "16px serif";
-  dst_ctx.fillText(text, Xo + 2, Yo + 2 + 18);
+  draw_text(dst_ctx, text, Xo + 2, Yo + 20, 3);
 }
 
 function draw() {
   const canvas = document.querySelector("#main-canvas");
-  const [x, y, w, h] = params.get_box();
   const ctx = canvas.getContext("2d");
   ctx.putImageData(params.RGB, 0, 0)
+
+  const [x, y, w, h] = params.get_box();
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#eee";
   ctx.strokeRect(x, y, w, h);
@@ -377,40 +422,30 @@ function draw() {
   const S = params.YUV_W;
   const s = (S + 1) >> 1;
 
-  draw_to('ref-rgb', params.RGB, x, y, w, h);
+  draw_to('ref-rgb', params.RGB, x, y, w, h, "source");
 
   draw_yuv('fast-yuv', params.Yf, params.W, x, y, w, h,  0, 0, S, S, "Y");
   draw_yuv('fast-yuv', params.Uf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
   draw_yuv('fast-yuv', params.Vf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
-  draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
   draw_to('fast-err', params.ERRf, x, y, w, h, `PSNR: ${params.psnr_f} dB`);
 
   draw_yuv('sharp-yuv', params.Ys, params.W, x, y, w, h,  0, 0, S, S, "Y");
   draw_yuv('sharp-yuv', params.Us, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
   draw_yuv('sharp-yuv', params.Vs, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
-  draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
   draw_to('sharp-err', params.ERRs, x, y, w, h, `PSNR: ${params.psnr_s} dB`);
+
+  if (params.show_src) {
+    draw_to('fast-rgb', params.RGB, x, y, w, h, "source");
+    draw_to('sharp-rgb', params.RGB, x, y, w, h, "source");
+  } else {
+    draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
+    draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function set_yuv_size(name) {
-  const S = params.YUV_W;
-  const Suv = (S + 1) >> 1;
-  const canvas = document.getElementById(name);
-  canvas.width = S;
-  canvas.height = S + Suv;
-}
-
-function set_size(name) {
-  const canvas = document.getElementById(name);
-  canvas.width = params.YUV_W;
-  canvas.height = params.YUV_W;
-}
-
 function import_image(image) {
-  const canvas = document.querySelector("#main-canvas");
-  const ctx = canvas.getContext("2d");
   let Wo = params.Main_W, Ho = params.Main_H;
   let W = image.width, H = image.height;
   console.log(`size in: ${W} x ${H} in canvas: ${Wo} x ${Ho}`);
@@ -423,30 +458,25 @@ function import_image(image) {
       H = Ho;
     }
   }
+  console.log(`adjusting to size: ${W} x ${H}`);
+
+  const canvas = document.querySelector("#main-canvas");
   canvas.width = W;
   canvas.height = H;
-  console.log(`adjusting to size: ${W} x ${H}`);
-  draw_to('main-canvas', image, 0, 0, image.width, image.height, undefined, true);
-  params.RGB = ctx.getImageData(0, 0, W, H);  // save source for later
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 
+  // save the definitive RGB source for later
+  draw_to('main-canvas', image, 0, 0, image.width, image.height, undefined, true);
+  params.RGB = ctx.getImageData(0, 0, W, H);
   params.W = W;
   params.H = H;
   params.w = (W + 1) >>> 1;
   params.h = (H + 1) >>> 1;
-  params.POI = { x: W/2, y: H/2 };
+  params.POI = { x: (W >> 1) & ~1, y: (H >> 1) & ~1, };
   params.zoom = 3;
-
-  params.YUV_W = (params.YUV_W + 1) & ~1;  // make even
-
-  set_size('ref-rgb');
-
-  set_yuv_size('fast-yuv');
-  set_size('fast-rgb');
-  set_size('fast-err');
-
-  set_yuv_size('sharp-yuv');
-  set_size('sharp-rgb');
-  set_size('sharp-err');
+  params.YUV_W = (params.YUV_W + 1) & ~1;  // make sure it's even
 
   render();
 }
@@ -481,8 +511,6 @@ function HandleFile(file) {
 }
 
 async function init_image() {
-  set_image("./SF.webp");
-
   const dropArea = document.getElementById('main-area');
   function highlight(e) { dropArea.classList.add('highlight'); }
   function unhighlight(e) { dropArea.classList.remove('highlight'); }
@@ -505,11 +533,38 @@ async function init_image() {
     draw();
   });
   canvas.addEventListener('wheel', (e) => {
-    if (e.target != document.querySelector("#main-canvas")) return;
     e.preventDefault();
     params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 8);
     draw();
   });
+  document.addEventListener('keydown', (e) => {
+    if (e.key == ' ') {
+      params.show_src = true;
+      draw();
+    } else if (e.key == 'f') {
+      params.fancy_upscaler = !params.fancy_upscaler;
+      render();
+    } else if (e.key == 'g') {
+      params.gamma_aware = !params.gamma_aware;
+      render();
+    } else {
+      console.log(`down: ${e.key}`);
+      return;
+    }
+    e.preventDefault();
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.key == ' ') {
+      params.show_src = false;
+      draw();
+    } else {
+      console.log(`up: ${e.key}`);
+      return;
+    }
+    e.preventDefault();
+  });
+
+  set_image("./SF.webp");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
