@@ -10,6 +10,7 @@ skal/ (pascal.massimino@gmail.com) 2025
 <link rel="stylesheet" href="../splats/style.css">
 <style>
 .canvas {
+  position: absolute;
   z-index:0;
   border: 2px solid #000; border-radius: 20px;
   margin: 0px;
@@ -21,11 +22,11 @@ skal/ (pascal.massimino@gmail.com) 2025
 #main-area.highlight { border-color: purple; }
 .button {
   display: inline-block;
-  padding: 8px;
+  padding: 4px;
   background: #bbc;
   cursor: pointer;
   border-radius: 5px;
-  border: 3px solid #334;
+  border: 2px solid #334;
   z-index:1;
   position:relative;
   font-size: 14px;
@@ -38,46 +39,68 @@ skal/ (pascal.massimino@gmail.com) 2025
  top: -230px;
  right: -6px;
 }
+#arrow-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;  /* pass-through clicks */
+  z-index: 10;  /* on top */
+}
 </style>
 </head>
 
 <body onload="main();">
-
+<svg id='arrow-svg'></svg>
 <div id="main-area">
   <div height='100px'>
-    Illustration of the Sharp-YUV conversion technique.<br/>
+    <h2><center>Illustration of the Sharp-YUV conversion technique</center></h2>
     <font size='-1'>
-    Drag and drop image on the canvas below.<br/>
-    Mouse-click will move the zoom area.<br/>
-    Mouse-Wheel will change the zoom level<br/>
+    Drag and drop image on the canvas below.
+    Or <label class='button' for="FileElmt">select an image</label>.<br/>
+    Mouse-click will move the zoom area. Mouse-Wheel will change the zoom level<br/>
+    Canvas key: <code>f</code> to toggle fancy upscaler. <code>space</code>
+    to show the source in reconstructed RGB.<br/>
     </font>
   </div>
-  <label class='button' for="FileElmt" style='top:80px; left:750px;'>select an image</label>
+  <hr>
+
   <form class="my-form">
     <input type="file" id="FileElmt" style='display:none;'
            multiple accept="image/*" onchange="HandleFile(this.files[0])">
   </form>
+
   <div id="gui-container">
-    <canvas id="main-canvas" style='left:-2px; position:relative;'></canvas>
-    <canvas id="ref-rgb" width='256px' height='256px'></canvas>
+    <canvas id="ref-rgb" style='position:relative; bottom:40px; left:20px; border: 2px solid #334;'></canvas>
+    <canvas id="main-canvas" style=''></canvas>
     <br/>
-    <canvas id="fast-yuv" width='256px' height='384px'></canvas>
-    <canvas id="fast-rgb" width='256px' height='256px'></canvas>
-    <canvas id="fast-err" width='256px' height='256px'></canvas>
-    <br/>
-    <canvas id="sharp-yuv" width='256px' height='384px' style='left:-2px;'></canvas>
-    <canvas id="sharp-rgb" width='256px' height='256px' style='left:-2px;'></canvas>
-    <canvas id="sharp-err" width='256px' height='256px' style='left:-2px;'></canvas>
-    <br/>
-    <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
-      <input type="submit" value="skal 2025" id="skal-back"/>
-    </form>
+    <table border='1px'>
+      <tr>
+        <th></th>
+        <th>Y/U/V</th><th>reconstructed RGB</th><th>error map</th>
+      </tr>
+      <tr>
+        <td style='writing-mode: sideways-rl;'>Regular</td>
+        <td valign='top'><canvas id="fast-yuv" width='256px' height='384px'></canvas></td>
+        <td valign='top'><canvas id="fast-rgb" width='256px' height='256px'></canvas></td>
+        <td valign='top'><canvas id="fast-err" width='256px' height='256px'></canvas></td>
+      </tr>
+      <tr>
+        <td style='writing-mode: sideways-rl;'>Sharp YUV</td>
+        <td valign='top'><canvas id="sharp-yuv" width='256px' height='384px' style='left:-2px;'></canvas></td>
+        <td valign='top'><canvas id="sharp-rgb" width='256px' height='256px' style='left:-2px;'></canvas></td>
+        <td valign='top'><canvas id="sharp-err" width='256px' height='256px' style='left:-2px;'></canvas></td>
+      </tr>
+    </table>
   </div>
 </div>
+<form action="https://skal65535.github.io/" >
+  <input type="submit" value="skal 2025" id="skal-back" style='position:relative; left:1%;'/>
+</form>
 
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
 <script src="../common/args.js"></script>
 <script src="../common/utils.js"></script>
+<script src="./arrow.js"></script>
 
 <script>
 "use strict";
@@ -85,7 +108,7 @@ skal/ (pascal.massimino@gmail.com) 2025
 const params = {
   original: true,
   iters: 6,
-  zoom: 3,
+  zoom: 50,
   fancy_upscaler: true,
   gamma_aware: true,
   POI: {x: 0, y: 0},
@@ -122,7 +145,7 @@ const params = {
     params.POI.y = Math.floor(y - bounds.top);
   },
   get_box: () => {
-    const S = 1 << params.zoom;
+    const S = Math.floor(Math.pow(2., params.zoom / 10.));
     const X = params.POI.x - S;
     const Y = params.POI.y - S;
     return [X, Y, 2 * S, 2 * S];  // TODO: make coords even?
@@ -182,7 +205,7 @@ function compute_everything(image) {
   params.Ys = new Uint8ClampedArray(W * H);
   params.Us = new Uint8ClampedArray(w * h);
   params.Vs = new Uint8ClampedArray(w * h);
-  convert_to_yuv_fast(params.RGB.data, params.Ys, params.Us, params.Vs, 2);
+  convert_to_yuv_fast(params.RGB.data, params.Ys, params.Us, params.Vs, 3);
   params.RGBs = new ImageData(W, H);
   params.ERRs = new ImageData(W, H);
   const err2_s = convert_to_rgb(params.Ys, params.Us, params.Vs, params.RGBs, params.ERRs);
@@ -346,10 +369,10 @@ const GUI_init = () => {
   }
   params.gui = new lil.GUI({container: document.querySelector("gui-container"), name: 'Sharp-YUV'});
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
-  params.gui.add(params, 'zoom', 1, 8, 1).name('zoom level').listen().onChange(GUI_reload);
+  params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
   params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_change);
   params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
-  params.gui.add(params, 'YUV_W', 64, 384, 16).name('zoomed size').listen().onChange(GUI_change);
+  params.gui.add(params, 'YUV_W', 64, 384, 16).name('zoom size').listen().onChange(GUI_change);
 
   params.gui.add(params, 'txt_info').name('info').listen().disable();
 
@@ -415,9 +438,11 @@ function draw() {
   ctx.putImageData(params.RGB, 0, 0)
 
   const [x, y, w, h] = params.get_box();
-  ctx.lineWidth = 2;
   ctx.strokeStyle = "#eee";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([4]);
   ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
 
   const S = params.YUV_W;
   const s = (S + 1) >> 1;
@@ -441,6 +466,7 @@ function draw() {
     draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
     draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
   }
+  draw_arrows();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -475,7 +501,7 @@ function import_image(image) {
   params.w = (W + 1) >>> 1;
   params.h = (H + 1) >>> 1;
   params.POI = { x: (W >> 1) & ~1, y: (H >> 1) & ~1, };
-  params.zoom = 3;
+  params.zoom = 50;
   params.YUV_W = (params.YUV_W + 1) & ~1;  // make sure it's even
 
   render();
@@ -526,6 +552,9 @@ async function init_image() {
   );
   dropArea.addEventListener('drop', HandleDrop, false)
 
+  window.addEventListener('resize', draw);
+  window.addEventListener('scroll', draw);
+
   const canvas = document.getElementById('main-canvas');
   canvas.addEventListener('mousemove', (e) => {
     if (!e.buttons) return;
@@ -533,9 +562,11 @@ async function init_image() {
     draw();
   });
   canvas.addEventListener('wheel', (e) => {
+    if (Math.abs(e.wheelDelta) > 3) {
+      params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 100);
+      draw();
+    }
     e.preventDefault();
-    params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 8);
-    draw();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key == ' ') {
@@ -565,6 +596,37 @@ async function init_image() {
   });
 
   set_image("./SF.webp");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function draw_arrows() {
+  const svg = get_adjusted_svg_container('arrow-svg');
+
+  const src = get_element_rectangle('main-canvas');
+  const [x, y, w, h] = params.get_box();
+  const x0 = Math.floor(src.x + x + w/2);
+  const y0 = Math.floor(src.y + y + h/2);
+
+  const dst = get_element_rectangle('ref-rgb');
+  const x1 = Math.floor(dst.x + dst.width);
+  const y1 = Math.floor(dst.y + dst.height / 2);
+
+  const yuv_dst = get_element_rectangle('fast-yuv');
+  const x2 = Math.floor(dst.x + dst.width / 2);
+  const y2 = Math.floor(dst.y + dst.height);
+  const x3 = Math.floor(yuv_dst.x + yuv_dst.width / 2);
+  const y3 = Math.floor(yuv_dst.y + 10);
+
+  const options = {
+    color: '#fffa',
+    stroke: '#fffa',
+    line_width: 14,
+    head_length: 6,
+    head_width: 6,
+  }
+  svg_draw_arrow(svg, 'line1', x0, y0, x1, y1, options);
+  svg_draw_arrow(svg, 'line2', x2, y2, x3, y3, options);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
