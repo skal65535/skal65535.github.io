@@ -273,6 +273,7 @@ function draw_to(dst_name, src_data, x, y, w, h, text, is_img = false) {
 
   const dst = document.getElementById(dst_name);
   const dst_ctx = dst.getContext("2d");
+  dst_ctx.clearRect(0, 0, dst.width, dst.height);
   dst_ctx.drawImage(off_canvas, x, y, w, h, 0, 0, dst.width, dst.height);
   draw_text(dst_ctx, text, 2, 20, 4);
 }
@@ -306,8 +307,10 @@ function draw() {
   ctx.putImageData(params.RGB, 0, 0)
 
   const [x, y, w, h] = params.get_box();
-  ctx.strokeStyle = "#eee";
   ctx.lineWidth = 3;
+  ctx.strokeStyle = "#000";
+  ctx.strokeRect(x + 1, y + 1, w, h);
+  ctx.strokeStyle = "#eee";
   ctx.setLineDash([4]);
   ctx.strokeRect(x, y, w, h);
   ctx.setLineDash([]);
@@ -428,7 +431,8 @@ async function init_image() {
     params.set_POI(e.x, e.y);
     draw();
   });
-  canvas.addEventListener('wheel', (e) => {
+  const container = document.getElementById('gui-container');
+  container.addEventListener('wheel', (e) => {
     if (Math.abs(e.wheelDelta) > 3) {
       params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 100);
       draw();
@@ -462,7 +466,8 @@ async function init_image() {
     e.preventDefault();
   });
 
-  set_image("./SF.webp");
+//  set_image("./SF.webp");
+  set_image("./test_yuv.png");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
