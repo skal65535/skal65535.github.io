@@ -101,16 +101,24 @@ skal/ (pascal.massimino@gmail.com) 2025
 <script src="../common/args.js"></script>
 <script src="../common/utils.js"></script>
 <script src="./arrow.js"></script>
+<script src="./yuv.js"></script>
 
 <script>
 "use strict";
 
 const params = {
-  original: true,
-  iters: 6,
-  zoom: 50,
-  fancy_upscaler: true,
-  gamma_aware: true,
+  // user-controlled params
+  iters: parse_arg('iters', 6, 1, 10),
+  zoom: parse_arg('zoom', 50, 1, 100),
+  fancy_upscaler: !parse_arg_bool('no_fancy'),
+  delta: parse_arg('delta', 1, 1, 8),
+  gamma_aware: !parse_arg_bool('no_gamma'),
+  YUV_W: parse_arg('size', 128, 64, 384),
+  // max dimension for the input image (resized to fit)
+  Wo: parse_arg('Wo', 512, 256, 1024),
+  Ho: parse_arg('Ho', 512, 256, 1024),
+
+  // internal rendering state
   POI: {x: 0, y: 0},
   show_src: false,
 
@@ -134,9 +142,6 @@ const params = {
   H: 0,
   w: 0,
   h: 0,
-  YUV_W: 128,
-  Main_W: 512,
-  Main_H: 512,
 
   set_POI: (x, y) => {
     const canvas = document.querySelector("#main-canvas");
@@ -179,9 +184,9 @@ function set_size(name) {
   ctx.font = "17px serif";
 }
 
-function compute_everything(image) {
-  const W = params.W, H = params.H;
-  const w = params.w, h = params.h;
+function update_canvas_dimensions() {
+  // make sure it's even
+  params.YUV_W = (params.YUV_W + 1) & ~1;
 
   set_size('ref-rgb');
 
@@ -192,11 +197,16 @@ function compute_everything(image) {
   set_yuv_size('sharp-yuv');
   set_size('sharp-rgb');
   set_size('sharp-err');
+}
+
+function compute_everything(image) {
+  const W = params.W, H = params.H;
+  const w = params.w, h = params.h;
 
   params.Yf = new Uint8ClampedArray(W * H);
   params.Uf = new Uint8ClampedArray(w * h);
   params.Vf = new Uint8ClampedArray(w * h);
-  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, 1);
+  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, params.delta);
   params.RGBf = new ImageData(W, H);
   params.ERRf = new ImageData(W, H);
   const err2_f = convert_to_rgb(params.Yf, params.Uf, params.Vf, params.RGBf, params.ERRf);
@@ -214,151 +224,6 @@ function compute_everything(image) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function clamp(v, m, M) { return Math.max(m, Math.min(M, v)); }
-function clamp8(v) { return Math.max(0, Math.min(255, v)); }
-
-const GAMMA = 2.2;
-const GAMMA_INV = 1. / GAMMA;
-function to_linear(x) { return Math.floor(255. * Math.pow(x / 255., GAMMA)); }
-function from_linear(x) { return Math.floor(255. * Math.pow(x / 255., GAMMA_INV)); }
-
-function clamp_coord(x, y, w, h) {
-  x = clamp(x, 0, w - 1);
-  y = clamp(y, 0, h - 1);
-  return 4 * (x + y * w);
-}
-
-function to_rgb(y, u, v) {  // BT.601
-  const R = (19077 * y             + 26149 * v - (14234 << 8)) >> 14;
-  const G = (19077 * y -  6419 * u - 13320 * v +  (8708 << 8)) >> 14;
-  const B = (19077 * y + 33050 * u             - (17685 << 8)) >> 14;
-  return new Uint8ClampedArray([R, G, B]);
-}
-
-function filter_9331(a, b, c, d) {
-  return (9 * a + 3 * b + 3 * c + d) / 16;
-}
-
-function get_rgb(Yo, Uo, Vo, X, Y, W, H) {
-  X = clamp(X, 0, W - 1);
-  Y = clamp(Y, 0, H - 1);
-  const off = X + Y * W;
-  const luma = Yo[off];
-  const dX = (X & 1) ? 1 : -1;
-  const dY = (Y & 1) ? 1 : -1;
-  X = X >> 1;
-  Y = Y >> 1;
-  W = (W + 1) >> 1;
-  const OFF = X + Y * W;
-  const u0 = Uo[OFF], v0 = Vo[OFF];
-  if (!params.fancy_upscaler) {
-    return to_rgb(luma, u0, v0);
-  }
-  // compute the 'far' X/Y coordinates (Xf,Yf):
-  const Xf = clamp(X + dX, 0, W - 1);
-  const Yf = clamp(Y + dY, 0, H - 1);
-  // get nearby samples
-  const u1 = Uo[Xf + Y * W], u2 = Uo[X + Yf * W], u3 = Uo[Xf + Yf * W];
-  const v1 = Vo[Xf + Y * W], v2 = Vo[X + Yf * W], v3 = Vo[Xf + Yf * W];
-  // and apply the fancy upscaler:
-  const u = filter_9331(u0, u1, u2, u3);
-  const v = filter_9331(v0, v1, v2, v3);
-  return to_rgb(luma, u, v);
-}
-
-function convert_to_rgb(Y, U, V, RGB, ERR) {
-  let total_err = 0.
-  for (let y = 0; y < RGB.height; ++y) {
-    for (let x = 0; x < RGB.width; ++x) {
-      const rgb = get_rgb(Y, U, V, x, y, RGB.width, RGB.height);
-      const off = 4 * (x + y * params.W);
-      RGB.data[off + 0] = rgb[0];
-      RGB.data[off + 1] = rgb[1];
-      RGB.data[off + 2] = rgb[2];
-      RGB.data[off + 3] = 255;
-
-      const err = get_err(x, y, rgb);
-      total_err += err;
-      ERR.data[off + 0] = err;
-      ERR.data[off + 1] = err;
-      ERR.data[off + 2] = err;
-      ERR.data[off + 3] = 255;
-    }
-  }
-  return total_err / (RGB.width * RGB.height);
-}
-
-function get_err(x, y, rgb) {
-  const off = 4 * (x + y * params.W);
-  const er = params.RGB.data[off + 0] - rgb[0];
-  const eg = params.RGB.data[off + 1] - rgb[1];
-  const eb = params.RGB.data[off + 2] - rgb[2];
-  return er * er + eg * eg + eb * eb;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function to_y(r, g, b) {
-  return (+16839 * r + 33059 * g + 6420 * b + (16 << 16) + (1 << 15)) >> 16; // in [16, 235] range
-}
-
-function to_uv(r, g, b) {
-  const U = ( -9719 * r - 19081 * g + 28800 * b + (128 << 16) + (1 << 16)) >> 16;
-  const V = (+28800 * r - 24116 * g -  4684 * b + (128 << 16) + (1 << 16)) >> 16;
-  return [U, V];  // in [16,240] range
-}
-
-function to_yuv(r, g, b) {
-  const Y = to_y(r, g, b);
-  const [U, V] = to_uv(r, g, b);
-  return new Uint8ClampedArray([Y, U, V]);
-}
-
-function get_yuv(RGB, x, y, w, h) {
-  const off = clamp_coord(x, y, w, h);
-  return to_yuv(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
-}
-
-function get_y(RGB, x, y, w, h) {
-  const off = clamp_coord(x, y, w, h);
-  return to_y(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
-}
-
-function get_uv(RGB, x, y, w, h) {
-  const off = clamp_coord(x, y, w, h);
-  return to_uv(RGB[off + 0], RGB[off + 1], RGB[off + 2]);
-}
-
-function convert_to_yuv_fast(RGB, Yo, Uo, Vo, delta) {
-  for (let y = 0; y < params.H; ++y) {
-    for (let x = 0; x < params.W; ++x) {
-      Yo[x + y * params.W] = get_y(RGB, x, y, params.W, params.H);
-    }
-  }
-
-  const total = 4 * delta * delta;
-  const round = (total + 1) >> 1
-  for (let y = 0; y < params.h; ++y) {
-    for (let x = 0; x < params.w; ++x) {
-      let all_U = 0, all_V = 0;
-      for (let Y = -delta; Y < delta; ++Y) {
-        for (let X = -delta; X < delta; ++X) {
-          const yuv = get_yuv(RGB, 2 * x + X, 2 * y + Y, params.W, params.H);
-          all_U += yuv[1];
-          all_V += yuv[2];
-        }
-      }
-      all_U = Math.floor((all_U + round) / total);
-      all_V = Math.floor((all_V + round) / total);
-      const off = x + y * params.w;
-      Uo[off] = all_U;
-      Vo[off] = all_V;
-    }
-  }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
 const GUI_change = async () => { await render(); }
 const GUI_reload = async () => { await draw(); }
 
@@ -370,9 +235,12 @@ const GUI_init = () => {
   params.gui = new lil.GUI({container: document.querySelector("gui-container"), name: 'Sharp-YUV'});
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
   params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
+  params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
   params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_change);
   params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
-  params.gui.add(params, 'YUV_W', 64, 384, 16).name('zoom size').listen().onChange(GUI_change);
+  params.gui.add(params, 'YUV_W', 64, 384, 16).name('zoom size').listen().onChange(
+    () => { update_canvas_dimensions(); draw(); }
+  );
 
   params.gui.add(params, 'txt_info').name('info').listen().disable();
 
@@ -472,9 +340,9 @@ function draw() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function import_image(image) {
-  let Wo = params.Main_W, Ho = params.Main_H;
+  let Wo = params.Wo, Ho = params.Ho;
   let W = image.width, H = image.height;
-  console.log(`size in: ${W} x ${H} in canvas: ${Wo} x ${Ho}`);
+  console.log(`size in: ${W} x ${H} in max canvas: ${Wo} x ${Ho}`);
   if (W > Wo || H > Ho) {   // needs resizing?
     if (W * Ho > Wo * H) {
       H = Math.floor(H * Wo / W);
@@ -500,9 +368,7 @@ function import_image(image) {
   params.H = H;
   params.w = (W + 1) >>> 1;
   params.h = (H + 1) >>> 1;
-  params.POI = { x: (W >> 1) & ~1, y: (H >> 1) & ~1, };
-  params.zoom = 50;
-  params.YUV_W = (params.YUV_W + 1) & ~1;  // make sure it's even
+  params.POI = { x: (W >>> 1) & ~1, y: (H >>> 1) & ~1, };
 
   render();
 }
@@ -517,6 +383,7 @@ function set_image(src) {
 
 function render() {
   compute_everything();
+  update_canvas_dimensions();
   draw();
 }
 
