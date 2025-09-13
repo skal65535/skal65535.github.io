@@ -467,8 +467,14 @@ async function init_image() {
 
   const handle_wheel = (e) => {
     if (Math.abs(e.wheelDelta) > 3) {
-      params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 100);
-      draw();
+      if (e.shiftKey) {
+        params.YUV_W = clamp(params.YUV_W + (e.wheelDelta < 0 ? 16 : -16), 64, 384);
+        update_canvas_dimensions();
+        draw();
+      } else {
+        params.zoom = clamp(params.zoom + (e.wheelDelta < 0 ? 1 : -1), 1, 100);
+        draw();
+      }
     }
     e.preventDefault();
   };
