@@ -515,30 +515,33 @@ async function init_image() {
 
 function draw_arrows() {
   const svg = get_adjusted_svg_container('arrow-svg');
+  const options = {
+    color: '#fffa',
+    stroke: '#000f',
+    line_width: 4,
+    head_length: 20,
+    head_width: 14,
+    thickness: 5,
+    spike: 1.2,
+    drop_limit: 20,
+  }
 
   const src = get_element_rectangle('main-canvas');
   const [x, y, w, h] = params.get_box();
-  const x0 = Math.floor(src.x + x + w/2);
-  const y0 = Math.floor(src.y + y + h/2);
+  const [x0, y0] = [src.x + x + w / 2, src.y + y + h / 2];
 
   const dst = get_element_rectangle('ref-rgb');
-  const x1 = Math.floor(dst.x + dst.width);
-  const y1 = Math.floor(dst.y + dst.height / 2);
+  if (!is_inside_rectangle(x0, y0, dst)) {
+    const [x1, y1] = get_arrow_endpoint(x0, y0, null, null, dst, 1.1);
+    svg_draw_arrow(svg, 'line1', x0, y0, x1, y1, options);
+  }
 
   const yuv_dst = get_element_rectangle(params.show_sharp ? 'sharp-yuv' : 'fast-yuv');
-  const x2 = Math.floor(dst.x + dst.width / 2);
-  const y2 = Math.floor(dst.y + dst.height);
-  const x3 = Math.floor(yuv_dst.x + yuv_dst.width / 2);
+  let x2 = dst.x + dst.width / 2;
+  let y2 = dst.y + dst.height;
+  const x3 = Math.floor(yuv_dst.x + yuv_dst.width * .7);
   const y3 = Math.floor(yuv_dst.y + 10);
-
-  const options = {
-    color: '#fffa',
-    stroke: '#fffa',
-    line_width: 14,
-    head_length: 6,
-    head_width: 6,
-  }
-  svg_draw_arrow(svg, 'line1', x0, y0, x1, y1, options);
+  [x2, y2] = get_arrow_endpoint(x3, y3, x2, y2, src, 1.1);
   svg_draw_arrow(svg, 'line2', x2, y2, x3, y3, options);
 }
 
