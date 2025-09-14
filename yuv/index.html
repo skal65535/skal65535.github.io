@@ -357,7 +357,6 @@ function draw() {
     draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
   }
   draw_arrows();
-  show_table_row();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -458,12 +457,18 @@ async function init_image() {
   window.addEventListener('resize', draw);
   window.addEventListener('scroll', draw);
 
+  const mouse_move = (e, pos) => {
+    e.preventDefault();
+    params.set_POI(pos.clientX, pos.clientY);
+    draw();
+  };
   const canvas = document.getElementById('main-canvas');
   canvas.addEventListener('mousemove', (e) => {
     if (!e.buttons) return;
-    params.set_POI(e.x, e.y);
-    draw();
+    mouse_move(e, e);
   });
+  canvas.addEventListener('touchmove', (e) => mouse_move(e, e.touches[0]));
+  canvas.addEventListener('touchstart', (e) => mouse_move(e, e.touches[0]));
 
   const handle_wheel = (e) => {
     if (Math.abs(e.wheelDelta) > 3) {
@@ -502,6 +507,7 @@ async function init_image() {
     }
     e.preventDefault();
   });
+
   document.addEventListener('keyup', (e) => {
     if (e.key == ' ') {
       params.show_src = false;
@@ -520,6 +526,8 @@ async function init_image() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function draw_arrows() {
+  show_table_row();  // make sure *first* that the correct row is displayed
+
   const svg = get_adjusted_svg_container('arrow-svg');
   const options = {
     color: '#fffa',
