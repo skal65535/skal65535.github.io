@@ -34,17 +34,17 @@ skal/ (pascal.massimino@gmail.com) 2025
 .button:hover {
   background: #cce;
 }
-#gui {
- position: relative;
- top: -230px;
- right: -6px;
-}
 #arrow-svg {
   position: absolute;
   top: 0;
   left: 0;
   pointer-events: none;  /* pass-through clicks */
   z-index: 10;  /* on top */
+}
+.lil-gui {
+  --font-size: 15px;
+  --input-font-size: 15px;
+  --width: 40%;
 }
 </style>
 </head>
@@ -98,7 +98,7 @@ skal/ (pascal.massimino@gmail.com) 2025
   <input type="submit" value="skal 2025" id="skal-back" style='position:relative; left:1%;'/>
 </form>
 
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.20"></script>
 <script src="../common/args.js"></script>
 <script src="../common/utils.js"></script>
 <script src="./arrow.js"></script>
@@ -121,6 +121,7 @@ const params = {
   Ho: parse_arg('Ho', 512, 256, 1024),
   debug: parse_arg_bool('debug'),
   show_sharp: !parse_arg_bool('fast'),
+  no_gui: parse_arg_bool('no_gui'),
 
   // internal rendering state
   POI: {x: 0, y: 0},
@@ -249,10 +250,10 @@ const GUI_init = () => {
 
   params.gui.add(params, 'txt_info').name('info').listen().disable();
 
-  params.gui.domElement.style.top = '5%';
+  params.gui.domElement.style.top = '430px';
   params.gui.domElement.style.right = '3%';
 
-  // make_draggable('ref-rgb', draw);
+//   make_draggable('ref-rgb', draw);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -563,6 +564,7 @@ function draw_arrows() {
 
 async function main() {
   try {
+    if (parse_arg_bool('help')) arg_help();
     await init_image();
     GUI_init();
   } catch(e) { console.log(`Error: ${e};`); }

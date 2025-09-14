@@ -27,11 +27,17 @@ function parse_arg_bool(arg_value) {
 
 function arg_help() {
   let str = `URL params:\n`;
-  str += '\n== values ==\n';
-  for (const C of help.V) str += ` - ${C}\n`;
-  str += '\n== strings ==\n';
-  for (const C of help.S) str += ` - ${C}\n`;
-  str += '\n== bool flags ==\n';
-  for (const C of help.B) str += ` - ${C}\n`;
+  if (help.V.length > 0) {
+    str += '\n== values ==\n';
+    for (const C of help.V) str += ` - ${C}\n`;
+  }
+  if (help.S.length > 0) {
+    str += '\n== strings ==\n';
+    for (const C of help.S) str += ` - ${C}\n`;
+  }
+  if (help.B.length > 0) {
+    str += '\n== bool flags ==\n';
+    for (const C of help.B) str += ` - ${C}\n`;
+  }
   console.log(str);
 }
