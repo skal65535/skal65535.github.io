@@ -3,7 +3,7 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-function make_draggable(id, callback) {
+function make_draggable(id, callback = {}) {
   const elmt = document.getElementById(id);
   if (!elmt) return;
 

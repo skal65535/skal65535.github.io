@@ -1,5 +1,5 @@
 <!--
-Explanation page for Sharp-YUV algorithm.
+Demo page for Sharp-YUV algorithm.
 skal/ (pascal.massimino@gmail.com) 2025
  -->
 <!DOCTYPE html>
@@ -140,7 +140,6 @@ const params = {
   ERRs: undefined,   // RGB-sharp error
 
   gui: null,
-  txt_info: "info",
   dbg: { timing: false, },
 
   W: 0,
@@ -211,18 +210,25 @@ function compute_everything(image) {
   params.Yf = new Uint8ClampedArray(W * H);
   params.Uf = new Uint8ClampedArray(w * h);
   params.Vf = new Uint8ClampedArray(w * h);
-  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, params.delta);
   params.RGBf = new ImageData(W, H);
   params.ERRf = new ImageData(W, H);
-  const err2_f = convert_to_rgb(params.Yf, params.Uf, params.Vf, params.RGBf, params.ERRf);
-  params.psnr_f = PSNR(err2_f);
+
+  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, params.delta);
+
 
   params.Ys = new Uint8ClampedArray(W * H);
   params.Us = new Uint8ClampedArray(w * h);
   params.Vs = new Uint8ClampedArray(w * h);
-  convert_to_yuv_sharp(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
   params.RGBs = new ImageData(W, H);
   params.ERRs = new ImageData(W, H);
+  convert_to_yuv_sharp(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
+
+  convert_images_to_rgb();
+}
+
+function convert_images_to_rgb() {
+  const err2_f = convert_to_rgb(params.Yf, params.Uf, params.Vf, params.RGBf, params.ERRf);
+  params.psnr_f = PSNR(err2_f);
   const err2_s = convert_to_rgb(params.Ys, params.Us, params.Vs, params.RGBs, params.ERRs);
   params.psnr_s = PSNR(err2_s);
 }
@@ -231,6 +237,7 @@ function compute_everything(image) {
 
 const GUI_change = async () => { await render(); }
 const GUI_reload = async () => { await draw(); }
+const GUI_convert = async () => { convert_images_to_rgb(); draw(); }
 
 const GUI_init = () => {
   if (params.no_gui) {
@@ -242,15 +249,12 @@ const GUI_init = () => {
   params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
   params.gui.add(params, 'show_sharp').name('show sharpYUV').listen().onChange(GUI_reload);
-  params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_change);
+  params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_convert);
 //  params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
   params.gui.add(params, 'YUV_W', 64, 384, 16).name('source zoom level').listen().onChange(
     () => { update_canvas_dimensions(); draw(); }
   );
-
-  params.gui.add(params, 'txt_info').name('info').listen().disable();
-
-  params.gui.domElement.style.top = '430px';
+  params.gui.domElement.style.top = '40%';
 
 //   make_draggable('ref-rgb', draw);
 }
@@ -520,7 +524,7 @@ async function init_image() {
   });
 
 //  set_image("./SF.webp");
-  set_image("./test_yuv.png");
+  set_image("./x2.png");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
