@@ -108,8 +108,19 @@ skal/ (pascal.massimino@gmail.com) 2025
 <script>
 "use strict";
 
+const kImages = {
+  'chrome icon': { file: "Chrome_icon.png", POI: {x: 122, y: 222} },
+  'color': { file: "color.png", POI: {x: 213, y: 114} },
+  'dithered': { file: "d3.png", POI: {x: 229, y: 240} },
+  'blue text': { file: "difficult_blue.png", POI: {x: 61, y: 38} },
+  'graff': { file: "test_yuv.png", POI: {x: 129, y: 71} },
+  'anime-1': { file: "x1.png", POI: {x: 82, y: 381} },
+  'anime-2': { file: "x2.png", POI: {x: 369, y: 223} },
+};
+
 const params = {
   // user-controlled params
+  image_name: Object.keys(kImages)[parse_arg('image', 0, 0, Object.keys(kImages).length - 1)],
   iters: parse_arg('iters', 6, 1, 10),
   zoom: parse_arg('zoom', 50, 1, 100),
   fancy_upscaler: !parse_arg_bool('no_fancy'),
@@ -244,7 +255,10 @@ const GUI_init = () => {
     params.gui = undefined;
     return;
   }
+
   params.gui = new lil.GUI({container: document.querySelector("gui-container"), name: 'Sharp-YUV'});
+  params.gui.add(params, 'image_name', Object.keys(kImages)).name('source image').listen()
+    .onChange(() => { set_local_image(kImages[params.image_name]); render(); });
   params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
   params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
@@ -365,7 +379,7 @@ function draw() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function import_image(image) {
+function import_image(image, POI = null) {
   let Wo = params.Wo, Ho = params.Ho;
   let W = image.width, H = image.height;
   console.log(`size in: ${W} x ${H} in max canvas: ${Wo} x ${Ho}`);
@@ -407,15 +421,19 @@ function import_image(image) {
   params.H = H;
   params.w = (W + 1) >>> 1;
   params.h = (H + 1) >>> 1;
-  params.POI = { x: (W >>> 1) & ~1, y: (H >>> 1) & ~1, };
+  params.POI = (POI != null) ? POI : { x: (W >>> 1) & ~1, y: (H >>> 1) & ~1, };
 
   render();
 }
 
-function set_image(src) {
+function set_local_image(image) {
+  set_image(`./img/${image.file}`, image.POI);
+}
+
+function set_image(src, POI = null) {
   let image = new Image();
   image.onload = function() {
-    import_image(image);
+    import_image(image, POI);
   };
   image.src = src;
 }
@@ -524,7 +542,7 @@ async function init_image() {
   });
 
 //  set_image("./SF.webp");
-  set_image("./x2.png");
+  set_local_image(kImages[params.image_name]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
