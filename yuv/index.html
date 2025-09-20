@@ -366,32 +366,40 @@ function draw_text(ctx, text, x, y, line_width = 4) {
   }
 }
 
-function draw_to(dst_name, src_data, x, y, w, h, text, is_img = false) {
-  const off_canvas = document.createElement('canvas');
-  off_canvas.width = src_data.width;
-  off_canvas.height = src_data.height;
-  const off_ctx = off_canvas.getContext("2d");
-  if (is_img) {
-    off_ctx.drawImage(src_data, 0, 0);
-  } else {
-    off_ctx.putImageData(src_data, 0, 0);
-  }
+function draw_image_into(dst_name, img) {
+  const dst = document.getElementById(dst_name);
+  const dst_ctx = dst.getContext("2d");
+  dst_ctx.fillStyle = '#000';
+  dst_ctx.fillRect(0, 0, dst.width, dst.height);
+  dst_ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, dst.width, dst.height);
+}
 
+function draw_to(dst_name, src_data, x, y, w, h, text) {
   const dst = document.getElementById(dst_name);
   const dst_ctx = dst.getContext("2d");
   dst_ctx.clearRect(0, 0, dst.width, dst.height);
-  dst_ctx.drawImage(off_canvas, x, y, w, h, 0, 0, dst.width, dst.height);
+
+  const off_canvas = document.createElement('canvas');
+  off_canvas.width = w;
+  off_canvas.height = h;
+  const off_ctx = off_canvas.getContext("2d");
+  off_ctx.putImageData(src_data, -x, -y, x, y, w, h);
+  dst_ctx.drawImage(off_canvas, 0, 0, w, h, 0, 0, dst.width, dst.height);
+
   draw_text(dst_ctx, text, 4, 20, 4);
 }
+
 
 function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
   const dst = document.getElementById(dst_name);
   const dst_ctx = dst.getContext("2d");
   const y_dst = dst_ctx.getImageData(Xo, Yo, Wo, Ho);
+  const scale_y = h / Ho;
+  const scale_x = w / Wo;
   for (let y = 0; y < Ho; ++y) {
-    const yy = Math.min(yo + Math.floor(y * h / Ho), params.H - 1);
+    const yy = Math.min(yo + Math.floor(y * scale_y), params.H - 1);
     for (let x = 0; x < Wo; ++x) {
-      const xx = Math.min(xo + Math.floor(x * w / Wo), params.W - 1);
+      const xx = Math.min(xo + Math.floor(x * scale_x), params.W - 1);
       const v = data[xx + yy * stride];
       const off = (x + y * Wo) * 4;
       y_dst.data[off + 0] = v;
@@ -466,7 +474,7 @@ function import_image(image, POI = null) {
   ctx.imageSmoothingQuality = "high";
 
   // save the definitive RGB source for later
-  draw_to('main-canvas', image, 0, 0, image.width, image.height, undefined, true);
+  draw_image_into('main-canvas', image);
   params.RGB = ctx.getImageData(0, 0, W, H);
 
   // debug
