@@ -41,6 +41,18 @@ skal/ (pascal.massimino@gmail.com) 2025
   pointer-events: none;  /* pass-through clicks */
   z-index: 10;  /* on top */
 }
+#popup-rgb {
+    position: absolute;
+    display: none;
+    background-color: #333;
+    color: white;
+    padding: 10px;
+    border-radius: 5px;
+    font-family: Arial, sans-serif;
+    z-index: 1000;
+    pointer-events: none; /* Prevents the box from blocking mouse events */
+}
+
 .lil-gui {
   --font-size: 15px;
   --input-font-size: 15px;
@@ -58,10 +70,6 @@ skal/ (pascal.massimino@gmail.com) 2025
     <font size='-1'>
     Drag and drop image on the canvas below.
     Or <label class='button' for="FileElmt">select an image</label>.<br/>
-    Mouse-click will move the zoom area. Mouse-Wheel will change the zoom level<br/>
-    Canvas key: <code>s</code> toggle sharp-YUV / fast-YUV. <code>f</code> to toggle fancy upscaler. <code>space</code>
-    to show the source in reconstructed RGB.<br/>
-    </font>
   </div>
   <hr>
 
@@ -92,6 +100,21 @@ skal/ (pascal.massimino@gmail.com) 2025
         <td valign='top'><canvas id="sharp-err" width='256px' height='256px' style='left:-2px;'></canvas></td>
       </tr>
     </table>
+    <div id="popup-rgb">
+      <span id="rgb-value"></span>
+    </div>
+    <font size='-1'>
+    Mouse-click will move the zoom area.<br/>
+    Mouse-Wheel will change the zoom level<br/>
+    Canvas key:
+    <ul>
+      <li><code>s</code> toggle sharp-YUV / fast-YUV</li>
+      <li><code>f</code> to toggle fancy upscaler</li>
+      <li><code>r</code> to toggle between reference implementation and the new one</li>
+      <li><code>space</code> to show the source in reconstructed RGB</li>
+    </ul>
+    <br/>
+    </font>
   </div>
 </div>
 <form action="https://skal65535.github.io/" >
@@ -110,6 +133,7 @@ skal/ (pascal.massimino@gmail.com) 2025
 
 const kImages = {
   'chrome icon': { file: "Chrome_icon.png", POI: {x: 122, y: 222} },
+  'Netflix logo': { file: "Logonetflix.png", POI: {x: 250, y: 30} },
   'color': { file: "color.png", POI: {x: 213, y: 114} },
   'dithered': { file: "d3.png", POI: {x: 229, y: 240} },
   'blue text': { file: "difficult_blue.png", POI: {x: 61, y: 38} },
@@ -124,9 +148,10 @@ const params = {
   iters: parse_arg('iters', 6, 1, 10),
   zoom: parse_arg('zoom', 50, 1, 100),
   fancy_upscaler: !parse_arg_bool('no_fancy'),
+  ref_impl: !parse_arg_bool('new'),
   delta: parse_arg('delta', 1, 1, 8),
   gamma_aware: !parse_arg_bool('no_gamma'),
-  YUV_W: parse_arg('size', 128, 64, 384),
+  YUV_W: parse_arg('size', 256, 64, 512),
   // max dimension for the input image (resized to fit)
   Wo: parse_arg('Wo', 512, 256, 1024),
   Ho: parse_arg('Ho', 512, 256, 1024),
@@ -226,13 +251,16 @@ function compute_everything(image) {
 
   convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, params.delta);
 
-
   params.Ys = new Uint8ClampedArray(W * H);
   params.Us = new Uint8ClampedArray(w * h);
   params.Vs = new Uint8ClampedArray(w * h);
   params.RGBs = new ImageData(W, H);
   params.ERRs = new ImageData(W, H);
-  convert_to_yuv_sharp(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
+  if (params.ref_impl) {
+    convert_to_yuv_sharp_ref(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
+  } else {
+    convert_to_yuv_sharp(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
+  }
 
   convert_images_to_rgb();
 }
@@ -262,10 +290,11 @@ const GUI_init = () => {
   params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
   params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
   params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
+  params.gui.add(params, 'ref_impl').name('use ref. implementation').listen().onChange(GUI_change);
   params.gui.add(params, 'show_sharp').name('show sharpYUV').listen().onChange(GUI_reload);
   params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_convert);
 //  params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
-  params.gui.add(params, 'YUV_W', 64, 384, 16).name('source zoom level').listen().onChange(
+  params.gui.add(params, 'YUV_W', 64, 512, 16).name('source zoom level').listen().onChange(
     () => { update_canvas_dimensions(); draw(); }
   );
   params.gui.domElement.style.top = '40%';
@@ -341,7 +370,22 @@ function show_table_row() {
 function draw() {
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d");
-  ctx.putImageData(params.RGB, 0, 0)
+
+  if (!params.show_src) {
+    ctx.putImageData(params.RGB, 0, 0);
+  } else {
+    if (params.show_sharp) {
+      ctx.putImageData(params.RGBs, 0, 0);
+    } else {
+      ctx.putImageData(params.RGBf, 0, 0);
+    }
+  }
+  ctx.fillStyle = "#eee";
+  if (!params.show_src) {
+    ctx.fillText("Source", 10, 20);
+  } else {
+    ctx.fillText("Conversion", 10, 20);
+  }
 
   const [x, y, w, h] = params.get_box();
   ctx.lineWidth = 3;
@@ -372,7 +416,7 @@ function draw() {
     draw_to('sharp-rgb', params.RGB, x, y, w, h, "source");
   } else {
     draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
-    draw_to('sharp-rgb', params.RGBs, x, y, w, h, "sharp");
+    draw_to('sharp-rgb', params.RGBs, x, y, w, h, params.ref_impl ? "sharp (ref.)" : "sharp");
   }
   draw_arrows();
 }
@@ -495,7 +539,7 @@ async function init_image() {
   const handle_wheel = (e) => {
     if (Math.abs(e.wheelDelta) > 3) {
       if (e.shiftKey) {
-        params.YUV_W = clamp(params.YUV_W + (e.wheelDelta < 0 ? 16 : -16), 64, 384);
+        params.YUV_W = clamp(params.YUV_W + (e.wheelDelta > 0 ? 16 : -16), 64, 512);
         update_canvas_dimensions();
         draw();
       } else {
@@ -506,11 +550,57 @@ async function init_image() {
     e.preventDefault();
   };
 
+  function display_popup(e, text) {
+    const popup = document.getElementById('popup-rgb');
+    const W = popup.offsetWidth, H = popup.offsetHeight;
+    const x = Math.min(event.clientX + 20 + W, window.innerWidth) - W;
+    const y = Math.min(event.clientY + 20 + H, window.innerHeight) - H;
+    popup.style.left = `${x}px`;
+    popup.style.top = `${y}px`;
+    popup.style.display = 'block';
+    document.getElementById('rgb-value').textContent = text;
+  }
+
+  function get_coords(e) {
+    const elmt = e.target;
+    const rect = elmt.getBoundingClientRect();
+    const x = Math.floor(e.clientX - rect.left);
+    const y = Math.floor(e.clientY - rect.top);
+    const ctx = elmt.getContext('2d');
+    const rgb = ctx.getImageData(x, y, 1, 1).data;
+    return [elmt, x, y, rgb];
+  }
+
+  const show_pixel_values = (e) => {
+    const [elmt, x, y, rgb] = get_coords(e);
+    const text = `RGB(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+    display_popup(e, text);
+  }
+  const show_yuv_values = (e) => {
+    const [elmt, x, y, rgb] = get_coords(e);
+    const text = (y < params.YUV_W)     ? `Y(${rgb[0]})` :
+                 (x < params.YUV_W / 2) ? `U(${rgb[0]})` :
+                                          `V(${rgb[0]})`;
+    display_popup(e, text);
+  }
+  const hide_popup = (e) => {
+    const popup = document.getElementById('popup-rgb');
+    popup.style.display = 'none';
+  }
+
   for (const id of ['main-canvas', 'fast-rgb', 'fast-err', 'sharp-rgb', 'sharp-err']) {
     const elmt = document.getElementById(id);
     elmt.addEventListener('wheel', handle_wheel);
+    elmt.addEventListener('mousemove', show_pixel_values);
+    elmt.addEventListener('mouseenter', show_pixel_values);
+    elmt.addEventListener('mouseleave', hide_popup);
   }
-
+  for (const id of ['fast-yuv', 'sharp-yuv']) {
+    const elmt = document.getElementById(id);
+    elmt.addEventListener('mousemove', show_yuv_values);
+    elmt.addEventListener('mouseenter', show_yuv_values);
+    elmt.addEventListener('mouseleave', hide_popup);
+  }
   document.addEventListener('keydown', (e) => {
     if (e.key == ' ') {
       params.show_src = true;
@@ -524,6 +614,9 @@ async function init_image() {
     } else if (e.key == 's') {
       params.show_sharp = !params.show_sharp;
       show_table_row();
+    } else if (e.key == 'r') {
+      params.ref_impl = !params.ref_impl;
+      render();
     } else {
       return;
     }

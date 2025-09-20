@@ -9,7 +9,7 @@ function clamp8(v) { return Math.max(0, Math.min(255, v)); }
 const GAMMA = 1.2;
 const GAMMA_INV = 1. / GAMMA;
 function to_linear(x) { return 255. * Math.pow(x / 255., GAMMA); }
-function from_linear(x) { return 255. * Math.pow(x / 255., GAMMA_INV); }
+function to_gamma(x) { return 255. * Math.pow(x / 255., GAMMA_INV); }
 
 function clamp_coord(x, y, w, h) {
   x = clamp(x, 0, w - 1);
@@ -29,6 +29,11 @@ function to_rgb(y, u, v) {  // BT.601
 
 function filter_9331(a, b, c, d) {
   return (9 * a + 3 * b + 3 * c + d) / 16;
+}
+
+function filter_rgbW(a, b, c, d, W) {
+  let v = filter_9331(a, b, c, d);
+  return clamp8(v + W);  // clipping is important!!
 }
 
 function get_rgb(Yo, Uo, Vo, X, Y, W, H) {
@@ -65,7 +70,7 @@ function get_rgb(Yo, Uo, Vo, X, Y, W, H) {
 // mean squared error
 function mse(err) { return err[0] * err[0] + err[1] * err[1] + err[2] * err[2]; }
 // for visual display, emphasis on small errors
-function map_err(v) { return clamp8(Math.floor(Math.pow(v / 255., .4) * 255.)); }
+function map_err(v) { return clamp8(Math.floor(Math.pow(Math.abs(v) / 255., .4) * 255.)); }
 
 function convert_to_rgb(Y, U, V, RGB, ERR) {
   let total_err = 0.
@@ -287,6 +292,191 @@ function convert_to_yuv_sharp(RGB, Y, U, V, W, H, iters) {
   for (let iter = 0; iter < iters; ++iter) {
     converge_sharp(Y, U, V, RGB, W, H);
   }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// original Sharp-YUV algo
+
+function to_gray(r, g, b) {
+  return (13933 * r + 46871 * g + 4732 * b + (1 << 15)) >> 16;
+}
+
+class WRGB {
+  constructor(W, H, with_tmp_buffer = true) {
+    this.W = W;
+    this.H = H;
+    this.Wr = (W + 1) & ~1;  // rounded up
+    this.Hr = (H + 1) & ~1;
+    this.w = this.Wr >>> 1;
+    this.h = this.Hr >>> 1;
+    this.dRGB = new Int16Array(3 * this.w * this.h);
+    this.Wl = new Int16Array(this.Wr * this.Hr);
+    if (with_tmp_buffer) {
+      // tmp buffers for transient RGB values (imported or computed)
+      // In there, we store R, then G, then B sequentially, not interleaved.
+      this.rgb1 = new Int16Array(3 * this.Wr);
+      this.rgb2 = new Int16Array(3 * this.Wr);
+      this.scratch = new Int16Array(Math.max(this.w * 3, this.Wr));
+    }
+  }
+
+  import_rgb_row(RGB, dst) {
+    for (let i = 0; i < this.W; ++i) {
+      dst[i + 0 * this.Wr] = RGB[4 * i + 0];
+      dst[i + 1 * this.Wr] = RGB[4 * i + 1];
+      dst[i + 2 * this.Wr] = RGB[4 * i + 2];
+    }
+    if (this.W & 1) {  // replicate last pixel
+      dst[this.W + 0 * this.Wr] = dst[this.W - 1 + 0 * this.Wr];
+      dst[this.W + 1 * this.Wr] = dst[this.W - 1 + 1 * this.Wr];
+      dst[this.W + 2 * this.Wr] = dst[this.W - 1 + 2 * this.Wr];
+    }
+  }
+
+  rgb_to_Wl(rgb, dst) {
+    for (let i = 0; i < this.Wr; ++i) {
+      const r = to_linear(rgb[i + 0 * this.Wr]);
+      const g = to_linear(rgb[i + 1 * this.Wr]);
+      const b = to_linear(rgb[i + 2 * this.Wr]);
+      dst[i] = to_gamma(to_gray(r, g, b));
+    }
+  }
+
+  scale_down(rgb1, rgb2, off) {
+    const a = to_linear(rgb1[off + 0]), b = to_linear(rgb1[off + 1]);
+    const c = to_linear(rgb2[off + 0]), d = to_linear(rgb2[off + 1]);
+    return to_gamma((a + b + c + d + 2) >> 2);
+  }
+
+  rgb_to_dRGB(rgb1, rgb2, dst) {
+    for (let i = 0; i < this.w; ++i) {
+      const r = this.scale_down(rgb1, rgb2, 2 * i + 0 * this.Wr);
+      const g = this.scale_down(rgb1, rgb2, 2 * i + 1 * this.Wr);
+      const b = this.scale_down(rgb1, rgb2, 2 * i + 2 * this.Wr);
+      const wl = to_gray(r, g, b);
+      dst[i + 0 * this.w] = r - wl;
+      dst[i + 1 * this.w] = g - wl;
+      dst[i + 2 * this.w] = b - wl;
+    }
+  }
+
+  interpolate_two_rows(j) {
+    const jj = j >> 1;
+    const jm = Math.max(jj - 1, 0);
+    const jM = Math.min(jj + 1, this.h - 1)
+    let off = j * this.Wr;
+    for (let N = 0; N < 3; ++N) {
+      const drgb1 = this.dRGB.subarray((3 * jm + N) * this.w);
+      const drgb2 = this.dRGB.subarray((3 * jj + N) * this.w);
+      const drgb3 = this.dRGB.subarray((3 * jM + N) * this.w);
+      const Wl1 = this.Wl.subarray(off + 0 * this.Wr);
+      const Wl2 = this.Wl.subarray(off + 1 * this.Wr);
+      const rgb1 = this.rgb1.subarray(N * this.Wr);
+      const rgb2 = this.rgb2.subarray(N * this.Wr);
+      rgb1[0] = filter_rgbW(drgb1[0], drgb1[0], drgb2[0], drgb2[0], Wl1[0]);
+      rgb2[0] = filter_rgbW(drgb2[0], drgb2[0], drgb3[0], drgb3[0], Wl2[0]);
+      for (let i = 1; i < this.w; ++i) {
+        rgb1[2 * i - 1] = filter_rgbW(drgb2[i - 1], drgb2[i + 0], drgb1[i - 1], drgb1[i + 0], Wl1[2 * i - 1]);
+        rgb1[2 * i + 0] = filter_rgbW(drgb2[i + 0], drgb2[i - 1], drgb1[i + 0], drgb1[i - 1], Wl1[2 * i + 0]);
+        rgb2[2 * i - 1] = filter_rgbW(drgb2[i - 1], drgb2[i + 0], drgb3[i - 1], drgb3[i + 0], Wl2[2 * i - 1]);
+        rgb2[2 * i + 0] = filter_rgbW(drgb2[i + 0], drgb2[i - 1], drgb3[i + 0], drgb3[i - 1], Wl2[2 * i + 0]);
+      }
+      if (!(this.W & 1)) {
+        rgb1[this.W - 1] = filter_rgbW(drgb2[this.w - 1], drgb2[this.w - 1], drgb1[this.w - 1], drgb1[this.w - 1], Wl1[this.W - 1]);
+        rgb2[this.W - 1] = filter_rgbW(drgb2[this.w - 1], drgb2[this.w - 1], drgb3[this.w - 1], drgb3[this.w - 1], Wl2[this.W - 1]);
+      }
+    }
+  }
+
+  converge_Wl(target, j, tmp_Wl) {
+    let sum_diff = 0.;
+    const off = j * this.Wr;
+    for (let i = 0; i < this.Wr; ++i) {
+      const diff = target.Wl[off + i] - tmp_Wl[i];
+      sum_diff += Math.abs(diff);
+      this.Wl[off + i] = clamp8(this.Wl[off + i] + diff);
+    }
+    return sum_diff;
+  }
+  converge_dRGB(target, j, tmp_dRGB) {
+    const off = 3 * j * this.w;
+    for (let i = 0; i < 3 * this.w; ++i) {
+      const diff = target.dRGB[off + i] - tmp_dRGB[i];
+      this.dRGB[off + i] = this.dRGB[off + i] + diff;
+    }
+  }
+
+  import(RGB) {
+    for (let j = 0; j < this.H; j += 2) {
+      const J = Math.min(j + 1, this.H);
+      this.import_rgb_row(RGB.subarray(j * 4 * this.W), this.rgb1);
+      this.import_rgb_row(RGB.subarray(J * 4 * this.W), this.rgb2);
+      // import Wl
+      this.rgb_to_Wl(this.rgb1, this.Wl.subarray((j + 0) * this.Wr));
+      this.rgb_to_Wl(this.rgb2, this.Wl.subarray((j + 1) * this.Wr));
+      // import delta R/G/B
+      this.rgb_to_dRGB(this.rgb1, this.rgb2, this.dRGB.subarray((j >> 1) * 3 * this.w));
+    }
+  }
+
+  export_to(Y, U, V) {
+    for (let j = 0; j < this.H; ++j) {
+      for (let i = 0; i < this.W; ++i) {
+        const wl = this.Wl[j * this.Wr + i];
+        const off = (i >>> 1) + (j >>> 1) * 3 * this.w;
+        const r = this.dRGB[off + 0 * this.w] + wl;
+        const g = this.dRGB[off + 1 * this.w] + wl;
+        const b = this.dRGB[off + 2 * this.w] + wl;
+        Y[j * this.W + i] = to_y(r, g, b);  // clamp to [16, 240] ?
+      }
+    }
+    for (let j = 0; j < this.h; ++j) {
+      for (let i = 0; i < this.w; ++i) {
+        const off = i + j * 3 * this.w;
+        const r = this.dRGB[off + 0 * this.w];
+        const g = this.dRGB[off + 1 * this.w];
+        const b = this.dRGB[off + 2 * this.w];
+        const uv = to_uv(r, g, b);
+        U[i + j * this.w] = uv[0];  // clamp to [16, 235] ?
+        V[i + j * this.w] = uv[1];
+      }
+    }
+  }
+
+  copy_from(src) {
+    this.dRGB.set(src.dRGB);
+    this.Wl.set(src.Wl);
+  }
+};
+
+function one_iteration(target, cur) {
+  let diff = 0.;
+  for (let j = 0; j < cur.Hr; j += 2) {
+    cur.interpolate_two_rows(j);  // -> cur.rgb1[] and cur.rgb2[] filled
+    cur.rgb_to_Wl(cur.rgb1, cur.scratch);
+    diff += cur.converge_Wl(target, j + 0, cur.scratch);
+    cur.rgb_to_Wl(cur.rgb2, cur.scratch);
+    diff += cur.converge_Wl(target, j + 1, cur.scratch);
+
+    cur.rgb_to_dRGB(cur.rgb1, cur.rgb2, cur.scratch);
+    cur.converge_dRGB(target, j >> 1, cur.scratch);
+  }
+  return diff / (cur.Wr * cur.Hr);
+}
+
+function convert_to_yuv_sharp_ref(RGB, Y, U, V, W, H, iters) {
+  let cur = new WRGB(W, H, true);
+  cur.import(RGB);
+  let target = new WRGB(W, H, false);
+  target.copy_from(cur);
+  let prev_diff = 1e38;
+  for (let iter = 0; iter < iters; ++iter) {
+    const diff = one_iteration(target, cur);
+    console.log(`#${iter}: ${diff}`);
+    if (diff < .4 || diff > prev_diff) break;
+    prev_diff = diff;
+  }
+  cur.export_to(Y, U, V);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
