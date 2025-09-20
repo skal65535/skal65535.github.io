@@ -489,7 +489,7 @@ class qrcode {
     this._errorCorrectLevel = QRErrorCorrectLevel[errorCorrectLevel];
     this._moduleCount = typeNumber * 4 + 17;
     this._modules = null;
-  };
+  }
 
   MakeData(data, test, pattern_id, onlyControl) {
     this._modules = new Array(this._moduleCount);
