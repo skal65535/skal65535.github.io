@@ -87,17 +87,11 @@ skal/ (pascal.massimino@gmail.com) 2025
         <th></th>
         <th>Y/U/V</th><th>reconstructed RGB</th><th>error map</th>
       </tr>
-      <tr id='tr1'>
-        <td style='writing-mode: sideways-rl;'>Regular</td>
-        <td valign='top'><canvas id="fast-yuv" width='256px' height='384px'></canvas></td>
-        <td valign='top'><canvas id="fast-rgb" width='256px' height='256px'></canvas></td>
-        <td valign='top'><canvas id="fast-err" width='256px' height='256px'></canvas></td>
-      </tr>
-      <tr id='tr2'>
-        <td style='writing-mode: sideways-rl;'>Sharp YUV</td>
-        <td valign='top'><canvas id="sharp-yuv" width='256px' height='384px' style='left:-2px;'></canvas></td>
-        <td valign='top'><canvas id="sharp-rgb" width='256px' height='256px' style='left:-2px;'></canvas></td>
-        <td valign='top'><canvas id="sharp-err" width='256px' height='256px' style='left:-2px;'></canvas></td>
+      <tr id='tr'>
+        <td id='what' style='writing-mode: sideways-rl;'>Regular</td>
+        <td valign='top'><canvas id="yuv" width='256px' height='384px'></canvas></td>
+        <td valign='top'><canvas id="rgb" width='256px' height='256px'></canvas></td>
+        <td valign='top'><canvas id="err" width='256px' height='256px'></canvas></td>
       </tr>
     </table>
     <div id="popup-rgb">
@@ -108,9 +102,9 @@ skal/ (pascal.massimino@gmail.com) 2025
     Mouse-Wheel will change the zoom level<br/>
     Canvas key:
     <ul>
-      <li><code>s</code> toggle sharp-YUV / fast-YUV</li>
+      <li><code>1/2/3</code> display RGB for fast / reference /new sharp-YUV algo</li>
       <li><code>f</code> to toggle fancy upscaler</li>
-      <li><code>r</code> to toggle between reference implementation and the new one</li>
+      <li><code>g</code> to toggle gamma correction</li>
       <li><code>space</code> to show the source in reconstructed RGB</li>
     </ul>
     <br/>
@@ -142,15 +136,61 @@ const kImages = {
   'anime-2': { file: "x2.png", POI: {x: 369, y: 223} },
 };
 
+const kAlgoNames = ["Fast", "WebP ref.", "New"];
+function AlgoId(name) {
+  return Math.max(kAlgoNames.indexOf(name), 0);
+}
+
+class AlgoOutput {
+  constructor(algo) {
+    this.Y = new Uint8ClampedArray(params.W * params.H);
+    this.U = new Uint8ClampedArray(params.w * params.h);
+    this.V = new Uint8ClampedArray(params.w * params.h);
+    this.RGB = new ImageData(params.W, params.H);
+    this.ERR = new ImageData(params.W, params.H);
+    this.psnr = 99.;
+    this.draw(kAlgoNames[algo]);
+  }
+  draw(algo) {
+    if (algo == kAlgoNames[0]) {
+      convert_to_yuv_fast(params.RGB.data, this.Y, this.U, this.V, params.delta);
+    } else if (algo == kAlgoNames[1]) {
+      convert_to_yuv_sharp_ref(params.RGB.data, this.Y, this.U, this.V, params.W, params.H, params.iters);
+    } else {
+      convert_to_yuv_sharp(params.RGB.data, this.Y, this.U, this.V, params.W, params.H, params.iters);
+    }
+  }
+  to_rgb() {
+    const err2 = convert_to_rgb(this.Y, this.U, this.V, this.RGB, this.ERR);
+    this.psnr = PSNR(err2);
+  }
+  render(x, y, w, h) {
+    const S = params.YUV_W;
+    const s = (S + 1) >> 1;
+
+    draw_yuv('yuv', this.Y, params.W, x, y, w, h,  0, 0, S, S, "Y");
+    draw_yuv('yuv', this.U, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
+    draw_yuv('yuv', this.V, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
+    draw_to('err', this.ERR, x, y, w, h, `PSNR: ${this.psnr} dB`);
+    if (params.show_src) {
+      draw_to('rgb', params.RGB, x, y, w, h, "source");
+    } else {
+      draw_to('rgb', this.RGB, x, y, w, h, params.algo);
+    }
+  }
+}
+
 const params = {
   // user-controlled params
   image_name: Object.keys(kImages)[parse_arg('image', 0, 0, Object.keys(kImages).length - 1)],
-  iters: parse_arg('iters', 6, 1, 10),
+  iters: parse_arg('iters', 6, 1, 8),
   zoom: parse_arg('zoom', 50, 1, 100),
   fancy_upscaler: !parse_arg_bool('no_fancy'),
-  ref_impl: !parse_arg_bool('new'),
+  algo: kAlgoNames[parse_arg('algo', 2, 0, 2)],
   delta: parse_arg('delta', 1, 1, 8),
   gamma_aware: !parse_arg_bool('no_gamma'),
+  gamma: parse_arg('gamma', 1.2, 0.25, 4.),
+  exit_threshold: parse_arg('exit', .3, 0.0, 0.5),
   YUV_W: parse_arg('size', 256, 64, 512),
   // max dimension for the input image (resized to fit)
   Wo: parse_arg('Wo', 512, 256, 1024),
@@ -164,24 +204,34 @@ const params = {
   show_src: false,
 
   RGB: undefined,  // reference input
-  Yf: undefined,   // Y-fast internal
-  Uf: undefined,   // U-fast internal
-  Vf: undefined,   // V-fast internal
+
+  // different algo rendition
+  out: [null, null, null],
+
   Ys: undefined,   // Y-sharp internal
   Us: undefined,   // U-sharp internal
   Vs: undefined,   // V-sharp internal
-  RGBf: undefined,   // RGB-fast output
   RGBs: undefined,   // RGB-sharp output
-  ERRf: undefined,   // RGB-fast error
   ERRs: undefined,   // RGB-sharp error
 
+  Yn: undefined,   // Y-sharp internal
+  Un: undefined,   // U-sharp internal
+  Vn: undefined,   // V-sharp internal
+  RGBn: undefined,   // RGB-new-sharp output
+  ERRn: undefined,   // RGB-new-sharp error
+
+  // gamma look-up tables
+  gLUT: null,
+  gLUT_inv: null,
+
   gui: null,
-  dbg: { timing: false, },
 
   W: 0,
   H: 0,
   w: 0,
   h: 0,
+  Wr: 0,
+  Hr: 0,
 
   set_POI: (x, y) => {
     const canvas = document.querySelector("#main-canvas");
@@ -230,46 +280,47 @@ function update_canvas_dimensions() {
 
   set_size('ref-rgb');
 
-  set_yuv_size('fast-yuv');
-  set_size('fast-rgb');
-  set_size('fast-err');
-
-  set_yuv_size('sharp-yuv');
-  set_size('sharp-rgb');
-  set_size('sharp-err');
+  set_yuv_size('yuv');
+  set_size('rgb');
+  set_size('err');
 }
 
 function compute_everything(image) {
-  const W = params.W, H = params.H;
-  const w = params.w, h = params.h;
+  compute_gamma_LUT();
 
-  params.Yf = new Uint8ClampedArray(W * H);
-  params.Uf = new Uint8ClampedArray(w * h);
-  params.Vf = new Uint8ClampedArray(w * h);
-  params.RGBf = new ImageData(W, H);
-  params.ERRf = new ImageData(W, H);
-
-  convert_to_yuv_fast(params.RGB.data, params.Yf, params.Uf, params.Vf, params.delta);
-
-  params.Ys = new Uint8ClampedArray(W * H);
-  params.Us = new Uint8ClampedArray(w * h);
-  params.Vs = new Uint8ClampedArray(w * h);
-  params.RGBs = new ImageData(W, H);
-  params.ERRs = new ImageData(W, H);
-  if (params.ref_impl) {
-    convert_to_yuv_sharp_ref(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
-  } else {
-    convert_to_yuv_sharp(params.RGB.data, params.Ys, params.Us, params.Vs, W, H, params.iters);
-  }
+  params.out[0] = new AlgoOutput(0);
+  params.out[1] = new AlgoOutput(1);
+  params.out[2] = new AlgoOutput(2);
 
   convert_images_to_rgb();
 }
 
 function convert_images_to_rgb() {
-  const err2_f = convert_to_rgb(params.Yf, params.Uf, params.Vf, params.RGBf, params.ERRf);
-  params.psnr_f = PSNR(err2_f);
-  const err2_s = convert_to_rgb(params.Ys, params.Us, params.Vs, params.RGBs, params.ERRs);
-  params.psnr_s = PSNR(err2_s);
+  params.out[0].to_rgb();
+  params.out[1].to_rgb();
+  params.out[2].to_rgb();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function compute_gamma_LUT() {
+  const gamma = params.gamma_aware ? params.gamma : 1.;
+
+  const GPRECISION = 16;
+  const NORM = 256 * GPRECISION;
+  params.gLUT = new Float32Array(256);
+  params.gLUT_inv = new Int16Array(NORM);
+
+  function to_linear(x, gamma) { return Math.pow(x / 256., gamma); }
+  function to_gamma(x, gamma) { return Math.pow(x, 1. / gamma); }
+
+  for (let x = 0; x < 256; ++x) params.gLUT[x] = to_linear(x, gamma);
+  for (let x = 0; x < NORM; ++x) params.gLUT_inv[x] = Math.round(256. * to_gamma(x / NORM, gamma));
+
+  // input: [0..255] -> output: [0..1]
+  params.to_linear = (x) => { return params.gLUT[Math.floor(x)]; }
+  // input: [0..1] -> output: [0..255]
+  params.to_gamma = (x) => { return params.gLUT_inv[Math.floor(x * NORM)]; }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -287,13 +338,14 @@ const GUI_init = () => {
   params.gui = new lil.GUI({container: document.querySelector("gui-container"), name: 'Sharp-YUV'});
   params.gui.add(params, 'image_name', Object.keys(kImages)).name('source image').listen()
     .onChange(() => { set_local_image(kImages[params.image_name]); render(); });
-  params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
-  params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
-  params.gui.add(params, 'iters', 1, 32, 1).name('iterations').listen().onChange(GUI_change);
-  params.gui.add(params, 'ref_impl').name('use ref. implementation').listen().onChange(GUI_change);
-  params.gui.add(params, 'show_sharp').name('show sharpYUV').listen().onChange(GUI_reload);
+  params.gui.add(params, 'algo', kAlgoNames).name('sharp algo').listen().onChange(GUI_change);
+  params.gui.add(params, 'exit_threshold', .0, .5, 0.001).name('exit threshold').listen().onChange(GUI_change);
+  params.gui.add(params, 'iters', 1, 8, 1).name('iterations').listen().onChange(GUI_change);
+  params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
+  params.gui.add(params, 'gamma', 0.25, 4., .05).name('gamma').listen().onChange(GUI_change);
   params.gui.add(params, 'fancy_upscaler').name('fancy upscaler').listen().onChange(GUI_convert);
-//  params.gui.add(params, 'gamma_aware').name('gamma-corrected').listen().onChange(GUI_change);
+  params.gui.add(params, 'delta', 1, 8, 1).name('U/V averaging size').listen().onChange(GUI_change);
+  params.gui.add(params, 'zoom', 1, 100, 1).name('zoom level').listen().onChange(GUI_reload);
   params.gui.add(params, 'YUV_W', 64, 512, 16).name('source zoom level').listen().onChange(
     () => { update_canvas_dimensions(); draw(); }
   );
@@ -355,18 +407,6 @@ function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
   draw_text(dst_ctx, text, Xo + 3, Yo + 20, 3);
 }
 
-function show_table_row() {
-  const tr1 = document.getElementById('tr1');
-  const tr2 = document.getElementById('tr2');
-  if (!params.show_sharp) {
-    tr1.style.display = "table-row";
-    tr2.style.display = "none";
-  } else {
-    tr1.style.display = "none";
-    tr2.style.display = "table-row";
-  }
-}
-
 function draw() {
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d");
@@ -374,11 +414,7 @@ function draw() {
   if (!params.show_src) {
     ctx.putImageData(params.RGB, 0, 0);
   } else {
-    if (params.show_sharp) {
-      ctx.putImageData(params.RGBs, 0, 0);
-    } else {
-      ctx.putImageData(params.RGBf, 0, 0);
-    }
+    ctx.putImageData(params.out[AlgoId(params.algo)].RGB, 0, 0);
   }
   ctx.fillStyle = "#eee";
   if (!params.show_src) {
@@ -396,28 +432,12 @@ function draw() {
   ctx.strokeRect(x, y, w, h);
   ctx.setLineDash([]);
 
-  const S = params.YUV_W;
-  const s = (S + 1) >> 1;
-
   draw_to('ref-rgb', params.RGB, x, y, w, h, "source");
 
-  draw_yuv('fast-yuv', params.Yf, params.W, x, y, w, h,  0, 0, S, S, "Y");
-  draw_yuv('fast-yuv', params.Uf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
-  draw_yuv('fast-yuv', params.Vf, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
-  draw_to('fast-err', params.ERRf, x, y, w, h, `PSNR: ${params.psnr_f} dB`);
+  const hd = document.getElementById('what');
+  hd.innerHTML = params.algo;
 
-  draw_yuv('sharp-yuv', params.Ys, params.W, x, y, w, h,  0, 0, S, S, "Y");
-  draw_yuv('sharp-yuv', params.Us, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  0, S, s, s, "U");
-  draw_yuv('sharp-yuv', params.Vs, params.w, x >> 1, y >> 1, w >> 1, h >> 1,  s, S, s, s, "V");
-  draw_to('sharp-err', params.ERRs, x, y, w, h, `PSNR: ${params.psnr_s} dB`);
-
-  if (params.show_src) {
-    draw_to('fast-rgb', params.RGB, x, y, w, h, "source");
-    draw_to('sharp-rgb', params.RGB, x, y, w, h, "source");
-  } else {
-    draw_to('fast-rgb', params.RGBf, x, y, w, h, "fast");
-    draw_to('sharp-rgb', params.RGBs, x, y, w, h, params.ref_impl ? "sharp (ref.)" : "sharp");
-  }
+  params.out[AlgoId(params.algo)].render(x, y, w, h);
   draw_arrows();
 }
 
@@ -588,35 +608,45 @@ async function init_image() {
     popup.style.display = 'none';
   }
 
-  for (const id of ['main-canvas', 'fast-rgb', 'fast-err', 'sharp-rgb', 'sharp-err']) {
+  for (const id of ['main-canvas', 'rgb', 'err']) {
     const elmt = document.getElementById(id);
     elmt.addEventListener('wheel', handle_wheel);
     elmt.addEventListener('mousemove', show_pixel_values);
     elmt.addEventListener('mouseenter', show_pixel_values);
     elmt.addEventListener('mouseleave', hide_popup);
   }
-  for (const id of ['fast-yuv', 'sharp-yuv']) {
+  for (const id of ['yuv']) {
     const elmt = document.getElementById(id);
     elmt.addEventListener('mousemove', show_yuv_values);
     elmt.addEventListener('mouseenter', show_yuv_values);
     elmt.addEventListener('mouseleave', hide_popup);
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key == ' ') {
-      params.show_src = true;
-      draw();
-    } else if (e.key == 'f') {
+    if (e.key == 'f') {
       params.fancy_upscaler = !params.fancy_upscaler;
       render();
     } else if (e.key == 'g') {
       params.gamma_aware = !params.gamma_aware;
       render();
-    } else if (e.key == 's') {
-      params.show_sharp = !params.show_sharp;
-      show_table_row();
+    } else if (e.key == ' ') {
+      params.show_src = true;
+      draw();
+    } else if (e.key == '1') {
+      params.algo = kAlgoNames[0];
+      params.show_src = false;
+      draw();
+    } else if (e.key == '2') {
+      params.algo = kAlgoNames[1];
+      params.show_src = false;
+      draw();
+    } else if (e.key == '3') {
+      params.algo = kAlgoNames[2];
+      params.show_src = false;
+      draw();
     } else if (e.key == 'r') {
-      params.ref_impl = !params.ref_impl;
-      render();
+      params.algo = kAlgoNames[(AlgoId(params.algo) + 1) % 3];
+      params.show_src = false;
+      draw();
     } else {
       return;
     }
@@ -641,8 +671,6 @@ async function init_image() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function draw_arrows() {
-  show_table_row();  // make sure *first* that the correct row is displayed
-
   const svg = get_adjusted_svg_container('arrow-svg');
   const options = {
     color: '#fffa',
@@ -665,7 +693,7 @@ function draw_arrows() {
     svg_draw_arrow(svg, 'line1', x0, y0, x1, y1, options);
   }
 
-  const yuv_dst = get_element_rectangle(params.show_sharp ? 'sharp-yuv' : 'fast-yuv');
+  const yuv_dst = get_element_rectangle('yuv');
   let x2 = dst.x + dst.width / 2;
   let y2 = dst.y + dst.height;
   const x3 = Math.floor(yuv_dst.x + yuv_dst.width * .7);

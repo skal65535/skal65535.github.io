@@ -6,11 +6,6 @@
 function clamp(v, m, M) { return Math.max(m, Math.min(M, v)); }
 function clamp8(v) { return Math.max(0, Math.min(255, v)); }
 
-const GAMMA = 1.2;
-const GAMMA_INV = 1. / GAMMA;
-function to_linear(x) { return 255. * Math.pow(x / 255., GAMMA); }
-function to_gamma(x) { return 255. * Math.pow(x / 255., GAMMA_INV); }
-
 function clamp_coord(x, y, w, h) {
   x = clamp(x, 0, w - 1);
   y = clamp(y, 0, h - 1);
@@ -219,78 +214,81 @@ function update_yuv(Y, U, V, RGB, x, y, W, H) {
                filter_9331(v1, v0, v3, v2),
                filter_9331(v2, v3, v0, v1),
                filter_9331(v3, v2, v1, v0),]);
-  let R = new Float32Array([
-               RGB[4 * off0 + 0],
-               RGB[4 * off1 + 0],
-               RGB[4 * off2 + 0],
-               RGB[4 * off3 + 0],]);
-  let G = new Float32Array([
-               RGB[4 * off0 + 1],
-               RGB[4 * off1 + 1],
-               RGB[4 * off2 + 1],
-               RGB[4 * off3 + 1],]);
-  let B = new Float32Array([
-               RGB[4 * off0 + 2],
-               RGB[4 * off1 + 2],
-               RGB[4 * off2 + 2],
-               RGB[4 * off3 + 2],]);
+  const R = new Float32Array([
+               params.to_linear(RGB[4 * off0 + 0]),
+               params.to_linear(RGB[4 * off1 + 0]),
+               params.to_linear(RGB[4 * off2 + 0]),
+               params.to_linear(RGB[4 * off3 + 0]),]);
+  const G = new Float32Array([
+               params.to_linear(RGB[4 * off0 + 1]),
+               params.to_linear(RGB[4 * off1 + 1]),
+               params.to_linear(RGB[4 * off2 + 1]),
+               params.to_linear(RGB[4 * off3 + 1]),]);
+  const B = new Float32Array([
+               params.to_linear(RGB[4 * off0 + 2]),
+               params.to_linear(RGB[4 * off1 + 2]),
+               params.to_linear(RGB[4 * off2 + 2]),
+               params.to_linear(RGB[4 * off3 + 2]),]);
 
-  for (i = 0; i < 4; ++i) {
-    R[i] = to_linear(R[i]);
-    G[i] = to_linear(G[i]);
-    B[i] = to_linear(B[i]);
-  }
   let dY = new Float32Array([0., 0., 0., 0.]);
   let dU = new Float32Array([0., 0., 0., 0.]);
   let dV = new Float32Array([0., 0., 0., 0.]);
   for (let i = 0; i < 4; ++i) {
-    const r = to_linear(1.164 * ys[i] + 1.596 * vs[i]);
-    const g = to_linear(1.164 * ys[i] - 0.813 * vs[i] - 0.392 * us[i]);
-    const b = to_linear(1.164 * ys[i]                 + 2.017 * us[i]);
-    if (r >= 0. && r <= 255.) {
+    const r = params.to_linear(1.164 * ys[i] + 1.596 * vs[i]);
+    const g = params.to_linear(1.164 * ys[i] - 0.813 * vs[i] - 0.392 * us[i]);
+    const b = params.to_linear(1.164 * ys[i]                 + 2.017 * us[i]);
+    if (r >= 0. && r <= 1.) {
       dY[i] += (r - R[i]) * 1.164;
       dV[i] += (r - R[i]) * 1.596;
     }
-    if (g >= 0. && g <= 255.) {
+    if (g >= 0. && g <= 1.) {
       dY[i] += (g - G[i]) * 1.164;
       dV[i] += (g - G[i]) * (-0.813);
       dU[i] += (g - G[i]) * (-0.392);
     }
-    if (b >= 0. && b <= 255.) {
+    if (b >= 0. && b <= 1.) {
       dY[i] += (b - B[i]) * 1.164;
       dU[i] += (b - B[i]) * 2.017;
     }
   }
 
-  const lambda = -.05;
-  Y[off0] = Math.floor(clamp8(Y[off0] + lambda * dY[0]));
-  Y[off1] = Math.floor(clamp8(Y[off1] + lambda * dY[1]));
-  Y[off2] = Math.floor(clamp8(Y[off2] + lambda * dY[2]));
-  Y[off3] = Math.floor(clamp8(Y[off3] + lambda * dY[3]));
+  const lambda = .1 * 256.;
+  Y[off0] = Y[off0] - lambda * dY[0];
+  Y[off1] = Y[off1] - lambda * dY[1];
+  Y[off2] = Y[off2] - lambda * dY[2];
+  Y[off3] = Y[off3] - lambda * dY[3];
 
-  U[uv_off0] = Math.floor(clamp8(U[uv_off0] + lambda * dU[0]));
-  U[uv_off1] = Math.floor(clamp8(U[uv_off1] + lambda * dU[1]));
-  U[uv_off2] = Math.floor(clamp8(U[uv_off2] + lambda * dU[2]));
-  U[uv_off3] = Math.floor(clamp8(U[uv_off3] + lambda * dU[3]));
+  U[uv_off0] = U[uv_off0] - lambda * dU[0];
+  U[uv_off1] = U[uv_off1] - lambda * dU[1];
+  U[uv_off2] = U[uv_off2] - lambda * dU[2];
+  U[uv_off3] = U[uv_off3] - lambda * dU[3];
 
-  V[uv_off0] = Math.floor(clamp8(V[uv_off0] + lambda * dV[0]));
-  V[uv_off1] = Math.floor(clamp8(V[uv_off1] + lambda * dV[1]));
-  V[uv_off2] = Math.floor(clamp8(V[uv_off2] + lambda * dV[2]));
-  V[uv_off3] = Math.floor(clamp8(V[uv_off3] + lambda * dV[3]));
+  V[uv_off0] = V[uv_off0] - lambda * dV[0];
+  V[uv_off1] = V[uv_off1] - lambda * dV[1];
+  V[uv_off2] = V[uv_off2] - lambda * dV[2];
+  V[uv_off3] = V[uv_off3] - lambda * dV[3];
+
+  return lambda * (Math.abs(dY[0]) + Math.abs(dY[1]) + Math.abs(dY[2]) + Math.abs(dY[3]));
 }
 
 function converge_sharp(Y, U, V, RGB, W, H) {
+  let diff = 0.;
   for (let y = 1; y + 2 < H; y += 2) {
     for (let x = 1; x + 2 < W; x += 2) {
-      update_yuv(Y, U, V, RGB, x, y, W, H);
+      diff += update_yuv(Y, U, V, RGB, x, y, W, H);
     }
   }
+  return diff / (W * H);
 }
 
 function convert_to_yuv_sharp(RGB, Y, U, V, W, H, iters) {
   convert_to_yuv_fast(RGB, Y, U, V, params.delta);  // initial values
+  let prev_diff = 1e38;
   for (let iter = 0; iter < iters; ++iter) {
-    converge_sharp(Y, U, V, RGB, W, H);
+    diff = converge_sharp(Y, U, V, RGB, W, H);
+    console.log(`N-#${iter}: ${diff}`);
+    if (Math.abs(diff - prev_diff) < params.exit_threshold) break;
+    prev_diff = diff;
   }
 }
 
@@ -300,6 +298,10 @@ function convert_to_yuv_sharp(RGB, Y, U, V, W, H, iters) {
 function to_gray(r, g, b) {
   return (13933 * r + 46871 * g + 4732 * b + (1 << 15)) >> 16;
 }
+function to_gray_f(r, g, b) {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;  // sRGB
+}
+
 
 class WRGB {
   constructor(W, H, with_tmp_buffer = true) {
@@ -335,17 +337,19 @@ class WRGB {
 
   rgb_to_Wl(rgb, dst) {
     for (let i = 0; i < this.Wr; ++i) {
-      const r = to_linear(rgb[i + 0 * this.Wr]);
-      const g = to_linear(rgb[i + 1 * this.Wr]);
-      const b = to_linear(rgb[i + 2 * this.Wr]);
-      dst[i] = to_gamma(to_gray(r, g, b));
+      const r = params.to_linear(rgb[i + 0 * this.Wr]);
+      const g = params.to_linear(rgb[i + 1 * this.Wr]);
+      const b = params.to_linear(rgb[i + 2 * this.Wr]);
+      dst[i] = params.to_gamma(to_gray_f(r, g, b));
     }
   }
 
   scale_down(rgb1, rgb2, off) {
-    const a = to_linear(rgb1[off + 0]), b = to_linear(rgb1[off + 1]);
-    const c = to_linear(rgb2[off + 0]), d = to_linear(rgb2[off + 1]);
-    return to_gamma((a + b + c + d + 2) >> 2);
+    const a = params.to_linear(rgb1[off + 0]);
+    const b = params.to_linear(rgb1[off + 1]);
+    const c = params.to_linear(rgb2[off + 0]);
+    const d = params.to_linear(rgb2[off + 1]);
+    return params.to_gamma((a + b + c + d) * 0.25);
   }
 
   rgb_to_dRGB(rgb1, rgb2, dst) {
@@ -472,8 +476,8 @@ function convert_to_yuv_sharp_ref(RGB, Y, U, V, W, H, iters) {
   let prev_diff = 1e38;
   for (let iter = 0; iter < iters; ++iter) {
     const diff = one_iteration(target, cur);
-    console.log(`#${iter}: ${diff}`);
-    if (diff < .4 || diff > prev_diff) break;
+    console.log(`W-#${iter}: ${diff}`);
+    if (diff < params.exit_threshold || diff > prev_diff) break;
     prev_diff = diff;
   }
   cur.export_to(Y, U, V);
