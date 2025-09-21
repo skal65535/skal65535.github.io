@@ -622,8 +622,8 @@ async function init_image() {
   function display_popup(e, text) {
     const popup = document.getElementById('popup-rgb');
     const W = popup.offsetWidth, H = popup.offsetHeight;
-    const x = Math.min(event.clientX + 20 + W, window.innerWidth) - W;
-    const y = Math.min(event.clientY + 20 + H, window.innerHeight) - H;
+    const x = Math.min(event.clientX + 20 + W, window.innerWidth) - W + window.scrollX;
+    const y = Math.min(event.clientY + 20 + H, window.innerHeight) - H + window.scrollY;
     popup.style.left = `${x}px`;
     popup.style.top = `${y}px`;
     popup.style.display = 'block';
