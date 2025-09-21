@@ -91,13 +91,16 @@ skal/ (pascal.massimino@gmail.com) 2025
     This page showcases some RGB->YUV420 conversion techniques usable before
     JPEG/WebP/AVIF compression. <br/>
     The 'fast' one is the simplest and less CPU-intensive. But it falls short on some
-    classes of images shown below (thumbnails, screen-capture, ...).<br/>
+    classes of images shown below (thumbnails, screen-capture, ads...).<br/>
     To remediate this, we present the 'Sharp-YUV' technique used in WebP,
-    along with a new one. They better capture edges and vivid colors, while
-    staying in YUV420 downsampled format. But they imply local
-    micro-optimizing the conversion loss, so are more expensive. That's why
+    along with a new one ("new").<br/>
+    They better capture edges and vivid colors, while staying in YUV420 downsampled format.
+    We utilise the upsampling used at decoding time (dubbed "fancy
+    upsampling" in libjpeg e.g.) to our advantage.<br/>
+    Sharp-YUV locally optimizes the conversion loss, so is more expensive. That's why
     <code>-sharp_yuv</code> is not the default option in <code>cwebp</code>!
     <br/>
+    <b>Quick keys</b>: 1/2/3 to change algo. Use SPACE to view the original.</br>
   </div>
   <hr>
 
@@ -746,6 +749,12 @@ function draw_arrows() {
   const y3 = Math.floor(yuv_dst.y + 10);
   [x2, y2] = get_arrow_endpoint(x3, y3, x2, y2, src, 1.1);
   svg_draw_arrow(svg, 'line2', x2, y2, x3, y3, options);
+
+  const rgb_dst = get_element_rectangle('rgb');
+  const [x4, y4] = [yuv_dst.x + yuv_dst.width * .9, yuv_dst.y + yuv_dst.height * .3];
+  const [x5, y5] = get_arrow_endpoint(x4, y4, null, null, rgb_dst, 2.4);
+  console.log(`${x4} ${y4}  ${x5} ${y5}`);
+  svg_draw_arrow(svg, 'line3', x4, y4, x5, y5, { ...options, bend: 0.1 });
 }
 
 ////////////////////////////////////////////////////////////////////////////////
