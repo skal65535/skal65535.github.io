@@ -35,6 +35,8 @@ function is_inside_rectangle(x, y, rect) {
          (y >= rect.y && y < rect.y + rect.height);
 }
 
+function interpolate(a, b, x) { return a * (1. - x) + b * x; }
+
 // helper function useful for compute line / box intersection
 // for a line starting at (x0,y0) and targetting point (x1, y1),
 // this find a nice intersection point with box 'rect'.
@@ -49,9 +51,6 @@ function get_arrow_endpoint(x0, y0, x1, y1, rect, penetration) {
   function intersect(v0, v1, v) {
     return clamp((v - v0) / (v1 - v0), 0., 1.);
   }
-
-  function interpolate(a, b, x) { return a * (1. - x) + b * x; }
-
   function mix([v0, w0], [v1, w1], [wm, wM], a) {
     const w = interpolate(w0, w1, a);
     if (w < wm || w > wM) return [v1, w1];
@@ -88,6 +87,7 @@ function svg_draw_arrow(svgContainer, arrowId, x0, y0, x1, y1, options = {}) {
     thickness = 3,
     spike = 1.,
     drop_limit = 1e6,
+    bend = 0.,
   } = options;
 
   //          .P2
@@ -110,26 +110,44 @@ function svg_draw_arrow(svgContainer, arrowId, x0, y0, x1, y1, options = {}) {
   const [dx, dy] = [Math.cos(angle + d_angle), Math.sin(angle + d_angle)];
   const [dx2, dy2] = [Math.cos(angle + spike * d_angle), Math.sin(angle + spike * d_angle)];
   const [dx4, dy4] = [Math.cos(angle - spike * d_angle), Math.sin(angle - spike * d_angle)];
-  const [P0x, P0y] = [x0 + thickness * dx, y0 + thickness * dy];
-  const [P1x, P1y] = [P0x + lx, P0y + ly];
-  const [P2x, P2y] = [x0 + lx + head_width * dx2, y0 + ly + head_width * dy2];
-  const [P3x, P3y] = [x1, y1];
-  const [P4x, P4y] = [x0 + lx + head_width * dx4, y0 + ly + head_width * dy4];
-  const [P6x, P6y] = [x0 - thickness * dx, y0 - thickness * dy];
-  const [P5x, P5y] = [P6x + lx, P6y + ly];
+  let [P0x, P0y] = [x0 + thickness * dx, y0 + thickness * dy];
+  let [P1x, P1y] = [P0x + lx, P0y + ly];
+  let [P2x, P2y] = [x0 + lx + head_width * dx2, y0 + ly + head_width * dy2];
+  let [P3x, P3y] = [x1, y1];
+  let [P4x, P4y] = [x0 + lx + head_width * dx4, y0 + ly + head_width * dy4];
+  let [P6x, P6y] = [x0 - thickness * dx, y0 - thickness * dy];
+  let [P5x, P5y] = [P6x + lx, P6y + ly];
 
-  const path_data = `M ${P0x},${P0y} ` +
-                    `L ${P1x},${P1y} ` +
-                    `L ${P2x},${P2y} ` +
-                    `L ${P3x},${P3y} ` +
-                    `L ${P4x},${P4y} ` +
-                    `L ${P5x},${P5y} ` +
-                    `L ${P6x},${P6y} ` +
-                    `Z`;
+  function bend_point(x0, y0, x1, y1, bend) {
+    return [interpolate(x0, x1, .5) + (y1 - y0) * bend,
+            interpolate(y0, y1, .5) - (x1 - x0) * bend];
+  }
+  function rotate_about(x, y, x0, y0, a) {
+    const dx = x - x0, dy = y - y0;
+    const ca = Math.cos(a), sa = -Math.sin(a);
+    return [x0 + dx * ca + dy * sa, y0 + dy * ca - dx * sa];
+  }
+  // Add some bending
+  [P0x, P0y] = rotate_about(P0x, P0y, x0, y0,  bend);
+  [P1x, P1y] = rotate_about(P1x, P1y, x1, y1, -bend);
+  [P2x, P2y] = rotate_about(P2x, P2y, x1, y1, -bend);
+  [P4x, P4y] = rotate_about(P4x, P4y, x1, y1, -bend);
+  [P5x, P5y] = rotate_about(P5x, P5y, x1, y1, -bend);
+  [P6x, P6y] = rotate_about(P6x, P6y, x0, y0,  bend);
+  const [P01x, P01y] = bend_point(P0x, P0y, P1x, P1y, -Math.tan(bend * .5));
+  const [P56x, P56y] = bend_point(P6x, P6y, P5x, P5y, -Math.tan(bend * .5));
 
+  const path_str = `M ${P0x},${P0y} ` +
+                   `Q ${P01x} ${P01y}, ${P1x} ${P1y} ` +
+                   `L ${P2x},${P2y} ` +
+                   `L ${P3x},${P3y} ` +
+                   `L ${P4x},${P4y} ` +
+                   `L ${P5x},${P5y} ` +
+                   `Q ${P56x} ${P56y}, ${P6x} ${P6y} ` +
+                   `Z`;
   const path = create_svg_element('path', {
       id: arrowId,
-      d: path_data,
+      d: path_str,
       stroke: stroke,
       fill: color,
       'stroke-width': line_width,
