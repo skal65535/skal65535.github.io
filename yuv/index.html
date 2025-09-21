@@ -42,15 +42,36 @@ skal/ (pascal.massimino@gmail.com) 2025
   z-index: 10;  /* on top */
 }
 #popup-rgb {
-    position: absolute;
-    display: none;
-    background-color: #333;
-    color: white;
-    padding: 10px;
-    border-radius: 5px;
-    font-family: Arial, sans-serif;
-    z-index: 1000;
-    pointer-events: none; /* Prevents the box from blocking mouse events */
+  position: absolute;
+  display: none;
+  background-color: #333;
+  color: white;
+  padding: 10px;
+  border-radius: 5px;
+  font-family: Arial, 10pt, bold sans-serif;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.floating {
+  position: relative;
+  left: 50%;
+  transform: translate(-50%, 0%);
+  text-align: left;
+  overflow-wrap: break-word;
+  z-index: 10;
+}
+.stroke_text {
+  font-weight: bold;
+  color: white;
+  font-family: 'Arial', sans-serif;
+  font-size: 1.5em;
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000;
+
 }
 
 .lil-gui {
@@ -67,9 +88,6 @@ skal/ (pascal.massimino@gmail.com) 2025
 <div id="main-area">
   <div height='100px'>
     <h2><center>Illustration of the Sharp-YUV conversion technique</center></h2>
-    <font size='-1'>
-    Drag and drop image on the canvas below.
-    Or <label class='button' for="FileElmt">select an image</label>.<br/>
   </div>
   <hr>
 
@@ -82,21 +100,23 @@ skal/ (pascal.massimino@gmail.com) 2025
     <canvas id="ref-rgb" style='position:relative; bottom:40px; left:20px; border: 2px solid #334;'></canvas>
     <canvas id="main-canvas" style=''></canvas>
     <br/>
-    <table border='1px'>
-      <tr>
-        <th></th>
-        <th>Y/U/V</th><th>reconstructed RGB</th><th>error map</th>
-      </tr>
+    <div id='desc' class="stroke_text floating" style='width:30%%; top: 15%; background-color:#8888;'></div><br/>
+    <table style='border: 1px solid black;'>
       <tr id='tr'>
-        <td id='what' style='writing-mode: sideways-rl;'>Regular</td>
         <td valign='top'><canvas id="yuv" width='256px' height='384px'></canvas></td>
         <td valign='top'><canvas id="rgb" width='256px' height='256px'></canvas></td>
         <td valign='top'><canvas id="err" width='256px' height='256px'></canvas></td>
       </tr>
+      <tr><th>Y/U/V</th><th>converted RGB</th><th>error map</th></tr>
     </table>
     <div id="popup-rgb">
       <span id="rgb-value"></span>
     </div>
+<hr>
+    <font size='-1'>
+    Drag and drop image on the canvas above.
+    Or <label class='button' for="FileElmt">select an image</label>.<br/>
+    </font>
     <font size='-1'>
     Mouse-click will move the zoom area.<br/>
     Mouse-Wheel will change the zoom level<br/>
@@ -126,14 +146,18 @@ skal/ (pascal.massimino@gmail.com) 2025
 "use strict";
 
 const kImages = {
-  'chrome icon': { file: "Chrome_icon.png", POI: {x: 122, y: 222} },
-  'Netflix logo': { file: "Logonetflix.png", POI: {x: 250, y: 30} },
-  'color': { file: "color.png", POI: {x: 213, y: 114} },
-  'dithered': { file: "d3.png", POI: {x: 229, y: 240} },
-  'blue text': { file: "difficult_blue.png", POI: {x: 61, y: 38} },
+  'Smeared Colors': { file: "combo.png", POI: {x: 160, y: 100}, zoom: 60, YUV_W: 320,
+                      desc: "Some color combinations smear more than others.<br/>Blue, pink and yellow in particular.", },
+  'YouTube Thumbnail': { file: "hq720.jpg", POI: {x: 96, y: 250}, zoom: 50, YUV_W:208, desc: "Thumbnails typically use vivid colors", },
+  'chrome icon': { file: "Chrome_icon.png", POI: {x: 122, y: 222}, desc: "sharp edges between saturated colors" },
+  'Netflix logo': { file: "Logonetflix.png", POI: {x: 250, y: 30}, YUV_W: 80, desc: "Red on black is hard" },
+  'Cover': { file: "cover.png", POI: {x: 213, y: 114}, desc:"the problem here is visible around the red circle, that gets darker after conversion", },
+  // magick input.png -resize 512x -colors 16 -ordered-dither o8x8 dithered.png
+  'dithered': { file: "dithered.png", POI: {x: 229, y: 240}, desc: "Dithering patterns make the converted image 'darker'" },
+  'blue text': { file: "difficult_blue.png", POI: {x: 61, y: 38}, desc: "Fonts are hard to preserve when the background is not black or white" },
   'graff': { file: "test_yuv.png", POI: {x: 129, y: 71} },
-  'anime-1': { file: "x1.png", POI: {x: 82, y: 381} },
-  'anime-2': { file: "x2.png", POI: {x: 369, y: 223} },
+  'anime-1': { file: "x1.png", POI: {x: 82, y: 381}, desc: "lot of difficult red objects"  },
+  'anime-2': { file: "x2.png", POI: {x: 369, y: 223}, desc: "difficult red/black combinations, and yellow too" },
 };
 
 const kAlgoNames = ["Fast", "WebP ref.", "New"];
@@ -201,6 +225,7 @@ const params = {
 
   // internal rendering state
   POI: {x: 0, y: 0},
+  desc: "",  // description
   show_src: false,
 
   RGB: undefined,  // reference input
@@ -356,13 +381,25 @@ const GUI_init = () => {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function draw_text(ctx, text, x, y, line_width = 4) {
+function draw_text(ctx, text, x, y) {
   if (text != undefined) {
-    ctx.lineWidth = line_width;
-    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#000';
     ctx.strokeText(text, x, y);
-    ctx.fillStyle = '#000';
+    ctx.lineWidth = 1;
+
+    ctx.shadowColor = '#000a';
+    ctx.shadowOffsetX = 3;
+    ctx.shadowOffsetY = 3;
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = '#fff';
     ctx.fillText(text, x, y);
+
+    // reset
+    ctx.shadowColor = 'transparent';
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.shadowBlur = 0;
   }
 }
 
@@ -386,7 +423,7 @@ function draw_to(dst_name, src_data, x, y, w, h, text) {
   off_ctx.putImageData(src_data, -x, -y, x, y, w, h);
   dst_ctx.drawImage(off_canvas, 0, 0, w, h, 0, 0, dst.width, dst.height);
 
-  draw_text(dst_ctx, text, 4, 20, 4);
+  draw_text(dst_ctx, text, 4, 20);
 }
 
 
@@ -412,7 +449,7 @@ function draw_yuv(dst_name, data, stride, xo, yo, w, h, Xo, Yo, Wo, Ho, text) {
   dst_ctx.strokeStyle = '#000';
   dst_ctx.lineWidth = 1;
   dst_ctx.strokeRect(Xo, Yo, Wo - 1, Ho - 1);
-  draw_text(dst_ctx, text, Xo + 3, Yo + 20, 3);
+  draw_text(dst_ctx, text, Xo + 3, Yo + 20);
 }
 
 function draw() {
@@ -442,8 +479,8 @@ function draw() {
 
   draw_to('ref-rgb', params.RGB, x, y, w, h, "source");
 
-  const hd = document.getElementById('what');
-  hd.innerHTML = params.algo;
+  const desc = document.getElementById('desc');
+  desc.innerHTML = params.desc;
 
   params.out[AlgoId(params.algo)].render(x, y, w, h);
   draw_arrows();
@@ -451,7 +488,7 @@ function draw() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-function import_image(image, POI = null) {
+function import_image(image, info) {
   let Wo = params.Wo, Ho = params.Ho;
   let W = image.width, H = image.height;
   console.log(`size in: ${W} x ${H} in max canvas: ${Wo} x ${Ho}`);
@@ -477,35 +514,26 @@ function import_image(image, POI = null) {
   draw_image_into('main-canvas', image);
   params.RGB = ctx.getImageData(0, 0, W, H);
 
-  // debug
-  if (params.debug) {
-    for (let y = 0; y < H; ++y) {
-      for (let x = 0; x < W; ++x) {
-        const data = params.RGB.data;
-        data[4 * (x + y * W) + 0] = x;
-        data[4 * (x + y * W) + 1] = y;
-        data[4 * (x + y * W) + 2] = 200;
-        data[4 * (x + y * W) + 3] = 255;
-      }
-    }
-  }
   params.W = W;
   params.H = H;
   params.w = (W + 1) >>> 1;
   params.h = (H + 1) >>> 1;
-  params.POI = (POI != null) ? POI : { x: (W >>> 1) & ~1, y: (H >>> 1) & ~1, };
+  params.POI = (info.POI != null) ? info.POI : { x: (W >>> 1) & ~1, y: (H >>> 1) & ~1, };
+  params.zoom = info.zoom || 50;
+  params.desc = info.desc || "";
+  params.YUV_W = ((info.YUV_W + 15) & ~16) || params.YUV_W;
 
   render();
 }
 
 function set_local_image(image) {
-  set_image(`./img/${image.file}`, image.POI);
+  set_image(`./img/${image.file}`, image);
 }
 
-function set_image(src, POI = null) {
+function set_image(src, info = null) {
   let image = new Image();
   image.onload = function() {
-    import_image(image, POI);
+    import_image(image, info);
   };
   image.src = src;
 }
@@ -529,7 +557,7 @@ function HandleDrop(e) {
 function HandleFile(file) {
   const reader = new FileReader();
   reader.readAsDataURL(file);
-  reader.onloadend = function() { set_image(reader.result); }
+  reader.onloadend = function() { set_image(reader.result, { desc:`file: ${file.name}`,}); }
 }
 
 async function init_image() {
@@ -601,7 +629,7 @@ async function init_image() {
 
   const show_pixel_values = (e) => {
     const [elmt, x, y, rgb] = get_coords(e);
-    const text = `RGB(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+    const text = `(${x}, ${y}) -> RGB(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
     display_popup(e, text);
   }
   const show_yuv_values = (e) => {
@@ -672,7 +700,6 @@ async function init_image() {
     e.preventDefault();
   });
 
-//  set_image("./SF.webp");
   set_local_image(kImages[params.image_name]);
 }
 
