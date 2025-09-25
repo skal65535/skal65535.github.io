@@ -473,16 +473,21 @@
                     boundingSphere.copy(pointGeometry.boundingSphere);
 
                     // Calculate the new target camera position, with a wider zoom
-                    const distance = (boundingSphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 2.0;
-                    const newPosition = boundingSphere.center.clone().add(new THREE.Vector3(distance * 0.5, distance * 0.5, distance * 0.5));
+                    if (boundingSphere.radius > 5.) {
+                        const distance = (boundingSphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 2.0;
+                        const newPosition = boundingSphere.center.clone().add(new THREE.Vector3(distance * 0.5, distance * 0.5, distance * 0.5));
 
-                    // Update animation variables
-                    isAnimating = true;
-                    startTime = performance.now();
-                    startPosition.copy(camera.position);
-                    endPosition.copy(newPosition);
-                    startTarget.copy(controls.target);
-                    endTarget.copy(boundingSphere.center);
+                        // Update animation variables
+                        const length = newPosition.distanceTo(camera.position);
+                        if (length > 20.) {
+                            isAnimating = true;
+                            startTime = performance.now();
+                            startPosition.copy(camera.position);
+                            endPosition.copy(newPosition);
+                            startTarget.copy(controls.target);
+                            endTarget.copy(boundingSphere.center);
+                        }
+                    }
                 }
             }
 
