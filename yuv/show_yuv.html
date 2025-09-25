@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YUV to RGB Converter</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+
+        .container {
+            max-width: 60rem;
+            width: 100%;
+            background-color: white;
+            padding: 2.5rem;
+            border-radius: 1.5rem;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        .slider-group {
+            width: 16rem;
+        }
+        
+        .slider-container {
+            flex-grow: 1;
+        }
+        
+        .slider-text {
+            width: 3rem;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 1.25rem;
+            height: 1.25rem;
+            background: #4f46e5;
+            cursor: pointer;
+            border-radius: 9999px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        .slider::-moz-range-thumb {
+            width: 1.25rem;
+            height: 1.25rem;
+            background: #4f46e5;
+            cursor: pointer;
+            border-radius: 9999px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        #visualization-container {
+            width: 100%;
+            max-width: 40rem;
+            aspect-ratio: 1 / 1;
+            border-radius: 1rem;
+            overflow: hidden;
+        }
+    </style>
+    <!-- Import Map for Three.js v0.180.0 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="container mx-auto p-8 rounded-2xl shadow-xl flex flex-col items-center space-y-8">
+        <h1 class="text-2xl font-bold text-gray-800 text-center">Color Space Converter</h1>
+
+        <!-- Combined Sliders and Converted Color Section -->
+        <div class="w-full flex flex-col md:flex-row md:space-x-8 items-center md:items-start space-y-8 md:space-y-0">
+            <!-- RGB Input Section -->
+            <div class="w-full md:w-1/3 flex flex-col items-center space-y-4">
+                <div class="flex items-center space-x-4">
+                    <h2 class="text-xl font-semibold text-gray-700">RGB Input</h2>
+                    <input type="color" id="color-picker" value="#ffff00" class="w-12 h-12 rounded-lg border-2 border-gray-300">
+                </div>
+                <div class="flex flex-col space-y-4 slider-group">
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">R</div>
+                        <div class="slider-container">
+                             <input type="range" id="red-slider" min="0" max="255" value="255" class="w-full slider">
+                        </div>
+                        <div id="red-text" class="text-center text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">G</div>
+                        <div class="slider-container">
+                             <input type="range" id="green-slider" min="0" max="255" value="255" class="w-full slider">
+                        </div>
+                        <div id="green-text" class="text-center text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">B</div>
+                        <div class="slider-container">
+                             <input type="range" id="blue-slider" min="0" max="255" value="0" class="w-full slider">
+                        </div>
+                        <div id="blue-text" class="text-center text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- YUV Output Section -->
+            <div class="w-full md:w-1/3 flex flex-col items-center space-y-4">
+                <h2 class="text-xl font-semibold text-gray-700">YUV Values</h2>
+                <div class="flex flex-col space-y-4 slider-group">
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">Y</div>
+                        <div class="slider-container">
+                            <input type="range" id="y-slider" min="0" max="255" value="210" class="w-full slider">
+                        </div>
+                        <div id="y-text" class="text-left text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">U</div>
+                        <div class="slider-container">
+                            <input type="range" id="u-slider" min="0" max="255" value="16" class="w-full slider">
+                        </div>
+                        <div id="u-text" class="text-left text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="text-gray-600 font-medium slider-text">V</div>
+                        <div class="slider-container">
+                            <input type="range" id="v-slider" min="0" max="255" value="146" class="w-full slider">
+                        </div>
+                        <div id="v-text" class="text-left text-gray-800 w-12 flex-shrink-0"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Converted RGB Output Section -->
+            <div class="w-full md:w-1/3 space-y-4 flex flex-col items-center text-center">
+                <h2 class="text-xl font-semibold text-gray-700">Converted Color</h2>
+                <div id="color-square" class="w-32 h-32 rounded-xl border-4 border-gray-300 shadow-inner" style="background-color: rgb(255, 255, 0);"></div>
+                <div id="rgb-output" class="text-base font-mono text-gray-800 mt-2">RGB: (255, 255, 0)</div>
+            </div>
+        </div>
+        
+        <!-- --- -->
+        <!-- Visualization Section -->
+        <div class="w-full flex flex-col md:flex-row md:space-x-8 items-center space-y-8 md:space-y-0">
+            <!-- Solver Results Section -->
+            <div class="w-full md:w-1/3 space-y-4 flex flex-col items-center md:items-start text-center md:text-left">
+                <h2 class="text-xl font-semibold text-gray-700">Clipping during BT.709 color conversion</h2>
+                <p class="text-sm text-gray-600 text-center md:text-left">Some vivid RGB values can be mapped to a full convex set of YUV values (shown in 3D on the right). All these values map back to exactly to the same original RGB values, because of they are clipped to the [0..255] range. In SharpYUV conversion, we exploit this property to improve the YUV420 downsampling around saturated colors.</p>
+                <button id="freeze-button" class="mt-4 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors duration-200">Freeze View</button>
+                
+                <!-- Horizontal range display -->
+                <div class="flex flex-wrap justify-start gap-6 text-gray-800 text-base">
+                    <!-- Y Range -->
+                    <div class="flex flex-col items-start">
+                        <div class="font-bold">Y:</div>
+                        <div id="y-range" class="font-mono"></div>
+                    </div>
+                    <!-- U Range -->
+                    <div class="flex flex-col items-start">
+                        <div class="font-bold">U:</div>
+                        <div id="u-range" class="font-mono"></div>
+                    </div>
+                    <!-- V Range -->
+                    <div class="flex flex-col items-start">
+                        <div class="font-bold">V:</div>
+                        <div id="v-range" class="font-mono"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 3D Visualization Section -->
+            <div class="w-full md:w-2/3 flex justify-center items-center">
+                <div id="visualization-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+
+        // DOM element references
+        const redSlider = document.getElementById('red-slider');
+        const greenSlider = document.getElementById('green-slider');
+        const blueSlider = document.getElementById('blue-slider');
+        const colorPicker = document.getElementById('color-picker');
+        
+        const redText = document.getElementById('red-text');
+        const greenText = document.getElementById('green-text');
+        const blueText = document.getElementById('blue-text');
+        
+        const ySlider = document.getElementById('y-slider');
+        const uSlider = document.getElementById('u-slider');
+        const vSlider = document.getElementById('v-slider');
+        
+        const yText = document.getElementById('y-text');
+        const uText = document.getElementById('u-text');
+        const vText = document.getElementById('v-text');
+        
+        const colorSquare = document.getElementById('color-square');
+        const rgbOutput = document.getElementById('rgb-output');
+
+        const yRangeText = document.getElementById('y-range');
+        const uRangeText = document.getElementById('u-range');
+        const vRangeText = document.getElementById('v-range');
+        const freezeButton = document.getElementById('freeze-button');
+
+        const visContainer = document.getElementById('visualization-container');
+
+        // Clip function to clamp value to [0, 255] range
+        const clip = (x) => Math.max(0, Math.min(255, Math.round(x)));
+
+        // Function to convert YUV to RGB (from user's prompt)
+        const yuvToRgb = (Y, U, V) => {
+            Y -= 16;
+            U -= 128;
+            V -= 128;
+
+            const R = clip(1.164 * Y + 1.596 * V);
+            const G = clip(1.164 * Y - 0.813 * V - 0.392 * U);
+            const B = clip(1.164 * Y + 2.017 * U);
+
+            return { R, G, B };
+        };
+
+        // Function to convert RGB to YUV (standard BT.709 formulas)
+        const rgbToYuv = (R, G, B) => {
+            const Y = clip(16 + 0.257 * R + 0.504 * G + 0.098 * B);
+            const U = clip(128 - 0.148 * R - 0.291 * G + 0.439 * B);
+            const V = clip(128 + 0.439 * R - 0.368 * G - 0.071 * B);
+            return { Y, U, V };
+        };
+        
+        // Helper function to convert hex to RGB
+        const hexToRgb = (hex) => {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                R: parseInt(result[1], 16),
+                G: parseInt(result[2], 16),
+                B: parseInt(result[3], 16)
+            } : null;
+        };
+
+        // Function to find the valid YUV solutions and ranges, now with RGB values
+        const findYuvSolutions = (targetR, targetG, targetB) => {
+            const { Y: initialY, U: initialU, V: initialV } = rgbToYuv(targetR, targetG, targetB);
+
+            let minY = 255, maxY = 0;
+            let minU = 255, maxU = 0;
+            let minV = 255, maxV = 0;
+
+            const validPoints = [];
+            const pointColors = [];
+            const searchRadius = 30;
+
+            for (let y = Math.max(0, initialY - searchRadius); y <= Math.min(255, initialY + searchRadius); y++) {
+                for (let u = Math.max(0, initialU - searchRadius); u <= Math.min(255, initialU + searchRadius); u++) {
+                    for (let v = Math.max(0, initialV - searchRadius); v <= Math.min(255, initialV + searchRadius); v++) {
+                        const { R, G, B } = yuvToRgb(y, u, v);
+                        if (R === targetR && G === targetG && B === targetB) {
+                            validPoints.push(new THREE.Vector3(y, u, v));
+                            pointColors.push(R / 255, G / 255, B / 255);
+                            minY = Math.min(minY, y);
+                            maxY = Math.max(maxY, y);
+                            minU = Math.min(minU, u);
+                            maxU = Math.max(maxU, u);
+                            minV = Math.min(minV, v);
+                            maxV = Math.max(maxV, v);
+                        }
+                    }
+                }
+            }
+
+            // If no points were found, use the initial point
+            if (validPoints.length === 0) {
+                validPoints.push(new THREE.Vector3(initialY, initialU, initialV));
+                pointColors.push(targetR / 255, targetG / 255, targetB / 255);
+                minY = maxY = initialY;
+                minU = maxU = initialU;
+                minV = maxV = initialV;
+            }
+
+            return { points: validPoints, colors: pointColors, ranges: { y: [minY, maxY], u: [minU, maxU], v: [minV, maxV] } };
+        };
+        
+        // Helper to create a text texture
+        const createTextTexture = (text, color = 'black') => {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            const font = '48px Arial';
+            context.font = font;
+            const metrics = context.measureText(text);
+            const textWidth = metrics.width;
+            canvas.width = textWidth + 10;
+            canvas.height = 60;
+            context.font = font;
+            context.fillStyle = color;
+            context.fillText(text, 5, 45);
+            return new THREE.CanvasTexture(canvas);
+        };
+        
+        // Helper to create a circular texture for points
+        const createCircleTexture = () => {
+            const size = 64;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+            const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(0.2, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, size, size);
+            return new THREE.CanvasTexture(canvas);
+        };
+
+        // --- 3D Visualization Code ---
+        let scene, camera, renderer, controls;
+        let pointCloud, convexHull, convexHullEdges;
+
+        // Variables for smooth camera transition and freezing
+        let isAnimating = false;
+        let isFrozen = false;
+        const animationDuration = 1500; // Reduced to 1.5 seconds for a faster animation
+        let startTime = 0;
+        const startPosition = new THREE.Vector3();
+        const endPosition = new THREE.Vector3();
+        const startTarget = new THREE.Vector3();
+        const endTarget = new THREE.Vector3();
+
+        // Ease-in-out function for smooth animation
+        const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+        const init3D = () => {
+            // Scene, Camera, and Renderer setup
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, visContainer.clientWidth / visContainer.clientHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(visContainer.clientWidth, visContainer.clientHeight);
+            visContainer.appendChild(renderer.domElement);
+            
+            // Add click listener to unfreeze the view
+            renderer.domElement.addEventListener('mousedown', () => {
+                if (isFrozen) {
+                    toggleFreeze();
+                }
+            });
+
+            // Set up camera controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // Create and add the wireframe cube
+            const boxGeometry = new THREE.BoxGeometry(255, 255, 255);
+            const edgesGeometry = new THREE.EdgesGeometry(boxGeometry);
+            const edgesMaterial = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 });
+            const boxEdges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+            boxEdges.position.set(255 / 2, 255 / 2, 255 / 2);
+            scene.add(boxEdges);
+
+            // Add arrows for the axes
+            const axisLength = 270;
+            const headLength = 10;
+            const headWidth = 5;
+            const origin = new THREE.Vector3(0, 0, 0);
+
+            // Removed axis colors and set to black
+            const yArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, axisLength, 0x000000, headLength, headWidth);
+            const uArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, axisLength, 0x000000, headLength, headWidth);
+            const vArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), origin, axisLength, 0x000000, headLength, headWidth);
+            scene.add(yArrow, uArrow, vArrow);
+            
+            // Add flat 2D axis labels
+            const labelScale = 50;
+
+            const yLabelTexture = createTextTexture('Y');
+            const yLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: yLabelTexture }));
+            yLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
+            yLabelSprite.position.set(axisLength + 10, 0, 0);
+
+            const uLabelTexture = createTextTexture('U');
+            const uLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: uLabelTexture }));
+            uLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
+            uLabelSprite.position.set(0, axisLength + 10, 0);
+
+            const vLabelTexture = createTextTexture('V');
+            const vLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: vLabelTexture }));
+            vLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
+            vLabelSprite.position.set(0, 0, axisLength + 10);
+            
+            scene.add(yLabelSprite, uLabelSprite, vLabelSprite);
+
+            // Set up initial camera position and target to view the cube
+            camera.position.set(255 * 1.5, 255 * 1.5, 255 * 1.5);
+            controls.target.set(255 / 2, 255 / 2, 255 / 2);
+
+            // Initial render
+            animate();
+        };
+
+        const onWindowResize = () => {
+            camera.aspect = visContainer.clientWidth / visContainer.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(visContainer.clientWidth, visContainer.clientHeight);
+            renderer.render(scene, camera);
+        };
+
+        // Animation Loop
+        const animate = (timestamp) => {
+            requestAnimationFrame(animate);
+
+            // Handle the smooth camera transition
+            if (isAnimating && !isFrozen) {
+                const elapsed = timestamp - startTime;
+                const t = Math.min(1, elapsed / animationDuration);
+                const easedT = easeInOutCubic(t);
+
+                // Lerp camera position and control target
+                camera.position.lerpVectors(startPosition, endPosition, easedT);
+                controls.target.lerpVectors(startTarget, endTarget, easedT);
+
+                if (t >= 1) {
+                    isAnimating = false;
+                }
+            }
+            // Always update controls to allow manual interaction
+            controls.update();
+            
+            renderer.render(scene, camera);
+        };
+
+        // Update the 3D visualization with new points
+        const update3DVisualization = (points, colors) => {
+            // Clear previous meshes
+            if (pointCloud) scene.remove(pointCloud);
+            if (convexHull) scene.remove(convexHull);
+            if (convexHullEdges) scene.remove(convexHullEdges);
+
+            // Create Point Cloud
+            if (points.length > 0) {
+                const pointGeometry = new THREE.BufferGeometry().setFromPoints(points);
+                pointGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+                
+                const pointMaterial = new THREE.PointsMaterial({ 
+                    size: 0.1, // Reduced point size
+                    map: createCircleTexture(),
+                    vertexColors: true, 
+                    transparent: true, 
+                    opacity: 0.8,
+                    alphaTest: 0.1,
+                    sizeAttenuation: true
+                });
+                pointCloud = new THREE.Points(pointGeometry, pointMaterial);
+                scene.add(pointCloud);
+                
+                // Start camera transition only if the view is not frozen
+                if (!isFrozen) {
+                    const boundingSphere = new THREE.Sphere();
+                    pointGeometry.computeBoundingSphere();
+                    boundingSphere.copy(pointGeometry.boundingSphere);
+                    
+                    // Calculate the new target camera position, with a wider zoom
+                    const distance = (boundingSphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 2.0;
+                    const newPosition = boundingSphere.center.clone().add(new THREE.Vector3(distance * 0.5, distance * 0.5, distance * 0.5));
+                    
+                    // Update animation variables
+                    isAnimating = true;
+                    startTime = performance.now();
+                    startPosition.copy(camera.position);
+                    endPosition.copy(newPosition);
+                    startTarget.copy(controls.target);
+                    endTarget.copy(boundingSphere.center);
+                }
+            }
+
+            // Create Convex Hull
+            if (points.length > 3) {
+                const hullGeometry = new ConvexGeometry(points);
+
+                // Semi-transparent hull faces
+                const hullMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x4f46e5,
+                    opacity: 0.2,
+                    transparent: true,
+                    side: THREE.DoubleSide,
+                });
+                convexHull = new THREE.Mesh(hullGeometry, hullMaterial);
+                scene.add(convexHull);
+
+                // Visible edges
+                const edgesMaterial = new THREE.LineBasicMaterial({
+                    color: 0x000000, // Black
+                    linewidth: 4, // Thicker
+                });
+                const edgesGeometry = new THREE.EdgesGeometry(hullGeometry);
+                convexHullEdges = new THREE.LineSegments(edgesGeometry, edgesMaterial);
+                scene.add(convexHullEdges);
+            }
+        };
+
+        // Update the display from YUV values
+        const updateFromYuv = () => {
+            const Y = parseInt(ySlider.value);
+            const U = parseInt(uSlider.value);
+            const V = parseInt(vSlider.value);
+            
+            yText.textContent = Y;
+            uText.textContent = U;
+            vText.textContent = V;
+
+            const { R, G, B } = yuvToRgb(Y, U, V);
+            colorSquare.style.backgroundColor = `rgb(${R}, ${G}, ${B})`;
+            rgbOutput.textContent = `RGB: (${R}, ${G}, ${B})`;
+        };
+
+        // Update the YUV sliders, color picker, range, and 3D viz from RGB values
+        const updateFromRgb = (source) => {
+            let R, G, B;
+            if (source === 'picker') {
+                const rgb = hexToRgb(colorPicker.value);
+                R = rgb.R;
+                G = rgb.G;
+                B = rgb.B;
+                redSlider.value = R;
+                greenSlider.value = G;
+                blueSlider.value = B;
+            } else {
+                R = parseInt(redSlider.value);
+                G = parseInt(greenSlider.value);
+                B = parseInt(blueSlider.value);
+                const hexColor = "#" +
+                    ((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
+                colorPicker.value = hexColor;
+            }
+
+            redText.textContent = R;
+            greenText.textContent = G;
+            blueText.textContent = B;
+            
+            const { Y, U, V } = rgbToYuv(R, G, B);
+            ySlider.value = Y;
+            uSlider.value = U;
+            vSlider.value = V;
+            
+            updateFromYuv();
+
+            // Find and display the valid YUV range and solutions
+            const solutions = findYuvSolutions(R, G, B);
+            const range = solutions.ranges;
+            yRangeText.textContent = `[${range.y[0]}, ${range.y[1]}]`;
+            uRangeText.textContent = `[${range.u[0]}, ${range.u[1]}]`;
+            vRangeText.textContent = `[${range.v[0]}, ${range.v[1]}]`;
+            
+            update3DVisualization(solutions.points, solutions.colors);
+        };
+        
+        // Toggle view freeze and controls
+        const toggleFreeze = () => {
+            isFrozen = !isFrozen;
+            if (isFrozen) {
+                freezeButton.textContent = "Unfreeze View";
+                controls.enabled = false;
+            } else {
+                freezeButton.textContent = "Freeze View";
+                controls.enabled = true;
+            }
+        };
+        
+        // Event listeners for RGB sliders and color picker
+        redSlider.addEventListener('input', () => updateFromRgb('slider'));
+        greenSlider.addEventListener('input', () => updateFromRgb('slider'));
+        blueSlider.addEventListener('input', () => updateFromRgb('slider'));
+        colorPicker.addEventListener('input', () => updateFromRgb('picker'));
+
+        // Event listeners for YUV sliders
+        ySlider.addEventListener('input', updateFromYuv);
+        uSlider.addEventListener('input', updateFromYuv);
+        vSlider.addEventListener('input', updateFromYuv);
+        
+        // Event listener for the new freeze button
+        freezeButton.addEventListener('click', toggleFreeze);
+
+        // Add a listener for window resizing
+        window.addEventListener('resize', onWindowResize);
+
+        // Initial setup
+        window.onload = () => {
+            init3D();
+            updateFromRgb('slider');
+        };
+    </script>
+</body>
+</html>
