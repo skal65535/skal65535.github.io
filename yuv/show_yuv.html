@@ -29,11 +29,11 @@
         .slider-group {
             width: 16rem;
         }
-        
+
         .slider-container {
             flex-grow: 1;
         }
-        
+
         .slider-text {
             width: 3rem;
         }
@@ -77,7 +77,7 @@
 </head>
 <body class="bg-gray-100 p-8">
     <div class="container mx-auto p-8 rounded-2xl shadow-xl flex flex-col items-center space-y-8">
-        <h1 class="text-2xl font-bold text-gray-800 text-center">Color Space Converter</h1>
+        <h1 class="text-2xl font-bold text-gray-800 text-center">RGB &lt;-&gt; YUV Color Convertion demo</h1>
 
         <!-- Combined Sliders and Converted Color Section -->
         <div class="w-full flex flex-col md:flex-row md:space-x-8 items-center md:items-start space-y-8 md:space-y-0">
@@ -111,7 +111,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <!-- YUV Output Section -->
             <div class="w-full md:w-1/3 flex flex-col items-center space-y-4">
                 <h2 class="text-xl font-semibold text-gray-700">YUV Values</h2>
@@ -147,36 +147,37 @@
                 <div id="rgb-output" class="text-base font-mono text-gray-800 mt-2">RGB: (255, 255, 0)</div>
             </div>
         </div>
-        
+
         <!-- --- -->
         <!-- Visualization Section -->
         <div class="w-full flex flex-col md:flex-row md:space-x-8 items-center space-y-8 md:space-y-0">
             <!-- Solver Results Section -->
-            <div class="w-full md:w-1/3 space-y-4 flex flex-col items-center md:items-start text-center md:text-left">
+            <div class="w-full md:w-1/2 space-y-4 flex flex-col items-center md:items-start text-center md:text-left">
                 <h2 class="text-xl font-semibold text-gray-700">Clipping during BT.709 color conversion</h2>
                 <p class="text-sm text-gray-600 text-center md:text-left">Some vivid RGB values can be mapped to a full convex set of YUV values (shown in 3D on the right). All these values map back to exactly to the same original RGB values, because of they are clipped to the [0..255] range. In SharpYUV conversion, we exploit this property to improve the YUV420 downsampling around saturated colors.</p>
                 <button id="freeze-button" class="mt-4 px-4 py-2 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors duration-200">Freeze View</button>
-                
+
                 <!-- Horizontal range display -->
-                <div class="flex flex-wrap justify-start gap-6 text-gray-800 text-base">
+                <div class="flex flex-wrap justify-start gap-2 text-gray-800 text-base">
+                    Bounds
                     <!-- Y Range -->
-                    <div class="flex flex-col items-start">
-                        <div class="font-bold">Y:</div>
+                    <div class="flex items-start">
+                        <span class="font-bold">Y:</span>
                         <div id="y-range" class="font-mono"></div>
                     </div>
                     <!-- U Range -->
-                    <div class="flex flex-col items-start">
+                    <div class="flex items-start">
                         <div class="font-bold">U:</div>
                         <div id="u-range" class="font-mono"></div>
                     </div>
                     <!-- V Range -->
-                    <div class="flex flex-col items-start">
+                    <div class="flex items-start">
                         <div class="font-bold">V:</div>
                         <div id="v-range" class="font-mono"></div>
                     </div>
                 </div>
             </div>
-            
+
             <!-- 3D Visualization Section -->
             <div class="w-full md:w-2/3 flex justify-center items-center">
                 <div id="visualization-container"></div>
@@ -194,19 +195,19 @@
         const greenSlider = document.getElementById('green-slider');
         const blueSlider = document.getElementById('blue-slider');
         const colorPicker = document.getElementById('color-picker');
-        
+
         const redText = document.getElementById('red-text');
         const greenText = document.getElementById('green-text');
         const blueText = document.getElementById('blue-text');
-        
+
         const ySlider = document.getElementById('y-slider');
         const uSlider = document.getElementById('u-slider');
         const vSlider = document.getElementById('v-slider');
-        
+
         const yText = document.getElementById('y-text');
         const uText = document.getElementById('u-text');
         const vText = document.getElementById('v-text');
-        
+
         const colorSquare = document.getElementById('color-square');
         const rgbOutput = document.getElementById('rgb-output');
 
@@ -240,7 +241,7 @@
             const V = clip(128 + 0.439 * R - 0.368 * G - 0.071 * B);
             return { Y, U, V };
         };
-        
+
         // Helper function to convert hex to RGB
         const hexToRgb = (hex) => {
             const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -285,14 +286,14 @@
             if (validPoints.length === 0) {
                 validPoints.push(new THREE.Vector3(initialY, initialU, initialV));
                 pointColors.push(targetR / 255, targetG / 255, targetB / 255);
-                minY = maxY = initialY;
-                minU = maxU = initialU;
-                minV = maxV = initialV;
+                minY = initialY; maxY = minY + 1;
+                minU = initialU; maxU = minU + 1;
+                minV = initialV; maxV = minV + 1;
             }
 
             return { points: validPoints, colors: pointColors, ranges: { y: [minY, maxY], u: [minU, maxU], v: [minV, maxV] } };
         };
-        
+
         // Helper to create a text texture
         const createTextTexture = (text, color = 'black') => {
             const canvas = document.createElement('canvas');
@@ -308,7 +309,7 @@
             context.fillText(text, 5, 45);
             return new THREE.CanvasTexture(canvas);
         };
-        
+
         // Helper to create a circular texture for points
         const createCircleTexture = () => {
             const size = 64;
@@ -349,7 +350,7 @@
             renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setSize(visContainer.clientWidth, visContainer.clientHeight);
             visContainer.appendChild(renderer.domElement);
-            
+
             // Add click listener to unfreeze the view
             renderer.domElement.addEventListener('mousedown', () => {
                 if (isFrozen) {
@@ -381,25 +382,25 @@
             const uArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, axisLength, 0x000000, headLength, headWidth);
             const vArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), origin, axisLength, 0x000000, headLength, headWidth);
             scene.add(yArrow, uArrow, vArrow);
-            
+
             // Add flat 2D axis labels
             const labelScale = 50;
 
             const yLabelTexture = createTextTexture('Y');
             const yLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: yLabelTexture }));
-            yLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
-            yLabelSprite.position.set(axisLength + 10, 0, 0);
+            yLabelSprite.scale.set(labelScale, labelScale, 1);
+            yLabelSprite.position.set(axisLength + 11, 0, 0);
 
             const uLabelTexture = createTextTexture('U');
             const uLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: uLabelTexture }));
-            uLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
-            uLabelSprite.position.set(0, axisLength + 10, 0);
+            uLabelSprite.scale.set(labelScale, labelScale, 1);
+            uLabelSprite.position.set(0, axisLength + 11, 0);
 
             const vLabelTexture = createTextTexture('V');
             const vLabelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: vLabelTexture }));
-            vLabelSprite.scale.set(labelScale, labelScale * 0.5, 1);
-            vLabelSprite.position.set(0, 0, axisLength + 10);
-            
+            vLabelSprite.scale.set(labelScale, labelScale, 1);
+            vLabelSprite.position.set(0, 0, axisLength + 11);
+
             scene.add(yLabelSprite, uLabelSprite, vLabelSprite);
 
             // Set up initial camera position and target to view the cube
@@ -437,7 +438,7 @@
             }
             // Always update controls to allow manual interaction
             controls.update();
-            
+
             renderer.render(scene, camera);
         };
 
@@ -452,29 +453,29 @@
             if (points.length > 0) {
                 const pointGeometry = new THREE.BufferGeometry().setFromPoints(points);
                 pointGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-                
-                const pointMaterial = new THREE.PointsMaterial({ 
+
+                const pointMaterial = new THREE.PointsMaterial({
                     size: 0.1, // Reduced point size
                     map: createCircleTexture(),
-                    vertexColors: true, 
-                    transparent: true, 
+                    vertexColors: true,
+                    transparent: true,
                     opacity: 0.8,
                     alphaTest: 0.1,
                     sizeAttenuation: true
                 });
                 pointCloud = new THREE.Points(pointGeometry, pointMaterial);
                 scene.add(pointCloud);
-                
+
                 // Start camera transition only if the view is not frozen
                 if (!isFrozen) {
                     const boundingSphere = new THREE.Sphere();
                     pointGeometry.computeBoundingSphere();
                     boundingSphere.copy(pointGeometry.boundingSphere);
-                    
+
                     // Calculate the new target camera position, with a wider zoom
                     const distance = (boundingSphere.radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2))) * 2.0;
                     const newPosition = boundingSphere.center.clone().add(new THREE.Vector3(distance * 0.5, distance * 0.5, distance * 0.5));
-                    
+
                     // Update animation variables
                     isAnimating = true;
                     startTime = performance.now();
@@ -515,7 +516,7 @@
             const Y = parseInt(ySlider.value);
             const U = parseInt(uSlider.value);
             const V = parseInt(vSlider.value);
-            
+
             yText.textContent = Y;
             uText.textContent = U;
             vText.textContent = V;
@@ -548,12 +549,12 @@
             redText.textContent = R;
             greenText.textContent = G;
             blueText.textContent = B;
-            
+
             const { Y, U, V } = rgbToYuv(R, G, B);
             ySlider.value = Y;
             uSlider.value = U;
             vSlider.value = V;
-            
+
             updateFromYuv();
 
             // Find and display the valid YUV range and solutions
@@ -562,10 +563,10 @@
             yRangeText.textContent = `[${range.y[0]}, ${range.y[1]}]`;
             uRangeText.textContent = `[${range.u[0]}, ${range.u[1]}]`;
             vRangeText.textContent = `[${range.v[0]}, ${range.v[1]}]`;
-            
+
             update3DVisualization(solutions.points, solutions.colors);
         };
-        
+
         // Toggle view freeze and controls
         const toggleFreeze = () => {
             isFrozen = !isFrozen;
@@ -577,7 +578,7 @@
                 controls.enabled = true;
             }
         };
-        
+
         // Event listeners for RGB sliders and color picker
         redSlider.addEventListener('input', () => updateFromRgb('slider'));
         greenSlider.addEventListener('input', () => updateFromRgb('slider'));
@@ -588,7 +589,7 @@
         ySlider.addEventListener('input', updateFromYuv);
         uSlider.addEventListener('input', updateFromYuv);
         vSlider.addEventListener('input', updateFromYuv);
-        
+
         // Event listener for the new freeze button
         freezeButton.addEventListener('click', toggleFreeze);
 
