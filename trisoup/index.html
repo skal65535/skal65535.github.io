@@ -153,15 +153,9 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
 
   function onDeviceError(event) {
@@ -176,7 +170,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -360,19 +353,13 @@ async function init_buffers(render) {
   if (render.device == null) return;
 
   // Create uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: 60 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.uniforms = Create_Uniform_Buffer(render.device, 60 * 4);
 
   // depth texture
-  render.GPU.depth_texture = render.device.createTexture({
-    label: 'depth',
-    size: [canvas.width, canvas.height],
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    sampleCount: 1,  // no MSAA for now
-  });
+  render.GPU.depth_texture = Create_Texture(
+      render.device, canvas.width, canvas.height, 'depth24plus',
+      GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      1, 'depth');
 }
 
 ////////////////////////////////////////////////////////////////////////////////

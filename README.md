@@ -42,7 +42,7 @@ open-sourced code for fun :) Here are some side-projects demo pages:
    ![Curly thing!](https://skal65535.github.io/curl/curl.thumb.webp)
 
    An experimental WebGPU [demo](https://skal65535.github.io/curl/index.html?funky) with some
-   dynamic tesselation generated during the compute-shader pass. Kind of fun and demomaker-ish.
+   dynamic tessellation generated during the compute-shader pass. Kind of fun and demomaker-ish.
 
 ## [Welzl algorithm](https://skal65535.github.io/convex_hull/index.html) demo
 

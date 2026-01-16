@@ -41,10 +41,10 @@
     The critical parameter is <i>beta = J / kT</i>, where J is the coupling constant between spins
     (J&gt;0: <a href="https://en.wikipedia.org/wiki/Curie_temperature#Ferromagnetic">ferromagnetism</a>,
      J&lt;0: <a href="https://en.wikipedia.org/wiki/Antiferromagnetism">anti-ferromagnetism</a>).<br/>
-    Since the cubic lattice can be decomposed into two independant sub-lattices
+    Since the cubic lattice can be decomposed into two independent sub-lattices
     (depending on the parity of (x + y + z)), both cases are symmetric and share
     the same critical temperature <a href="https://www.hermetic-systems.com/compsci/thesis/chap3.htm"><b>Tc=4.5115...</b></a><br/>
-    The anti-ferromagnetic case is visually interesting with the alterning planes of +1 and -1 spins.
+    The anti-ferromagnetic case is visually interesting with the alternating planes of +1 and -1 spins.
     <br/>
     All the Monte-Carlo simulation is done as a <b>WebGPU compute-shader</b> (flipping the spins,
     drawing a random number and rejecting the move or not, etc.)
@@ -259,16 +259,11 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
+
   for (const name of ['maxComputeInvocationsPerWorkgroup',
                       'maxComputeWorkgroupSizeX',
                       'maxComputeWorkgroupSizeY',
@@ -296,7 +291,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -648,12 +642,9 @@ async function init_textures(render) {
     render.depthTexture.destroy();
     render.depthTexture = undefined;
   }
-  render.depthTexture = render.device.createTexture({
-    label: 'depth',
-    size: [canvas.width, canvas.height],
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
+  render.depthTexture = Create_Texture(
+      render.device, canvas.width, canvas.height, 'depth24plus',
+      GPUTextureUsage.RENDER_ATTACHMENT, 1, 'depth');
 }
 
 function draw_mag(s, data, min, max, width, height = canvas.height / 8) {
@@ -827,21 +818,13 @@ async function init_buffers(render) {
                       GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
 
   // Create uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: UNIFORMS_SIZE * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  render.GPU.visu_uniforms = render.device.createBuffer({
-    size: 44 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.uniforms = Create_Uniform_Buffer(render.device, UNIFORMS_SIZE * 4);
+  render.GPU.visu_uniforms = Create_Uniform_Buffer(render.device, 44 * 4);
 
   // buffer to copy the stats out of the GPU
   const size_stats = render.nb_spins;
-  render.GPU.stats = render.device.createBuffer({
-    size: size_stats * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-  });
+  render.GPU.stats = Create_Storage_Buffer(
+      render.device, size_stats * 4, GPUBufferUsage.COPY_SRC);
   render.GPU.mapped_stats = render.device.createBuffer({
     size: size_stats * 4,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,

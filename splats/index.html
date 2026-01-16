@@ -318,16 +318,11 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
+
   for (const name of ['maxComputeInvocationsPerWorkgroup',
                       'maxComputeWorkgroupSizeX',
                       'maxComputeWorkgroupSizeY',
@@ -355,7 +350,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -747,24 +741,19 @@ async function init_buffers(render) {
         ", num_splats:", render.num_splats);
 
   // Create the persistent GPU buffers that will be filled progressively
-  render.GPU.sigmas = render.device.createBuffer({
-    size: render.max_splats * STRIDE_COV3 * UINT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  render.GPU.positions = render.device.createBuffer({
-    size: render.max_splats * STRIDE_POS * FLOAT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  render.GPU.colors = render.device.createBuffer({
-    size: render.max_splats * 1 * UINT32_SIZE,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.sigmas = Create_Storage_Buffer(
+      render.device, render.max_splats * STRIDE_COV3 * UINT32_SIZE,
+      GPUBufferUsage.COPY_DST);
+  render.GPU.positions = Create_Storage_Buffer(
+      render.device, render.max_splats * STRIDE_POS * FLOAT32_SIZE,
+      GPUBufferUsage.COPY_DST);
+  render.GPU.colors = Create_Storage_Buffer(
+      render.device, render.max_splats * 1 * UINT32_SIZE,
+      GPUBufferUsage.COPY_DST);
 
   // Create uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: 44 * FLOAT32_SIZE,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.uniforms = Create_Uniform_Buffer(
+      render.device, 44 * FLOAT32_SIZE);
 
   // shared CPU storage for sorted idx (persistent across sorting methods)
   render.CPU.idx = new Uint32Array(render.max_splats);
@@ -782,10 +771,9 @@ async function init_buffers(render) {
 async function init_side_buffers(render) {
   // create the cov2x2 buffer to communicate between COMPUTE and VERTEX shaders
   if (params.use_compute_shader) {
-    render.GPU.axis = render.device.createBuffer({
-      size: render.max_splats * STRIDE_COV2 * UINT32_SIZE,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.STORAGE,
-    });
+    render.GPU.axis = Create_Storage_Buffer(
+        render.device, render.max_splats * STRIDE_COV2 * UINT32_SIZE,
+        GPUBufferUsage.VERTEX);
   } else {
     if (render.GPU.axis != undefined) {
       render.GPU.axis.destroy();
@@ -800,26 +788,18 @@ async function init_textures(render) {
     render.multisample_texture = undefined;
   }
   if (params.use_MSAA) {
-    render.multisample_texture = render.device.createTexture({
-      label: 'multisample',
-      size: [canvas.width, canvas.height],
-      sampleCount: 4,
-      format: render.textureFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+    render.multisample_texture = Create_Texture(
+        render.device, canvas.width, canvas.height, render.textureFormat,
+        GPUTextureUsage.RENDER_ATTACHMENT, 4, 'multisample');
   }
   if (render.depthTexture != undefined) {
     render.depthTexture.destroy();
     render.depthTexture = undefined;
   }
   if (params.dbg.use_depth || params.dbg.draw_axis) {
-    render.depthTexture = render.device.createTexture({
-      label: 'depth',
-      size: [canvas.width, canvas.height],
-      format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      sampleCount: (params.use_MSAA ? 4 : 1),
-    });
+    render.depthTexture = Create_Texture(
+        render.device, canvas.width, canvas.height, 'depth24plus',
+        GPUTextureUsage.RENDER_ATTACHMENT, (params.use_MSAA ? 4 : 1), 'depth');
   }
 }
 
@@ -1540,7 +1520,7 @@ function transmit_splats() {
     render.stored_splats = render.num_splats;
     render.num_visible = render.num_splats;
     if (render.stored_splats == render.max_splats) {
-      trace(0, "Done transfering to GPU.");
+      trace(0, "Done transferring to GPU.");
       // get rid of unneeded buffers now but keep CPU.positions[] and CPU.idx[] for sorting
       render.CPU.sigmas = null;
       render.CPU.colors = null;

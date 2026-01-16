@@ -229,15 +229,9 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
 
   function onDeviceError(event) {
@@ -252,7 +246,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -519,21 +512,13 @@ async function init_textures(render) {
     render.multisample_texture = undefined;
   }
   if (params.use_MSAA) {
-    render.multisample_texture = render.device.createTexture({
-      label: 'multisample',
-      size: [canvas.width, canvas.height],
-      sampleCount: 4,
-      format: render.textureFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+    render.multisample_texture = Create_Texture(
+        render.device, canvas.width, canvas.height, render.textureFormat,
+        GPUTextureUsage.RENDER_ATTACHMENT, 4, 'multisample');
   }
-  render.depthTexture = render.device.createTexture({
-    label: 'depth',
-    size: [canvas.width, canvas.height],
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    sampleCount: (params.use_MSAA ? 4 : 1),
-  });
+  render.depthTexture = Create_Texture(
+      render.device, canvas.width, canvas.height, 'depth24plus',
+      GPUTextureUsage.RENDER_ATTACHMENT, (params.use_MSAA ? 4 : 1), 'depth');
 }
 
 // END OF GPU PART
@@ -782,47 +767,20 @@ async function set_poly(polyhedron_name) {
   const poly = kPolys[polyhedron_name];
 
   render.nb_vtx = poly.vtx.length / 4;
-  render.GPU.vtx = render.device.createBuffer({
-    size: poly.vtx.length * 4,  // vec4f
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.VERTEX,
-    mappedAtCreation: true,
-  });
-  new Float32Array(render.GPU.vtx.getMappedRange()).set(poly.vtx);
-  render.GPU.vtx.unmap();
+  render.GPU.vtx = Create_GPU_Buffer(render.device, poly.vtx, GPUBufferUsage.VERTEX);
 
   render.nb_faces = poly.faces.length / 3;
-  render.GPU.faces = render.device.createBuffer({
-    size: poly.faces.length * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    mappedAtCreation: true,
-  });
-  new Uint32Array(render.GPU.faces.getMappedRange()).set(poly.faces);
-  render.GPU.faces.unmap();
+  render.GPU.faces = Create_GPU_Buffer(render.device, poly.faces);
 
   [render.nb_idx, render.idx, render.nb_pts, render.uv] = MakeSubs(params.depth);
-  render.GPU.idx = render.device.createBuffer({
-    size: render.idx.length * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.INDEX,
-    mappedAtCreation: true,
-  });
-  new Uint32Array(render.GPU.idx.getMappedRange()).set(render.idx);
-  render.GPU.idx.unmap();
+  render.GPU.idx = Create_GPU_Buffer(render.device, render.idx, GPUBufferUsage.INDEX);
   render.idx = undefined;
 
-  render.GPU.uv = render.device.createBuffer({
-    size: render.uv.length * 2 * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    mappedAtCreation: true,
-  });
-  new Float32Array(render.GPU.uv.getMappedRange()).set(render.uv);
-  render.GPU.uv.unmap();
+  render.GPU.uv = Create_GPU_Buffer(render.device, render.uv);
   render.uv = undefined;
 
   // Create uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: 68 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.uniforms = Create_Uniform_Buffer(render.device, 68 * 4);
 
   render.txt_info = "vtx:" + render.nb_vtx + " faces:" + render.nb_faces
                   + " idx:" + render.nb_idx + " uv:" + render.nb_uv;
