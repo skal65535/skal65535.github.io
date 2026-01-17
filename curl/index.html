@@ -254,15 +254,9 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
 
   function onDeviceError(event) {
@@ -277,7 +271,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   render.target = [{
     format: render.textureFormat,
     blend: {
@@ -704,7 +697,7 @@ function create_post_pipeline(render) {
           count += textureSampleCompareLevel(light_depth, cmp_sampler, pos, light_ref);
           w += 1.;
         }
-        if (layer == nb_samples) {  // early out on the outter layer
+        if (layer == nb_samples) {  // early out on the outer layer
           if (count == 0) { return 0.; }
           if (count == w) { return 1.; }
         }
@@ -1007,36 +1000,23 @@ async function init_textures(render) {
     render.multisample_texture = undefined;
   }
   if (params.use_MSAA) {
-    render.multisample_texture = render.device.createTexture({
-      label: 'multisample',
-      size: [canvas.width, canvas.height],
-      sampleCount: 4,
-      format: render.textureFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+    render.multisample_texture = Create_Texture(
+        render.device, canvas.width, canvas.height, render.textureFormat,
+        GPUTextureUsage.RENDER_ATTACHMENT, 4, 'multisample');
   }
-  render.depth_texture = render.device.createTexture({
-    label: 'depth',
-    size: [canvas.width, canvas.height],
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    sampleCount: (params.use_MSAA ? 4 : 1),
-  });
-  render.post_texture = render.device.createTexture({
-    label: 'post',
-    size: [canvas.width, canvas.height],
-    format: render.textureFormat,
-    sampleCount: (params.use_MSAA ? 4 : 1),
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-  });
+  render.depth_texture = Create_Texture(
+      render.device, canvas.width, canvas.height, 'depth24plus',
+      GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      (params.use_MSAA ? 4 : 1), 'depth');
 
-  render.light_depth = render.device.createTexture({
-    label: 'light-depth',
-    size: [params.sm_size, params.sm_size, 1],
-    format: 'depth32float',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-  });
+  render.post_texture = Create_Texture(
+      render.device, canvas.width, canvas.height, render.textureFormat,
+      GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      (params.use_MSAA ? 4 : 1), 'post');
+
+  render.light_depth = Create_Texture(
+      render.device, params.sm_size, params.sm_size, 'depth32float',
+      GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING, 1, 'light-depth');
   render.GPU.light_entries = [
     { binding: 0, resource: render.light_depth.createView(), },
     { binding: 1, resource: render.device.createSampler({ compare: 'greater', }), },
@@ -1364,18 +1344,9 @@ async function set_poly(polyhedron_name) {
   render.GPU.uv = Create_GPU_Buffer(render.device, uv);
 
   // uniforms buffers
-  render.GPU.m_uniforms = render.device.createBuffer({
-    size: 68 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  render.GPU.l_uniforms = render.device.createBuffer({
-    size: 24 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  render.GPU.p_uniforms = render.device.createBuffer({
-    size: 17 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  })
+  render.GPU.m_uniforms = Create_Uniform_Buffer(render.device, 68 * 4);
+  render.GPU.l_uniforms = Create_Uniform_Buffer(render.device, 24 * 4);
+  render.GPU.p_uniforms = Create_Uniform_Buffer(render.device, 17 * 4);
   render.GPU.uniform_entries = [
     { binding: 0, resource: render.GPU.m_uniforms, },
     { binding: 1, resource: render.GPU.l_uniforms, },

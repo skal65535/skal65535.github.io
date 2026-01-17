@@ -12,7 +12,7 @@
 <div>
   <center>
     <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    Particules simulation with WebGPU (WIP)<p>
+    Particles simulation with WebGPU (WIP)<p>
     click and move mouse to add a circular obstacle<br/>
   </center>
 </div>
@@ -97,27 +97,20 @@ async function init_GPU(render) {
   if (render.device != undefined) render.device.destroy();
   render.device = undefined;
 
-  navigator.gpu || Oops("WebGPU not supported.");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("GPU Device acquired");
 
   params.wsize = render.device.limits['maxComputeInvocationsPerWorkgroup'];
   params.wsize_max = render.device.limits['maxComputeWorkgroupsPerDimension'];
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
                  alphaMode: 'premultiplied'});
 
-  render.uniforms_buffer = render.device.createBuffer({
-    size: 16 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.uniforms_buffer = Create_Uniform_Buffer(render.device, 16 * 4);
 }
 
 function init_particles(render) {
@@ -658,7 +651,7 @@ function init_GUI() {
   gui.add(params, 'force', 0.0, .2, .01).name('force radius').listen().onChange(params.change);
   gui.add(params, 'collisions').listen().onChange(params.change);
   gui.add(params, 'do_force').name('w/ force').listen();
-  gui.add(params, 'draw').name('draw particules').listen();
+  gui.add(params, 'draw').name('draw particles').listen();
   gui.add(params, 'animate_particles').name('animate particles').listen();
   gui.add(params, 'use_proxy').name('use proxy').listen().onChange(params.change);
   gui.add(params, 'use_LJ').name('use Lennard-Jones').listen().onChange(params.change);

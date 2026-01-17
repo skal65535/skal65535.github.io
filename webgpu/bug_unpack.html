@@ -19,6 +19,7 @@ Works fine with Chrome 120.0.6099.109 (Official Build) (arm64)
 <body onload="main();">
 <canvas id="main-canvas"'></canvas>
 
+<script src="../common/utils.js"></script>
 <script>"use strict";
 
 async function main() {
@@ -28,12 +29,10 @@ async function main() {
   canvas.height = innerHeight;
 
   // Init
-  navigator.gpu || Error("WebGPU not supported.");
-  const textureFormat = navigator.gpu.getPreferredCanvasFormat();
+  const gpu = await Init_WebGPU();
+  const device = gpu.device;
+  const textureFormat = gpu.format;
 
-  const adapter = await navigator.gpu.requestAdapter();
-  const device = await adapter.requestDevice();
-  if (!device) Error("Initialization failed.");
   ctx.configure({device: device,
                  format: textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,

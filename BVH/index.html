@@ -29,7 +29,7 @@
     be cached or pre-calculated (see the 'Optimized BVH' method).
     <br/>
     The shader will launch a ray for each pixel to recursively test the bounding boxes.
-    If a box is hit by the ray, the remaining triangles a split in two exact halves
+    If a box is hit by the ray, the remaining triangles are split in two exact halves
     and thus generate two new boxes to test, etc. until we hit a leaf.
     <br/>
     If you don't cache the bounding boxes corresponding to a group of 6
@@ -168,15 +168,9 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  navigator.gpu || Oops("WebGPU not supported.");
-  console.log("Navigator has GPU");
-
-  const adapter = await navigator.gpu.requestAdapter();
-  adapter || Oops("Couldn’t request WebGPU adapter.");
-  console.log("WebGPU Adapter ok");
-
-  render.device = await adapter.requestDevice();
-  render.device || Oops("Couldn’t request WebGPU logical device.");
+  const gpu = await Init_WebGPU(Oops);
+  render.device = gpu.device;
+  render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
 
   function onDeviceError(event) {
@@ -191,7 +185,6 @@ const GPU_init = async () => {
   }
   render.device.addEventListener('uncapturederror', onDeviceError);
 
-  render.textureFormat = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({device: render.device,
                  format: render.textureFormat,
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
@@ -395,7 +388,7 @@ function create_visu_pipeline1(render, with_bbox) {  // BVH method
         var dir_v = dir.x;
         if (dims[1] > dims[0]) { dir_i = 1; dir_v = dir.y; }
         if (dims[2] > dims[dir_i]) { dir_i = 2; dir_v = dir.z; }
-        // maximum the hit probabilityw by recursing the closest box first:
+        // maximize the hit probability by recursing the closest box first:
         if (dir_v < 0.) {
           stack[stack_size + 0] = vec2(start, split);
           stack[stack_size + 1] = vec2(split, segment.y);
@@ -582,19 +575,13 @@ async function init_buffers(render) {
   if (render.device == null) return;
 
   // Create uniforms buffer
-  render.GPU.uniforms = render.device.createBuffer({
-    size: 68 * 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
+  render.GPU.uniforms = Create_Uniform_Buffer(render.device, 68 * 4);
 
   // depth texture
-  render.GPU.depth_texture = render.device.createTexture({
-    label: 'depth',
-    size: [canvas.width, canvas.height],
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    sampleCount: 1,  // no MSAA for now
-  });
+  render.GPU.depth_texture = Create_Texture(
+      render.device, canvas.width, canvas.height, 'depth24plus',
+      GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      1, 'depth');
 }
 
 ////////////////////////////////////////////////////////////////////////////////
