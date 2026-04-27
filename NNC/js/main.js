@@ -1,0 +1,1168 @@
+import { initWebGPU } from './webgpu_manager.js';
+import { createModel, ModelTensors } from './model.js';
+import { buildShader } from './shader_builder.js';
+import { buildBackwardShaders, FP_SCALE } from './backward_builder.js';
+import { get_target_pixels, calculate_loss } from './loss.js';
+import { export_to_glsl } from './shader_exporter.js';
+import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
+
+// --- DOM references ---
+const sourcePanel  = document.getElementById('source-panel');
+const sourceCanvas = document.getElementById('source-canvas');
+const embedCanvas  = document.getElementById('embed-canvas');
+const layersCanvas = document.getElementById('layers-canvas');
+const canvas       = document.getElementById('canvas');
+const lossCanvas   = document.getElementById('loss-canvas');
+const fileInput    = document.getElementById('file-input');
+const dropOverlay  = document.getElementById('drop-overlay');
+
+const gridSizeSelect            = document.getElementById('grid-size');
+const embeddingChannelsSelect   = document.getElementById('embedding-channels');
+const mlpWidthSelect            = document.getElementById('mlp-width');
+const quantizationSelect        = document.getElementById('quantization');
+const smoothInterpolationCheckbox = document.getElementById('smooth-interpolation');
+const maxIterInput  = document.getElementById('max-iter');
+const embedLrInput  = document.getElementById('embed-lr');
+const mlpLrInput    = document.getElementById('mlp-lr');
+const maxIterVal    = document.getElementById('max-iter-val');
+const embedLrVal    = document.getElementById('embed-lr-val');
+const mlpLrVal      = document.getElementById('mlp-lr-val');
+const mlpRatioInput = document.getElementById('mlp-ratio');
+const mlpRatioVal   = document.getElementById('mlp-ratio-val');
+const bwdStrideInput = document.getElementById('bwd-stride');
+const bwdStrideVal   = document.getElementById('bwd-stride-val');
+const outputZoomInput = document.getElementById('output-zoom');
+const outputZoomVal   = document.getElementById('output-zoom-val');
+const startBtn      = document.getElementById('start-btn');
+const resetBtn      = document.getElementById('reset-btn');
+const saveBtn       = document.getElementById('save-btn');
+const loadBtn       = document.getElementById('load-btn');
+const modelFileInput = document.getElementById('model-file-input');
+const lossValueEl   = document.getElementById('loss-value');
+const stepCounterEl = document.getElementById('step-counter');
+const rateDisplayEl = document.getElementById('rate-display');
+const modelSizeEl   = document.getElementById('model-size');
+const inputSizeEl   = document.getElementById('input-size');
+const iterLabelEl   = document.getElementById('iter-label');
+const statusDotEl   = document.getElementById('status-dot');
+const statusTextEl  = document.getElementById('status-text');
+const sourceResEl   = document.getElementById('source-res');
+const outputResEl   = document.getElementById('output-res');
+
+// --- State ---
+let BASE_CANVAS_W = canvas.width;
+let BASE_CANVAS_H = canvas.height;
+let config = {};
+let loadedImage   = null;
+let webGpuContext = null;
+let model         = null;
+let pipeline      = null;
+let bindGroup     = null;
+let outputBuffers  = {};
+let readbackBuffers = {};
+let targetPixels  = null;
+let trainingActive  = false;
+let animationFrameId = null;
+let lastWeights   = null;
+let layerRangeEma = null; // EMA of [min, max] per layer for visualization
+let stepCount     = 0;
+let lossHistory   = [];
+let lastStepTime  = 0;
+let lastConfig    = null; // { gridSize, embeddingChannels, mlpWidth } from last full init
+let adamT         = 0;   // GPU Adam timestep (incremented each step)
+
+// Backward pipelines + bind groups (rebuilt on model change)
+let fwdUniformsBuf   = null; // 160-byte forward uniform buffer (includes emb_range)
+let bwdPipelines     = null;
+let bwdBindGroups    = null;
+let bwdBuffers       = {}; // intermediate per-pixel grad buffers (GPU only)
+let targetGpuBuf     = null; // target image uploaded once per training run
+let bwdUniformsBuf   = null; // BwdUniforms (width, height, stride, sampled_count)
+let adamUniformsBufs = {}; // AdamUniforms uniform buffer per parameter tensor
+
+const MAX_LOSS_HISTORY = 400;
+
+// --- Compressed size estimate ---
+function computeModelSize() {
+    const gs   = parseInt(gridSizeSelect.value);
+    const embCh = parseInt(embeddingChannelsSelect.value);
+    const mlpW  = parseInt(mlpWidthSelect.value);
+    const emb   = gs * gs * embCh;
+    const mlp   = embCh*mlpW + mlpW + mlpW*mlpW + mlpW + mlpW*4 + 4;
+    const mlpBpp = quantizationSelect.value === 'none' ? 4 : 1;
+    return emb * 1 + mlp * mlpBpp;  // embeddings always 8-bit packed
+}
+
+function updateSizeDisplay() {
+    const b = computeModelSize();
+    modelSizeEl.textContent = b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B';
+}
+
+// --- LR slider helpers (log scale: slider 0–100 → 1e-4 … 1e-1) ---
+const sliderToLR = v => Math.pow(10, -4 + (v / 100) * 3);
+const formatLR   = lr => lr.toExponential(1);
+
+function syncSliderDisplay(input, display) {
+    display.textContent = formatLR(sliderToLR(parseInt(input.value)));
+}
+
+syncSliderDisplay(embedLrInput, embedLrVal);
+syncSliderDisplay(mlpLrInput,   mlpLrVal);
+updateSizeDisplay();
+
+embedLrInput.addEventListener('input', () => syncSliderDisplay(embedLrInput, embedLrVal));
+mlpLrInput.addEventListener('input',   () => syncSliderDisplay(mlpLrInput, mlpLrVal));
+maxIterInput.addEventListener('input', () => {
+    const v = parseInt(maxIterInput.value);
+    maxIterVal.textContent = v === 0 ? '∞' : v.toLocaleString();
+});
+mlpRatioInput.addEventListener('input', () => { mlpRatioVal.textContent = mlpRatioInput.value; });
+bwdStrideInput.addEventListener('input', () => { bwdStrideVal.textContent = bwdStrideInput.value; });
+outputZoomInput.addEventListener('input', () => {
+    const scale = parseFloat(outputZoomInput.value);
+    outputZoomVal.textContent = scale + '×';
+    if (!trainingActive && model && config.mlpWidth && lastWeights?.embeddings) {
+        const W = Math.round(BASE_CANVAS_W * scale);
+        const H = Math.round(BASE_CANVAS_H * scale);
+        outputResEl.textContent = `${W}×${H}`;
+        if (scale <= 1.0) {
+            canvas.style.width = '';
+            canvas.style.height = '';
+            canvas.style.maxWidth = '';
+            canvas.style.maxHeight = '';
+            canvas.parentElement.style.overflow = 'hidden';
+        } else {
+            canvas.style.maxWidth  = 'none';
+            canvas.style.maxHeight = 'none';
+            canvas.style.width  = W + 'px';
+            canvas.style.height = H + 'px';
+            canvas.parentElement.style.overflow = 'auto';
+        }
+        runZoomInference(W, H);
+    }
+});
+
+function configCompatible(a, b) {
+    return a && b &&
+        a.gridSize === b.gridSize &&
+        a.embeddingChannels === b.embeddingChannels &&
+        a.mlpWidth === b.mlpWidth;
+}
+
+function currentModelConfig() {
+    const mlpWidth = parseInt(mlpWidthSelect.value);
+    const embeddingChannels = parseInt(embeddingChannelsSelect.value);
+    return {
+        gridSize:          parseInt(gridSizeSelect.value),
+        embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
+        mlpWidth:          Math.ceil(mlpWidth / 4) * 4,
+    };
+}
+
+function updateStartLabel() {
+    if (configCompatible(lastConfig, currentModelConfig()) && model) {
+        startBtn.textContent = '▶ Continue';
+    } else {
+        startBtn.textContent = '▶ Start';
+    }
+    resetBtn.disabled = !model || trainingActive;
+}
+
+// --- Status indicator ---
+function setStatus(s) {
+    const labels = { idle: 'IDLE', training: 'TRAINING', stopped: 'STOPPED' };
+    statusTextEl.textContent = labels[s] || s;
+    statusDotEl.className    = 'status-dot ' + s;
+    if (s === 'training') {
+        startBtn.textContent = '■ Stop';
+        startBtn.classList.add('stopping');
+        resetBtn.disabled = true;
+        outputZoomInput.disabled = true;
+    } else {
+        startBtn.classList.remove('stopping');
+        updateStartLabel();
+        outputZoomInput.disabled = false;
+    }
+}
+
+// --- Source canvas ---
+function drawSourceImage() {
+    if (!loadedImage) return;
+    const ctx = sourceCanvas.getContext('2d');
+    ctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+    ctx.drawImage(loadedImage, 0, 0, sourceCanvas.width, sourceCanvas.height);
+    dropOverlay.classList.add('hidden');
+}
+
+// --- Output canvas (2D) ---
+function drawOutputCanvas(outputData) {
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.createImageData(canvas.width, canvas.height);
+    const px = imageData.data;
+    for (let i = 0; i < outputData.length; i += 4) {
+        px[i]   = outputData[i]   * 255 | 0;
+        px[i+1] = outputData[i+1] * 255 | 0;
+        px[i+2] = outputData[i+2] * 255 | 0;
+        px[i+3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+}
+
+// --- Embeddings visualization: all channels as grayscale thumbnails ---
+// Uses bilinear/smooth interpolation matching the forward shader so the panel
+// accurately reflects what the network actually samples.
+function drawEmbeddings() {
+    if (!lastWeights?.embeddings || !config.gridSize) return;
+    const { gridSize, embeddingChannels } = config;
+    if (!Number.isInteger(embeddingChannels) || embeddingChannels < 1) return;
+    const emb = lastWeights.embeddings;
+    const w = embedCanvas.width, h = embedCanvas.height;
+    const ctx = embedCanvas.getContext('2d');
+
+    const cols = Math.max(1, Math.ceil(Math.sqrt(embeddingChannels)));
+    const rows = Math.max(1, Math.ceil(embeddingChannels / cols));
+
+    const imgData = ctx.createImageData(w, h);
+    const data = imgData.data;
+
+    for (let screenY = 0; screenY < h; screenY++) {
+        for (let screenX = 0; screenX < w; screenX++) {
+            const col = Math.floor(screenX * cols / w);
+            const row = Math.floor(screenY * rows / h);
+            const ch  = row * cols + col;
+
+            let v = 0;
+            if (ch < embeddingChannels) {
+                const localX = screenX - Math.floor(col * w / cols);
+                const localY = screenY - Math.floor(row * h / rows);
+                const localW = Math.floor(w / cols);
+                const localH = Math.floor(h / rows);
+                if (localX === 0 || localY === 0 || localX === localW - 1 || localY === localH - 1) {
+                    v = 20;
+                } else {
+                    const gx = Math.min((localX - 1) * gridSize / Math.max(1, localW - 2) | 0, gridSize - 1);
+                    const gy = Math.min((localY - 1) * gridSize / Math.max(1, localH - 2) | 0, gridSize - 1);
+                    const val = emb[(gy * gridSize + gx) * embeddingChannels + ch];
+                    v = Math.max(0, Math.min(255, (val * 0.5 + 0.5) * 255 | 0));
+                }
+            }
+
+            const idx = (screenY * w + screenX) * 4;
+            data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
+        }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+}
+
+// --- Layer weight visualization: L1/L2/L3 matrices as grayscale panels ---
+function drawLayers() {
+    const w = lastWeights;
+    if (!w?.layer1Weights || !config.mlpWidth) return;
+    const { mlpWidth, embeddingChannels } = config;
+    const ctx = layersCanvas.getContext('2d');
+    const cw = layersCanvas.width, ch = layersCanvas.height;
+
+    // 3 layers stacked vertically; proportional height by row count
+    const layers = [
+        { data: w.layer1Weights, rows: mlpWidth,  cols: embeddingChannels, label: 'L1' },
+        { data: w.layer2Weights, rows: mlpWidth,  cols: mlpWidth,          label: 'L2' },
+        { data: w.layer3Weights, rows: 4,          cols: mlpWidth,          label: 'L3' },
+    ];
+    const totalRows = layers.reduce((s, l) => s + l.rows, 0);
+    const imgData = ctx.createImageData(cw, ch);
+    const data = imgData.data;
+
+    const EMA_ALPHA = 0.98; // slow adaptation: ~50-step lag
+    if (!layerRangeEma) layerRangeEma = layers.map(() => ({ mn: null, mx: null }));
+
+    let yOffset = 0;
+    for (let li = 0; li < layers.length; li++) {
+        const layer = layers[li];
+        const bandH = Math.round(layer.rows / totalRows * ch);
+        let cmn = Infinity, cmx = -Infinity;
+        for (let i = 0; i < layer.data.length; i++) {
+            if (layer.data[i] < cmn) cmn = layer.data[i];
+            if (layer.data[i] > cmx) cmx = layer.data[i];
+        }
+        const ema = layerRangeEma[li];
+        if (ema.mn === null) { ema.mn = cmn; ema.mx = cmx; }
+        else { ema.mn = EMA_ALPHA * ema.mn + (1 - EMA_ALPHA) * cmn;
+               ema.mx = EMA_ALPHA * ema.mx + (1 - EMA_ALPHA) * cmx; }
+        const mn = ema.mn, mx = ema.mx;
+        const scale = mx > mn ? 255 / (mx - mn) : 1;
+        for (let py = yOffset; py < yOffset + bandH; py++) {
+            const row = Math.min(Math.floor((py - yOffset) / bandH * layer.rows), layer.rows - 1);
+            for (let px = 0; px < cw; px++) {
+                const col = Math.min(Math.floor(px / cw * layer.cols), layer.cols - 1);
+                const v = (layer.data[row * layer.cols + col] - mn) * scale | 0;
+                const idx = (py * cw + px) * 4;
+                data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
+            }
+        }
+        yOffset += bandH;
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    // Draw dividers and labels
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.font = '11px monospace';
+    yOffset = 0;
+    for (const layer of layers) {
+        const bandH = Math.round(layer.rows / totalRows * ch);
+        ctx.fillText(layer.label, 4, yOffset + 12);
+        if (yOffset > 0) { ctx.fillRect(0, yOffset, cw, 1); }
+        yOffset += bandH;
+    }
+}
+
+// --- Loss curve ---
+function drawLossCurve() {
+    const ctx = lossCanvas.getContext('2d');
+    const w = lossCanvas.width, h = lossCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const hist = lossHistory.slice(-MAX_LOSS_HISTORY);
+    if (hist.length < 2) return;
+
+    const maxL  = Math.max(...hist);
+    const minL  = Math.min(...hist);
+    const range = maxL - minL || maxL || 1;
+    const pad   = 5;
+    const n     = hist.length;
+
+    // Subtle horizontal grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    ctx.lineWidth   = 1;
+    for (let i = 0; i <= 3; i++) {
+        const y = pad + (i / 3) * (h - pad * 2);
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    const toX = i => (i / (n - 1)) * w;
+    const toY = v => h - pad - ((v - minL) / range) * (h - pad * 2);
+
+    // Fill area under curve
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0,   'rgba(245,166,36,0.14)');
+    grad.addColorStop(1,   'rgba(245,166,36,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(toX(0), h);
+    for (let i = 0; i < n; i++) ctx.lineTo(toX(i), toY(hist[i]));
+    ctx.lineTo(toX(n - 1), h);
+    ctx.closePath();
+    ctx.fill();
+
+    // Main line with amber glow
+    ctx.strokeStyle = '#f5a624';
+    ctx.lineWidth   = 1.5;
+    ctx.shadowColor = 'rgba(245,166,36,0.55)';
+    ctx.shadowBlur  = 5;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+        i === 0 ? ctx.moveTo(toX(i), toY(hist[i])) : ctx.lineTo(toX(i), toY(hist[i]));
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+}
+
+// --- File / drop zone ---
+sourcePanel.addEventListener('click', (e) => {
+    if (e.target !== fileInput) fileInput.click();
+});
+fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) handleFile(e.target.files[0]);
+});
+sourcePanel.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropOverlay.classList.remove('hidden');
+    dropOverlay.classList.add('dragover');
+});
+sourcePanel.addEventListener('dragleave', () => {
+    dropOverlay.classList.remove('dragover');
+    if (loadedImage) dropOverlay.classList.add('hidden');
+});
+sourcePanel.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropOverlay.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+});
+
+function loadImageOntoCanvas(img) {
+    loadedImage = img;
+    const MAX = 512;
+    const aspect = img.naturalWidth / img.naturalHeight;
+    BASE_CANVAS_W = aspect >= 1 ? MAX : Math.round(MAX * aspect);
+    BASE_CANVAS_H = aspect >= 1 ? Math.round(MAX / aspect) : MAX;
+    sourceCanvas.width  = BASE_CANVAS_W;
+    sourceCanvas.height = BASE_CANVAS_H;
+    canvas.width  = BASE_CANVAS_W;
+    canvas.height = BASE_CANVAS_H;
+    canvas.style.width = '';
+    canvas.style.height = '';
+    canvas.style.maxWidth = '';
+    canvas.style.maxHeight = '';
+    sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    drawSourceImage();
+    const bytes = BASE_CANVAS_W * BASE_CANVAS_H * 3;
+    inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
+}
+
+async function handleFile(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => loadImageOntoCanvas(img);
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+// --- Embedding range helpers ---
+function computeEmbRange(embData, embCh, gridCount) {
+    const range = new Float32Array(embCh * 2);
+    for (let c = 0; c < embCh; c++) {
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < gridCount; i++) {
+            const v = embData[i * embCh + c];
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+        range[c * 2]     = mn === Infinity  ? -1 : mn;
+        range[c * 2 + 1] = mx === -Infinity ?  1 : mx;
+    }
+    return range;
+}
+
+// Build 160-byte ArrayBuffer for the forward Uniforms struct.
+// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32).
+// range is optional (null → identity [-1,1] for all channels).
+function buildFwdUniforms(gSize, embCh, mlpW, w, h, range) {
+    const ab  = new ArrayBuffer(160);
+    const u32 = new Uint32Array(ab);
+    const f32 = new Float32Array(ab);
+    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
+    // default: identity unscaling [-1,1] for all 4 planes
+    for (let p = 0; p < 4; p++) {
+        f32[8+p*8+0]=f32[8+p*8+1]=f32[8+p*8+2]=f32[8+p*8+3]=-1; // mn
+        f32[8+p*8+4]=f32[8+p*8+5]=f32[8+p*8+6]=f32[8+p*8+7]= 1; // mx
+    }
+    if (range) {
+        const numPlanes = embCh / 4;
+        for (let p = 0; p < numPlanes; p++) {
+            for (let b = 0; b < 4; b++) {
+                const c = p * 4 + b;
+                f32[8+p*8+b]   = range[c*2];
+                f32[8+p*8+4+b] = range[c*2+1];
+            }
+        }
+    }
+    return ab;
+}
+
+// Update only the emb_range portion of fwdUniformsBuf (byte offset 32).
+function uploadEmbRange(range, embCh, buf, device) {
+    const numPlanes = embCh / 4;
+    const f32 = new Float32Array(32);
+    for (let p = 0; p < 4; p++) {
+        f32[p*8+0]=f32[p*8+1]=f32[p*8+2]=f32[p*8+3]=-1;
+        f32[p*8+4]=f32[p*8+5]=f32[p*8+6]=f32[p*8+7]= 1;
+    }
+    for (let p = 0; p < numPlanes; p++) {
+        for (let b = 0; b < 4; b++) {
+            const c = p*4+b;
+            f32[p*8+b]   = range[c*2];
+            f32[p*8+4+b] = range[c*2+1];
+        }
+    }
+    device.queue.writeBuffer(buf, 32, f32);
+}
+
+function cpuPackEmbeddings(embF32, embCh, range) {
+    const numPlanes = embCh / 4;
+    const gridCount = embF32.length / embCh;
+    const packed = new Uint32Array(gridCount * numPlanes);
+    for (let i = 0; i < gridCount; i++) {
+        for (let pl = 0; pl < numPlanes; pl++) {
+            let p = 0;
+            for (let b = 0; b < 4; b++) {
+                const c = pl * 4 + b;
+                const v = embF32[i * embCh + c];
+                const mn = range[c * 2], mx = range[c * 2 + 1];
+                const span = mx - mn;
+                const s = span < 1e-9 ? 0 : Math.max(-1, Math.min(1, 2 * (v - mn) / span - 1));
+                p |= (Math.round(s * 127) & 0xff) << (b * 8);
+            }
+            packed[i * numPlanes + pl] = p >>> 0;
+        }
+    }
+    return packed;
+}
+
+// --- WebGPU setup ---
+async function createPipeline() {
+    const shaderModule = webGpuContext.device.createShaderModule({ code: buildShader(config) });
+    pipeline = webGpuContext.device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: shaderModule, entryPoint: 'main' },
+    });
+}
+
+function createBindGroup() {
+    const { mlpWidth, gridSize, embeddingChannels } = config;
+    fwdUniformsBuf = webGpuContext.uniformBuffer(160);
+    webGpuContext.device.queue.writeBuffer(fwdUniformsBuf, 0,
+        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth, canvas.width, canvas.height, null));
+
+    const pixelCount = canvas.width * canvas.height;
+    const embSize    = gridSize * gridSize * embeddingChannels;
+
+    outputBuffers.interLayer1 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    outputBuffers.interLayer2 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    outputBuffers.final       = webGpuContext.outputBuffer(pixelCount * 4 * 4);
+
+    readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
+    readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4);
+    readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth * embeddingChannels * 4);
+    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * mlpWidth * 4);
+    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer(4 * mlpWidth * 4);
+
+    bindGroup = webGpuContext.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0,  resource: { buffer: fwdUniformsBuf } },
+            { binding: 1,  resource: { buffer: model.embeddings_q } },
+            { binding: 2,  resource: { buffer: model.layer1.weights } },
+            { binding: 3,  resource: { buffer: model.layer1.biases  } },
+            { binding: 4,  resource: { buffer: model.layer2.weights } },
+            { binding: 5,  resource: { buffer: model.layer2.biases  } },
+            { binding: 6,  resource: { buffer: model.layer3.weights } },
+            { binding: 7,  resource: { buffer: model.layer3.biases  } },
+            { binding: 8,  resource: { buffer: outputBuffers.interLayer1 } },
+            { binding: 9,  resource: { buffer: outputBuffers.interLayer2 } },
+            { binding: 10, resource: { buffer: outputBuffers.final       } },
+        ],
+    });
+}
+
+function createBackwardPipelines() {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const pixelCount = canvas.width * canvas.height;
+    const shaders = buildBackwardShaders(config);
+
+    const makePipeline = code => device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
+    });
+
+    bwdPipelines = {
+        gradOutput:     makePipeline(shaders.gradOutput),
+        gradL3:         makePipeline(shaders.gradL3),
+        gradL2:         makePipeline(shaders.gradL2),
+        gradL1:         makePipeline(shaders.gradL1),
+        adamStep:       makePipeline(shaders.adamStep),
+        packEmbeddings: makePipeline(shaders.packEmbeddings),
+    };
+
+    // Upload target image once
+    if (targetGpuBuf) targetGpuBuf.destroy();
+    targetGpuBuf = webGpuContext.zeroBuffer(targetPixels.length);
+    device.queue.writeBuffer(targetGpuBuf, 0, targetPixels);
+
+    // BwdUniforms (width, height, stride, sampled_count)
+    bwdUniformsBuf = webGpuContext.uniformBuffer(4 * 4);
+
+    // Per-pixel intermediate gradient buffers (no races, plain f32, GPU-only)
+    bwdBuffers.gradFinal        = webGpuContext.storageBuffer(pixelCount * 4 * 4);
+    bwdBuffers.gradInter2Preact = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    bwdBuffers.gradInter1Preact = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+
+    // Adam uniform buffers (one per parameter tensor, updated each step)
+    const makeAdamBuf = () => webGpuContext.uniformBuffer(10 * 4);
+    adamUniformsBufs = ModelTensors.create(() => makeAdamBuf());
+
+    // Pre-allocate scratch buffers reused every step (avoids per-frame heap allocation)
+    bwdBuffers.adamAB = new ArrayBuffer(10 * 4);
+    bwdBuffers.adamF  = new Float32Array(bwdBuffers.adamAB);
+    bwdBuffers.adamU  = new Uint32Array(bwdBuffers.adamAB);
+    bwdBuffers.gradZero = {};
+    for (const [k, buf] of Object.entries(model.gradAtomic)) {
+        bwdBuffers.gradZero[k] = new Int32Array(buf.size / 4); // zero-filled, reused
+    }
+
+    // Helper: bind group from flat buffer list
+    const makeBG = (pipeline, bufs) => device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })),
+    });
+
+    const m = model;
+    bwdBindGroups = {
+        gradOutput: makeBG(bwdPipelines.gradOutput, [
+            bwdUniformsBuf, outputBuffers.final, targetGpuBuf, bwdBuffers.gradFinal,
+        ]),
+        gradL3: makeBG(bwdPipelines.gradL3, [
+            bwdUniformsBuf, bwdBuffers.gradFinal, outputBuffers.interLayer2, m.layer3.weights,
+            bwdBuffers.gradInter2Preact, m.gradAtomic.layer3_weights, m.gradAtomic.layer3_biases,
+        ]),
+        gradL2: makeBG(bwdPipelines.gradL2, [
+            bwdUniformsBuf, bwdBuffers.gradInter2Preact, outputBuffers.interLayer2,
+            outputBuffers.interLayer1, m.layer2.weights,
+            bwdBuffers.gradInter1Preact, m.gradAtomic.layer2_weights, m.gradAtomic.layer2_biases,
+        ]),
+        gradL1: makeBG(bwdPipelines.gradL1, [
+            bwdUniformsBuf, bwdBuffers.gradInter1Preact, outputBuffers.interLayer1,
+            m.layer1.weights, m.embeddings,
+            m.gradAtomic.layer1_weights, m.gradAtomic.layer1_biases, m.gradAtomic.embeddings,
+        ]),
+        adam: {
+            embeddings:     makeBG(bwdPipelines.adamStep, [adamUniformsBufs.embeddings,     m.gradAtomic.embeddings,     m.embeddings,     m.adamM.embeddings,     m.adamV.embeddings]),
+            layer1_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer1_weights,  m.gradAtomic.layer1_weights, m.layer1.weights, m.adamM.layer1_weights, m.adamV.layer1_weights]),
+            layer1_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer1_biases,   m.gradAtomic.layer1_biases,  m.layer1.biases,  m.adamM.layer1_biases,  m.adamV.layer1_biases]),
+            layer2_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer2_weights,  m.gradAtomic.layer2_weights, m.layer2.weights, m.adamM.layer2_weights, m.adamV.layer2_weights]),
+            layer2_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer2_biases,   m.gradAtomic.layer2_biases,  m.layer2.biases,  m.adamM.layer2_biases,  m.adamV.layer2_biases]),
+            layer3_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer3_weights,  m.gradAtomic.layer3_weights, m.layer3.weights, m.adamM.layer3_weights, m.adamV.layer3_weights]),
+            layer3_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer3_biases,   m.gradAtomic.layer3_biases,  m.layer3.biases,  m.adamM.layer3_biases,  m.adamV.layer3_biases]),
+        },
+        packEmbeddings: makeBG(bwdPipelines.packEmbeddings, [m.embeddings, m.embeddings_q, m.embeddings_range]),
+    };
+
+    // Pack initial f32 embeddings → u32 before first forward pass
+    {
+        const { gridSize, embeddingChannels: embCh } = config;
+        const ce = device.createCommandEncoder();
+        const p  = ce.beginComputePass();
+        p.setPipeline(bwdPipelines.packEmbeddings);
+        p.setBindGroup(0, bwdBindGroups.packEmbeddings);
+        p.dispatchWorkgroups(Math.ceil(gridSize * gridSize * embCh / 4 / 64));
+        p.end();
+        device.queue.submit([ce.finish()]);
+    }
+}
+
+// --- Training loop ---
+async function train() {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const pixelCount = canvas.width * canvas.height;
+    const embSize    = gridSize * gridSize * embCh;
+
+    const stride       = parseInt(bwdStrideInput.value) || 1;
+    const sampledCount = Math.ceil(pixelCount / stride);
+    adamT++;
+
+    const embedLR = sliderToLR(parseInt(embedLrInput.value));
+    const mlpLR   = sliderToLR(parseInt(mlpLrInput.value));
+    const tensorCfg = {
+        embeddings:     { lr: embedLR, size: embSize,             l2: 0.002 / embSize, clamp: 1 },
+        layer1_weights: { lr: mlpLR,   size: mlpWidth * embCh,    l2: 0, clamp: 0 },
+        layer1_biases:  { lr: mlpLR,   size: mlpWidth,             l2: 0, clamp: 0 },
+        layer2_weights: { lr: mlpLR,   size: mlpWidth * mlpWidth,  l2: 0, clamp: 0 },
+        layer2_biases:  { lr: mlpLR,   size: mlpWidth,             l2: 0, clamp: 0 },
+        layer3_weights: { lr: mlpLR,   size: 4 * mlpWidth,         l2: 0, clamp: 0 },
+        layer3_biases:  { lr: mlpLR,   size: 4,                    l2: 0, clamp: 0 },
+    };
+
+    for (const [k, buf] of Object.entries(model.gradAtomic)) {
+        device.queue.writeBuffer(buf, 0, bwdBuffers.gradZero[k]);
+    }
+    device.queue.writeBuffer(bwdUniformsBuf, 0, new Uint32Array([canvas.width, canvas.height, stride, sampledCount]));
+
+    const { adamAB, adamF, adamU } = bwdBuffers;
+    adamF[1] = 0.9; adamF[2] = 0.999; adamF[3] = 1e-8; adamF[6] = FP_SCALE;
+    adamU[4] = adamT; adamU[9] = sampledCount;
+    for (const [k, tc] of Object.entries(tensorCfg)) {
+        adamF[0] = tc.lr; adamU[5] = tc.size; adamF[7] = tc.l2; adamU[8] = tc.clamp;
+        device.queue.writeBuffer(adamUniformsBufs[k], 0, adamAB);
+    }
+
+    const ce = device.createCommandEncoder();
+
+    const fwdPass = ce.beginComputePass();
+    fwdPass.setPipeline(pipeline);
+    fwdPass.setBindGroup(0, bindGroup);
+    fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+    fwdPass.end();
+
+    // separate compute pass per shader = implicit memory barrier between them
+    const bwdDispatch = Math.ceil(pixelCount / 64);
+    const runPass = (pl, bg, dx, dy = 1) => {
+        const p = ce.beginComputePass();
+        p.setPipeline(pl); p.setBindGroup(0, bg);
+        p.dispatchWorkgroups(dx, dy); p.end();
+    };
+    runPass(bwdPipelines.gradOutput, bwdBindGroups.gradOutput, bwdDispatch);
+    runPass(bwdPipelines.gradL3,     bwdBindGroups.gradL3,     bwdDispatch);
+    runPass(bwdPipelines.gradL2,     bwdBindGroups.gradL2,     bwdDispatch);
+    runPass(bwdPipelines.gradL1,     bwdBindGroups.gradL1,     Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+
+    const adamPass = ce.beginComputePass();
+    for (const k of ModelTensors.KEYS) {
+        adamPass.setPipeline(bwdPipelines.adamStep);
+        adamPass.setBindGroup(0, bwdBindGroups.adam[k]);
+        adamPass.dispatchWorkgroups(Math.ceil(tensorCfg[k].size / 64));
+    }
+    adamPass.end();
+
+    // Pack updated f32 embeddings → u32 for next forward pass
+    runPass(bwdPipelines.packEmbeddings, bwdBindGroups.packEmbeddings, Math.ceil(embSize / 4 / 64));
+
+    ce.copyBufferToBuffer(outputBuffers.final,    0, readbackBuffers.final,         0, outputBuffers.final.size);
+    ce.copyBufferToBuffer(model.embeddings,       0, readbackBuffers.embeddings,    0, model.embeddings.size);
+    ce.copyBufferToBuffer(model.layer1.weights,   0, readbackBuffers.layer1Weights, 0, model.layer1.weights.size);
+    ce.copyBufferToBuffer(model.layer2.weights,   0, readbackBuffers.layer2Weights, 0, model.layer2.weights.size);
+    ce.copyBufferToBuffer(model.layer3.weights,   0, readbackBuffers.layer3Weights, 0, model.layer3.weights.size);
+
+    device.queue.submit([ce.finish()]);
+
+    await Promise.all([
+        readbackBuffers.final.mapAsync(GPUMapMode.READ),
+        readbackBuffers.embeddings.mapAsync(GPUMapMode.READ),
+        readbackBuffers.layer1Weights.mapAsync(GPUMapMode.READ),
+        readbackBuffers.layer2Weights.mapAsync(GPUMapMode.READ),
+        readbackBuffers.layer3Weights.mapAsync(GPUMapMode.READ),
+    ]);
+
+    const finalData  = new Float32Array(readbackBuffers.final.getMappedRange());
+    const embData    = new Float32Array(readbackBuffers.embeddings.getMappedRange());
+    const l1wData    = new Float32Array(readbackBuffers.layer1Weights.getMappedRange());
+    const l2wData    = new Float32Array(readbackBuffers.layer2Weights.getMappedRange());
+    const l3wData    = new Float32Array(readbackBuffers.layer3Weights.getMappedRange());
+
+    drawOutputCanvas(finalData);
+    const loss = calculate_loss(finalData, targetPixels);
+
+    lastWeights = {
+        embeddings:    new Float32Array(embData),
+        layer1Weights: new Float32Array(l1wData),
+        layer2Weights: new Float32Array(l2wData),
+        layer3Weights: new Float32Array(l3wData),
+    };
+
+    // Update per-channel range for next step's pack shader + forward unscale
+    const range = computeEmbRange(embData, embCh, gridSize * gridSize);
+    device.queue.writeBuffer(model.embeddings_range, 0, range);
+    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
+
+    readbackBuffers.final.unmap();
+    readbackBuffers.embeddings.unmap();
+    readbackBuffers.layer1Weights.unmap();
+    readbackBuffers.layer2Weights.unmap();
+    readbackBuffers.layer3Weights.unmap();
+
+    stepCount++;
+    lossHistory.push(loss);
+
+    const now = performance.now();
+    const rate = lastStepTime > 0 ? (1000 / (now - lastStepTime)).toFixed(1) : '—';
+    lastStepTime = now;
+
+    lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+    stepCounterEl.textContent = stepCount.toLocaleString();
+    rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
+    iterLabelEl.textContent   = `step ${stepCount}`;
+
+    drawEmbeddings();
+    drawLayers();
+    drawLossCurve();
+
+    const maxIter = parseInt(maxIterInput.value);
+    if (maxIter > 0 && stepCount >= maxIter) {
+        trainingActive = false;
+        setStatus('stopped');
+        return;
+    }
+
+    if (trainingActive) {
+        animationFrameId = requestAnimationFrame(train);
+    }
+}
+
+function run(initialWeights) {
+    targetPixels  = get_target_pixels(loadedImage, canvas);
+    stepCount     = 0;
+    lossHistory   = [];
+    lastStepTime  = 0;
+    layerRangeEma = null;
+
+    // Clear visualizations
+    embedCanvas.getContext('2d').clearRect(0, 0, embedCanvas.width, embedCanvas.height);
+    lossCanvas.getContext('2d').clearRect(0, 0, lossCanvas.width, lossCanvas.height);
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    lossValueEl.textContent   = '—';
+    stepCounterEl.textContent = '0';
+    rateDisplayEl.textContent = '—';
+    iterLabelEl.textContent   = '—';
+
+    {
+        const { gridSize, embeddingChannels: embCh } = config;
+        const src = initialWeights !== null ? initialWeights.embeddings : lastWeights?.embeddings;
+        if (initialWeights !== null) {
+            adamT = 0;
+            lastWeights = { embeddings: new Float32Array(initialWeights.embeddings) };
+        }
+        if (src) {
+            const range = computeEmbRange(src, embCh, gridSize * gridSize);
+            webGpuContext.device.queue.writeBuffer(model.embeddings_range, 0, range);
+            uploadEmbRange(range, embCh, fwdUniformsBuf, webGpuContext.device);
+        }
+    }
+
+    createBackwardPipelines();
+
+    trainingActive   = true;
+    animationFrameId = requestAnimationFrame(train);
+}
+
+// --- Start / Stop / Reset buttons ---
+startBtn.addEventListener('click', async () => {
+    if (trainingActive) {
+        trainingActive = false;
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+        setStatus('stopped');
+        return;
+    }
+    if (!loadedImage) {
+        alert("Please load an image first.");
+        return;
+    }
+    canvas.width  = BASE_CANVAS_W;
+    canvas.height = BASE_CANVAS_H;
+    canvas.style.width = '';
+    canvas.style.height = '';
+    canvas.parentElement.style.overflow = 'hidden';
+    config = {
+        gridSize:             parseInt(gridSizeSelect.value),
+        embeddingChannels:    parseInt(embeddingChannelsSelect.value),
+        mlpWidth:             parseInt(mlpWidthSelect.value),
+        quantization:         quantizationSelect.value,
+        smoothInterpolation:  smoothInterpolationCheckbox.checked,
+        width:  BASE_CANVAS_W,
+        height: BASE_CANVAS_H,
+    };
+    try {
+        if (!webGpuContext) webGpuContext = await initWebGPU();
+        const isRestart = configCompatible(lastConfig, currentModelConfig()) && model;
+        if (isRestart) {
+            // Rebuild pipeline (quantization/smooth may have changed), reuse model buffers + Adam state
+            await createPipeline();
+            createBindGroup();
+            setStatus('training');
+            run(null);
+        } else {
+            const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
+            model = buffers;
+            await createPipeline();
+            createBindGroup();
+            lastConfig = currentModelConfig();
+            setStatus('training');
+            run(initialWeights);
+        }
+    } catch (err) {
+        console.error("Training setup failed:", err);
+        alert("Training setup failed. Check the console for errors.");
+    }
+});
+
+resetBtn.addEventListener('click', async () => {
+    if (trainingActive || !loadedImage) return;
+    canvas.width  = BASE_CANVAS_W;
+    canvas.height = BASE_CANVAS_H;
+    canvas.style.width = '';
+    canvas.style.height = '';
+    canvas.parentElement.style.overflow = 'hidden';
+    config = {
+        gridSize:             parseInt(gridSizeSelect.value),
+        embeddingChannels:    parseInt(embeddingChannelsSelect.value),
+        mlpWidth:             parseInt(mlpWidthSelect.value),
+        quantization:         quantizationSelect.value,
+        smoothInterpolation:  smoothInterpolationCheckbox.checked,
+        width:  BASE_CANVAS_W,
+        height: BASE_CANVAS_H,
+    };
+    try {
+        if (!webGpuContext) webGpuContext = await initWebGPU();
+        const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
+        model = buffers;
+        await createPipeline();
+        createBindGroup();
+        lastConfig = currentModelConfig();
+        setStatus('training');
+        run(initialWeights);
+    } catch (err) {
+        console.error("Reset failed:", err);
+        alert("Reset failed. Check the console for errors.");
+    }
+});
+
+// --- Weight readback (for export) ---
+async function readBackAllWeights() {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const tensors = {
+        embeddings:     { buf: model.embeddings,     size: gridSize * gridSize * embCh },
+        layer1_weights: { buf: model.layer1.weights, size: mlpWidth * embCh },
+        layer1_biases:  { buf: model.layer1.biases,  size: mlpWidth },
+        layer2_weights: { buf: model.layer2.weights, size: mlpWidth * mlpWidth },
+        layer2_biases:  { buf: model.layer2.biases,  size: mlpWidth },
+        layer3_weights: { buf: model.layer3.weights, size: 4 * mlpWidth },
+        layer3_biases:  { buf: model.layer3.biases,  size: 4 },
+    };
+    const rbBufs = {};
+    const ce = device.createCommandEncoder();
+    for (const [k, { buf, size }] of Object.entries(tensors)) {
+        rbBufs[k] = webGpuContext.readbackBuffer(size * 4);
+        ce.copyBufferToBuffer(buf, 0, rbBufs[k], 0, size * 4);
+    }
+    device.queue.submit([ce.finish()]);
+    await Promise.all(Object.values(rbBufs).map(b => b.mapAsync(GPUMapMode.READ)));
+    const result = {};
+    for (const [k, b] of Object.entries(rbBufs)) {
+        result[k] = new Float32Array(b.getMappedRange()).slice();
+        b.unmap();
+        b.destroy();
+    }
+    return result;
+}
+
+// --- Export button ---
+document.getElementById('export-btn').addEventListener('click', async () => {
+    if (!model || !config.mlpWidth) {
+        alert("Train the model first.");
+        return;
+    }
+    const weights = await readBackAllWeights();
+    const glsl = export_to_glsl(config, weights);
+    const url  = URL.createObjectURL(new Blob([glsl], { type: 'text/plain' }));
+    const a    = Object.assign(document.createElement('a'), { href: url, download: 'shader.glsl' });
+    a.click();
+    URL.revokeObjectURL(url);
+});
+
+// --- Save model ---
+document.getElementById('save-btn').addEventListener('click', async () => {
+    if (!model || !config.mlpWidth) {
+        alert("Train or load a model first.");
+        return;
+    }
+    const weights = await readBackAllWeights();
+    const saveConfig = {
+        ...config,
+        maxIter:    maxIterInput.value,
+        embedLr:    embedLrInput.value,
+        mlpLr:      mlpLrInput.value,
+        mlpRatio:   mlpRatioInput.value,
+        bwdStride:  bwdStrideInput.value,
+        outputZoom: outputZoomInput.value,
+    };
+    const buf = saveModelSafetensors(saveConfig, weights);
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
+    const a   = Object.assign(document.createElement('a'), { href: url, download: 'model.safetensors' });
+    a.click();
+    URL.revokeObjectURL(url);
+});
+
+// --- Zoom inference: forward pass at arbitrary resolution using temp buffers ---
+async function runZoomInference(W, H) {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const embSize    = gridSize * gridSize * embCh;
+    const pixelCount = W * H;
+
+    const embF32 = lastWeights.embeddings;
+    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
+    device.queue.writeBuffer(model.embeddings_range, 0, range);
+    const packed = cpuPackEmbeddings(embF32, embCh, range);
+    device.queue.writeBuffer(model.embeddings_q, 0, packed);
+
+    const unifBuf = webGpuContext.uniformBuffer(160);
+    device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range));
+    const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
+    const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    const rbBuf   = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
+
+    const bg = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0,  resource: { buffer: unifBuf } },
+            { binding: 1,  resource: { buffer: model.embeddings_q } },
+            { binding: 2,  resource: { buffer: model.layer1.weights } },
+            { binding: 3,  resource: { buffer: model.layer1.biases  } },
+            { binding: 4,  resource: { buffer: model.layer2.weights } },
+            { binding: 5,  resource: { buffer: model.layer2.biases  } },
+            { binding: 6,  resource: { buffer: model.layer3.weights } },
+            { binding: 7,  resource: { buffer: model.layer3.biases  } },
+            { binding: 8,  resource: { buffer: interL1 } },
+            { binding: 9,  resource: { buffer: interL2 } },
+            { binding: 10, resource: { buffer: outBuf  } },
+        ],
+    });
+
+    const ce = device.createCommandEncoder();
+    const fwdPass = ce.beginComputePass();
+    fwdPass.setPipeline(pipeline);
+    fwdPass.setBindGroup(0, bg);
+    fwdPass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
+    fwdPass.end();
+    ce.copyBufferToBuffer(outBuf, 0, rbBuf, 0, outBuf.size);
+    device.queue.submit([ce.finish()]);
+
+    await rbBuf.mapAsync(GPUMapMode.READ);
+    canvas.width  = W;
+    canvas.height = H;
+    drawOutputCanvas(new Float32Array(rbBuf.getMappedRange()));
+    rbBuf.unmap();
+
+    unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
+}
+
+// --- Load model ---
+// --- Inference: pack embeddings (CPU) then run one forward pass ---
+async function runInference() {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh } = config;
+
+    const embF32 = lastWeights.embeddings;
+    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
+    device.queue.writeBuffer(model.embeddings_range, 0, range);
+    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
+    const packed = cpuPackEmbeddings(embF32, embCh, range);
+    device.queue.writeBuffer(model.embeddings_q, 0, packed);
+
+    const ce = device.createCommandEncoder();
+    const fwdPass = ce.beginComputePass();
+    fwdPass.setPipeline(pipeline);
+    fwdPass.setBindGroup(0, bindGroup);
+    fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+    fwdPass.end();
+    ce.copyBufferToBuffer(outputBuffers.final, 0, readbackBuffers.final, 0, outputBuffers.final.size);
+    device.queue.submit([ce.finish()]);
+
+    await readbackBuffers.final.mapAsync(GPUMapMode.READ);
+    drawOutputCanvas(new Float32Array(readbackBuffers.final.getMappedRange()));
+    readbackBuffers.final.unmap();
+
+    drawEmbeddings();
+    drawLayers();
+    iterLabelEl.textContent = 'loaded';
+}
+
+async function loadModelFile(file) {
+    let parsed;
+    try {
+        parsed = await loadModelSafetensors(file);
+    } catch (err) {
+        alert('Failed to load model: ' + err.message);
+        return;
+    }
+
+    const { config: savedConfig, tensors, uiSettings = {} } = parsed;
+    if (![16, 32, 64].includes(savedConfig.gridSize) ||
+        ![4, 8, 16].includes(savedConfig.embeddingChannels) ||
+        ![8, 16, 32, 64].includes(savedConfig.mlpWidth)) {
+        alert('Unsupported model config in file.');
+        return;
+    }
+
+    gridSizeSelect.value          = String(savedConfig.gridSize);
+    embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
+    mlpWidthSelect.value          = String(savedConfig.mlpWidth);
+
+    // Restore saved UI settings
+    if (uiSettings.quantization) quantizationSelect.value = uiSettings.quantization;
+    if (uiSettings.smoothInterpolation !== undefined)
+        smoothInterpolationCheckbox.checked = uiSettings.smoothInterpolation === 'true';
+    if (uiSettings.maxIter !== undefined) {
+        maxIterInput.value = uiSettings.maxIter;
+        maxIterInput.dispatchEvent(new Event('input'));
+    }
+    if (uiSettings.embedLr !== undefined) syncSliderDisplay(Object.assign(embedLrInput, { value: uiSettings.embedLr }), embedLrVal);
+    if (uiSettings.mlpLr   !== undefined) syncSliderDisplay(Object.assign(mlpLrInput,   { value: uiSettings.mlpLr   }), mlpLrVal);
+    if (uiSettings.mlpRatio  !== undefined) { mlpRatioInput.value  = uiSettings.mlpRatio;  mlpRatioVal.textContent  = uiSettings.mlpRatio; }
+    if (uiSettings.bwdStride !== undefined) { bwdStrideInput.value = uiSettings.bwdStride; bwdStrideVal.textContent = uiSettings.bwdStride; }
+    if (uiSettings.outputZoom !== undefined) { outputZoomInput.value = uiSettings.outputZoom; outputZoomVal.textContent = uiSettings.outputZoom + '×'; }
+
+    config = {
+        gridSize:            savedConfig.gridSize,
+        embeddingChannels:   savedConfig.embeddingChannels,
+        mlpWidth:            savedConfig.mlpWidth,
+        quantization:        quantizationSelect.value,
+        smoothInterpolation: smoothInterpolationCheckbox.checked,
+        width:  canvas.width,
+        height: canvas.height,
+    };
+
+    try {
+        if (!webGpuContext) webGpuContext = await initWebGPU();
+        const { buffers } = createModel(webGpuContext, config);
+        model = buffers;
+
+        const { device } = webGpuContext;
+        device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);
+        device.queue.writeBuffer(model.layer1.weights, 0, tensors.layer1_weights);
+        device.queue.writeBuffer(model.layer1.biases,  0, tensors.layer1_biases);
+        device.queue.writeBuffer(model.layer2.weights, 0, tensors.layer2_weights);
+        device.queue.writeBuffer(model.layer2.biases,  0, tensors.layer2_biases);
+        device.queue.writeBuffer(model.layer3.weights, 0, tensors.layer3_weights);
+        device.queue.writeBuffer(model.layer3.biases,  0, tensors.layer3_biases);
+
+        await createPipeline();
+        createBindGroup();
+        lastConfig  = currentModelConfig();
+        adamT       = 0;
+        stepCount   = 0;
+        lossHistory = [];
+
+        lastWeights = {
+            embeddings:    tensors.embeddings,
+            layer1Weights: tensors.layer1_weights,
+            layer2Weights: tensors.layer2_weights,
+            layer3Weights: tensors.layer3_weights,
+        };
+
+        await runInference();
+        setStatus('stopped');
+        updateSizeDisplay();
+        updateStartLabel();
+    } catch (err) {
+        console.error('Load model failed:', err);
+        alert('Load model failed. Check console for errors.');
+    }
+}
+
+loadBtn.addEventListener('click', () => modelFileInput.click());
+modelFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    modelFileInput.value = '';
+    await loadModelFile(file);
+});
+
+// Page-level drop for .safetensors (image drops still handled by source panel)
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file?.name.endsWith('.safetensors')) await loadModelFile(file);
+});
+
+// Update start button label and size when model config dropdowns change
+[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect].forEach(sel => {
+    sel.addEventListener('change', () => { updateStartLabel(); updateSizeDisplay(); });
+});
+
+// --- Startup: load default image then default model ---
+const startupImg = new Image();
+startupImg.onload = async () => {
+    loadImageOntoCanvas(startupImg);
+    try {
+        const resp = await fetch('mona_lisa.safetensors');
+        if (resp.ok) await loadModelFile(await resp.blob());
+    } catch (_) {}
+};
+startupImg.src = 'Mona_Lisa.jpg';

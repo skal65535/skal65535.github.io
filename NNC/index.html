@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NNCOMPRESS — WebGPU Image Trainer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:            #0d1117;
+            --surface:       #161b24;
+            --surface-2:     #1c2333;
+            --border:        #2a3548;
+            --border-2:      #374861;
+            --text:          #dce6f0;
+            --text-dim:      #7a93aa;
+            --accent:        #f5a624;
+            --accent-dim:    rgba(245, 166, 36, 0.12);
+            --accent-glow:   rgba(245, 166, 36, 0.35);
+            --cyan:          #56d0f8;
+            --red:           #f87171;
+            --mono:          'JetBrains Mono', 'Courier New', monospace;
+            --display:       'Barlow Condensed', sans-serif;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--mono);
+            font-size: 13px;
+            line-height: 1.5;
+            min-height: 100vh;
+            overflow-x: auto;
+        }
+
+        /* ── HEADER ───────────────────────────────── */
+        header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 0 20px;
+            height: 44px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .app-logo {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 18px;
+            letter-spacing: 0.14em;
+            color: var(--accent);
+        }
+        .app-divider {
+            width: 1px;
+            height: 20px;
+            background: var(--border-2);
+        }
+        .app-sub {
+            font-family: var(--display);
+            font-weight: 500;
+            font-size: 12px;
+            letter-spacing: 0.07em;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+        .header-spacer { flex: 1; }
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--display);
+            font-weight: 600;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+        }
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+        .status-dot.idle    { background: var(--text-dim); }
+        .status-dot.training {
+            background: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
+            animation: pulse-dot 1.2s ease-in-out infinite;
+        }
+        .status-dot.stopped { background: var(--red); }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1;   transform: scale(1);   }
+            50%      { opacity: 0.4; transform: scale(0.6); }
+        }
+        #status-text { color: var(--text-dim); }
+
+        /* ── LAYOUT ───────────────────────────────── */
+        #app {
+            display: flex;
+            height: calc(100vh - 44px);
+        }
+
+        /* ── SIDEBAR ──────────────────────────────── */
+        #sidebar {
+            width: 244px;
+            min-width: 244px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        #sidebar::-webkit-scrollbar { width: 3px; }
+        #sidebar::-webkit-scrollbar-track { background: transparent; }
+        #sidebar::-webkit-scrollbar-thumb { background: var(--border-2); }
+
+        .ctrl-section {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .section-label {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 11px;
+            letter-spacing: 0.15em;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            margin-bottom: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-label::before {
+            content: '';
+            display: block;
+            width: 2px;
+            height: 10px;
+            background: var(--accent);
+            opacity: 0.5;
+        }
+
+        .ctrl-row {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        .ctrl-row:last-child { margin-bottom: 0; }
+        .ctrl-label {
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        select {
+            width: 100%;
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border-2);
+            padding: 5px 28px 5px 8px;
+            font-family: var(--mono);
+            font-size: 12px;
+            outline: none;
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='5' viewBox='0 0 9 5'%3E%3Cpath d='M0 0l4.5 5L9 0z' fill='%237a93aa'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 9px center;
+            border-radius: 2px;
+            transition: border-color 0.15s;
+        }
+        select:focus  { border-color: var(--accent); }
+
+        .ctrl-check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        .ctrl-check input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            border: 1px solid var(--border-2);
+            background: var(--surface-2);
+            cursor: pointer;
+            position: relative;
+            border-radius: 2px;
+            flex-shrink: 0;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .ctrl-check input[type="checkbox"]:checked {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+        .ctrl-check input[type="checkbox"]:checked::after {
+            content: '';
+            position: absolute;
+            left: 3px; top: 1px;
+            width: 5px; height: 8px;
+            border: 1.5px solid #070b10;
+            border-top: none;
+            border-left: none;
+            transform: rotate(40deg);
+        }
+
+        .slider-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 13px;
+        }
+        .slider-row:last-child { margin-bottom: 0; }
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .slider-val {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--accent);
+            font-family: var(--mono);
+        }
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 2px;
+            background: var(--border-2);
+            outline: none;
+            cursor: pointer;
+            border-radius: 1px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 13px; height: 13px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+            box-shadow: 0 0 6px var(--accent-glow);
+            transition: transform 0.1s;
+        }
+        input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
+        input[type="range"]::-moz-range-thumb {
+            width: 13px; height: 13px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-area {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: auto;
+        }
+        .btn {
+            width: 100%;
+            padding: 10px 14px;
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            border: none;
+            border-radius: 2px;
+            transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+        }
+        #start-btn {
+            background: var(--accent);
+            color: #070b10;
+        }
+        #start-btn:hover {
+            background: #fbbf24;
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+        #start-btn.stopping {
+            background: var(--red);
+            color: #fff;
+        }
+        #start-btn.stopping:hover {
+            background: #fca5a5;
+            box-shadow: 0 0 14px rgba(248,113,113,0.3);
+        }
+        .btn-danger {
+            background: transparent;
+            color: var(--red);
+            border: 1px solid var(--red);
+            opacity: 0.7;
+        }
+        .btn-danger:hover:not(:disabled) {
+            background: rgba(248,113,113,0.1);
+            opacity: 1;
+        }
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        #export-btn, #save-btn, #load-btn {
+            background: transparent;
+            color: var(--text-dim);
+            border: 1px solid var(--border-2);
+        }
+        #export-btn:hover, #save-btn:hover, #load-btn:hover {
+            color: var(--cyan);
+            border-color: var(--cyan);
+        }
+
+        /* ── WORKSPACE ────────────────────────────── */
+        #workspace {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: auto;
+            padding: 16px 20px;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .canvas-row {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+            min-height: 0;
+        }
+        .canvas-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            min-width: 0;
+        }
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 10px;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-2);
+            flex-shrink: 0;
+        }
+        .panel-title {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.1em;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+        .panel-hint {
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 0.03em;
+            font-family: var(--mono);
+        }
+        .canvas-wrap {
+            position: relative;
+            background: #000;
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .canvas-wrap canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #canvas, #source-canvas {
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+        #drop-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: rgba(7, 11, 16, 0.88);
+            cursor: pointer;
+            z-index: 2;
+            transition: background 0.2s, outline 0.2s;
+        }
+        #drop-overlay.hidden { display: none; }
+        #drop-overlay.dragover {
+            background: var(--accent-dim);
+            outline: 1px dashed var(--accent);
+            outline-offset: -3px;
+        }
+        .drop-icon {
+            font-size: 30px;
+            color: var(--text-dim);
+            line-height: 1;
+        }
+        .drop-text {
+            font-family: var(--display);
+            font-weight: 600;
+            font-size: 12px;
+            letter-spacing: 0.1em;
+            color: var(--text-dim);
+            text-align: center;
+            text-transform: uppercase;
+            line-height: 1.7;
+        }
+        #source-panel { cursor: pointer; }
+
+        /* ── STATS BAR ────────────────────────────── */
+        .stats-bar {
+            display: flex;
+            gap: 28px;
+            padding: 7px 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .stat-item {
+            display: flex;
+            align-items: baseline;
+            gap: 9px;
+        }
+        .stat-label {
+            font-family: var(--display);
+            font-weight: 600;
+            font-size: 12px;
+            letter-spacing: 0.1em;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+        .stat-value {
+            font-family: var(--mono);
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--accent);
+        }
+
+        /* ── LOSS CANVAS ──────────────────────────── */
+        .loss-section {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            flex-shrink: 0;
+            overflow: hidden;
+            position: relative;
+        }
+        .loss-label {
+            position: absolute;
+            top: 5px;
+            left: 10px;
+            font-family: var(--display);
+            font-weight: 600;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            pointer-events: none;
+            z-index: 1;
+        }
+        #loss-canvas {
+            display: block;
+            width: 100%;
+            height: 72px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="app-logo">◈ NNCOMPRESS</div>
+        <div class="app-divider"></div>
+        <div class="app-sub">WebGPU Neural Image Trainer</div>
+        <div class="header-spacer"></div>
+        <div class="status-indicator">
+            <span class="status-dot idle" id="status-dot"></span>
+            <span id="status-text">IDLE</span>
+        </div>
+    </header>
+
+    <div id="app">
+        <aside id="sidebar">
+            <div class="ctrl-section">
+                <div class="section-label">Model</div>
+                <div class="ctrl-row">
+                    <div class="ctrl-label">Embedding Grid</div>
+                    <select id="grid-size">
+                        <option value="16">16 × 16</option>
+                        <option value="32">32 × 32</option>
+                        <option value="64" selected>64 × 64</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
+                    <div class="ctrl-label">Embedding Channels</div>
+                    <select id="embedding-channels">
+                        <option value="4">4</option>
+                        <option value="8">8</option>
+                        <option value="16" selected>16</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
+                    <div class="ctrl-label">MLP Width</div>
+                    <select id="mlp-width">
+                        <option value="8">8</option>
+                        <option value="16" selected>16</option>
+                        <option value="32">32</option>
+                        <option value="64">64</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
+                    <div class="ctrl-label">Quantization</div>
+                    <select id="quantization">
+                        <option value="none">None (fp32)</option>
+                        <option value="qat8" selected>MLP 8-bit QAT</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-check">
+                        <input type="checkbox" id="smooth-interpolation" checked>
+                        <span class="ctrl-label">Smooth Interpolation</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="ctrl-section">
+                <div class="section-label">Training</div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">Max Iterations</span>
+                        <span class="slider-val" id="max-iter-val">1,000</span>
+                    </div>
+                    <input type="range" id="max-iter" min="0" max="5000" step="100" value="1000">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">Embeddings LR</span>
+                        <span class="slider-val" id="embed-lr-val">—</span>
+                    </div>
+                    <input type="range" id="embed-lr" min="0" max="100" step="1" value="67">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">MLP LR</span>
+                        <span class="slider-val" id="mlp-lr-val">—</span>
+                    </div>
+                    <input type="range" id="mlp-lr" min="0" max="100" step="1" value="33">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">MLP steps / emb step</span>
+                        <span class="slider-val" id="mlp-ratio-val">3</span>
+                    </div>
+                    <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">Bwd pixel stride</span>
+                        <span class="slider-val" id="bwd-stride-val">4</span>
+                    </div>
+                    <input type="range" id="bwd-stride" min="1" max="16" step="1" value="4">
+                </div>
+            </div>
+
+            <div class="btn-area">
+                <button class="btn" id="start-btn">▶ Start</button>
+                <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
+                <button class="btn" id="export-btn">↓ Export GLSL</button>
+                <button class="btn" id="save-btn">↓ Save Model</button>
+                <button class="btn" id="load-btn">↑ Load Model</button>
+                <input type="file" id="model-file-input" style="display:none" accept=".safetensors">
+            </div>
+        </aside>
+
+        <main id="workspace">
+            <div class="canvas-row">
+                <div class="canvas-panel" id="source-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Source <span id="source-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
+                        <span class="panel-hint">click or drop</span>
+                    </div>
+                    <div class="canvas-wrap">
+                        <canvas id="source-canvas" width="512" height="512"></canvas>
+                        <div id="drop-overlay">
+                            <div class="drop-icon">⊕</div>
+                            <div class="drop-text">Drop Image<br>or Click</div>
+                        </div>
+                    </div>
+                    <input type="file" id="file-input" style="display:none" accept="image/*">
+                </div>
+
+                <div class="canvas-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Embeddings</span>
+                        <span class="panel-hint">all channels, grayscale</span>
+                    </div>
+                    <div class="canvas-wrap">
+                        <canvas id="embed-canvas" width="512" height="512"></canvas>
+                    </div>
+                    <div class="panel-header" style="border-top: 1px solid var(--border);">
+                        <span class="panel-title">Layers</span>
+                        <span class="panel-hint">L1 / L2 / L3 weights, normalized</span>
+                    </div>
+                    <div class="canvas-wrap">
+                        <canvas id="layers-canvas" width="512" height="256"></canvas>
+                    </div>
+                </div>
+
+                <div class="canvas-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Output <span id="output-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
+                        <span class="panel-hint" id="iter-label">—</span>
+                        <label class="panel-hint" style="display:flex;align-items:center;gap:5px;cursor:default;flex-shrink:0;">
+                            zoom
+                            <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1" style="width:52px;vertical-align:middle;">
+                            <span id="output-zoom-val" style="display:inline-block;width:4ch;text-align:right;">1×</span>
+                        </label>
+                    </div>
+                    <div class="canvas-wrap">
+                        <canvas id="canvas" width="512" height="512"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <span class="stat-label">Loss</span>
+                    <span class="stat-value" id="loss-value">—</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Step</span>
+                    <span class="stat-value" id="step-counter">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Rate</span>
+                    <span class="stat-value" id="rate-display">—</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Input Size</span>
+                    <span class="stat-value" id="input-size">—</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Compressed Size</span>
+                    <span class="stat-value" id="model-size">—</span>
+                </div>
+            </div>
+
+            <div class="loss-section">
+                <div class="loss-label">Loss Curve</div>
+                <canvas id="loss-canvas" width="900" height="72"></canvas>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
