@@ -64,6 +64,47 @@ export class ROIMask {
         this._lastDecayAt = 0;
     }
 
+    // Generate mask from image RGBA data: 75% local luminance variance + 25% luminosity.
+    // imageData: Uint8ClampedArray (RGBA), same dimensions as this mask.
+    autoMask(imageData) {
+        const { w, h } = this;
+        const lum = new Float32Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+            const b = i * 4;
+            lum[i] = 0.2126 * imageData[b] + 0.7152 * imageData[b + 1] + 0.0722 * imageData[b + 2];
+        }
+
+        // Local variance over 5×5 patch
+        const R = 2;
+        const variance = new Float32Array(w * h);
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                let sum = 0, sum2 = 0, n = 0;
+                for (let dy = -R; dy <= R; dy++) {
+                    const yy = Math.max(0, Math.min(h - 1, y + dy));
+                    for (let dx = -R; dx <= R; dx++) {
+                        const xx = Math.max(0, Math.min(w - 1, x + dx));
+                        const v = lum[yy * w + xx];
+                        sum += v; sum2 += v * v; n++;
+                    }
+                }
+                const mean = sum / n;
+                variance[y * w + x] = sum2 / n - mean * mean;
+            }
+        }
+
+        // Normalize variance to 95th percentile to avoid outliers compressing the range
+        const sorted = variance.slice().sort();
+        const p95 = sorted[Math.floor(sorted.length * 0.95)] || 1;
+
+        for (let i = 0; i < w * h; i++) {
+            const normVar = Math.min(variance[i] / p95, 1.0);
+            const normLum = lum[i] / 255;
+            this.weights[i] = Math.sqrt(0.75 * normVar + 0.25 * normLum);
+        }
+        this._lastDecayAt = performance.now();
+    }
+
     // Composite an orange tint over whatever is already drawn on ctx.
     drawOverlay(ctx) {
         const { w, h } = this;

@@ -130,8 +130,7 @@ export function export_to_glsl(config, weights) {
 
     // Rescale uv [0,1] to the gridSize×gridSize region with align-corners=true,
     // so the GPU sampler bilinear matches the training interpolation.
-    const sampleFn = `\nconst int embed_texture = ${gridSize};
-vec4 sample_plane(sampler2D smp, vec2 uv) {
+    const sampleFn = `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
     vec2 bufUV = (uv * float(embed_texture - 1) + 0.5) / iResolution.xy;
     return texture(smp, bufUV);
 }`;
