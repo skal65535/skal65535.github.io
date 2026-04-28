@@ -16,10 +16,36 @@ function fmtVec4Array(arr, fmt) {
     return lines.join(',\n');
 }
 
+// Pack float array as uint array (int8×4 per uint, same layout as embedding buffers).
+function packMlpWeights(floatArr) {
+    const n = Math.ceil(floatArr.length / 4);
+    const u32 = new Uint32Array(n);
+    for (let i = 0; i < n; i++) {
+        let p = 0;
+        for (let b = 0; b < 4; b++) {
+            const v = floatArr[i * 4 + b] || 0;
+            const q = Math.max(-127, Math.min(127, Math.round(v * 127)));
+            p |= (q & 0xFF) << (b * 8);
+        }
+        u32[i] = p >>> 0;
+    }
+    return u32;
+}
+
+function fmtUintPackedArray(u32Array, perLine = 6) {
+    const vals = Array.from(u32Array).map(v =>
+        `0x${(v >>> 0).toString(16).padStart(8, '0').toUpperCase()}u`);
+    const lines = [];
+    for (let i = 0; i < vals.length; i += perLine)
+        lines.push('    ' + vals.slice(i, i + perLine).join(', '));
+    return lines.join(',\n');
+}
+
 // All arrays (weights, biases, inputs, outputs) are vec4[].
 // rows and cols must be multiples of 4.
 // Computes rows/4 output vec4s, each from 4 consecutive rows of the matrix.
-function matMul(rows, cols, inVec, outVec, weights, biases, activation) {
+// packedWeights=true: weights array is uint[] (int8×4), unpacked via unpack8().
+function matMul(rows, cols, inVec, outVec, weights, biases, activation, packedWeights = false) {
     console.assert(rows % 4 === 0 && cols % 4 === 0,
         `matMul: rows=${rows} and cols=${cols} must be multiples of 4`);
     const nc = cols / 4;
@@ -28,9 +54,12 @@ function matMul(rows, cols, inVec, outVec, weights, biases, activation) {
         s += `    ${outVec}[${g}] = ${activation ? activation + '(' : ''}${biases}[${g}] + vec4(\n`;
         for (let r = 0; r < 4; r++) {
             const base = (g * 4 + r) * nc;
-            // two dots per line, continuation lines indented
-            const dots = Array.from({length: nc}, (_, p) =>
-                `dot(${weights}[${base + p}], ${inVec}[${p}])`);
+            const dots = Array.from({length: nc}, (_, p) => {
+                const wv = packedWeights
+                    ? `unpack8(${weights}[${base + p}])`
+                    : `${weights}[${base + p}]`;
+                return `dot(${wv}, ${inVec}[${p}])`;
+            });
             const lines = [];
             for (let p = 0; p < dots.length; p += 2)
                 lines.push((p === 0 ? '        ' : '            + ') +
@@ -75,19 +104,23 @@ function fmtUvec4Array(u32Array, perLine = 2) {
 function genCommonGLSL(gridSize) {
     return `\
 // === Common tab ===
-// Paste into the Common tab in Shadertoy (shared by all Buffer tabs).
+// Paste into the Common tab in Shadertoy (shared by Image + all Buffer tabs).
 
 const int embed_texture = ${gridSize};
 
-#define EMB_BUFFER_MAINIMAGE(quant_arr)                                                 \\
-void mainImage(out vec4 fragColor, in vec2 fragCoord) {                                 \\
-    ivec2 gxy = ivec2(fragCoord);                                                       \\
-    if (gxy.x >= embed_texture || gxy.y >= embed_texture) { fragColor = vec4(0.0); return; } \\
-    int idx = gxy.x + gxy.y * embed_texture;                                           \\
-    uint val = quant_arr[idx >> 2][idx & 3];                                            \\
-    ivec4 s = ivec4((uvec4(val) >> uvec4(0u, 8u, 16u, 24u)) & uvec4(255u));            \\
-    s -= 256 * ivec4(greaterThan(s, ivec4(127)));                                       \\
-    fragColor = clamp(vec4(s) / 127.0, -1.0, 1.0);                                     \\
+vec4 unpack8(uint u) {   // no unpackSnorm4x8 !!
+    ivec4 s = ivec4((uvec4(u) >> uvec4(0u,8u,16u,24u)) & uvec4(255u));
+    s -= 256 * ivec4(greaterThan(s, ivec4(127)));
+    return vec4(s) / 127.0;
+}
+
+#define EMB_BUFFER_MAINIMAGE(quant_arr)                                \\
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {                \\
+    ivec2 gxy = ivec2(fragCoord);                                      \\
+    if (gxy.x >= embed_texture || gxy.y >= embed_texture) { discard; } \\
+    int idx = gxy.x + gxy.y * embed_texture;                           \\
+    uint val = quant_arr[idx >> 2][idx & 3];                           \\
+    fragColor = unpack8(val);                                          \\
 }`;
 }
 
@@ -155,20 +188,34 @@ export function export_to_glsl(config, weights) {
 
     const N1 = mlpWidth * embeddingChannels / 4, N2 = mlpWidth * mlpWidth / 4;
     const NW = mlpWidth / 4;
+    const packWeights = quantization === 'qat8';
+
+    const wType = packWeights ? 'uint' : 'vec4';
+    const fmtW = (arr, n) => packWeights
+        ? `uint[${n}](\n${fmtUintPackedArray(packMlpWeights(arr))}\n)`
+        : `vec4[${n}](\n${fmtVec4Array(arr, qw)}\n)`;
+
     const weightDecls = `
 // Layer 1 weights/biases  (${embeddingChannels} → ${mlpWidth})
-const vec4 l1_w[${N1}] = vec4[${N1}](\n${fmtVec4Array(weights.layer1_weights, qw)}\n);
-const vec4 l1_b[${NW}] = vec4[${NW}](\n${fmtVec4Array(weights.layer1_biases, qw)}\n);
+const ${wType} l1_w[${N1}] = ${fmtW(weights.layer1_weights, N1)};
+const vec4 l1_b[${NW}] = vec4[${NW}](
+${fmtVec4Array(weights.layer1_biases, qw)}
+);
 
 // Layer 2 weights/biases  (${mlpWidth} → ${mlpWidth})
-const vec4 l2_w[${N2}] = vec4[${N2}](\n${fmtVec4Array(weights.layer2_weights, qw)}\n);
-const vec4 l2_b[${NW}] = vec4[${NW}](\n${fmtVec4Array(weights.layer2_biases, qw)}\n);
+const ${wType} l2_w[${N2}] = ${fmtW(weights.layer2_weights, N2)};
+const vec4 l2_b[${NW}] = vec4[${NW}](
+${fmtVec4Array(weights.layer2_biases, qw)}
+);
 
 // Layer 3 weights/biases  (${mlpWidth} → 4)
-const vec4 l3_w[${mlpWidth}] = vec4[${mlpWidth}](\n${fmtVec4Array(weights.layer3_weights, qw)}\n);
-const vec4 l3_b[1] = vec4[1](\n${fmtVec4Array(weights.layer3_biases, qw)}\n);`;
+const ${wType} l3_w[${mlpWidth}] = ${fmtW(weights.layer3_weights, mlpWidth)};
+const vec4 l3_b[1] = vec4[1](
+${fmtVec4Array(weights.layer3_biases, qw)}
+);`;
 
-    const mainShader = `precision highp float;
+    const mainShader = `// === Image tab === (requires Common tab for embed_texture${packWeights ? ', unpack8' : ''})
+precision highp float;
 uniform vec2 iResolution;
 ${textureDecls}
 ${sampleFn}
@@ -190,13 +237,13 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 ${embInit}
     // Layer 1
     vec4 l1_out[${NW}];
-${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', 'sin')}
+${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', 'sin', packWeights)}
     // Layer 2
     vec4 l2_out[${NW}];
-${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', 'sin')}
+${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', 'sin', packWeights)}
     // Layer 3
     vec4 l3_out[1];
-${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '')}
+${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}
     fragColor = clamp(vec4(l3_out[0].rgb, 1.0), 0.0, 1.0);
 }
 `;
