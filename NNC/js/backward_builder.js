@@ -11,6 +11,7 @@ struct BwdUniforms {
     height:        u32,
     stride:        u32,
     sampled_count: u32,
+    roi_strength:  f32,
 }
 @group(0) @binding(0) var<uniform> uni: BwdUniforms;
 `;
@@ -36,20 +37,22 @@ function gradOutputShader() {
 @group(0) @binding(1) var<storage, read>       out_final:  array<f32>;
 @group(0) @binding(2) var<storage, read>       tgt:        array<f32>;
 @group(0) @binding(3) var<storage, read_write> grad_final: array<f32>;
+@group(0) @binding(4) var<storage, read>       roi_mask:   array<f32>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = gid.x;
     if (p >= uni.width * uni.height) { return; }
     if (uni.stride > 1u && p % uni.stride != 0u) {
-        grad_final[p*4u]   = 0.0; grad_final[p*4u+1u] = 0.0;
+        grad_final[p*4u]    = 0.0; grad_final[p*4u+1u] = 0.0;
         grad_final[p*4u+2u] = 0.0; grad_final[p*4u+3u] = 0.0;
         return;
     }
-    grad_final[p*4u]   = 2.0 * (out_final[p*4u]   - tgt[p*4u]);
-    grad_final[p*4u+1u] = 2.0 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
-    grad_final[p*4u+2u] = 2.0 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
-    grad_final[p*4u+3u] = 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u]);
+    let wt = 1.0 + roi_mask[p] * uni.roi_strength;
+    grad_final[p*4u]    = wt * 2.0 * (out_final[p*4u]    - tgt[p*4u]);
+    grad_final[p*4u+1u] = wt * 2.0 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
+    grad_final[p*4u+2u] = wt * 2.0 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
+    grad_final[p*4u+3u] = wt * 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u]);
 }
 `;
 }
