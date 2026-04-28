@@ -5,6 +5,7 @@ import { buildBackwardShaders, FP_SCALE } from './backward_builder.js';
 import { get_target_pixels, calculate_loss } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
+import { ROIMask } from './roi_mask.js';
 
 // --- DOM references ---
 const sourcePanel  = document.getElementById('source-panel');
@@ -20,7 +21,9 @@ const gridSizeSelect            = document.getElementById('grid-size');
 const embeddingChannelsSelect   = document.getElementById('embedding-channels');
 const mlpWidthSelect            = document.getElementById('mlp-width');
 const quantizationSelect        = document.getElementById('quantization');
+const embBitsSelect             = document.getElementById('emb-bits');
 const smoothInterpolationCheckbox = document.getElementById('smooth-interpolation');
+const noOffsetCheckbox            = document.getElementById('no-offset');
 const maxIterInput  = document.getElementById('max-iter');
 const embedLrInput  = document.getElementById('embed-lr');
 const mlpLrInput    = document.getElementById('mlp-lr');
@@ -35,6 +38,7 @@ const outputZoomInput = document.getElementById('output-zoom');
 const outputZoomVal   = document.getElementById('output-zoom-val');
 const startBtn      = document.getElementById('start-btn');
 const resetBtn      = document.getElementById('reset-btn');
+const shakeBtn      = document.getElementById('shake-btn');
 const saveBtn       = document.getElementById('save-btn');
 const loadBtn       = document.getElementById('load-btn');
 const modelFileInput = document.getElementById('model-file-input');
@@ -48,6 +52,12 @@ const statusDotEl   = document.getElementById('status-dot');
 const statusTextEl  = document.getElementById('status-text');
 const sourceResEl   = document.getElementById('source-res');
 const outputResEl   = document.getElementById('output-res');
+const roiBrushInput    = document.getElementById('roi-brush');
+const roiBrushVal      = document.getElementById('roi-brush-val');
+const roiStrengthInput = document.getElementById('roi-strength');
+const roiStrengthVal   = document.getElementById('roi-strength-val');
+const roiFreezeChk     = document.getElementById('roi-freeze');
+const roiClearBtn      = document.getElementById('roi-clear-btn');
 
 // --- State ---
 let BASE_CANVAS_W = canvas.width;
@@ -71,6 +81,10 @@ let lastStepTime  = 0;
 let lastConfig    = null; // { gridSize, embeddingChannels, mlpWidth } from last full init
 let adamT         = 0;   // GPU Adam timestep (incremented each step)
 
+// ROI mask state
+const roiMask  = new ROIMask(1, 1);
+let decayRafId = null;
+
 // Backward pipelines + bind groups (rebuilt on model change)
 let fwdUniformsBuf   = null; // 160-byte forward uniform buffer (includes emb_range)
 let bwdPipelines     = null;
@@ -90,12 +104,16 @@ function computeModelSize() {
     const emb   = gs * gs * embCh;
     const mlp   = embCh*mlpW + mlpW + mlpW*mlpW + mlpW + mlpW*4 + 4;
     const mlpBpp = quantizationSelect.value === 'none' ? 4 : 1;
-    return emb * 1 + mlp * mlpBpp;  // embeddings always 8-bit packed
+    const embBpp = parseInt(embBitsSelect.value) / 8;
+    return emb * embBpp + mlp * mlpBpp;
 }
 
 function updateSizeDisplay() {
     const b = computeModelSize();
-    modelSizeEl.textContent = b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B';
+    const pixels = BASE_CANVAS_W * BASE_CANVAS_H;
+    const bpp = pixels > 0 ? (b * 8 / pixels).toFixed(2) : '—';
+    const sizeStr = b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B';
+    modelSizeEl.textContent = `${sizeStr} (${bpp} bpp)`;
 }
 
 // --- LR slider helpers (log scale: slider 0–100 → 1e-4 … 1e-1) ---
@@ -142,6 +160,15 @@ outputZoomInput.addEventListener('input', () => {
     }
 });
 
+function generateEmbOffsets(embCh, embBits, gridSize) {
+    const channelsPerU32 = 32 / embBits;
+    const numU32 = embCh / channelsPerU32;
+    if (noOffsetCheckbox.checked) return new Float32Array(numU32 * 2);
+    const scale = 1.0 / gridSize;
+    return new Float32Array(numU32 * 2).map(() => (Math.random() - 0.5) * scale);
+}
+
+
 function configCompatible(a, b) {
     return a && b &&
         a.gridSize === b.gridSize &&
@@ -156,6 +183,7 @@ function currentModelConfig() {
         gridSize:          parseInt(gridSizeSelect.value),
         embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
         mlpWidth:          Math.ceil(mlpWidth / 4) * 4,
+        embBits:           parseInt(embBitsSelect.value),
     };
 }
 
@@ -166,6 +194,7 @@ function updateStartLabel() {
         startBtn.textContent = '▶ Start';
     }
     resetBtn.disabled = !model || trainingActive;
+    shakeBtn.disabled = !model;
 }
 
 // --- Status indicator ---
@@ -191,7 +220,22 @@ function drawSourceImage() {
     const ctx = sourceCanvas.getContext('2d');
     ctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
     ctx.drawImage(loadedImage, 0, 0, sourceCanvas.width, sourceCanvas.height);
+    roiMask.drawOverlay(ctx);
     dropOverlay.classList.add('hidden');
+}
+
+function startDecayLoop() {
+    if (decayRafId !== null || !roiMask.isActive()) return;
+    function tick(now) {
+        if (!roiFreezeChk.checked) roiMask.decay(now);
+        drawSourceImage();
+        decayRafId = (roiFreezeChk.checked || roiMask.isActive()) ? requestAnimationFrame(tick) : null;
+    }
+    decayRafId = requestAnimationFrame(tick);
+}
+
+function stopDecayLoop() {
+    if (decayRafId !== null) { cancelAnimationFrame(decayRafId); decayRafId = null; }
 }
 
 // --- Output canvas (2D) ---
@@ -270,6 +314,7 @@ function drawLayers() {
         { data: w.layer3Weights, rows: 4,          cols: mlpWidth,          label: 'L3' },
     ];
     const totalRows = layers.reduce((s, l) => s + l.rows, 0);
+    const bandHs    = layers.map(l => Math.round(l.rows / totalRows * ch));
     const imgData = ctx.createImageData(cw, ch);
     const data = imgData.data;
 
@@ -279,7 +324,7 @@ function drawLayers() {
     let yOffset = 0;
     for (let li = 0; li < layers.length; li++) {
         const layer = layers[li];
-        const bandH = Math.round(layer.rows / totalRows * ch);
+        const bandH = bandHs[li];
         let cmn = Infinity, cmx = -Infinity;
         for (let i = 0; i < layer.data.length; i++) {
             if (layer.data[i] < cmn) cmn = layer.data[i];
@@ -308,8 +353,8 @@ function drawLayers() {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.font = '11px monospace';
     yOffset = 0;
-    for (const layer of layers) {
-        const bandH = Math.round(layer.rows / totalRows * ch);
+    for (let li = 0; li < layers.length; li++) {
+        const layer = layers[li], bandH = bandHs[li];
         ctx.fillText(layer.label, 4, yOffset + 12);
         if (yOffset > 0) { ctx.fillRect(0, yOffset, cw, 1); }
         yOffset += bandH;
@@ -367,9 +412,53 @@ function drawLossCurve() {
     ctx.shadowBlur = 0;
 }
 
+// --- Collapsible sidebar sections ---
+document.querySelectorAll('#sidebar .section-label').forEach(label => {
+    label.addEventListener('click', () => label.closest('.ctrl-section').classList.toggle('collapsed'));
+});
+
+// --- ROI mask controls ---
+roiBrushInput.addEventListener('input', () => { roiBrushVal.textContent = roiBrushInput.value; });
+roiStrengthInput.addEventListener('input', () => { roiStrengthVal.textContent = roiStrengthInput.value; });
+roiFreezeChk.addEventListener('change', () => {
+    if (!roiFreezeChk.checked && roiMask.isActive() && !trainingActive) startDecayLoop();
+});
+roiClearBtn.addEventListener('click', () => {
+    roiMask.clear();
+    stopDecayLoop();
+    drawSourceImage();
+});
+
+{
+    let isPainting = false;
+    function sourceCanvasCoords(e) {
+        const r = sourceCanvas.getBoundingClientRect();
+        return [
+            (e.clientX - r.left) * sourceCanvas.width  / r.width,
+            (e.clientY - r.top)  * sourceCanvas.height / r.height,
+        ];
+    }
+    sourceCanvas.addEventListener('mousedown', (e) => {
+        if (!loadedImage) return;
+        isPainting = true;
+        const [x, y] = sourceCanvasCoords(e);
+        roiMask.paint(x, y, parseInt(roiBrushInput.value));
+        drawSourceImage();
+        if (!trainingActive) startDecayLoop();
+    });
+    sourceCanvas.addEventListener('mousemove', (e) => {
+        if (!isPainting) return;
+        const [x, y] = sourceCanvasCoords(e);
+        roiMask.paint(x, y, parseInt(roiBrushInput.value));
+        drawSourceImage();
+    });
+    window.addEventListener('mouseup',    () => { isPainting = false; });
+    sourceCanvas.addEventListener('mouseleave', () => { isPainting = false; });
+}
+
 // --- File / drop zone ---
 sourcePanel.addEventListener('click', (e) => {
-    if (e.target !== fileInput) fileInput.click();
+    if (e.target !== fileInput && !loadedImage) fileInput.click();
 });
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFile(e.target.files[0]);
@@ -403,6 +492,8 @@ function loadImageOntoCanvas(img) {
     canvas.style.height = '';
     canvas.style.maxWidth = '';
     canvas.style.maxHeight = '';
+    roiMask.resize(BASE_CANVAS_W, BASE_CANVAS_H);
+    sourcePanel.classList.add('has-image');
     sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     drawSourceImage();
@@ -436,69 +527,110 @@ function computeEmbRange(embData, embCh, gridCount) {
     return range;
 }
 
-// Build 160-byte ArrayBuffer for the forward Uniforms struct.
-// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32).
-// range is optional (null → identity [-1,1] for all channels).
-function buildFwdUniforms(gSize, embCh, mlpW, w, h, range) {
-    const ab  = new ArrayBuffer(160);
-    const u32 = new Uint32Array(ab);
-    const f32 = new Float32Array(ab);
-    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
-    // default: identity unscaling [-1,1] for all 4 planes
+// Normalize embeddings to [-1,1] per channel; absorb scale+center into L1 weights/biases.
+// Math: e_norm = (e - center) / scale → W1_new[:,c] = W1[:,c]*scale, b1_new += W1[:,c]*center
+function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlpWidth) {
+    const gridCount = embData.length / embCh;
+    for (let c = 0; c < embCh; c++) {
+        let mn = Infinity, mx = -Infinity;
+        for (let i = 0; i < gridCount; i++) {
+            const v = embData[i * embCh + c];
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+        const span = mx - mn;
+        if (span < 1e-9) continue;
+        const scale  = span * 0.5;
+        const center = (mx + mn) * 0.5;
+        for (let i = 0; i < gridCount; i++) {
+            embData[i * embCh + c] = (embData[i * embCh + c] - center) / scale;
+        }
+        for (let j = 0; j < mlpWidth; j++) {
+            const w = l1Weights[j * embCh + c];
+            l1Weights[j * embCh + c] = w * scale;
+            l1Biases[j] += w * center;
+        }
+    }
+}
+
+// Builds 32-float emb_range block: identity [-1,1] defaults, overwritten with actual range.
+function buildEmbRangeF32(range, embCh) {
+    const f32 = new Float32Array(32);
     for (let p = 0; p < 4; p++) {
-        f32[8+p*8+0]=f32[8+p*8+1]=f32[8+p*8+2]=f32[8+p*8+3]=-1; // mn
-        f32[8+p*8+4]=f32[8+p*8+5]=f32[8+p*8+6]=f32[8+p*8+7]= 1; // mx
+        f32[p*8]=f32[p*8+1]=f32[p*8+2]=f32[p*8+3]=-1;
+        f32[p*8+4]=f32[p*8+5]=f32[p*8+6]=f32[p*8+7]=1;
     }
     if (range) {
         const numPlanes = embCh / 4;
         for (let p = 0; p < numPlanes; p++) {
             for (let b = 0; b < 4; b++) {
-                const c = p * 4 + b;
-                f32[8+p*8+b]   = range[c*2];
-                f32[8+p*8+4+b] = range[c*2+1];
+                const c = p*4+b;
+                f32[p*8+b]   = range[c*2];
+                f32[p*8+4+b] = range[c*2+1];
             }
         }
     }
+    return f32;
+}
+
+// Build 160-byte ArrayBuffer for the forward Uniforms struct.
+// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32).
+function buildFwdUniforms(gSize, embCh, mlpW, w, h, range) {
+    const ab  = new ArrayBuffer(160);
+    const u32 = new Uint32Array(ab);
+    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
+    new Float32Array(ab, 32).set(buildEmbRangeF32(range, embCh));
     return ab;
 }
 
 // Update only the emb_range portion of fwdUniformsBuf (byte offset 32).
 function uploadEmbRange(range, embCh, buf, device) {
-    const numPlanes = embCh / 4;
-    const f32 = new Float32Array(32);
-    for (let p = 0; p < 4; p++) {
-        f32[p*8+0]=f32[p*8+1]=f32[p*8+2]=f32[p*8+3]=-1;
-        f32[p*8+4]=f32[p*8+5]=f32[p*8+6]=f32[p*8+7]= 1;
-    }
-    for (let p = 0; p < numPlanes; p++) {
-        for (let b = 0; b < 4; b++) {
-            const c = p*4+b;
-            f32[p*8+b]   = range[c*2];
-            f32[p*8+4+b] = range[c*2+1];
-        }
-    }
-    device.queue.writeBuffer(buf, 32, f32);
+    device.queue.writeBuffer(buf, 32, buildEmbRangeF32(range, embCh));
 }
 
-function cpuPackEmbeddings(embF32, embCh, range) {
-    const numPlanes = embCh / 4;
-    const gridCount = embF32.length / embCh;
-    const packed = new Uint32Array(gridCount * numPlanes);
+function cpuPackEmbeddings(embF32, embCh, range, embBits = 8) {
+    const chPerGroup = 32 / embBits;
+    const maxVal     = (1 << (embBits - 1)) - 1;
+    const mask       = (1 << embBits) - 1;
+    const numGroups  = embCh / chPerGroup;
+    const gridCount  = embF32.length / embCh;
+    const packed     = new Uint32Array(gridCount * numGroups);
     for (let i = 0; i < gridCount; i++) {
-        for (let pl = 0; pl < numPlanes; pl++) {
+        for (let g = 0; g < numGroups; g++) {
             let p = 0;
-            for (let b = 0; b < 4; b++) {
-                const c = pl * 4 + b;
+            for (let b = 0; b < chPerGroup; b++) {
+                const c = g * chPerGroup + b;
                 const v = embF32[i * embCh + c];
                 const mn = range[c * 2], mx = range[c * 2 + 1];
                 const span = mx - mn;
                 const s = span < 1e-9 ? 0 : Math.max(-1, Math.min(1, 2 * (v - mn) / span - 1));
-                p |= (Math.round(s * 127) & 0xff) << (b * 8);
+                p |= (Math.max(-maxVal, Math.min(maxVal, Math.round(s * maxVal))) & mask) << (b * embBits);
             }
-            packed[i * numPlanes + pl] = p >>> 0;
+            packed[i * numGroups + g] = p >>> 0;
         }
     }
     return packed;
+}
+
+function resetCanvasToBase() {
+    canvas.width  = BASE_CANVAS_W;
+    canvas.height = BASE_CANVAS_H;
+    canvas.style.width = '';
+    canvas.style.height = '';
+    canvas.parentElement.style.overflow = 'hidden';
+}
+
+function buildConfigFromUI() {
+    return {
+        gridSize:            parseInt(gridSizeSelect.value),
+        embeddingChannels:   parseInt(embeddingChannelsSelect.value),
+        mlpWidth:            parseInt(mlpWidthSelect.value),
+        quantization:        quantizationSelect.value,
+        embBits:             parseInt(embBitsSelect.value),
+        smoothInterpolation: smoothInterpolationCheckbox.checked,
+        width:  BASE_CANVAS_W,
+        height: BASE_CANVAS_H,
+    };
 }
 
 // --- WebGPU setup ---
@@ -526,6 +658,7 @@ function createBindGroup() {
     readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
     readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4);
     readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth * embeddingChannels * 4);
+    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(mlpWidth * 4);
     readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * mlpWidth * 4);
     readbackBuffers.layer3Weights = webGpuContext.readbackBuffer(4 * mlpWidth * 4);
 
@@ -572,8 +705,11 @@ function createBackwardPipelines() {
     targetGpuBuf = webGpuContext.zeroBuffer(targetPixels.length);
     device.queue.writeBuffer(targetGpuBuf, 0, targetPixels);
 
-    // BwdUniforms (width, height, stride, sampled_count)
-    bwdUniformsBuf = webGpuContext.uniformBuffer(4 * 4);
+    // BwdUniforms (width, height, stride, sampled_count, roi_strength)
+    bwdUniformsBuf = webGpuContext.uniformBuffer(5 * 4);
+
+    // ROI mask (one f32 per pixel, uploaded from CPU each step)
+    bwdBuffers.roiMask = webGpuContext.zeroBuffer(pixelCount);
 
     // Per-pixel intermediate gradient buffers (no races, plain f32, GPU-only)
     bwdBuffers.gradFinal        = webGpuContext.storageBuffer(pixelCount * 4 * 4);
@@ -588,6 +724,9 @@ function createBackwardPipelines() {
     bwdBuffers.adamAB = new ArrayBuffer(10 * 4);
     bwdBuffers.adamF  = new Float32Array(bwdBuffers.adamAB);
     bwdBuffers.adamU  = new Uint32Array(bwdBuffers.adamAB);
+    bwdBuffers.uniAB  = new ArrayBuffer(5 * 4);
+    bwdBuffers.uniU32 = new Uint32Array(bwdBuffers.uniAB);
+    bwdBuffers.uniF32 = new Float32Array(bwdBuffers.uniAB);
     bwdBuffers.gradZero = {};
     for (const [k, buf] of Object.entries(model.gradAtomic)) {
         bwdBuffers.gradZero[k] = new Int32Array(buf.size / 4); // zero-filled, reused
@@ -602,7 +741,7 @@ function createBackwardPipelines() {
     const m = model;
     bwdBindGroups = {
         gradOutput: makeBG(bwdPipelines.gradOutput, [
-            bwdUniformsBuf, outputBuffers.final, targetGpuBuf, bwdBuffers.gradFinal,
+            bwdUniformsBuf, outputBuffers.final, targetGpuBuf, bwdBuffers.gradFinal, bwdBuffers.roiMask,
         ]),
         gradL3: makeBG(bwdPipelines.gradL3, [
             bwdUniformsBuf, bwdBuffers.gradFinal, outputBuffers.interLayer2, m.layer3.weights,
@@ -646,7 +785,7 @@ function createBackwardPipelines() {
 // --- Training loop ---
 async function train() {
     const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const { gridSize, embeddingChannels: embCh, mlpWidth, embBits } = config;
     const pixelCount = canvas.width * canvas.height;
     const embSize    = gridSize * gridSize * embCh;
 
@@ -654,8 +793,10 @@ async function train() {
     const sampledCount = Math.ceil(pixelCount / stride);
     adamT++;
 
-    const embedLR = sliderToLR(parseInt(embedLrInput.value));
-    const mlpLR   = sliderToLR(parseInt(mlpLrInput.value));
+    const embedLR   = sliderToLR(parseInt(embedLrInput.value));
+    const mlpRatio  = parseInt(mlpRatioInput.value) || 1;
+    const activeMLP = (adamT % mlpRatio === 0);
+    const mlpLR     = activeMLP ? sliderToLR(parseInt(mlpLrInput.value)) : 0;
     const tensorCfg = {
         embeddings:     { lr: embedLR, size: embSize,             l2: 0.002 / embSize, clamp: 1 },
         layer1_weights: { lr: mlpLR,   size: mlpWidth * embCh,    l2: 0, clamp: 0 },
@@ -666,12 +807,17 @@ async function train() {
         layer3_biases:  { lr: mlpLR,   size: 4,                    l2: 0, clamp: 0 },
     };
 
+    if (!roiFreezeChk.checked) roiMask.decay(performance.now());
+    device.queue.writeBuffer(bwdBuffers.roiMask, 0, roiMask.weights);
+
     for (const [k, buf] of Object.entries(model.gradAtomic)) {
         device.queue.writeBuffer(buf, 0, bwdBuffers.gradZero[k]);
     }
-    device.queue.writeBuffer(bwdUniformsBuf, 0, new Uint32Array([canvas.width, canvas.height, stride, sampledCount]));
-
-    const { adamAB, adamF, adamU } = bwdBuffers;
+    const { adamAB, adamF, adamU, uniAB, uniU32, uniF32 } = bwdBuffers;
+    uniU32[0] = canvas.width; uniU32[1] = canvas.height;
+    uniU32[2] = stride;       uniU32[3] = sampledCount;
+    uniF32[4] = parseFloat(roiStrengthInput.value);
+    device.queue.writeBuffer(bwdUniformsBuf, 0, uniAB);
     adamF[1] = 0.9; adamF[2] = 0.999; adamF[3] = 1e-8; adamF[6] = FP_SCALE;
     adamU[4] = adamT; adamU[9] = sampledCount;
     for (const [k, tc] of Object.entries(tensorCfg)) {
@@ -707,12 +853,10 @@ async function train() {
     }
     adamPass.end();
 
-    // Pack updated f32 embeddings → u32 for next forward pass
-    runPass(bwdPipelines.packEmbeddings, bwdBindGroups.packEmbeddings, Math.ceil(embSize / 4 / 64));
-
     ce.copyBufferToBuffer(outputBuffers.final,    0, readbackBuffers.final,         0, outputBuffers.final.size);
     ce.copyBufferToBuffer(model.embeddings,       0, readbackBuffers.embeddings,    0, model.embeddings.size);
     ce.copyBufferToBuffer(model.layer1.weights,   0, readbackBuffers.layer1Weights, 0, model.layer1.weights.size);
+    ce.copyBufferToBuffer(model.layer1.biases,    0, readbackBuffers.layer1Biases,  0, model.layer1.biases.size);
     ce.copyBufferToBuffer(model.layer2.weights,   0, readbackBuffers.layer2Weights, 0, model.layer2.weights.size);
     ce.copyBufferToBuffer(model.layer3.weights,   0, readbackBuffers.layer3Weights, 0, model.layer3.weights.size);
 
@@ -722,36 +866,47 @@ async function train() {
         readbackBuffers.final.mapAsync(GPUMapMode.READ),
         readbackBuffers.embeddings.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer1Weights.mapAsync(GPUMapMode.READ),
+        readbackBuffers.layer1Biases.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer2Weights.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer3Weights.mapAsync(GPUMapMode.READ),
     ]);
 
-    const finalData  = new Float32Array(readbackBuffers.final.getMappedRange());
-    const embData    = new Float32Array(readbackBuffers.embeddings.getMappedRange());
-    const l1wData    = new Float32Array(readbackBuffers.layer1Weights.getMappedRange());
-    const l2wData    = new Float32Array(readbackBuffers.layer2Weights.getMappedRange());
-    const l3wData    = new Float32Array(readbackBuffers.layer3Weights.getMappedRange());
+    const finalData = new Float32Array(readbackBuffers.final.getMappedRange());
+    const embData   = new Float32Array(readbackBuffers.embeddings.getMappedRange()).slice();
+    const l1wData   = new Float32Array(readbackBuffers.layer1Weights.getMappedRange()).slice();
+    const l1bData   = new Float32Array(readbackBuffers.layer1Biases.getMappedRange()).slice();
+    const l2wData   = new Float32Array(readbackBuffers.layer2Weights.getMappedRange()).slice();
+    const l3wData   = new Float32Array(readbackBuffers.layer3Weights.getMappedRange()).slice();
 
     drawOutputCanvas(finalData);
     const loss = calculate_loss(finalData, targetPixels);
 
-    lastWeights = {
-        embeddings:    new Float32Array(embData),
-        layer1Weights: new Float32Array(l1wData),
-        layer2Weights: new Float32Array(l2wData),
-        layer3Weights: new Float32Array(l3wData),
-    };
-
-    // Update per-channel range for next step's pack shader + forward unscale
-    const range = computeEmbRange(embData, embCh, gridSize * gridSize);
-    device.queue.writeBuffer(model.embeddings_range, 0, range);
-    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
-
     readbackBuffers.final.unmap();
     readbackBuffers.embeddings.unmap();
     readbackBuffers.layer1Weights.unmap();
+    readbackBuffers.layer1Biases.unmap();
     readbackBuffers.layer2Weights.unmap();
     readbackBuffers.layer3Weights.unmap();
+
+    // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
+    normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth);
+    device.queue.writeBuffer(model.embeddings,    0, embData);
+    device.queue.writeBuffer(model.layer1.weights, 0, l1wData);
+    device.queue.writeBuffer(model.layer1.biases,  0, l1bData);
+
+    // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
+    const identityRange = new Float32Array(embCh * 2);
+    for (let c = 0; c < embCh; c++) { identityRange[c * 2] = -1; identityRange[c * 2 + 1] = 1; }
+    device.queue.writeBuffer(model.embeddings_q, 0, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
+    // Ensure fwdUniformsBuf emb_range matches identity packing (guards against stale range from restart)
+    uploadEmbRange(null, embCh, fwdUniformsBuf, device);
+
+    lastWeights = {
+        embeddings:    embData,
+        layer1Weights: l1wData,
+        layer2Weights: l2wData,
+        layer3Weights: l3wData,
+    };
 
     stepCount++;
     lossHistory.push(loss);
@@ -768,11 +923,13 @@ async function train() {
     drawEmbeddings();
     drawLayers();
     drawLossCurve();
+    drawSourceImage();
 
     const maxIter = parseInt(maxIterInput.value);
     if (maxIter > 0 && stepCount >= maxIter) {
         trainingActive = false;
         setStatus('stopped');
+        if (roiMask.isActive()) startDecayLoop();
         return;
     }
 
@@ -782,6 +939,7 @@ async function train() {
 }
 
 function run(initialWeights) {
+    stopDecayLoop();
     targetPixels  = get_target_pixels(loadedImage, canvas);
     stepCount     = 0;
     lossHistory   = [];
@@ -824,36 +982,31 @@ startBtn.addEventListener('click', async () => {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
         setStatus('stopped');
+        if (roiMask.isActive()) startDecayLoop();
         return;
     }
     if (!loadedImage) {
         alert("Please load an image first.");
         return;
     }
-    canvas.width  = BASE_CANVAS_W;
-    canvas.height = BASE_CANVAS_H;
-    canvas.style.width = '';
-    canvas.style.height = '';
-    canvas.parentElement.style.overflow = 'hidden';
-    config = {
-        gridSize:             parseInt(gridSizeSelect.value),
-        embeddingChannels:    parseInt(embeddingChannelsSelect.value),
-        mlpWidth:             parseInt(mlpWidthSelect.value),
-        quantization:         quantizationSelect.value,
-        smoothInterpolation:  smoothInterpolationCheckbox.checked,
-        width:  BASE_CANVAS_W,
-        height: BASE_CANVAS_H,
-    };
+    resetCanvasToBase();
+    const prevOffsets = config.embOffsets;
+    const prevEmbBits = config.embBits;
+    config = buildConfigFromUI();
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
         const isRestart = configCompatible(lastConfig, currentModelConfig()) && model;
         if (isRestart) {
+            // Preserve offsets only when embBits unchanged (same buffer layout)
+            config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
             // Rebuild pipeline (quantization/smooth may have changed), reuse model buffers + Adam state
             await createPipeline();
             createBindGroup();
             setStatus('training');
             run(null);
         } else {
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
             const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
             model = buffers;
             await createPipeline();
@@ -870,20 +1023,9 @@ startBtn.addEventListener('click', async () => {
 
 resetBtn.addEventListener('click', async () => {
     if (trainingActive || !loadedImage) return;
-    canvas.width  = BASE_CANVAS_W;
-    canvas.height = BASE_CANVAS_H;
-    canvas.style.width = '';
-    canvas.style.height = '';
-    canvas.parentElement.style.overflow = 'hidden';
-    config = {
-        gridSize:             parseInt(gridSizeSelect.value),
-        embeddingChannels:    parseInt(embeddingChannelsSelect.value),
-        mlpWidth:             parseInt(mlpWidthSelect.value),
-        quantization:         quantizationSelect.value,
-        smoothInterpolation:  smoothInterpolationCheckbox.checked,
-        width:  BASE_CANVAS_W,
-        height: BASE_CANVAS_H,
-    };
+    resetCanvasToBase();
+    config = buildConfigFromUI();
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
         const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
@@ -897,6 +1039,20 @@ resetBtn.addEventListener('click', async () => {
         console.error("Reset failed:", err);
         alert("Reset failed. Check the console for errors.");
     }
+});
+
+// --- Shake: add small noise to embeddings to escape local minima ---
+const SHAKE_AMPLITUDE = 0.02;
+shakeBtn.addEventListener('click', async () => {
+    if (!model || !lastWeights?.embeddings) return;
+    const emb = lastWeights.embeddings;
+    for (let i = 0; i < emb.length; i++) emb[i] += (Math.random() * 2 - 1) * SHAKE_AMPLITUDE;
+    const { device } = webGpuContext;
+    device.queue.writeBuffer(model.embeddings, 0, emb);
+    // Reset Adam moments so accumulated momentum doesn't immediately undo the perturbation
+    const zeros = new Float32Array(emb.length);
+    device.queue.writeBuffer(model.adamM.embeddings, 0, zeros);
+    device.queue.writeBuffer(model.adamV.embeddings, 0, zeros);
 });
 
 // --- Weight readback (for export) ---
@@ -958,6 +1114,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
         mlpRatio:   mlpRatioInput.value,
         bwdStride:  bwdStrideInput.value,
         outputZoom: outputZoomInput.value,
+        noOffset:   noOffsetCheckbox.checked,
     };
     const buf = saveModelSafetensors(saveConfig, weights);
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
@@ -976,7 +1133,7 @@ async function runZoomInference(W, H) {
     const embF32 = lastWeights.embeddings;
     const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
     device.queue.writeBuffer(model.embeddings_range, 0, range);
-    const packed = cpuPackEmbeddings(embF32, embCh, range);
+    const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
     device.queue.writeBuffer(model.embeddings_q, 0, packed);
 
     const unifBuf = webGpuContext.uniformBuffer(160);
@@ -1021,7 +1178,6 @@ async function runZoomInference(W, H) {
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
 }
 
-// --- Load model ---
 // --- Inference: pack embeddings (CPU) then run one forward pass ---
 async function runInference() {
     const { device } = webGpuContext;
@@ -1031,7 +1187,7 @@ async function runInference() {
     const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
     device.queue.writeBuffer(model.embeddings_range, 0, range);
     uploadEmbRange(range, embCh, fwdUniformsBuf, device);
-    const packed = cpuPackEmbeddings(embF32, embCh, range);
+    const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
     device.queue.writeBuffer(model.embeddings_q, 0, packed);
 
     const ce = device.createCommandEncoder();
@@ -1064,7 +1220,7 @@ async function loadModelFile(file) {
     const { config: savedConfig, tensors, uiSettings = {} } = parsed;
     if (![16, 32, 64].includes(savedConfig.gridSize) ||
         ![4, 8, 16].includes(savedConfig.embeddingChannels) ||
-        ![8, 16, 32, 64].includes(savedConfig.mlpWidth)) {
+        ![4, 8, 16, 32, 64].includes(savedConfig.mlpWidth)) {
         alert('Unsupported model config in file.');
         return;
     }
@@ -1075,8 +1231,11 @@ async function loadModelFile(file) {
 
     // Restore saved UI settings
     if (uiSettings.quantization) quantizationSelect.value = uiSettings.quantization;
+    if (savedConfig.embBits) embBitsSelect.value = String(savedConfig.embBits);
     if (uiSettings.smoothInterpolation !== undefined)
         smoothInterpolationCheckbox.checked = uiSettings.smoothInterpolation === 'true';
+    if (uiSettings.noOffset !== undefined)
+        noOffsetCheckbox.checked = uiSettings.noOffset === 'true';
     if (uiSettings.maxIter !== undefined) {
         maxIterInput.value = uiSettings.maxIter;
         maxIterInput.dispatchEvent(new Event('input'));
@@ -1087,14 +1246,17 @@ async function loadModelFile(file) {
     if (uiSettings.bwdStride !== undefined) { bwdStrideInput.value = uiSettings.bwdStride; bwdStrideVal.textContent = uiSettings.bwdStride; }
     if (uiSettings.outputZoom !== undefined) { outputZoomInput.value = uiSettings.outputZoom; outputZoomVal.textContent = uiSettings.outputZoom + '×'; }
 
+    const loadedEmbBits = savedConfig.embBits || 8;
     config = {
         gridSize:            savedConfig.gridSize,
         embeddingChannels:   savedConfig.embeddingChannels,
         mlpWidth:            savedConfig.mlpWidth,
         quantization:        quantizationSelect.value,
+        embBits:             loadedEmbBits,
         smoothInterpolation: smoothInterpolationCheckbox.checked,
         width:  canvas.width,
         height: canvas.height,
+        embOffsets:          savedConfig.embOffsets || generateEmbOffsets(savedConfig.embeddingChannels, loadedEmbBits, savedConfig.gridSize),
     };
 
     try {
@@ -1151,10 +1313,18 @@ document.addEventListener('drop', async (e) => {
     if (file?.name.endsWith('.safetensors')) await loadModelFile(file);
 });
 
+function updateEmbBitsOptions() {
+    const embCh = parseInt(embeddingChannelsSelect.value);
+    const opt4 = embBitsSelect.querySelector('option[value="4"]');
+    opt4.disabled = embCh < 8;
+    if (opt4.disabled && embBitsSelect.value === '4') embBitsSelect.value = '8';
+}
+
 // Update start button label and size when model config dropdowns change
-[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect].forEach(sel => {
-    sel.addEventListener('change', () => { updateStartLabel(); updateSizeDisplay(); });
+[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect, embBitsSelect].forEach(sel => {
+    sel.addEventListener('change', () => { updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay(); });
 });
+updateEmbBitsOptions();
 
 // --- Startup: load default image then default model ---
 const startupImg = new Image();

@@ -11,19 +11,21 @@ struct BwdUniforms {
     height:        u32,
     stride:        u32,
     sampled_count: u32,
+    roi_strength:  f32,
 }
 @group(0) @binding(0) var<uniform> uni: BwdUniforms;
 `;
 
 export function buildBackwardShaders(config) {
     const { gridSize, embeddingChannels: embCh, mlpWidth, smoothInterpolation } = config;
+    const embBits = config.embBits || 8;
     return {
         gradOutput:      gradOutputShader(),
         gradL3:          gradL3Shader(mlpWidth),
         gradL2:          gradL2Shader(mlpWidth),
-        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation),
+        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, config.embOffsets, embBits),
         adamStep:        adamStepShader(),
-        packEmbeddings:  packEmbeddingsShader(embCh),
+        packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
 }
 
@@ -35,20 +37,22 @@ function gradOutputShader() {
 @group(0) @binding(1) var<storage, read>       out_final:  array<f32>;
 @group(0) @binding(2) var<storage, read>       tgt:        array<f32>;
 @group(0) @binding(3) var<storage, read_write> grad_final: array<f32>;
+@group(0) @binding(4) var<storage, read>       roi_mask:   array<f32>;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = gid.x;
     if (p >= uni.width * uni.height) { return; }
     if (uni.stride > 1u && p % uni.stride != 0u) {
-        grad_final[p*4u]   = 0.0; grad_final[p*4u+1u] = 0.0;
+        grad_final[p*4u]    = 0.0; grad_final[p*4u+1u] = 0.0;
         grad_final[p*4u+2u] = 0.0; grad_final[p*4u+3u] = 0.0;
         return;
     }
-    grad_final[p*4u]   = 2.0 * (out_final[p*4u]   - tgt[p*4u]);
-    grad_final[p*4u+1u] = 2.0 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
-    grad_final[p*4u+2u] = 2.0 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
-    grad_final[p*4u+3u] = 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u]);
+    let wt = 1.0 + roi_mask[p] * uni.roi_strength;
+    grad_final[p*4u]    = wt * 2.0 * (out_final[p*4u]    - tgt[p*4u]);
+    grad_final[p*4u+1u] = wt * 2.0 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
+    grad_final[p*4u+2u] = wt * 2.0 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
+    grad_final[p*4u+3u] = wt * 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u]);
 }
 `;
 }
@@ -150,7 +154,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Phase 2: 8×8 spatial workgroup so adjacent pixels map to nearby grid cells,
 //           reducing atomic contention on grad_embeddings.
 // ---------------------------------------------------------------------------
-function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp) {
+function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embOffsets, embBits) {
+    const channelsPerU32 = 32 / (embBits || 8);
+    const numU32 = embCh / channelsPerU32;
+    const offsets = embOffsets || new Float32Array(numU32 * 2);
+    const offsetVals = Array.from(offsets).map(v => v.toFixed(6) + 'f').join(', ');
     const smoothCode = smoothInterp ? `
     tx = tx*tx*(3.0 - 2.0*tx);
     ty = ty*ty*(3.0 - 2.0*ty);` : '';
@@ -167,7 +175,10 @@ function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp) {
 const MW:  u32 = ${mlpWidth}u;
 const EC:  u32 = ${embCh}u;
 const GS:  u32 = ${gridSize}u;
+const NU:  u32 = ${numU32}u;
+const CPG: u32 = ${channelsPerU32}u;
 const FPS: f32 = ${FP_SCALE}.0;
+const EMB_OFFSETS: array<f32, ${numU32 * 2}> = array<f32, ${numU32 * 2}>(${offsetVals});
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -177,55 +188,61 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = px_y * uni.width + px_x;
     if (uni.stride > 1u && p % uni.stride != 0u) { return; }
 
-    let sx = f32(px_x) / f32(uni.width  - 1u) * f32(GS - 1u);
-    let sy = f32(px_y) / f32(uni.height - 1u) * f32(GS - 1u);
-    let x0 = u32(sx); let y0 = u32(sy);
-    let x1 = min(x0 + 1u, GS - 1u);
-    let y1 = min(y0 + 1u, GS - 1u);
-    var tx = sx - f32(x0);
-    var ty = sy - f32(y0);
-    ${smoothCode}
-    let w00 = (1.0-tx)*(1.0-ty);
-    let w10 = tx*(1.0-ty);
-    let w01 = (1.0-tx)*ty;
-    let w11 = tx*ty;
-    let idx00 = (y0*GS+x0)*EC;
-    let idx10 = (y0*GS+x1)*EC;
-    let idx01 = (y1*GS+x0)*EC;
-    let idx11 = (y1*GS+x1)*EC;
-
-    let bilinear_w = vec4<f32>(w00, w10, w01, w11);
-    var interp: array<f32, ${embCh}>;
-    for (var j = 0u; j < EC; j++) {
-        interp[j] = dot(bilinear_w, vec4<f32>(embeddings[idx00+j], embeddings[idx10+j], embeddings[idx01+j], embeddings[idx11+j]));
-    }
-
+    // Compute g[] from upstream gradient — independent of embedding layout
     var g: array<f32, ${mlpWidth}>;
     for (var i = 0u; i < MW; i++) {
         g[i] = grad_inter1_preact[p*MW+i] * cos(inter_layer1[p*MW+i]);
         atomicAdd(&grad_l1_biases[i], i32(g[i] * FPS));
-        for (var j = 0u; j < EC; j++) {
-            atomicAdd(&grad_l1_weights[i*EC+j], i32(g[i] * interp[j] * FPS));
-        }
     }
-
-    // ge[j] = W1^T * g  via dot over vec4 chunks; then scatter to embedding corners
     var gv: array<vec4<f32>, ${mlpWidth >> 2}>;
     for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
-        let b = k * 4u;
-        gv[k] = vec4<f32>(g[b], g[b+1u], g[b+2u], g[b+3u]);
+        let bk = k * 4u;
+        gv[k] = vec4<f32>(g[bk], g[bk+1u], g[bk+2u], g[bk+3u]);
     }
-    for (var j = 0u; j < EC; j++) {
-        var ge = 0.0;
-        for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
-            let b = k * 4u;
-            let col = vec4<f32>(layer1_weights[b*EC+j], layer1_weights[(b+1u)*EC+j], layer1_weights[(b+2u)*EC+j], layer1_weights[(b+3u)*EC+j]);
-            ge += dot(gv[k], col);
+
+    let uvx = f32(px_x) / f32(uni.width  - 1u);
+    let uvy = f32(px_y) / f32(uni.height - 1u);
+
+    // Per-u32 group: each has its own UV offset → distinct bilinear footprint
+    for (var grp = 0u; grp < NU; grp++) {
+        let ox = EMB_OFFSETS[grp * 2u];
+        let oy = EMB_OFFSETS[grp * 2u + 1u];
+        let sx = clamp(uvx + ox, 0.0, 1.0) * f32(GS - 1u);
+        let sy = clamp(uvy + oy, 0.0, 1.0) * f32(GS - 1u);
+        let x0 = u32(sx); let y0 = u32(sy);
+        let x1 = min(x0 + 1u, GS - 1u);
+        let y1 = min(y0 + 1u, GS - 1u);
+        var tx = sx - f32(x0);
+        var ty = sy - f32(y0);
+        ${smoothCode}
+        let w00 = (1.0-tx)*(1.0-ty);
+        let w10 = tx*(1.0-ty);
+        let w01 = (1.0-tx)*ty;
+        let w11 = tx*ty;
+        let idx00 = (y0*GS+x0)*EC;
+        let idx10 = (y0*GS+x1)*EC;
+        let idx01 = (y1*GS+x0)*EC;
+        let idx11 = (y1*GS+x1)*EC;
+
+        for (var b = 0u; b < CPG; b++) {
+            let j = grp * CPG + b;
+            let interp_j = w00*embeddings[idx00+j] + w10*embeddings[idx10+j]
+                         + w01*embeddings[idx01+j] + w11*embeddings[idx11+j];
+            for (var i = 0u; i < MW; i++) {
+                atomicAdd(&grad_l1_weights[i*EC+j], i32(g[i] * interp_j * FPS));
+            }
+            var ge = 0.0;
+            for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
+                let bk = k * 4u;
+                let col = vec4<f32>(layer1_weights[bk*EC+j], layer1_weights[(bk+1u)*EC+j],
+                                    layer1_weights[(bk+2u)*EC+j], layer1_weights[(bk+3u)*EC+j]);
+                ge += dot(gv[k], col);
+            }
+            atomicAdd(&grad_embeddings[idx00+j], i32(w00 * ge * FPS));
+            atomicAdd(&grad_embeddings[idx10+j], i32(w10 * ge * FPS));
+            atomicAdd(&grad_embeddings[idx01+j], i32(w01 * ge * FPS));
+            atomicAdd(&grad_embeddings[idx11+j], i32(w11 * ge * FPS));
         }
-        atomicAdd(&grad_embeddings[idx00+j], i32(w00 * ge * FPS));
-        atomicAdd(&grad_embeddings[idx10+j], i32(w10 * ge * FPS));
-        atomicAdd(&grad_embeddings[idx01+j], i32(w01 * ge * FPS));
-        atomicAdd(&grad_embeddings[idx11+j], i32(w11 * ge * FPS));
     }
 }
 `;
@@ -281,14 +298,44 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Applies per-channel range scaling so the full int8 range maps to [mn, mx].
 // Run after each Adam step for embeddings; forward shader reads packed buffer.
 // ---------------------------------------------------------------------------
-function packEmbeddingsShader(embCh) {
-    const numPlanes = embCh / 4;
-    return `
+const PACK_BINDINGS = `
 @group(0) @binding(0) var<storage, read>       src:       array<f32>;
-@group(0) @binding(1) var<storage, read_write>  dst:       array<u32>;
-@group(0) @binding(2) var<storage, read>        emb_range: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst:       array<u32>;
+@group(0) @binding(2) var<storage, read>       emb_range: array<f32>;
+`;
 
-const NP: u32 = ${numPlanes}u;
+function packEmbeddingsShader(embCh, embBits) {
+    const channelsPerU32 = 32 / (embBits || 8);
+    const numU32 = embCh / channelsPerU32;
+    if ((embBits || 8) === 4) {
+        return `${PACK_BINDINGS}
+const EC: u32 = ${embCh}u;
+const NG: u32 = ${numU32}u;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let k = gid.x;
+    if (k >= arrayLength(&dst)) { return; }
+    let grid_i = k / NG;
+    let g      = k % NG;
+    var packed: u32 = 0u;
+    for (var b = 0u; b < 8u; b++) {
+        let c    = g * 8u + b;
+        let v    = src[grid_i * EC + c];
+        let mn   = emb_range[c * 2u];
+        let mx   = emb_range[c * 2u + 1u];
+        let span = mx - mn;
+        let s    = select(0.0, clamp(2.0 * (v - mn) / span - 1.0, -1.0, 1.0), span >= 1e-9);
+        let nib  = u32(i32(clamp(round(s * 7.0), -7.0, 7.0)) & 0xF);
+        packed  |= nib << (b * 4u);
+    }
+    dst[k] = packed;
+}
+`;
+    }
+    // 8-bit path (default)
+    return `${PACK_BINDINGS}
+const NP: u32 = ${numU32}u;
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {

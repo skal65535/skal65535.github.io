@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NNCOMPRESS — WebGPU Image Trainer</title>
+    <title>Compression using Implicit Neural Representation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -71,15 +71,10 @@
             text-transform: uppercase;
         }
         .header-spacer { flex: 1; }
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-family: var(--display);
-            font-weight: 600;
-            font-size: 11px;
-            letter-spacing: 0.12em;
-        }
+        .header-links { display: flex; align-items: center; gap: 10px; }
+        .header-links-label { font-family: var(--display); font-size: 11px; letter-spacing: 0.05em; color: var(--text-dim); text-transform: uppercase; }
+        .header-links a { font-family: var(--display); font-size: 12px; font-weight: 600; letter-spacing: 0.07em; color: #c8e0ff; text-decoration: none; text-transform: uppercase; padding: 2px 7px; border: 1px solid rgba(160,200,240,0.35); border-radius: 3px; }
+        .header-links a:hover { color: #fff; border-color: #a0c8f0; background: rgba(160,200,240,0.1); }
         .status-dot {
             width: 7px;
             height: 7px;
@@ -135,7 +130,18 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            cursor: pointer;
+            user-select: none;
         }
+        .section-label::after {
+            content: '▾';
+            margin-left: auto;
+            font-size: 10px;
+            transition: transform 0.15s;
+        }
+        .ctrl-section.collapsed .section-label { margin-bottom: 0; }
+        .ctrl-section.collapsed .section-label::after { transform: rotate(-90deg); }
+        .ctrl-section.collapsed > :not(.section-label) { display: none; }
         .section-label::before {
             content: '';
             display: block;
@@ -158,6 +164,8 @@
             letter-spacing: 0.05em;
             text-transform: uppercase;
         }
+        .ctrl-label a { color: #a0c8f0; text-decoration: underline; }
+        .ctrl-label a:hover { color: #c8e0ff; }
 
         select {
             width: 100%;
@@ -251,6 +259,15 @@
             transition: transform 0.1s;
         }
         input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
+        input[type="range"].lr-slider { background: rgba(240,100,40,0.25); }
+        input[type="range"].lr-slider::-webkit-slider-thumb {
+            background: #f06428;
+            box-shadow: 0 0 6px rgba(240,100,40,0.45);
+        }
+        input[type="range"].lr-slider::-moz-range-thumb {
+            background: #f06428;
+            box-shadow: 0 0 6px rgba(240,100,40,0.45);
+        }
         input[type="range"]::-moz-range-thumb {
             width: 13px; height: 13px;
             border-radius: 50%;
@@ -309,14 +326,18 @@
             opacity: 0.3;
             cursor: not-allowed;
         }
-        #export-btn, #save-btn, #load-btn {
-            background: transparent;
-            color: var(--text-dim);
-            border: 1px solid var(--border-2);
+        .header-btns { display: flex; align-items: center; gap: 6px; margin-right: 14px; }
+        .header-btns .btn {
+            width: auto;
+            font-size: 11px; padding: 3px 9px;
+            background: var(--accent-dim);
+            color: var(--accent);
+            border: 1px solid rgba(245,166,36,0.4);
         }
-        #export-btn:hover, #save-btn:hover, #load-btn:hover {
-            color: var(--cyan);
-            border-color: var(--cyan);
+        .header-btns .btn:hover {
+            background: rgba(245,166,36,0.22);
+            border-color: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
         }
 
         /* ── WORKSPACE ────────────────────────────── */
@@ -424,6 +445,7 @@
             line-height: 1.7;
         }
         #source-panel { cursor: pointer; }
+        #source-panel.has-image .canvas-wrap { cursor: crosshair; }
 
         /* ── STATS BAR ────────────────────────────── */
         .stats-bar {
@@ -484,13 +506,19 @@
 </head>
 <body>
     <header>
-        <div class="app-logo">◈ NNCOMPRESS</div>
+        <div class="app-logo">◈ Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
         <div class="app-sub">WebGPU Neural Image Trainer</div>
         <div class="header-spacer"></div>
-        <div class="status-indicator">
-            <span class="status-dot idle" id="status-dot"></span>
-            <span id="status-text">IDLE</span>
+        <div class="header-btns">
+            <button class="btn" id="load-btn">↑ Load</button>
+            <button class="btn" id="save-btn">↓ Save</button>
+            <button class="btn" id="export-btn">↓ GLSL</button>
+        </div>
+        <div class="header-links">
+            <span class="header-links-label">Related papers:</span>
+            <a href="https://arxiv.org/abs/2103.03123" target="_blank" rel="noopener">COIN</a>
+            <a href="https://arxiv.org/abs/2201.05989" target="_blank" rel="noopener">Instant-NGP</a>
         </div>
     </header>
 
@@ -517,6 +545,7 @@
                 <div class="ctrl-row">
                     <div class="ctrl-label">MLP Width</div>
                     <select id="mlp-width">
+                        <option value="4">4</option>
                         <option value="8">8</option>
                         <option value="16" selected>16</option>
                         <option value="32">32</option>
@@ -531,9 +560,22 @@
                     </select>
                 </div>
                 <div class="ctrl-row">
+                    <div class="ctrl-label">Emb Bits</div>
+                    <select id="emb-bits">
+                        <option value="8" selected>8-bit</option>
+                        <option value="4">4-bit</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
                     <label class="ctrl-check">
                         <input type="checkbox" id="smooth-interpolation" checked>
-                        <span class="ctrl-label">Smooth Interpolation</span>
+                        <span class="ctrl-label">Smooth <a href="https://iquilezles.org/articles/texture/" target="_blank" rel="noopener">Interpolation</a></span>
+                    </label>
+                </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-check">
+                        <input type="checkbox" id="no-offset">
+                        <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
             </div>
@@ -552,18 +594,18 @@
                         <span class="ctrl-label">Embeddings LR</span>
                         <span class="slider-val" id="embed-lr-val">—</span>
                     </div>
-                    <input type="range" id="embed-lr" min="0" max="100" step="1" value="67">
+                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="67">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">MLP LR</span>
                         <span class="slider-val" id="mlp-lr-val">—</span>
                     </div>
-                    <input type="range" id="mlp-lr" min="0" max="100" step="1" value="33">
+                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="33">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
-                        <span class="ctrl-label">MLP steps / emb step</span>
+                        <span class="ctrl-label">Emb steps / MLP step</span>
                         <span class="slider-val" id="mlp-ratio-val">3</span>
                     </div>
                     <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3">
@@ -577,13 +619,37 @@
                 </div>
             </div>
 
+            <div class="ctrl-section collapsed">
+                <div class="section-label">ROI Mask</div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">Brush Radius</span>
+                        <span class="slider-val" id="roi-brush-val">20</span>
+                    </div>
+                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20">
+                </div>
+                <div class="slider-row">
+                    <div class="slider-header">
+                        <span class="ctrl-label">ROI Strength</span>
+                        <span class="slider-val" id="roi-strength-val">9</span>
+                    </div>
+                    <input type="range" id="roi-strength" min="0" max="20" step="1" value="9">
+                </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-check">
+                        <input type="checkbox" id="roi-freeze">
+                        <span class="ctrl-label">Freeze Mask</span>
+                    </label>
+                </div>
+                <div class="ctrl-row">
+                    <button class="btn" id="roi-clear-btn" style="padding:6px 10px;font-size:11px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border-2);">✕ Clear Mask</button>
+                </div>
+            </div>
+
             <div class="btn-area">
                 <button class="btn" id="start-btn">▶ Start</button>
+                <button class="btn" id="shake-btn" disabled>⚡ Shake</button>
                 <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
-                <button class="btn" id="export-btn">↓ Export GLSL</button>
-                <button class="btn" id="save-btn">↓ Save Model</button>
-                <button class="btn" id="load-btn">↑ Load Model</button>
-                <input type="file" id="model-file-input" style="display:none" accept=".safetensors">
             </div>
         </aside>
 
@@ -592,7 +658,7 @@
                 <div class="canvas-panel" id="source-panel">
                     <div class="panel-header">
                         <span class="panel-title">Source <span id="source-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
-                        <span class="panel-hint">click or drop</span>
+                        <span class="panel-hint">click or drop · draw mask</span>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="source-canvas" width="512" height="512"></canvas>
@@ -658,6 +724,10 @@
                     <span class="stat-label">Compressed Size</span>
                     <span class="stat-value" id="model-size">—</span>
                 </div>
+                <div class="stat-item" style="margin-left:auto;">
+                    <span class="status-dot idle" id="status-dot"></span>
+                    <span id="status-text" class="stat-label">IDLE</span>
+                </div>
             </div>
 
             <div class="loss-section">
@@ -668,5 +738,6 @@
     </div>
 
     <script type="module" src="js/main.js"></script>
+<input type="file" id="model-file-input" style="display:none" accept=".safetensors">
 </body>
 </html>
