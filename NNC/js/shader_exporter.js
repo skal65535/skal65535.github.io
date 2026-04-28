@@ -19,6 +19,22 @@ export function export_to_glsl(config, weights) {
     const { gridSize, embeddingChannels, mlpWidth, smoothInterpolation, quantization } = config;
     const numPlanes = embeddingChannels / 4;
     const comps = ['r', 'g', 'b', 'a'];
+    // GLSL export always uses fp32 textures (one texture per 4-channel plane), regardless of embBits
+    const offsets = config.embOffsets
+        ? (() => {
+            // embOffsets may be sized for 4-bit (numGroups) or 8-bit (numPlanes); expand to numPlanes
+            const embBits = config.embBits || 8;
+            const numU32 = embeddingChannels / (32 / embBits);
+            const out = new Float32Array(numPlanes * 2);
+            // each u32 group covers channelsPerU32 channels; map groups → planes
+            for (let p = 0; p < numPlanes; p++) {
+                const grp = embBits === 4 ? Math.floor(p / 2) : p;
+                out[p * 2]     = config.embOffsets[grp * 2]     || 0;
+                out[p * 2 + 1] = config.embOffsets[grp * 2 + 1] || 0;
+            }
+            return out;
+          })()
+        : new Float32Array(numPlanes * 2);
 
     // One texture per embedding plane (up to 4 = iChannel0..3)
     const textureDecls = Array.from({length: numPlanes}, (_, p) =>
@@ -40,13 +56,20 @@ vec4 sample_plane(sampler2D smp, vec2 uv) {
 }` : `
 vec4 sample_plane(sampler2D smp, vec2 uv) { return texture(smp, uv); }`;
 
-    const quantizeFn = quantization === 'qat8' ? `
-vec3 quantize(vec3 v) { return floor(v * 255.0 + 0.5) / 255.0; }` : '';
+    // For QAT8: snap weights to the same int8 grid used during training forward pass.
+    // Biases and embeddings are not quantized (training doesn't quantize them).
+    const qw = quantization === 'qat8'
+        ? w => Math.round(Math.max(-1, Math.min(1, w)) * 127) / 127
+        : w => w;
 
-    // Embedding init: sample all planes into l0_out[]
+    // Embedding init: sample all planes into l0_out[], each with its UV offset
     let embInit = `    float l0_out[${embeddingChannels}];\n`;
     for (let p = 0; p < numPlanes; p++) {
-        embInit += `    { vec4 e = sample_plane(iChannel${p}, uv); `;
+        const ox = offsets[p * 2].toFixed(6), oy = offsets[p * 2 + 1].toFixed(6);
+        const uvExpr = (ox === '0.000000' && oy === '0.000000')
+            ? 'uv'
+            : `clamp(uv + vec2(${ox}, ${oy}), 0.0, 1.0)`;
+        embInit += `    { vec4 e = sample_plane(iChannel${p}, ${uvExpr}); `;
         for (let b = 0; b < 4; b++) embInit += `l0_out[${p*4+b}] = e.${comps[b]}; `;
         embInit += '}\n';
     }
@@ -55,7 +78,6 @@ vec3 quantize(vec3 v) { return floor(v * 255.0 + 0.5) / 255.0; }` : '';
 uniform vec2 iResolution;
 ${textureDecls}
 ${sampleFn}
-${quantizeFn}
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
@@ -64,22 +86,21 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     // Layer 0: embeddings (${embeddingChannels} channels from ${numPlanes} texture(s))
 ${embInit}
     // Layer 1 (${embeddingChannels} → ${mlpWidth})
-    const float l1_w[${mlpWidth * embeddingChannels}] = float[](${weights.layer1_weights.join(', ')});
+    const float l1_w[${mlpWidth * embeddingChannels}] = float[](${Array.from(weights.layer1_weights).map(qw).join(', ')});
     const float l1_b[${mlpWidth}] = float[](${weights.layer1_biases.join(', ')});
     float l1_out[${mlpWidth}];
 ${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', 'sin')}
     // Layer 2 (${mlpWidth} → ${mlpWidth})
-    const float l2_w[${mlpWidth * mlpWidth}] = float[](${weights.layer2_weights.join(', ')});
+    const float l2_w[${mlpWidth * mlpWidth}] = float[](${Array.from(weights.layer2_weights).map(qw).join(', ')});
     const float l2_b[${mlpWidth}] = float[](${weights.layer2_biases.join(', ')});
     float l2_out[${mlpWidth}];
 ${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', 'sin')}
     // Layer 3 (${mlpWidth} → 4)
-    const float l3_w[${4 * mlpWidth}] = float[](${weights.layer3_weights.join(', ')});
+    const float l3_w[${4 * mlpWidth}] = float[](${Array.from(weights.layer3_weights).map(qw).join(', ')});
     const float l3_b[4] = float[](${weights.layer3_biases.join(', ')});
     vec4 l3_out;
 ${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '')}
     fragColor = clamp(vec4(l3_out.rgb, 1.0), 0.0, 1.0);
-    ${quantization === 'qat8' ? 'fragColor.rgb = quantize(fragColor.rgb);' : ''}
 }
 `;
     return shader;

@@ -24,9 +24,10 @@ export function saveModelSafetensors(config, tensors) {
 
     const meta = { gridSize: String(gridSize), embeddingChannels: String(embCh), mlpWidth: String(mlpWidth) };
     for (const [k, v] of Object.entries(config)) {
-        if (!['gridSize', 'embeddingChannels', 'mlpWidth', 'width', 'height'].includes(k))
+        if (!['gridSize', 'embeddingChannels', 'mlpWidth', 'width', 'height', 'embOffsets'].includes(k))
             meta[k] = String(v);
     }
+    if (config.embOffsets) meta.emb_offsets = JSON.stringify(Array.from(config.embOffsets));
 
     let offset = 0;
     const headerObj = { __metadata__: meta };
@@ -64,6 +65,8 @@ export async function loadModelSafetensors(file) {
         gridSize:          parseInt(meta.gridSize),
         embeddingChannels: parseInt(meta.embeddingChannels),
         mlpWidth:          parseInt(meta.mlpWidth),
+        embBits:           meta.embBits ? parseInt(meta.embBits) : 8,
+        embOffsets:        meta.emb_offsets ? new Float32Array(JSON.parse(meta.emb_offsets)) : null,
     };
     if ([config.gridSize, config.embeddingChannels, config.mlpWidth].some(isNaN))
         throw new Error('Missing or invalid config metadata');
@@ -76,7 +79,7 @@ export async function loadModelSafetensors(file) {
         tensors[k] = new Float32Array(ab.slice(dataStart + start, dataStart + end));
     }
 
-    const MODEL_KEYS = new Set(['gridSize', 'embeddingChannels', 'mlpWidth']);
+    const MODEL_KEYS = new Set(['gridSize', 'embeddingChannels', 'mlpWidth', 'embBits', 'emb_offsets']);
     const uiSettings = Object.fromEntries(Object.entries(meta).filter(([k]) => !MODEL_KEYS.has(k)));
 
     return { config, tensors, uiSettings };

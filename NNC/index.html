@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NNCOMPRESS — WebGPU Image Trainer</title>
+    <title>Compression using Implicit Neural Representation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -484,7 +484,7 @@
 </head>
 <body>
     <header>
-        <div class="app-logo">◈ NNCOMPRESS</div>
+        <div class="app-logo">◈ Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
         <div class="app-sub">WebGPU Neural Image Trainer</div>
         <div class="header-spacer"></div>
@@ -531,9 +531,22 @@
                     </select>
                 </div>
                 <div class="ctrl-row">
+                    <div class="ctrl-label">Emb Bits</div>
+                    <select id="emb-bits">
+                        <option value="8" selected>8-bit</option>
+                        <option value="4">4-bit</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
                     <label class="ctrl-check">
                         <input type="checkbox" id="smooth-interpolation" checked>
                         <span class="ctrl-label">Smooth Interpolation</span>
+                    </label>
+                </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-check">
+                        <input type="checkbox" id="no-offset">
+                        <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
             </div>
@@ -580,6 +593,7 @@
             <div class="btn-area">
                 <button class="btn" id="start-btn">▶ Start</button>
                 <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
+                <button class="btn" id="shake-btn" disabled>⚡ Shake</button>
                 <button class="btn" id="export-btn">↓ Export GLSL</button>
                 <button class="btn" id="save-btn">↓ Save Model</button>
                 <button class="btn" id="load-btn">↑ Load Model</button>

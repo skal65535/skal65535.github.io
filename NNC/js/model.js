@@ -14,6 +14,8 @@ export class ModelTensors {
 
 export function createModel(ctx, config) {
     const { gridSize, embeddingChannels, mlpWidth } = config;
+    const embBits = config.embBits || 8;
+    const channelsPerU32 = 32 / embBits;
 
     const embeddingSize = gridSize * gridSize * embeddingChannels;
     const embeddingData = new Float32Array(embeddingSize).map(() => Math.random() * 2 - 1);
@@ -42,7 +44,7 @@ export function createModel(ctx, config) {
 
     const modelBuffers = {
         embeddings:       ctx.createBuffer(embeddingData),
-        embeddings_q:     ctx.zeroBuffer(embeddingSize / 4),  // packed u32: 4 channels per u32
+        embeddings_q:     ctx.zeroBuffer(embeddingSize / channelsPerU32),  // packed u32: channelsPerU32 per u32
         embeddings_range: ctx.zeroBuffer(embeddingChannels * 2), // [min, max] per channel (f32)
         layer1: { weights: ctx.createBuffer(layer1Weights), biases: ctx.createBuffer(layer1Biases) },
         layer2: { weights: ctx.createBuffer(layer2Weights), biases: ctx.createBuffer(layer2Biases) },

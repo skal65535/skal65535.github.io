@@ -2,6 +2,15 @@
 
 export function buildShader(config) {
     const { gridSize, embeddingChannels, mlpWidth, quantization, smoothInterpolation } = config;
+    const embBits = config.embBits || 8;
+    const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
+    const numU32 = embeddingChannels / channelsPerU32;
+
+    const offsets = config.embOffsets || new Float32Array(numU32 * 2);
+    const offsetVals = Array.from(offsets).map(v => v.toFixed(6) + 'f').join(', ');
+    const embOffsetConst = `const EMB_OFFSETS: array<f32, ${numU32 * 2}> = array<f32, ${numU32 * 2}>(${offsetVals});`;
+
+    // keep numPlanes for 8-bit MLP/range indexing (always embCh/4)
     const numPlanes = embeddingChannels / 4;
 
     const quantizationFunctions = `
@@ -14,10 +23,13 @@ fn quantize_dequantize_8bit(val: f32) -> f32 {
         ? 'tx = tx*tx*(3.0-2.0*tx); ty = ty*ty*(3.0-2.0*ty);'
         : '';
 
-    // Samples one vec4 plane from the packed u32 embedding buffer with bilinear interpolation.
-    const interpolationFunctions = `
+    const interpolationFunctions = embBits === 8 ? `
+${embOffsetConst}
 fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
-    let scaled = uv * vec2<f32>(f32(uniforms.gridSize - 1u));
+    let ox = EMB_OFFSETS[plane * 2u];
+    let oy = EMB_OFFSETS[plane * 2u + 1u];
+    let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
+    let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
     let c      = floor(scaled);
     let x0 = u32(c.x); let y0 = u32(c.y);
     let x1 = min(x0 + 1u, uniforms.gridSize - 1u);
@@ -26,20 +38,22 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
     var ty = scaled.y - c.y;
     ${smoothCode}
     let gs = uniforms.gridSize;
-    let c00 = unpack4x8snorm(embeddings_q[(y0*gs+x0)*${numPlanes}u+plane]);
-    let c10 = unpack4x8snorm(embeddings_q[(y0*gs+x1)*${numPlanes}u+plane]);
-    let c01 = unpack4x8snorm(embeddings_q[(y1*gs+x0)*${numPlanes}u+plane]);
-    let c11 = unpack4x8snorm(embeddings_q[(y1*gs+x1)*${numPlanes}u+plane]);
+    let c00 = unpack4x8snorm(embeddings_q[(y0*gs+x0)*${numU32}u+plane]);
+    let c10 = unpack4x8snorm(embeddings_q[(y0*gs+x1)*${numU32}u+plane]);
+    let c01 = unpack4x8snorm(embeddings_q[(y1*gs+x0)*${numU32}u+plane]);
+    let c11 = unpack4x8snorm(embeddings_q[(y1*gs+x1)*${numU32}u+plane]);
     let interp = mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
-    // unscale from packed [-1,1] using per-plane range stored in uniforms
     let mn = uniforms.emb_range[plane * 2u];
     let mx = uniforms.emb_range[plane * 2u + 1u];
     return (interp + vec4<f32>(1.0)) * 0.5 * (mx - mn) + mn;
 }
+` : `
+${embOffsetConst}
+fn dequant4(n: u32) -> f32 { return f32(select(i32(n), i32(n) - 16, n >= 8u)) / 7.0; }
 `;
 
     // Generate dot-product inner loop (width must be a multiple of 4)
-    const dotLoop = (vecType) => quantization === 'qat8'
+    const dotLoop = quantization === 'qat8'
         ? `        for (var j: u32 = 0u; j < width; j = j + 4u) {
             let base = i * width + j;
             let w = vec4<f32>(quantize_dequantize_8bit((*mat)[base]), quantize_dequantize_8bit((*mat)[base+1u]), quantize_dequantize_8bit((*mat)[base+2u]), quantize_dequantize_8bit((*mat)[base+3u]));
@@ -53,36 +67,21 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
             sum += dot(w, v);
         }`;
 
+    const matVecMulFn = (name, inSize, outSize) => `
+fn ${name}(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${inSize}>, width: u32, height: u32) -> array<f32, ${outSize}> {
+    var result: array<f32, ${outSize}>;
+    for (var i: u32 = 0u; i < height; i = i + 1u) {
+        var sum = 0.0;
+${dotLoop}
+        result[i] = sum;
+    }
+    return result;
+}`;
+
     const mlpFunctions = `
-fn mat_vec_mul(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${embeddingChannels}>, width: u32, height: u32) -> array<f32, ${mlpWidth}> {
-    var result: array<f32, ${mlpWidth}>;
-    for (var i: u32 = 0u; i < height; i = i + 1u) {
-        var sum = 0.0;
-${dotLoop('embeddingChannels')}
-        result[i] = sum;
-    }
-    return result;
-}
-
-fn mat_vec_mul_hidden(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${mlpWidth}>, width: u32, height: u32) -> array<f32, ${mlpWidth}> {
-    var result: array<f32, ${mlpWidth}>;
-    for (var i: u32 = 0u; i < height; i = i + 1u) {
-        var sum = 0.0;
-${dotLoop('mlpWidth')}
-        result[i] = sum;
-    }
-    return result;
-}
-
-fn mat_vec_mul_output(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${mlpWidth}>, width: u32, height: u32) -> array<f32, 4> {
-    var result: array<f32, 4>;
-    for (var i: u32 = 0u; i < height; i = i + 1u) {
-        var sum = 0.0;
-${dotLoop('mlpWidth')}
-        result[i] = sum;
-    }
-    return result;
-}
+${matVecMulFn('mat_vec_mul',        embeddingChannels, mlpWidth)}
+${matVecMulFn('mat_vec_mul_hidden', mlpWidth,          mlpWidth)}
+${matVecMulFn('mat_vec_mul_output', mlpWidth,          4)}
 `;
 
     const shaderCode = `
@@ -127,13 +126,44 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let uv = vec2<f32>(f32(x) / f32(uniforms.canvasWidth - 1u), f32(y) / f32(uniforms.canvasHeight - 1u));
 
     var embedding_vector: array<f32, ${embeddingChannels}>;
-    for (var plane = 0u; plane < ${numPlanes}u; plane++) {
+    ${embBits === 8 ? `
+    for (var plane = 0u; plane < ${numU32}u; plane++) {
         let v = sample_embedding_plane(uv, plane);
         embedding_vector[plane*4u+0u] = v.x;
         embedding_vector[plane*4u+1u] = v.y;
         embedding_vector[plane*4u+2u] = v.z;
         embedding_vector[plane*4u+3u] = v.w;
-    }
+    }` : `
+    for (var grp = 0u; grp < ${numU32}u; grp++) {
+        let ox = EMB_OFFSETS[grp * 2u];
+        let oy = EMB_OFFSETS[grp * 2u + 1u];
+        let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
+        let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
+        let c = floor(scaled);
+        let x0 = u32(c.x); let y0 = u32(c.y);
+        let x1 = min(x0+1u, uniforms.gridSize-1u);
+        let y1 = min(y0+1u, uniforms.gridSize-1u);
+        var tx = scaled.x - c.x;
+        var ty = scaled.y - c.y;
+        ${smoothCode}
+        let gs = uniforms.gridSize;
+        let q00 = embeddings_q[(y0*gs+x0)*${numU32}u+grp];
+        let q10 = embeddings_q[(y0*gs+x1)*${numU32}u+grp];
+        let q01 = embeddings_q[(y1*gs+x0)*${numU32}u+grp];
+        let q11 = embeddings_q[(y1*gs+x1)*${numU32}u+grp];
+        for (var b = 0u; b < 8u; b++) {
+            let ch = grp * 8u + b;
+            let plane = ch / 4u;
+            let comp  = ch % 4u;
+            let mn = uniforms.emb_range[plane * 2u][comp];
+            let mx = uniforms.emb_range[plane * 2u + 1u][comp];
+            let s = dequant4((q00 >> (b*4u)) & 0xFu)*(1.0-tx)*(1.0-ty)
+                  + dequant4((q10 >> (b*4u)) & 0xFu)*tx*(1.0-ty)
+                  + dequant4((q01 >> (b*4u)) & 0xFu)*(1.0-tx)*ty
+                  + dequant4((q11 >> (b*4u)) & 0xFu)*tx*ty;
+            embedding_vector[ch] = (s + 1.0) * 0.5 * (mx - mn) + mn;
+        }
+    }`}
 
     // --- MLP FORWARD PASS ---
 
