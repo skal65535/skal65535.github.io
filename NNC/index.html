@@ -53,7 +53,7 @@
         .app-logo {
             font-family: var(--display);
             font-weight: 700;
-            font-size: 18px;
+            font-size: 21px;
             letter-spacing: 0.14em;
             color: var(--accent);
         }
@@ -660,17 +660,17 @@
             font-size: 11px;
             line-height: 1.55;
             padding: 6px 9px;
-            border-radius: 3px;
+            border-radius: 12px;
             pointer-events: none;
             max-width: 240px;
             white-space: pre-wrap;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.6);
         }
     </style>
 </head>
 <body>
     <header>
-        <div class="app-logo" id="app-title" style="cursor:pointer;text-decoration:underline dotted rgba(245,166,36,0.4);">◈ Compression using Implicit Neural Representation</div>
+        <div class="app-logo" id="app-title" style="cursor:pointer;text-decoration:underline dotted rgba(245,166,36,0.4);">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
         <button id="help-btn">?</button>
         <div class="header-spacer"></div>
@@ -855,7 +855,6 @@
                 <div class="canvas-panel">
                     <div class="panel-header">
                         <span class="panel-title">Output <span id="output-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
-                        <span class="panel-hint" id="iter-label">—</span>
                         <label class="panel-hint" style="display:flex;align-items:center;gap:5px;cursor:default;flex-shrink:0;">
                             zoom
                             <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1" style="width:52px;vertical-align:middle;">
@@ -922,6 +921,10 @@
                     <tr><td>EMB=N</td><td>Embedding channels per cell — 4, 8, or 16</td></tr>
                     <tr><td>MLP=N</td><td>MLP hidden layer width — 4, 8, 16, 32, or 64</td></tr>
                     <tr><td>iters=N</td><td>Max training steps (0 = run forever)</td></tr>
+                    <tr><td>embedLr=N</td><td>Embedding learning rate slider value (0–100)</td></tr>
+                    <tr><td>mlpLr=N</td><td>MLP learning rate slider value (0–100)</td></tr>
+                    <tr><td>smooth</td><td>Enable smooth interpolation</td></tr>
+                    <tr><td>nosmooth</td><td>Disable smooth interpolation</td></tr>
                     <tr><td>8qat</td><td>Enable 8-bit quantization-aware training for the MLP</td></tr>
                     <tr><td>4b</td><td>Pack embeddings as 4-bit (requires EMB ≥ 8)</td></tr>
                     <tr><td>8b</td><td>Pack embeddings as 8-bit (default)</td></tr>
