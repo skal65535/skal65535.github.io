@@ -58,6 +58,7 @@ const roiStrengthInput = document.getElementById('roi-strength');
 const roiStrengthVal   = document.getElementById('roi-strength-val');
 const roiFreezeChk     = document.getElementById('roi-freeze');
 const roiClearBtn      = document.getElementById('roi-clear-btn');
+const roiAutoBtn       = document.getElementById('roi-auto-btn');
 
 // --- State ---
 let BASE_CANVAS_W = canvas.width;
@@ -425,6 +426,15 @@ roiFreezeChk.addEventListener('change', () => {
 });
 roiClearBtn.addEventListener('click', () => {
     roiMask.clear();
+    stopDecayLoop();
+    drawSourceImage();
+});
+roiAutoBtn.addEventListener('click', () => {
+    if (!loadedImage) return;
+    const ctx = sourceCanvas.getContext('2d');
+    const id  = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+    roiMask.autoMask(id.data);
+    roiFreezeChk.checked = true;
     stopDecayLoop();
     drawSourceImage();
 });
