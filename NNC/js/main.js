@@ -42,7 +42,6 @@ const shakeBtn      = document.getElementById('shake-btn');
 const saveBtn       = document.getElementById('save-btn');
 const loadBtn       = document.getElementById('load-btn');
 const snapshotBtn   = document.getElementById('snapshot-btn');
-const recallBtn     = document.getElementById('recall-btn');
 const modelFileInput = document.getElementById('model-file-input');
 const lossValueEl   = document.getElementById('loss-value');
 const stepCounterEl = document.getElementById('step-counter');
@@ -1139,21 +1138,21 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 // --- Snapshot / Recall ---
 snapshotBtn.addEventListener('click', async () => {
     if (!model || !config.mlpWidth) { alert("Train or load a model first."); return; }
-    snapshotWeights = await readBackAllWeights();
-    recallBtn.disabled = false;
-    snapshotBtn.textContent = '● Snapshot ✓';
-});
-
-recallBtn.addEventListener('click', () => {
-    if (!snapshotWeights || !model) return;
-    const { device } = webGpuContext;
-    device.queue.writeBuffer(model.embeddings,     0, snapshotWeights.embeddings);
-    device.queue.writeBuffer(model.layer1.weights, 0, snapshotWeights.layer1_weights);
-    device.queue.writeBuffer(model.layer1.biases,  0, snapshotWeights.layer1_biases);
-    device.queue.writeBuffer(model.layer2.weights, 0, snapshotWeights.layer2_weights);
-    device.queue.writeBuffer(model.layer2.biases,  0, snapshotWeights.layer2_biases);
-    device.queue.writeBuffer(model.layer3.weights, 0, snapshotWeights.layer3_weights);
-    device.queue.writeBuffer(model.layer3.biases,  0, snapshotWeights.layer3_biases);
+    if (!snapshotWeights) {
+        snapshotWeights = await readBackAllWeights();
+        snapshotBtn.textContent = '↺ Recall';
+    } else {
+        const { device } = webGpuContext;
+        device.queue.writeBuffer(model.embeddings,     0, snapshotWeights.embeddings);
+        device.queue.writeBuffer(model.layer1.weights, 0, snapshotWeights.layer1_weights);
+        device.queue.writeBuffer(model.layer1.biases,  0, snapshotWeights.layer1_biases);
+        device.queue.writeBuffer(model.layer2.weights, 0, snapshotWeights.layer2_weights);
+        device.queue.writeBuffer(model.layer2.biases,  0, snapshotWeights.layer2_biases);
+        device.queue.writeBuffer(model.layer3.weights, 0, snapshotWeights.layer3_weights);
+        device.queue.writeBuffer(model.layer3.biases,  0, snapshotWeights.layer3_biases);
+        snapshotWeights = null;
+        snapshotBtn.textContent = '● Snapshot';
+    }
 });
 
 // --- Zoom inference: forward pass at arbitrary resolution using temp buffers ---
