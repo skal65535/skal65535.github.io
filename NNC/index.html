@@ -516,13 +516,163 @@
             width: 100%;
             height: 72px;
         }
+
+        /* ── HELP MODAL ──────────────────────────────*/
+        .help-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(7,11,16,0.82);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .help-overlay.hidden { display: none; }
+        .help-modal {
+            background: var(--surface);
+            border: 1px solid var(--border-2);
+            border-radius: 4px;
+            max-width: 680px;
+            width: 100%;
+            max-height: 88vh;
+            overflow-y: auto;
+            padding: 28px 32px 24px;
+            position: relative;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.7);
+        }
+        .help-modal::-webkit-scrollbar { width: 4px; }
+        .help-modal::-webkit-scrollbar-thumb { background: var(--border-2); }
+        #help-close {
+            position: absolute;
+            top: 14px; right: 16px;
+            background: none; border: none;
+            color: var(--text-dim); font-size: 20px; line-height: 1;
+            cursor: pointer; padding: 2px 6px;
+            font-family: var(--mono);
+        }
+        #help-close:hover { color: var(--text); }
+        .help-title {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 20px;
+            letter-spacing: 0.12em;
+            color: var(--accent);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .help-tagline {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-bottom: 22px;
+            line-height: 1.6;
+        }
+        .help-section {
+            margin-bottom: 20px;
+        }
+        .help-h {
+            font-family: var(--display);
+            font-weight: 700;
+            font-size: 12px;
+            letter-spacing: 0.15em;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 4px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .help-h::before {
+            content: '';
+            display: block;
+            width: 2px; height: 10px;
+            background: var(--accent);
+            opacity: 0.6;
+        }
+        .help-p {
+            font-size: 12px;
+            color: var(--text);
+            line-height: 1.65;
+            margin-bottom: 8px;
+        }
+        .help-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        .help-table tr { border-bottom: 1px solid var(--border); }
+        .help-table tr:last-child { border-bottom: none; }
+        .help-table td {
+            padding: 5px 8px;
+            vertical-align: top;
+            line-height: 1.5;
+        }
+        .help-table td:first-child {
+            font-family: var(--mono);
+            color: var(--accent);
+            white-space: nowrap;
+            padding-right: 16px;
+            width: 1%;
+        }
+        .help-table td:last-child { color: var(--text); }
+        .help-example {
+            margin-top: 8px;
+            font-size: 11px;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            padding: 6px 10px;
+            font-family: var(--mono);
+            word-break: break-all;
+        }
+        .help-example code { color: var(--cyan); }
+        #help-btn {
+            background: rgba(248,113,113,0.15);
+            border: 1.5px solid var(--red);
+            color: var(--red);
+            font-family: var(--mono);
+            font-weight: 700;
+            font-size: 15px;
+            width: 30px; height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.15s, box-shadow 0.15s;
+            flex-shrink: 0;
+        }
+        #help-btn:hover {
+            background: rgba(248,113,113,0.28);
+            box-shadow: 0 0 10px rgba(248,113,113,0.45);
+        }
+
+        /* ── TOOLTIPS ─────────────────────────────── */
+        .tooltip-box {
+            display: none;
+            position: absolute;
+            z-index: 9999;
+            background: var(--surface-2);
+            border: 1px solid var(--border-2);
+            color: var(--text);
+            font-family: var(--mono);
+            font-size: 11px;
+            line-height: 1.55;
+            padding: 6px 9px;
+            border-radius: 3px;
+            pointer-events: none;
+            max-width: 240px;
+            white-space: pre-wrap;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+        }
     </style>
 </head>
 <body>
     <header>
-        <div class="app-logo">◈ Compression using Implicit Neural Representation</div>
+        <div class="app-logo" id="app-title" style="cursor:pointer;text-decoration:underline dotted rgba(245,166,36,0.4);">◈ Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
-        <div class="app-sub">WebGPU Neural Image Trainer</div>
+        <button id="help-btn">?</button>
         <div class="header-spacer"></div>
         <div class="header-btns">
             <button class="btn" id="load-btn">↑ Load</button>
@@ -752,6 +902,100 @@
             </div>
         </main>
     </div>
+
+    <!-- Help modal -->
+    <div id="help-overlay" class="help-overlay hidden">
+        <div class="help-modal">
+            <button id="help-close">×</button>
+            <div class="help-title">◈ NNC — Neural Image Compressor</div>
+            <div class="help-tagline">
+                Trains an implicit neural representation (embedding grid + 3-layer MLP with SIREN activations) on a
+                single image entirely in WebGPU compute shaders. The trained model can be exported as a compact
+                GLSL fragment shader for platforms like ShaderToy.
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">URL Parameters</div>
+                <div class="help-p">Append any of these to auto-configure and immediately start training (skips loading the default model):</div>
+                <table class="help-table">
+                    <tr><td>grid=N</td><td>Embedding grid resolution — 16, 32, or 64</td></tr>
+                    <tr><td>EMB=N</td><td>Embedding channels per cell — 4, 8, or 16</td></tr>
+                    <tr><td>MLP=N</td><td>MLP hidden layer width — 4, 8, 16, 32, or 64</td></tr>
+                    <tr><td>iters=N</td><td>Max training steps (0 = run forever)</td></tr>
+                    <tr><td>8qat</td><td>Enable 8-bit quantization-aware training for the MLP</td></tr>
+                    <tr><td>4b</td><td>Pack embeddings as 4-bit (requires EMB ≥ 8)</td></tr>
+                    <tr><td>8b</td><td>Pack embeddings as 8-bit (default)</td></tr>
+                    <tr><td>none</td><td>Disable MLP quantization (fp32 weights)</td></tr>
+                </table>
+                <div class="help-example">Example: <code>?grid=64&amp;EMB=16&amp;MLP=8&amp;8qat&amp;4b&amp;iters=4000</code></div>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">Model Settings</div>
+                <table class="help-table">
+                    <tr><td>Embedding Grid</td><td>Spatial resolution of the feature grid (N×N). Larger = finer detail, bigger model.</td></tr>
+                    <tr><td>Embedding Channels</td><td>Feature dimensions per grid cell. More channels = richer representation.</td></tr>
+                    <tr><td>MLP Width</td><td>Hidden layer size of the 3-layer decoder MLP. Larger = more capacity, slower training.</td></tr>
+                    <tr><td>Quantization</td><td>MLP weight precision. QAT trains with simulated 8-bit quantization, yielding a much smaller GLSL export.</td></tr>
+                    <tr><td>Emb Bits</td><td>Quantization depth for the embedding grid. 4-bit halves storage vs 8-bit.</td></tr>
+                    <tr><td>Smooth Interp</td><td>Bicubic-like grid sampling via IQ's smooth-step trick. Improves quality at negligible cost.</td></tr>
+                    <tr><td>No Offset</td><td>Disable per-plane UV jitter. Each embedding plane normally samples at a small random offset to increase effective resolution.</td></tr>
+                </table>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">Training Settings</div>
+                <table class="help-table">
+                    <tr><td>Max Iterations</td><td>Training stops after N steps. Set to 0 to run indefinitely.</td></tr>
+                    <tr><td>Embeddings LR</td><td>Adam learning rate for the embedding grid (log scale: 1e-4 … 1e-1).</td></tr>
+                    <tr><td>MLP LR</td><td>Adam learning rate for MLP weights (log scale: 1e-4 … 1e-1).</td></tr>
+                    <tr><td>Emb / MLP ratio</td><td>How many embedding-only Adam steps are taken per MLP step. Higher = focus training on the grid.</td></tr>
+                    <tr><td>Bwd pixel stride</td><td>Subsample every Nth pixel during backprop. Speeds up steps at the cost of noisier gradients.</td></tr>
+                </table>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">ROI Mask</div>
+                <div class="help-p">Paint focus regions directly on the source image. The training loss is scaled by <em>ROI Strength</em> inside painted areas, biasing the network to prioritize those regions. The mask decays over time unless frozen. <em>Auto Mask</em> detects high-variance (high-detail) areas automatically.</div>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">References</div>
+                <table class="help-table">
+                    <tr>
+                        <td><a href="https://arxiv.org/abs/2103.03123" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;">COIN</a></td>
+                        <td style="color:var(--text-dim);">Dupont et al., 2021 — <em>COIN: COmpression with Implicit Neural representations</em></td>
+                    </tr>
+                    <tr>
+                        <td><a href="https://arxiv.org/abs/2201.05989" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;">Instant-NGP</a></td>
+                        <td style="color:var(--text-dim);">Müller et al., 2022 — <em>Instant Neural Graphics Primitives with a Multiresolution Hash Encoding</em></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">File I/O &amp; Controls</div>
+                <table class="help-table">
+                    <tr><td>↑ Load</td><td>Load a .safetensors model file (also drag-and-drop onto the page). Restores weights and all UI settings.</td></tr>
+                    <tr><td>↓ Save</td><td>Save model weights and current UI settings as .safetensors.</td></tr>
+                    <tr><td>↓ GLSL</td><td>Export the trained model as a self-contained GLSL fragment shader (ShaderToy-compatible).</td></tr>
+                    <tr><td>● Snapshot</td><td>Store current weights as an in-memory checkpoint. Click again (↺ Recall) to restore.</td></tr>
+                    <tr><td>⚡ Shake</td><td>Add small noise to the embedding grid to escape local minima. Resets embedding Adam moments.</td></tr>
+                    <tr><td>↺ Reset</td><td>Reinitialize the model and optimizer from scratch with the current settings.</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const helpOverlay = document.getElementById('help-overlay');
+        const openHelp = () => helpOverlay.classList.remove('hidden');
+        document.getElementById('help-btn').addEventListener('click', openHelp);
+        document.getElementById('app-title').addEventListener('click', openHelp);
+        document.getElementById('help-close').addEventListener('click', () => helpOverlay.classList.add('hidden'));
+        helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.add('hidden'); });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') helpOverlay.classList.add('hidden'); });
+    </script>
 
     <script type="module" src="js/main.js"></script>
 <input type="file" id="model-file-input" style="display:none" accept=".safetensors">

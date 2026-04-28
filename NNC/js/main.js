@@ -6,6 +6,9 @@ import { get_target_pixels, calculate_loss } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
+import { drawOutputCanvas, drawEmbeddings, drawLayers, drawLossCurve } from './viz.js';
+import { computeEmbRange, normalizeEmbAndAdjustL1, buildFwdUniforms, uploadEmbRange, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
+import { initTooltips } from './tooltips.js';
 
 // --- DOM references ---
 const sourcePanel  = document.getElementById('source-panel');
@@ -97,8 +100,6 @@ let targetGpuBuf     = null; // target image uploaded once per training run
 let bwdUniformsBuf   = null; // BwdUniforms (width, height, stride, sampled_count)
 let adamUniformsBufs = {}; // AdamUniforms uniform buffer per parameter tensor
 
-const MAX_LOSS_HISTORY = 400;
-
 // --- Compressed size estimate ---
 function computeModelSize() {
     const gs   = parseInt(gridSizeSelect.value);
@@ -162,15 +163,6 @@ outputZoomInput.addEventListener('input', () => {
         runZoomInference(W, H);
     }
 });
-
-function generateEmbOffsets(embCh, embBits, gridSize) {
-    const channelsPerU32 = 32 / embBits;
-    const numU32 = embCh / channelsPerU32;
-    if (noOffsetCheckbox.checked) return new Float32Array(numU32 * 2);
-    const scale = 1.0 / gridSize;
-    return new Float32Array(numU32 * 2).map(() => (Math.random() - 0.5) * scale);
-}
-
 
 function configCompatible(a, b) {
     return a && b &&
@@ -239,180 +231,6 @@ function startDecayLoop() {
 
 function stopDecayLoop() {
     if (decayRafId !== null) { cancelAnimationFrame(decayRafId); decayRafId = null; }
-}
-
-// --- Output canvas (2D) ---
-function drawOutputCanvas(outputData) {
-    const ctx = canvas.getContext('2d');
-    const imageData = ctx.createImageData(canvas.width, canvas.height);
-    const px = imageData.data;
-    for (let i = 0; i < outputData.length; i += 4) {
-        px[i]   = outputData[i]   * 255 | 0;
-        px[i+1] = outputData[i+1] * 255 | 0;
-        px[i+2] = outputData[i+2] * 255 | 0;
-        px[i+3] = 255;
-    }
-    ctx.putImageData(imageData, 0, 0);
-}
-
-// --- Embeddings visualization: all channels as grayscale thumbnails ---
-// Uses bilinear/smooth interpolation matching the forward shader so the panel
-// accurately reflects what the network actually samples.
-function drawEmbeddings() {
-    if (!lastWeights?.embeddings || !config.gridSize) return;
-    const { gridSize, embeddingChannels } = config;
-    if (!Number.isInteger(embeddingChannels) || embeddingChannels < 1) return;
-    const emb = lastWeights.embeddings;
-    const w = embedCanvas.width, h = embedCanvas.height;
-    const ctx = embedCanvas.getContext('2d');
-
-    const cols = Math.max(1, Math.ceil(Math.sqrt(embeddingChannels)));
-    const rows = Math.max(1, Math.ceil(embeddingChannels / cols));
-
-    const imgData = ctx.createImageData(w, h);
-    const data = imgData.data;
-
-    for (let screenY = 0; screenY < h; screenY++) {
-        for (let screenX = 0; screenX < w; screenX++) {
-            const col = Math.floor(screenX * cols / w);
-            const row = Math.floor(screenY * rows / h);
-            const ch  = row * cols + col;
-
-            let v = 0;
-            if (ch < embeddingChannels) {
-                const localX = screenX - Math.floor(col * w / cols);
-                const localY = screenY - Math.floor(row * h / rows);
-                const localW = Math.floor(w / cols);
-                const localH = Math.floor(h / rows);
-                if (localX === 0 || localY === 0 || localX === localW - 1 || localY === localH - 1) {
-                    v = 20;
-                } else {
-                    const gx = Math.min((localX - 1) * gridSize / Math.max(1, localW - 2) | 0, gridSize - 1);
-                    const gy = Math.min((localY - 1) * gridSize / Math.max(1, localH - 2) | 0, gridSize - 1);
-                    const val = emb[(gy * gridSize + gx) * embeddingChannels + ch];
-                    v = Math.max(0, Math.min(255, (val * 0.5 + 0.5) * 255 | 0));
-                }
-            }
-
-            const idx = (screenY * w + screenX) * 4;
-            data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
-        }
-    }
-
-    ctx.putImageData(imgData, 0, 0);
-}
-
-// --- Layer weight visualization: L1/L2/L3 matrices as grayscale panels ---
-function drawLayers() {
-    const w = lastWeights;
-    if (!w?.layer1Weights || !config.mlpWidth) return;
-    const { mlpWidth, embeddingChannels } = config;
-    const ctx = layersCanvas.getContext('2d');
-    const cw = layersCanvas.width, ch = layersCanvas.height;
-
-    // 3 layers stacked vertically; proportional height by row count
-    const layers = [
-        { data: w.layer1Weights, rows: mlpWidth,  cols: embeddingChannels, label: 'L1' },
-        { data: w.layer2Weights, rows: mlpWidth,  cols: mlpWidth,          label: 'L2' },
-        { data: w.layer3Weights, rows: 4,          cols: mlpWidth,          label: 'L3' },
-    ];
-    const totalRows = layers.reduce((s, l) => s + l.rows, 0);
-    const bandHs    = layers.map(l => Math.round(l.rows / totalRows * ch));
-    const imgData = ctx.createImageData(cw, ch);
-    const data = imgData.data;
-
-    const EMA_ALPHA = 0.98; // slow adaptation: ~50-step lag
-    if (!layerRangeEma) layerRangeEma = layers.map(() => ({ mn: null, mx: null }));
-
-    let yOffset = 0;
-    for (let li = 0; li < layers.length; li++) {
-        const layer = layers[li];
-        const bandH = bandHs[li];
-        let cmn = Infinity, cmx = -Infinity;
-        for (let i = 0; i < layer.data.length; i++) {
-            if (layer.data[i] < cmn) cmn = layer.data[i];
-            if (layer.data[i] > cmx) cmx = layer.data[i];
-        }
-        const ema = layerRangeEma[li];
-        if (ema.mn === null) { ema.mn = cmn; ema.mx = cmx; }
-        else { ema.mn = EMA_ALPHA * ema.mn + (1 - EMA_ALPHA) * cmn;
-               ema.mx = EMA_ALPHA * ema.mx + (1 - EMA_ALPHA) * cmx; }
-        const mn = ema.mn, mx = ema.mx;
-        const scale = mx > mn ? 255 / (mx - mn) : 1;
-        for (let py = yOffset; py < yOffset + bandH; py++) {
-            const row = Math.min(Math.floor((py - yOffset) / bandH * layer.rows), layer.rows - 1);
-            for (let px = 0; px < cw; px++) {
-                const col = Math.min(Math.floor(px / cw * layer.cols), layer.cols - 1);
-                const v = (layer.data[row * layer.cols + col] - mn) * scale | 0;
-                const idx = (py * cw + px) * 4;
-                data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
-            }
-        }
-        yOffset += bandH;
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    // Draw dividers and labels
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.font = '11px monospace';
-    yOffset = 0;
-    for (let li = 0; li < layers.length; li++) {
-        const layer = layers[li], bandH = bandHs[li];
-        ctx.fillText(layer.label, 4, yOffset + 12);
-        if (yOffset > 0) { ctx.fillRect(0, yOffset, cw, 1); }
-        yOffset += bandH;
-    }
-}
-
-// --- Loss curve ---
-function drawLossCurve() {
-    const ctx = lossCanvas.getContext('2d');
-    const w = lossCanvas.width, h = lossCanvas.height;
-    ctx.clearRect(0, 0, w, h);
-
-    const hist = lossHistory.slice(-MAX_LOSS_HISTORY);
-    if (hist.length < 2) return;
-
-    const maxL  = Math.max(...hist);
-    const minL  = Math.min(...hist);
-    const range = maxL - minL || maxL || 1;
-    const pad   = 5;
-    const n     = hist.length;
-
-    // Subtle horizontal grid lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-    ctx.lineWidth   = 1;
-    for (let i = 0; i <= 3; i++) {
-        const y = pad + (i / 3) * (h - pad * 2);
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    }
-
-    const toX = i => (i / (n - 1)) * w;
-    const toY = v => h - pad - ((v - minL) / range) * (h - pad * 2);
-
-    // Fill area under curve
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0,   'rgba(245,166,36,0.14)');
-    grad.addColorStop(1,   'rgba(245,166,36,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.moveTo(toX(0), h);
-    for (let i = 0; i < n; i++) ctx.lineTo(toX(i), toY(hist[i]));
-    ctx.lineTo(toX(n - 1), h);
-    ctx.closePath();
-    ctx.fill();
-
-    // Main line with amber glow
-    ctx.strokeStyle = '#f5a624';
-    ctx.lineWidth   = 1.5;
-    ctx.shadowColor = 'rgba(245,166,36,0.55)';
-    ctx.shadowBlur  = 5;
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-        i === 0 ? ctx.moveTo(toX(i), toY(hist[i])) : ctx.lineTo(toX(i), toY(hist[i]));
-    }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
 }
 
 // --- Collapsible sidebar sections ---
@@ -521,107 +339,6 @@ async function handleFile(file) {
         img.src = e.target.result;
     };
     reader.readAsDataURL(file);
-}
-
-// --- Embedding range helpers ---
-function computeEmbRange(embData, embCh, gridCount) {
-    const range = new Float32Array(embCh * 2);
-    for (let c = 0; c < embCh; c++) {
-        let mn = Infinity, mx = -Infinity;
-        for (let i = 0; i < gridCount; i++) {
-            const v = embData[i * embCh + c];
-            if (v < mn) mn = v;
-            if (v > mx) mx = v;
-        }
-        range[c * 2]     = mn === Infinity  ? -1 : mn;
-        range[c * 2 + 1] = mx === -Infinity ?  1 : mx;
-    }
-    return range;
-}
-
-// Normalize embeddings to [-1,1] per channel; absorb scale+center into L1 weights/biases.
-// Math: e_norm = (e - center) / scale → W1_new[:,c] = W1[:,c]*scale, b1_new += W1[:,c]*center
-function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlpWidth) {
-    const gridCount = embData.length / embCh;
-    for (let c = 0; c < embCh; c++) {
-        let mn = Infinity, mx = -Infinity;
-        for (let i = 0; i < gridCount; i++) {
-            const v = embData[i * embCh + c];
-            if (v < mn) mn = v;
-            if (v > mx) mx = v;
-        }
-        const span = mx - mn;
-        if (span < 1e-9) continue;
-        const scale  = span * 0.5;
-        const center = (mx + mn) * 0.5;
-        for (let i = 0; i < gridCount; i++) {
-            embData[i * embCh + c] = (embData[i * embCh + c] - center) / scale;
-        }
-        for (let j = 0; j < mlpWidth; j++) {
-            const w = l1Weights[j * embCh + c];
-            l1Weights[j * embCh + c] = w * scale;
-            l1Biases[j] += w * center;
-        }
-    }
-}
-
-// Builds 32-float emb_range block: identity [-1,1] defaults, overwritten with actual range.
-function buildEmbRangeF32(range, embCh) {
-    const f32 = new Float32Array(32);
-    for (let p = 0; p < 4; p++) {
-        f32[p*8]=f32[p*8+1]=f32[p*8+2]=f32[p*8+3]=-1;
-        f32[p*8+4]=f32[p*8+5]=f32[p*8+6]=f32[p*8+7]=1;
-    }
-    if (range) {
-        const numPlanes = embCh / 4;
-        for (let p = 0; p < numPlanes; p++) {
-            for (let b = 0; b < 4; b++) {
-                const c = p*4+b;
-                f32[p*8+b]   = range[c*2];
-                f32[p*8+4+b] = range[c*2+1];
-            }
-        }
-    }
-    return f32;
-}
-
-// Build 160-byte ArrayBuffer for the forward Uniforms struct.
-// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32).
-function buildFwdUniforms(gSize, embCh, mlpW, w, h, range) {
-    const ab  = new ArrayBuffer(160);
-    const u32 = new Uint32Array(ab);
-    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
-    new Float32Array(ab, 32).set(buildEmbRangeF32(range, embCh));
-    return ab;
-}
-
-// Update only the emb_range portion of fwdUniformsBuf (byte offset 32).
-function uploadEmbRange(range, embCh, buf, device) {
-    device.queue.writeBuffer(buf, 32, buildEmbRangeF32(range, embCh));
-}
-
-function cpuPackEmbeddings(embF32, embCh, range, embBits = 8) {
-    const chPerGroup = 32 / embBits;
-    const maxVal     = (1 << (embBits - 1)) - 1;
-    const mask       = (1 << embBits) - 1;
-    const numGroups  = embCh / chPerGroup;
-    const gridCount  = embF32.length / embCh;
-    const packed     = new Uint32Array(gridCount * numGroups);
-    for (let i = 0; i < gridCount; i++) {
-        for (let g = 0; g < numGroups; g++) {
-            let p = 0;
-            for (let b = 0; b < chPerGroup; b++) {
-                const c = g * chPerGroup + b;
-                const v = embF32[i * embCh + c];
-                const mn = range[c * 2], mx = range[c * 2 + 1];
-                const span = mx - mn;
-                const s = span < 1e-9 ? 0 : Math.max(-1, Math.min(1, 2 * (v - mn) / span - 1));
-                p |= (Math.max(-maxVal, Math.min(maxVal, Math.round(s * maxVal))) & mask) << (b * embBits);
-            }
-            packed[i * numGroups + g] = p >>> 0;
-        }
-    }
-    return packed;
 }
 
 function resetCanvasToBase() {
@@ -890,7 +607,7 @@ async function train() {
     const l2wData   = new Float32Array(readbackBuffers.layer2Weights.getMappedRange()).slice();
     const l3wData   = new Float32Array(readbackBuffers.layer3Weights.getMappedRange()).slice();
 
-    drawOutputCanvas(finalData);
+    drawOutputCanvas(canvas, finalData);
     const loss = calculate_loss(finalData, targetPixels);
 
     readbackBuffers.final.unmap();
@@ -932,9 +649,9 @@ async function train() {
     rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
     iterLabelEl.textContent   = `step ${stepCount}`;
 
-    drawEmbeddings();
-    drawLayers();
-    drawLossCurve();
+    drawEmbeddings(embedCanvas, lastWeights, config);
+    layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
+    drawLossCurve(lossCanvas, lossHistory);
     drawSourceImage();
 
     const maxIter = parseInt(maxIterInput.value);
@@ -1011,14 +728,14 @@ startBtn.addEventListener('click', async () => {
         if (isRestart) {
             // Preserve offsets only when embBits unchanged (same buffer layout)
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
-                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
             // Rebuild pipeline (quantization/smooth may have changed), reuse model buffers + Adam state
             await createPipeline();
             createBindGroup();
             setStatus('training');
             run(null);
         } else {
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
             const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
             model = buffers;
             await createPipeline();
@@ -1037,7 +754,7 @@ resetBtn.addEventListener('click', async () => {
     if (trainingActive || !loadedImage) return;
     resetCanvasToBase();
     config = buildConfigFromUI();
-    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize);
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
         const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
@@ -1204,7 +921,7 @@ async function runZoomInference(W, H) {
     await rbBuf.mapAsync(GPUMapMode.READ);
     canvas.width  = W;
     canvas.height = H;
-    drawOutputCanvas(new Float32Array(rbBuf.getMappedRange()));
+    drawOutputCanvas(canvas, new Float32Array(rbBuf.getMappedRange()));
     rbBuf.unmap();
 
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
@@ -1232,11 +949,11 @@ async function runInference() {
     device.queue.submit([ce.finish()]);
 
     await readbackBuffers.final.mapAsync(GPUMapMode.READ);
-    drawOutputCanvas(new Float32Array(readbackBuffers.final.getMappedRange()));
+    drawOutputCanvas(canvas, new Float32Array(readbackBuffers.final.getMappedRange()));
     readbackBuffers.final.unmap();
 
-    drawEmbeddings();
-    drawLayers();
+    drawEmbeddings(embedCanvas, lastWeights, config);
+    layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
     iterLabelEl.textContent = 'loaded';
 }
 
@@ -1288,7 +1005,7 @@ async function loadModelFile(file) {
         smoothInterpolation: smoothInterpolationCheckbox.checked,
         width:  canvas.width,
         height: canvas.height,
-        embOffsets:          savedConfig.embOffsets || generateEmbOffsets(savedConfig.embeddingChannels, loadedEmbBits, savedConfig.gridSize),
+        embOffsets:          savedConfig.embOffsets || generateEmbOffsets(savedConfig.embeddingChannels, loadedEmbBits, savedConfig.gridSize, noOffsetCheckbox.checked),
     };
 
     try {
@@ -1358,13 +1075,55 @@ function updateEmbBitsOptions() {
 });
 updateEmbBitsOptions();
 
-// --- Startup: load default image then default model ---
+// --- URL parameter parsing ---
+// Supported: ?grid=64&EMB=16&MLP=8&iters=4000&8qat&4b
+// Flags: 8qat (MLP 8-bit QAT), 4b (4-bit embeddings), 8b (8-bit embeddings)
+function applyUrlParams() {
+    const params = new URLSearchParams(window.location.search);
+    let hasParams = false;
+
+    const setSelect = (el, val, allowed) => {
+        const n = parseInt(val);
+        if (val !== null && allowed.includes(n)) { el.value = String(n); hasParams = true; }
+    };
+
+    setSelect(gridSizeSelect,          params.get('grid'), [16, 32, 64]);
+    setSelect(embeddingChannelsSelect, params.get('EMB'),  [4, 8, 16]);
+    setSelect(mlpWidthSelect,          params.get('MLP'),  [4, 8, 16, 32, 64]);
+
+    if (params.has('8qat')) { quantizationSelect.value = 'qat8'; hasParams = true; }
+    if (params.has('none')) { quantizationSelect.value = 'none'; hasParams = true; }
+    if (params.has('4b'))   { embBitsSelect.value = '4'; hasParams = true; }
+    if (params.has('8b'))   { embBitsSelect.value = '8'; hasParams = true; }
+
+    const iters = params.get('iters');
+    if (iters !== null) {
+        const v = parseInt(iters);
+        if (!isNaN(v) && v >= 0) {
+            maxIterInput.value = v;
+            maxIterInput.dispatchEvent(new Event('input'));
+            hasParams = true;
+        }
+    }
+
+    if (hasParams) { updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay(); }
+    return hasParams;
+}
+
+initTooltips();
+
+// --- Startup: load default image then default model (or auto-start from URL params) ---
+const urlHasParams = applyUrlParams();
 const startupImg = new Image();
 startupImg.onload = async () => {
     loadImageOntoCanvas(startupImg);
-    try {
-        const resp = await fetch('mona_lisa.safetensors');
-        if (resp.ok) await loadModelFile(await resp.blob());
-    } catch (_) {}
+    if (urlHasParams) {
+        startBtn.click();
+    } else {
+        try {
+            const resp = await fetch('mona_lisa.safetensors');
+            if (resp.ok) await loadModelFile(await resp.blob());
+        } catch (_) {}
+    }
 };
 startupImg.src = 'Mona_Lisa.jpg';
