@@ -45,8 +45,8 @@ export function initTooltips() {
     function position(el) {
         const r  = el.getBoundingClientRect();
         const bw = box.offsetWidth, bh = box.offsetHeight;
-        let left = r.left + r.width / 2 - bw / 2;
-        let top  = r.top + window.scrollY - bh - 8;
+        let left = r.left + r.width / 2 - bw / 2 + 10;
+        let top  = r.top + window.scrollY - bh - 14;
         left = Math.max(6, Math.min(left, window.innerWidth - bw - 6));
         if (top < window.scrollY + 6) top = r.bottom + window.scrollY + 8;
         box.style.left = left + 'px';

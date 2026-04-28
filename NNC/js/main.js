@@ -51,7 +51,6 @@ const stepCounterEl = document.getElementById('step-counter');
 const rateDisplayEl = document.getElementById('rate-display');
 const modelSizeEl   = document.getElementById('model-size');
 const inputSizeEl   = document.getElementById('input-size');
-const iterLabelEl   = document.getElementById('iter-label');
 const statusDotEl   = document.getElementById('status-dot');
 const statusTextEl  = document.getElementById('status-text');
 const sourceResEl   = document.getElementById('source-res');
@@ -201,6 +200,7 @@ function setStatus(s) {
         startBtn.textContent = '■ Stop';
         startBtn.classList.add('stopping');
         resetBtn.disabled = true;
+        shakeBtn.disabled = !model;
         outputZoomInput.disabled = true;
     } else {
         startBtn.classList.remove('stopping');
@@ -288,7 +288,7 @@ roiAutoBtn.addEventListener('click', () => {
 
 // --- File / drop zone ---
 sourcePanel.addEventListener('click', (e) => {
-    if (e.target !== fileInput && !loadedImage) fileInput.click();
+    if (e.target !== fileInput && e.target !== sourceCanvas) fileInput.click();
 });
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) handleFile(e.target.files[0]);
@@ -647,7 +647,6 @@ async function train() {
     lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
     stepCounterEl.textContent = stepCount.toLocaleString();
     rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-    iterLabelEl.textContent   = `step ${stepCount}`;
 
     drawEmbeddings(embedCanvas, lastWeights, config);
     layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
@@ -682,7 +681,6 @@ function run(initialWeights) {
     lossValueEl.textContent   = '—';
     stepCounterEl.textContent = '0';
     rateDisplayEl.textContent = '—';
-    iterLabelEl.textContent   = '—';
 
     {
         const { gridSize, embeddingChannels: embCh } = config;
@@ -954,7 +952,6 @@ async function runInference() {
 
     drawEmbeddings(embedCanvas, lastWeights, config);
     layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
-    iterLabelEl.textContent = 'loaded';
 }
 
 async function loadModelFile(file) {
@@ -1105,6 +1102,19 @@ function applyUrlParams() {
             hasParams = true;
         }
     }
+
+    const setLR = (el, valEl, param) => {
+        const v = parseInt(params.get(param));
+        if (!isNaN(v) && v >= 0 && v <= 100) {
+            syncSliderDisplay(Object.assign(el, { value: v }), valEl);
+            hasParams = true;
+        }
+    };
+    setLR(embedLrInput, embedLrVal, 'embedLr');
+    setLR(mlpLrInput,   mlpLrVal,   'mlpLr');
+
+    if (params.has('smooth')) { smoothInterpolationCheckbox.checked = true;  hasParams = true; }
+    if (params.has('nosmooth')) { smoothInterpolationCheckbox.checked = false; hasParams = true; }
 
     if (hasParams) { updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay(); }
     return hasParams;
