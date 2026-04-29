@@ -15,13 +15,20 @@
     --red:           #f87171;
     --mono:          'JetBrains Mono', 'Courier New', monospace;
     --display:       'Barlow Condensed', sans-serif;
+
+    /* Font scale — change these to resize the entire UI */
+    --fs-xs:   13px;
+    --fs-sm:   14px;
+    --fs-md:   15px;
+    --fs-lg:   17px;
+    --fs-xl:   22px;
 }
 
 body {
     background: var(--bg);
     color: var(--text);
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: var(--fs-md);
     line-height: 1.5;
     min-height: 100vh;
     overflow-x: auto;
@@ -55,8 +62,8 @@ header {
 }
 .header-spacer { flex: 1; }
 .header-links { display: flex; align-items: center; gap: 10px; }
-.header-links-label { font-family: var(--display); font-size: 11px; letter-spacing: 0.05em; color: var(--text-dim); text-transform: uppercase; }
-.header-links a { font-family: var(--display); font-size: 12px; font-weight: 600; letter-spacing: 0.07em; color: #c8e0ff; text-decoration: none; text-transform: uppercase; padding: 2px 7px; border: 1px solid rgba(160,200,240,0.35); border-radius: 3px; }
+.header-links-label { font-family: var(--display); font-size: var(--fs-xs); letter-spacing: 0.05em; color: var(--text-dim); text-transform: uppercase; }
+.header-links a { font-family: var(--display); font-size: var(--fs-sm); font-weight: 600; letter-spacing: 0.07em; color: #c8e0ff; text-decoration: none; text-transform: uppercase; padding: 2px 7px; border: 1px solid rgba(160,200,240,0.35); border-radius: 3px; }
 .header-links a:hover { color: #fff; border-color: #a0c8f0; background: rgba(160,200,240,0.1); }
 .status-dot {
     width: 7px;
@@ -107,7 +114,7 @@ header {
 .section-label {
     font-family: var(--display);
     font-weight: 700;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.15em;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -121,7 +128,7 @@ header {
 .section-label::after {
     content: '▾';
     margin-left: auto;
-    font-size: 10px;
+    font-size: var(--fs-xs);
     transition: transform 0.15s;
 }
 .ctrl-section.collapsed .section-label { margin-bottom: 0; }
@@ -144,7 +151,7 @@ header {
 }
 .ctrl-row:last-child, .slider-row:last-child { margin-bottom: 0; }
 .ctrl-label {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -159,7 +166,7 @@ select {
     border: 1px solid var(--border-2);
     padding: 5px 28px 5px 8px;
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: var(--fs-sm);
     outline: none;
     cursor: pointer;
     appearance: none;
@@ -188,7 +195,7 @@ select:focus  { border-color: var(--accent); }
     border-radius: 3px;
     color: var(--text-dim);
     cursor: pointer;
-    font-size: 10px;
+    font-size: var(--fs-xs);
     font-family: var(--mono);
     letter-spacing: 0.04em;
     transition: border-color 0.15s, color 0.15s, background 0.15s;
@@ -245,7 +252,7 @@ select:focus  { border-color: var(--accent); }
     align-items: center;
 }
 .slider-val {
-    font-size: 13px;
+    font-size: var(--fs-md);
     font-weight: 500;
     color: var(--accent);
 }
@@ -286,19 +293,12 @@ input[type="range"]::-moz-range-thumb {
     cursor: pointer;
 }
 
-.btn-area {
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: auto;
-}
 .btn {
     width: 100%;
     padding: 10px 14px;
     font-family: var(--display);
     font-weight: 700;
-    font-size: 13px;
+    font-size: var(--fs-md);
     letter-spacing: 0.1em;
     text-transform: uppercase;
     cursor: pointer;
@@ -334,7 +334,7 @@ input[type="range"]::-moz-range-thumb {
 }
 .btn-dim {
     padding: 6px 10px;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     background: var(--surface-2);
     color: var(--text-dim);
     border: 1px solid var(--border-2);
@@ -347,7 +347,7 @@ input[type="range"]::-moz-range-thumb {
 .header-btns { display: flex; align-items: center; gap: 6px; margin-right: 14px; }
 .header-btns .btn {
     width: auto;
-    font-size: 11px; padding: 3px 9px;
+    font-size: var(--fs-xs); padding: 3px 9px;
     background: var(--accent-dim);
     color: var(--accent);
     border: 1px solid rgba(245,166,36,0.4);
@@ -357,9 +357,17 @@ input[type="range"]::-moz-range-thumb {
     border-color: var(--accent);
     box-shadow: 0 0 8px var(--accent-glow);
 }
+.header-actions { margin-right: 0; }
+.header-actions .btn { font-size: var(--fs-xs); padding: 3px 0; width: 6.5em; text-align: center; }
+.header-actions #start-btn { background: var(--accent); color: #070b10; border: none; }
+.header-actions #start-btn:hover { background: #fbbf24; box-shadow: 0 0 10px var(--accent-glow); }
+.header-actions #start-btn.stopping { background: var(--red); color: #fff; }
+.header-actions .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--red); opacity: 0.7; }
+.header-actions .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.1); opacity: 1; }
+}
 .panel-header .btn {
     width: 5.5em;
-    font-size: 10px; padding: 2px 0;
+    font-size: var(--fs-xs); padding: 2px 0;
     background: transparent;
     color: var(--text-dim);
     border: 1px solid var(--border);
@@ -413,13 +421,13 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .panel-title {
     font-family: var(--display);
     font-weight: 700;
-    font-size: 13px;
+    font-size: var(--fs-md);
     letter-spacing: 0.1em;
     color: var(--accent);
     text-transform: uppercase;
 }
 .panel-hint {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     letter-spacing: 0.03em;
     font-family: var(--mono);
@@ -476,7 +484,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .drop-text {
     font-family: var(--display);
     font-weight: 600;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.1em;
     color: var(--text-dim);
     text-align: center;
@@ -504,14 +512,14 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .stat-label {
     font-family: var(--display);
     font-weight: 600;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.1em;
     color: var(--text-dim);
     text-transform: uppercase;
 }
 .stat-value {
     font-family: var(--mono);
-    font-size: 15px;
+    font-size: var(--fs-lg);
     font-weight: 500;
     color: var(--accent);
 }
@@ -530,7 +538,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     left: 10px;
     font-family: var(--display);
     font-weight: 600;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     letter-spacing: 0.12em;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -572,7 +580,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     position: absolute;
     top: 14px; right: 16px;
     background: none; border: none;
-    color: var(--text-dim); font-size: 20px; line-height: 1;
+    color: var(--text-dim); font-size: var(--fs-xl); line-height: 1;
     cursor: pointer; padding: 2px 6px;
     font-family: var(--mono);
 }
@@ -580,14 +588,14 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .help-title {
     font-family: var(--display);
     font-weight: 700;
-    font-size: 20px;
+    font-size: var(--fs-xl);
     letter-spacing: 0.12em;
     color: var(--accent);
     text-transform: uppercase;
     margin-bottom: 6px;
 }
 .help-tagline {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-dim);
     margin-bottom: 22px;
     line-height: 1.6;
@@ -598,7 +606,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .help-h {
     font-family: var(--display);
     font-weight: 700;
-    font-size: 12px;
+    font-size: var(--fs-sm);
     letter-spacing: 0.15em;
     color: var(--text-dim);
     text-transform: uppercase;
@@ -617,7 +625,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     opacity: 0.6;
 }
 .help-p {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text);
     line-height: 1.65;
     margin-bottom: 8px;
@@ -625,7 +633,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .help-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--fs-sm);
 }
 .help-table tr { border-bottom: 1px solid var(--border); }
 .help-table tr:last-child { border-bottom: none; }
@@ -645,7 +653,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 .help-table a { color: var(--cyan); text-decoration: none; }
 .help-example {
     margin-top: 8px;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--text-dim);
     background: var(--surface-2);
     border: 1px solid var(--border);
@@ -661,7 +669,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     color: var(--red);
     font-family: var(--mono);
     font-weight: 700;
-    font-size: 15px;
+    font-size: var(--fs-lg);
     width: 30px; height: 30px;
     border-radius: 50%;
     cursor: pointer;
@@ -683,7 +691,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     border: 1px solid var(--border-2);
     color: var(--text);
     font-family: var(--mono);
-    font-size: 11px;
+    font-size: var(--fs-xs);
     line-height: 1.55;
     padding: 6px 9px;
     border-radius: 12px;
@@ -710,7 +718,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     .header-links { display: none; }
     .header-spacer { display: none; }
     .header-btns { margin-right: 0; }
-    .header-btns .btn { font-size: 10px; padding: 3px 7px; }
+    .header-btns .btn { font-size: var(--fs-xs); padding: 3px 7px; }
 
     #app {
         flex-direction: column;
@@ -728,7 +736,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
         background: var(--surface-2);
         border-bottom: 1px solid var(--border);
         font-family: var(--display);
-        font-size: 11px;
+        font-size: var(--fs-xs);
         color: var(--text-dim);
         letter-spacing: 0.07em;
         text-transform: uppercase;
@@ -761,7 +769,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
         gap: 8px 18px;
         padding: 7px 10px;
     }
-    .stat-value { font-size: 13px; }
+    .stat-value { font-size: var(--fs-md); }
 
     .loss-section { display: none; }
 

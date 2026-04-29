@@ -98,6 +98,18 @@ let snapshotWeights = null;
 let layerRangeEma  = null; // EMA of [min, max] per layer for flow diagram
 let lastInterData  = { inter1: null, inter2: null }; // inter-layer activations, updated every VIZ_INTERVAL steps
 const VIZ_INTERVAL = 10;
+
+function drawPlaceholder(canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#1a1a2a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#555';
+    ctx.font = `${Math.max(12, Math.min(18, canvas.width / 14))}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('train or load a model', canvas.width / 2, canvas.height / 2);
+}
 document.getElementById('layers-hint').textContent = `inference flow · activations update every ${VIZ_INTERVAL} steps`;
 let stepCount     = 0;
 let lossHistory   = [];
@@ -744,7 +756,7 @@ function run(initialWeights) {
     lastInterData = { inter1: null, inter2: null };
 
     // Clear visualizations
-    embedCanvas.getContext('2d').clearRect(0, 0, embedCanvas.width, embedCanvas.height);
+    drawPlaceholder(embedCanvas);
     lossCanvas.getContext('2d').clearRect(0, 0, lossCanvas.width, lossCanvas.height);
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
     lossValueEl.textContent   = '—';
@@ -1202,11 +1214,18 @@ function updateEmbBitsOptions() {
     sel.addEventListener('change', () => {
         updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay();
         if (!trainingActive) {
-            if (lastConfig && lastWeights?.layer1Weights) {
+            const cur = currentModelConfig();
+            const weightsMatch = lastConfig && lastWeights?.layer1Weights &&
+                lastConfig.embeddingChannels === cur.embeddingChannels &&
+                lastConfig.mlpWidth         === cur.mlpWidth &&
+                lastConfig.gridSize         === cur.gridSize;
+            if (weightsMatch) {
+                drawEmbeddings(embedCanvas, lastWeights, lastConfig);
                 layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
                     lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma);
             } else {
-                layersCanvas.getContext('2d').clearRect(0, 0, layersCanvas.width, layersCanvas.height);
+                drawPlaceholder(embedCanvas);
+                drawPlaceholder(layersCanvas);
                 layerRangeEma = null;
                 lastInterData = { inter1: null, inter2: null };
             }
@@ -1280,6 +1299,26 @@ startupImg.onload = async () => {
     if (urlHasParams) {
         startBtn.click();
     } else {
+        // Always init model + run one inference (random weights) for immediate visual feedback.
+        // Then overwrite with saved weights if available.
+        try {
+            if (!webGpuContext) webGpuContext = await initWebGPU();
+            config = buildConfigFromUI();
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+            const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
+            model = buffers;
+            await createPipeline();
+            createBindGroup();
+            initEmbChannelMaskClick();
+            lastConfig = currentModelConfig();
+            lastWeights = {
+                embeddings:    new Float32Array(initialWeights.embeddings),
+                layer1Weights: new Float32Array(initialWeights.layer1_weights),
+                layer2Weights: new Float32Array(initialWeights.layer2_weights),
+                layer3Weights: new Float32Array(initialWeights.layer3_weights),
+            };
+            await runInference();
+        } catch (err) { console.error('Initial inference failed:', err); }
         try {
             const resp = await fetch('mona_lisa.safetensors');
             if (resp.ok) await loadModelFile(await resp.blob());

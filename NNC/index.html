@@ -14,6 +14,13 @@
         <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
         <button id="help-btn">?</button>
+        <div class="app-divider"></div>
+        <div class="header-btns header-actions">
+            <span class="header-links-label">Training:</span>
+            <button class="btn" id="start-btn">▶ Start</button>
+            <button class="btn" id="shake-btn" disabled>⚡ Shake</button>
+            <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
+        </div>
         <div class="header-spacer"></div>
         <div class="header-btns">
             <button class="btn" id="load-btn">↑ Load</button>
@@ -186,11 +193,6 @@
                 </div>
             </div>
 
-            <div class="btn-area">
-                <button class="btn" id="start-btn">▶ Start</button>
-                <button class="btn" id="shake-btn" disabled>⚡ Shake</button>
-                <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
-            </div>
         </aside>
 
         <main id="workspace">
@@ -285,9 +287,9 @@
             <button id="help-close">×</button>
             <div class="help-title">◈ NNC — Neural Image Compressor</div>
             <div class="help-tagline">
-                Trains an implicit neural representation (embedding grid + 3-layer MLP with SIREN activations) on a
-                single image entirely in WebGPU compute shaders. The trained model can be exported as a compact
-                GLSL fragment shader for platforms like ShaderToy.
+                Trains an implicit neural representation (embedding grid + 3-layer MLP) on a single image entirely
+                in WebGPU compute shaders. The activation function is selectable (SIREN, Tanh, Softsign, HardTanh).
+                The trained model can be exported as a compact GLSL fragment shader for platforms like ShaderToy.
             </div>
 
             <div class="help-section">
@@ -331,9 +333,21 @@
                     <tr><td>Max Iterations</td><td>Training stops after N steps. Set to 0 to run indefinitely.</td></tr>
                     <tr><td>Embeddings LR</td><td>Adam learning rate for the embedding grid (log scale: 1e-4 … ~1.2e-1; default 3.0e-2).</td></tr>
                     <tr><td>MLP LR</td><td>Adam learning rate for MLP weights (log scale: 1e-4 … ~1.2e-1; default 3.0e-2).</td></tr>
+                    <tr><td>Loss</td><td>MSE over RGBA with ITU-R BT.601 luminance weights on R/G/B (0.299 / 0.587 / 0.114). Alpha is weighted equally and supports transparent images.</td></tr>
                     <tr><td>Emb / MLP ratio</td><td>How many embedding-only Adam steps are taken per MLP step. Higher = focus training on the grid.</td></tr>
                     <tr><td>Num Loops</td><td>Repeats each phase N times per super-cycle. With ratio=5 and loops=3: 15 consecutive EMB steps then 3 MLP steps, then repeat.</td></tr>
                     <tr><td>Bwd pixel stride</td><td>Subsample every Nth pixel during backprop. Speeds up steps at the cost of noisier gradients.</td></tr>
+                </table>
+            </div>
+
+            <div class="help-section">
+                <div class="help-h">Visualization</div>
+                <div class="help-p">Three panels update live during training:</div>
+                <table class="help-table">
+                    <tr><td>Source</td><td>Input image. Click or drop a new image to replace it. Paint the ROI mask by dragging.</td></tr>
+                    <tr><td>Embeddings</td><td>All embedding channels shown as grayscale thumbnails. Click a thumbnail to mute/unmute that channel in the forward pass. Shift+click to solo one channel.</td></tr>
+                    <tr><td>Layers</td><td>Inference flow diagram: embedding → L1 → L2 → L3 → output. Pre-activation values are shown per-neuron with per-layer min/max normalisation. Updates every few steps.</td></tr>
+                    <tr><td>Output</td><td>Decoded result at full resolution. Use the zoom slider to upscale.</td></tr>
                 </table>
             </div>
 
