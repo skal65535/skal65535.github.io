@@ -322,11 +322,39 @@ function loadImageOntoCanvas(img) {
     inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
 }
 
+async function startFreshTraining() {
+    if (trainingActive) {
+        trainingActive = false;
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+    resetCanvasToBase();
+    config = buildConfigFromUI();
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+    try {
+        if (!webGpuContext) webGpuContext = await initWebGPU();
+        const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
+        model = buffers;
+        await createPipeline();
+        createBindGroup();
+        initEmbChannelMaskClick();
+        lastConfig = currentModelConfig();
+        setStatus('training');
+        run(initialWeights);
+    } catch (err) {
+        console.error("Training start failed:", err);
+        alert("Training start failed. Check the console for errors.");
+    }
+}
+
 async function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
         const img = new Image();
-        img.onload = () => loadImageOntoCanvas(img);
+        img.onload = async () => {
+            loadImageOntoCanvas(img);
+            await startFreshTraining();
+        };
         img.src = e.target.result;
     };
     reader.readAsDataURL(file);
@@ -746,24 +774,8 @@ startBtn.addEventListener('click', async () => {
 });
 
 resetBtn.addEventListener('click', async () => {
-    if (trainingActive || !loadedImage) return;
-    resetCanvasToBase();
-    config = buildConfigFromUI();
-    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
-    try {
-        if (!webGpuContext) webGpuContext = await initWebGPU();
-        const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
-        model = buffers;
-        await createPipeline();
-        createBindGroup();
-        initEmbChannelMaskClick();
-        lastConfig = currentModelConfig();
-        setStatus('training');
-        run(initialWeights);
-    } catch (err) {
-        console.error("Reset failed:", err);
-        alert("Reset failed. Check the console for errors.");
-    }
+    if (!loadedImage) return;
+    await startFreshTraining();
 });
 
 // --- Shake: add small noise to embeddings to escape local minima ---

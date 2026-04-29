@@ -11,7 +11,7 @@
 </head>
 <body>
     <header>
-        <div class="app-logo" id="app-title" style="cursor:pointer;text-decoration:underline dotted rgba(245,166,36,0.4);">Compression using Implicit Neural Representation</div>
+        <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
         <button id="help-btn">?</button>
         <div class="header-spacer"></div>
@@ -154,8 +154,8 @@
                     </label>
                 </div>
                 <div class="ctrl-row" style="gap:6px;">
-                    <button class="btn" id="roi-auto-btn"  style="padding:6px 10px;font-size:11px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border-2);">⚙ Auto Mask</button>
-                    <button class="btn" id="roi-clear-btn" style="padding:6px 10px;font-size:11px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border-2);">✕ Clear Mask</button>
+                    <button class="btn btn-dim" id="roi-auto-btn">⚙ Auto Mask</button>
+                    <button class="btn btn-dim" id="roi-clear-btn">✕ Clear Mask</button>
                 </div>
             </div>
 
@@ -171,7 +171,7 @@
             <div class="canvas-row">
                 <div class="canvas-panel" id="source-panel">
                     <div class="panel-header">
-                        <span class="panel-title">Source <span id="source-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
+                        <span class="panel-title">Source <span id="source-res" class="panel-hint"></span></span>
                         <span class="panel-hint">click or drop · draw mask</span>
                     </div>
                     <div class="canvas-wrap">
@@ -181,7 +181,7 @@
                             <div class="drop-text">Drop Image<br>or Click</div>
                         </div>
                     </div>
-                    <input type="file" id="file-input" style="display:none" accept="image/*">
+                    <input type="file" id="file-input" accept="image/*">
                 </div>
 
                 <div class="canvas-panel">
@@ -191,9 +191,9 @@
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="embed-canvas" width="512" height="512"></canvas>
-                        <div id="emb-overlay" style="position:absolute;inset:0;"></div>
+                        <div id="emb-overlay"></div>
                     </div>
-                    <div class="panel-header" style="border-top: 1px solid var(--border);">
+                    <div class="panel-header panel-header--sep">
                         <span class="panel-title">Layers</span>
                         <span class="panel-hint">L1 / L2 / L3 weights, normalized</span>
                     </div>
@@ -204,11 +204,11 @@
 
                 <div class="canvas-panel">
                     <div class="panel-header">
-                        <span class="panel-title">Output <span id="output-res" class="panel-hint" style="font-size:11px;font-family:var(--mono);"></span></span>
-                        <label class="panel-hint" style="display:flex;align-items:center;gap:5px;cursor:default;flex-shrink:0;">
+                        <span class="panel-title">Output <span id="output-res" class="panel-hint"></span></span>
+                        <label class="panel-hint">
                             zoom
-                            <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1" style="width:52px;vertical-align:middle;">
-                            <span id="output-zoom-val" style="display:inline-block;width:4ch;text-align:right;">1×</span>
+                            <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1">
+                            <span id="output-zoom-val">1×</span>
                         </label>
                         <button class="btn" id="snapshot-btn">&#x25CF; Snapshot</button>
                     </div>
@@ -239,7 +239,7 @@
                     <span class="stat-label">Compressed Size</span>
                     <span class="stat-value" id="model-size">—</span>
                 </div>
-                <div class="stat-item" style="margin-left:auto;">
+                <div class="stat-item stat-end">
                     <span class="status-dot idle" id="status-dot"></span>
                     <span id="status-text" class="stat-label">IDLE</span>
                 </div>
@@ -318,11 +318,11 @@
                 <div class="help-h">References</div>
                 <table class="help-table">
                     <tr>
-                        <td><a href="https://arxiv.org/abs/2103.03123" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;">COIN</a></td>
+                        <td><a href="https://arxiv.org/abs/2103.03123" target="_blank" rel="noopener">COIN</a></td>
                         <td style="color:var(--text-dim);">Dupont et al., 2021 — <em>COIN: COmpression with Implicit Neural representations</em></td>
                     </tr>
                     <tr>
-                        <td><a href="https://arxiv.org/abs/2201.05989" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none;">Instant-NGP</a></td>
+                        <td><a href="https://arxiv.org/abs/2201.05989" target="_blank" rel="noopener">Instant-NGP</a></td>
                         <td style="color:var(--text-dim);">Müller et al., 2022 — <em>Instant Neural Graphics Primitives with a Multiresolution Hash Encoding</em></td>
                     </tr>
                 </table>
@@ -352,7 +352,7 @@
         document.addEventListener('keydown', e => { if (e.key === 'Escape') helpOverlay.classList.add('hidden'); });
     </script>
 
+    <input type="file" id="model-file-input" accept=".safetensors">
     <script type="module" src="js/main.js"></script>
-<input type="file" id="model-file-input" style="display:none" accept=".safetensors">
 </body>
 </html>
