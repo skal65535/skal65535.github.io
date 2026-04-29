@@ -95,7 +95,7 @@ struct Uniforms {
     mlpWidth:          u32,
     canvasWidth:       u32,
     canvasHeight:      u32,
-    _p0: u32, _p1: u32, _p2: u32,   // pad to align vec4 at offset 32
+    channelMask: u32, _p1: u32, _p2: u32,  // channelMask: bit i=0 → zero out emb channel i
     emb_range: array<vec4<f32>, 8>,  // [mn_plane0, mx_plane0, mn_plane1, mx_plane1, ...]
 };
 
@@ -164,6 +164,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             embedding_vector[ch] = (s + 1.0) * 0.5 * (mx - mn) + mn;
         }
     }`}
+
+    for (var ch = 0u; ch < ${embeddingChannels}u; ch++) {
+        if ((uniforms.channelMask & (1u << ch)) == 0u) { embedding_vector[ch] = 0.0; }
+    }
 
     // --- MLP FORWARD PASS ---
 
