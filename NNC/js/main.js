@@ -7,7 +7,7 @@ import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
 import { drawOutputCanvas, drawEmbeddings, drawLayers, drawLossCurve } from './viz.js';
-import { computeEmbRange, normalizeEmbAndAdjustL1, buildFwdUniforms, uploadEmbRange, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
+import { computeEmbRange, normalizeEmbAndAdjustL1, buildFwdUniforms, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
 
 // --- DOM references ---
@@ -33,8 +33,10 @@ const mlpLrInput    = document.getElementById('mlp-lr');
 const maxIterVal    = document.getElementById('max-iter-val');
 const embedLrVal    = document.getElementById('embed-lr-val');
 const mlpLrVal      = document.getElementById('mlp-lr-val');
-const mlpRatioInput = document.getElementById('mlp-ratio');
-const mlpRatioVal   = document.getElementById('mlp-ratio-val');
+const mlpRatioInput  = document.getElementById('mlp-ratio');
+const mlpRatioVal    = document.getElementById('mlp-ratio-val');
+const numLoopsInput  = document.getElementById('num-loops');
+const numLoopsVal    = document.getElementById('num-loops-val');
 const bwdStrideInput = document.getElementById('bwd-stride');
 const bwdStrideVal   = document.getElementById('bwd-stride-val');
 const outputZoomInput = document.getElementById('output-zoom');
@@ -85,6 +87,7 @@ let lossHistory   = [];
 let lastStepTime  = 0;
 let lastConfig    = null; // { gridSize, embeddingChannels, mlpWidth } from last full init
 let adamT         = 0;   // GPU Adam timestep (incremented each step)
+let channelMask   = 0xFFFFFFFF; // bitmask: bit i=0 → zero out embedding channel i during inference
 
 // ROI mask state
 const roiMask  = new ROIMask(1, 1);
@@ -138,6 +141,7 @@ maxIterInput.addEventListener('input', () => {
     maxIterVal.textContent = v === 0 ? '∞' : v.toLocaleString();
 });
 mlpRatioInput.addEventListener('input', () => { mlpRatioVal.textContent = mlpRatioInput.value; });
+numLoopsInput.addEventListener('input', () => { numLoopsVal.textContent = numLoopsInput.value; });
 bwdStrideInput.addEventListener('input', () => { bwdStrideVal.textContent = bwdStrideInput.value; });
 outputZoomInput.addEventListener('input', () => {
     const scale = parseFloat(outputZoomInput.value);
@@ -146,19 +150,6 @@ outputZoomInput.addEventListener('input', () => {
         const W = Math.round(BASE_CANVAS_W * scale);
         const H = Math.round(BASE_CANVAS_H * scale);
         outputResEl.textContent = `${W}×${H}`;
-        if (scale <= 1.0) {
-            canvas.style.width = '';
-            canvas.style.height = '';
-            canvas.style.maxWidth = '';
-            canvas.style.maxHeight = '';
-            canvas.parentElement.style.overflow = 'hidden';
-        } else {
-            canvas.style.maxWidth  = 'none';
-            canvas.style.maxHeight = 'none';
-            canvas.style.width  = W + 'px';
-            canvas.style.height = H + 'px';
-            canvas.parentElement.style.overflow = 'auto';
-        }
         runZoomInference(W, H);
     }
 });
@@ -522,10 +513,13 @@ async function train() {
     const sampledCount = Math.ceil(pixelCount / stride);
     adamT++;
 
-    const embedLR   = sliderToLR(parseInt(embedLrInput.value));
-    const mlpRatio  = parseInt(mlpRatioInput.value) || 1;
-    const activeMLP = (adamT % mlpRatio === 0);
-    const mlpLR     = activeMLP ? sliderToLR(parseInt(mlpLrInput.value)) : 0;
+    const mlpRatio   = parseInt(mlpRatioInput.value) || 1;
+    const numLoops   = parseInt(numLoopsInput.value) || 1;
+    const period     = (mlpRatio + 1) * numLoops;
+    const phasePos   = adamT % period;
+    const activeMLP  = phasePos >= mlpRatio * numLoops;
+    const embedLR    = activeMLP ? 0 : sliderToLR(parseInt(embedLrInput.value));
+    const mlpLR      = activeMLP ? sliderToLR(parseInt(mlpLrInput.value)) : 0;
     const tensorCfg = {
         embeddings:     { lr: embedLR, size: embSize,             l2: 0.002 / embSize, clamp: 1 },
         layer1_weights: { lr: mlpLR,   size: mlpWidth * embCh,    l2: 0, clamp: 0 },
@@ -554,6 +548,7 @@ async function train() {
         device.queue.writeBuffer(adamUniformsBufs[k], 0, adamAB);
     }
 
+    uploadChannelMask(0xFFFFFFFF, fwdUniformsBuf, device);
     const ce = device.createCommandEncoder();
 
     const fwdPass = ce.beginComputePass();
@@ -730,6 +725,7 @@ startBtn.addEventListener('click', async () => {
             // Rebuild pipeline (quantization/smooth may have changed), reuse model buffers + Adam state
             await createPipeline();
             createBindGroup();
+            initEmbChannelMaskClick();
             setStatus('training');
             run(null);
         } else {
@@ -738,6 +734,7 @@ startBtn.addEventListener('click', async () => {
             model = buffers;
             await createPipeline();
             createBindGroup();
+            initEmbChannelMaskClick();
             lastConfig = currentModelConfig();
             setStatus('training');
             run(initialWeights);
@@ -759,6 +756,7 @@ resetBtn.addEventListener('click', async () => {
         model = buffers;
         await createPipeline();
         createBindGroup();
+        initEmbChannelMaskClick();
         lastConfig = currentModelConfig();
         setStatus('training');
         run(initialWeights);
@@ -839,6 +837,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
         embedLr:    embedLrInput.value,
         mlpLr:      mlpLrInput.value,
         mlpRatio:   mlpRatioInput.value,
+        numLoops:   numLoopsInput.value,
         bwdStride:  bwdStrideInput.value,
         outputZoom: outputZoomInput.value,
         noOffset:   noOffsetCheckbox.checked,
@@ -885,6 +884,7 @@ async function runZoomInference(W, H) {
 
     const unifBuf = webGpuContext.uniformBuffer(160);
     device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range));
+    uploadChannelMask(channelMask, unifBuf, device);
     const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
     const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
     const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
@@ -925,6 +925,59 @@ async function runZoomInference(W, H) {
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
 }
 
+// --- Channel mask: overlay divs on embedding thumbnails for click-to-toggle ---
+function repositionEmbOverlay() {
+    const overlay = document.getElementById('emb-overlay');
+    if (!overlay) return;
+    const wrapRect   = embedCanvas.parentElement.getBoundingClientRect();
+    const canvasRect = embedCanvas.getBoundingClientRect();
+    const scale  = Math.min(canvasRect.width / embedCanvas.width, canvasRect.height / embedCanvas.height);
+    const bitmapW = embedCanvas.width  * scale;
+    const bitmapH = embedCanvas.height * scale;
+    const offL = (canvasRect.left - wrapRect.left) + (canvasRect.width  - bitmapW) / 2;
+    const offT = (canvasRect.top  - wrapRect.top)  + (canvasRect.height - bitmapH) / 2;
+    overlay.style.left   = `${offL}px`;
+    overlay.style.top    = `${offT}px`;
+    overlay.style.width  = `${bitmapW}px`;
+    overlay.style.height = `${bitmapH}px`;
+}
+
+function initEmbChannelMaskClick() {
+    channelMask = 0xFFFFFFFF;
+    const overlay = document.getElementById('emb-overlay');
+    if (!overlay) return;
+    overlay.innerHTML = '';
+    const embCh = config?.embeddingChannels || 0;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(embCh)));
+    const rows = Math.max(1, Math.ceil(embCh / cols));
+    for (let ch = 0; ch < embCh; ch++) {
+        const col = ch % cols;
+        const row = Math.floor(ch / cols);
+        const cell = document.createElement('div');
+        cell.style.cssText = `position:absolute;box-sizing:border-box;cursor:pointer;` +
+            `left:${col*100/cols}%;top:${row*100/rows}%;` +
+            `width:${100/cols}%;height:${100/rows}%;`;
+        cell.addEventListener('click', (e) => {
+            const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
+            if (e.shiftKey) {
+                channelMask = (channelMask ^ allBits) | (1 << ch);
+                Array.from(overlay.children).forEach((c, i) => {
+                    c.style.background = ((channelMask >>> i) & 1) ? '' : 'rgba(200,30,30,0.55)';
+                });
+            } else {
+                channelMask ^= (1 << ch);
+                cell.style.background = ((channelMask >>> ch) & 1) ? '' : 'rgba(200,30,30,0.55)';
+            }
+            if (!trainingActive && model && fwdUniformsBuf) runInference();
+        });
+        overlay.appendChild(cell);
+    }
+    repositionEmbOverlay();
+}
+
+// Keep overlay aligned when the wrap is resized (e.g. window resize).
+new ResizeObserver(repositionEmbOverlay).observe(embedCanvas.parentElement);
+
 // --- Inference: pack embeddings (CPU) then run one forward pass ---
 async function runInference() {
     const { device } = webGpuContext;
@@ -937,6 +990,7 @@ async function runInference() {
     const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
     device.queue.writeBuffer(model.embeddings_q, 0, packed);
 
+    uploadChannelMask(channelMask, fwdUniformsBuf, device);
     const ce = device.createCommandEncoder();
     const fwdPass = ce.beginComputePass();
     fwdPass.setPipeline(pipeline);
@@ -989,6 +1043,7 @@ async function loadModelFile(file) {
     if (uiSettings.embedLr !== undefined) syncSliderDisplay(Object.assign(embedLrInput, { value: uiSettings.embedLr }), embedLrVal);
     if (uiSettings.mlpLr   !== undefined) syncSliderDisplay(Object.assign(mlpLrInput,   { value: uiSettings.mlpLr   }), mlpLrVal);
     if (uiSettings.mlpRatio  !== undefined) { mlpRatioInput.value  = uiSettings.mlpRatio;  mlpRatioVal.textContent  = uiSettings.mlpRatio; }
+    if (uiSettings.numLoops  !== undefined) { numLoopsInput.value  = uiSettings.numLoops;  numLoopsVal.textContent  = uiSettings.numLoops; }
     if (uiSettings.bwdStride !== undefined) { bwdStrideInput.value = uiSettings.bwdStride; bwdStrideVal.textContent = uiSettings.bwdStride; }
     if (uiSettings.outputZoom !== undefined) { outputZoomInput.value = uiSettings.outputZoom; outputZoomVal.textContent = uiSettings.outputZoom + '×'; }
 
@@ -1021,6 +1076,7 @@ async function loadModelFile(file) {
 
         await createPipeline();
         createBindGroup();
+        initEmbChannelMaskClick();
         lastConfig  = currentModelConfig();
         adamT       = 0;
         stepCount   = 0;
@@ -1073,7 +1129,7 @@ function updateEmbBitsOptions() {
 updateEmbBitsOptions();
 
 // --- URL parameter parsing ---
-// Supported: ?grid=64&EMB=16&MLP=8&iters=4000&8qat&4b
+// Supported: ?grid=64&EMB=16&MLP=8&iters=4000&8qat&4b&numLoops=3
 // Flags: 8qat (MLP 8-bit QAT), 4b (4-bit embeddings), 8b (8-bit embeddings)
 function applyUrlParams() {
     const params = new URLSearchParams(window.location.search);
@@ -1112,6 +1168,13 @@ function applyUrlParams() {
     };
     setLR(embedLrInput, embedLrVal, 'embedLr');
     setLR(mlpLrInput,   mlpLrVal,   'mlpLr');
+
+    const numLoopsParam = parseInt(params.get('numLoops'));
+    if (!isNaN(numLoopsParam) && numLoopsParam >= 1 && numLoopsParam <= 8) {
+        numLoopsInput.value = numLoopsParam;
+        numLoopsVal.textContent = numLoopsParam;
+        hasParams = true;
+    }
 
     if (params.has('smooth')) { smoothInterpolationCheckbox.checked = true;  hasParams = true; }
     if (params.has('nosmooth')) { smoothInterpolationCheckbox.checked = false; hasParams = true; }

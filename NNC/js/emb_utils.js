@@ -81,6 +81,11 @@ export function uploadEmbRange(range, embCh, buf, device) {
     device.queue.writeBuffer(buf, 32, buildEmbRangeF32(range, embCh));
 }
 
+// Update only the channelMask field of fwdUniformsBuf (byte offset 20, u32[5]).
+export function uploadChannelMask(mask, buf, device) {
+    device.queue.writeBuffer(buf, 20, new Uint32Array([mask]));
+}
+
 export function cpuPackEmbeddings(embF32, embCh, range, embBits = 8) {
     const chPerGroup = 32 / embBits;
     const maxVal     = (1 << (embBits - 1)) - 1;

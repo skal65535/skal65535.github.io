@@ -10,6 +10,7 @@ const TIPS = {
     'embed-lr':             'Adam learning rate for the embedding grid (log scale, 1e-4 … 1e-1).',
     'mlp-lr':               'Adam learning rate for MLP weights (log scale, 1e-4 … 1e-1).',
     'mlp-ratio':            'Embedding-only Adam steps per MLP step.\nHigher = focus more on the grid.',
+    'num-loops':            'Repeat each phase N times per super-cycle.\nratio=5, loops=3 → 15 EMB steps then 3 MLP steps.',
     'bwd-stride':           'Subsample every Nth pixel during backprop.\nHigher = faster steps, noisier gradients.',
     'roi-brush':            'Brush radius for painting the ROI mask (pixels).',
     'roi-strength':         'Loss multiplier inside painted regions.\nHigher = network focuses more on those areas.',
@@ -32,14 +33,18 @@ export function initTooltips() {
     document.body.appendChild(box);
 
     let hideTimer = null;
+    let showTimer = null;
 
     function show(text, el) {
         clearTimeout(hideTimer);
-        box.textContent = text;
-        box.style.visibility = 'hidden';
-        box.style.display    = 'block';
-        position(el);
-        box.style.visibility = 'visible';
+        clearTimeout(showTimer);
+        showTimer = setTimeout(() => {
+            box.textContent = text;
+            box.style.visibility = 'hidden';
+            box.style.display    = 'block';
+            position(el);
+            box.style.visibility = 'visible';
+        }, 1000);
     }
 
     function position(el) {
@@ -54,6 +59,7 @@ export function initTooltips() {
     }
 
     function hide() {
+        clearTimeout(showTimer);
         hideTimer = setTimeout(() => { box.style.display = 'none'; }, 60);
     }
 

@@ -86,17 +86,11 @@ function packEmbPlane(embeddings, planeIdx, gridCount, embCh) {
     return u32;
 }
 
-// Format uint32 array as uvec4[](…) body (groups of 4 uint32 → one uvec4).
-function fmtUvec4Array(u32Array, perLine = 2) {
-    const vecs = [];
-    for (let i = 0; i < u32Array.length; i += 4) {
-        const a = u32Array[i], b = u32Array[i+1] || 0;
-        const c = u32Array[i+2] || 0, d = u32Array[i+3] || 0;
-        vecs.push(`uvec4(${a}u,${b}u,${c}u,${d}u)`);
-    }
+// Format uint32 array as plain uint[](…) body.
+function fmtUintArray(u32Array, perLine = 8) {
     const lines = [];
-    for (let i = 0; i < vecs.length; i += perLine)
-        lines.push('    ' + vecs.slice(i, i + perLine).join(', '));
+    for (let i = 0; i < u32Array.length; i += perLine)
+        lines.push('    ' + Array.from(u32Array.slice(i, i + perLine)).map(v => `${v}u`).join(', '));
     return lines.join(',\n');
 }
 
@@ -119,7 +113,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {                \\
     ivec2 gxy = ivec2(fragCoord);                                      \\
     if (gxy.x >= embed_texture || gxy.y >= embed_texture) { discard; } \\
     int idx = gxy.x + gxy.y * embed_texture;                           \\
-    uint val = quant_arr[idx >> 2][idx & 3];                           \\
+    uint val = quant_arr[idx];                                         \\
     fragColor = unpack8(val);                                          \\
 }`;
 }
@@ -129,15 +123,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {                \\
 // GPU sampler bilinear handles interpolation; main shader rescales UV.
 function genBufferGLSL(p, gridSize, u32Data) {
     const label = String.fromCharCode(65 + p); // 'A', 'B', ...
-    const N = u32Data.length / 4;              // number of uvec4s
+    const N = u32Data.length;
     return `\
 // === Buffer ${label} — embedding plane ${p} (channels ${p*4}–${p*4+3}) ===
 // Paste into Buffer ${label} tab. Set iChannel${p} = Buffer ${label} in Image tab.
 
-const uvec4 embed${p}_quant[${N}] = uvec4[${N}](
-${fmtUvec4Array(u32Data)}
+const uint embed${p}[${N}] = uint[${N}](
+${fmtUintArray(u32Data)}
 );
-EMB_BUFFER_MAINIMAGE(embed${p}_quant)`;
+EMB_BUFFER_MAINIMAGE(embed${p})`;
 }
 
 export function export_to_glsl(config, weights) {
