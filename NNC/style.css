@@ -101,6 +101,9 @@ header {
     padding: 14px 16px;
     border-bottom: 1px solid var(--border);
 }
+.ctrl-section:nth-child(1) { background: #121c2e; }
+.ctrl-section:nth-child(2) { background: #0f1e1a; }
+.ctrl-section:nth-child(3) { background: #1a1428; }
 .section-label {
     font-family: var(--display);
     font-weight: 700;
@@ -168,6 +171,33 @@ select {
     transition: border-color 0.15s;
 }
 select:focus  { border-color: var(--accent); }
+
+.activation-picker {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+}
+.activ-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 5px 4px 4px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 10px;
+    font-family: var(--mono);
+    letter-spacing: 0.04em;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.activ-btn:hover { border-color: var(--border-2); color: var(--text); }
+.activ-btn.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.activ-btn svg { width: 40px; height: 20px; display: block; }
+.activ-btn svg .axis { stroke: currentColor; stroke-width: 0.5; opacity: 0.25; }
+.activ-btn svg path, .activ-btn svg polyline { stroke: currentColor; stroke-width: 1.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 
 .ctrl-check {
     display: flex;

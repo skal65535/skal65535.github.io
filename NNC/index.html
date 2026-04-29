@@ -58,6 +58,33 @@
                     </select>
                 </div>
                 <div class="ctrl-row">
+                    <div class="ctrl-label">Activation</div>
+                    <div class="activation-picker">
+                        <button type="button" class="activ-btn" data-val="sin">
+                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,10 3.3,14 6.7,17 10,18 13.3,17 16.7,14 20,10 23.3,6 26.7,3 30,2 33.3,3 36.7,6 40,10"/></svg>
+                            <span>SIREN</span>
+                        </button>
+                        <button type="button" class="activ-btn" data-val="tanh">
+                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,18 3.3,18 6.7,18 10,17 13.3,16 16.7,14 20,10 23.3,6 26.7,4 30,3 33.3,2 36.7,2 40,2"/></svg>
+                            <span>Tanh</span>
+                        </button>
+                        <button type="button" class="activ-btn" data-val="softsign">
+                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,17 3.3,16 6.7,16 10,16 13.3,15 16.7,14 20,10 23.3,6 26.7,5 30,4 33.3,4 36.7,4 40,3"/></svg>
+                            <span>Softsign</span>
+                        </button>
+                        <button type="button" class="activ-btn" data-val="hardtanh">
+                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,18 13.3,18 26.7,2 40,2"/></svg>
+                            <span>HardTanh</span>
+                        </button>
+                    </div>
+                    <select id="activation" style="display:none">
+                        <option value="sin" selected>SIREN (sin)</option>
+                        <option value="tanh">Tanh</option>
+                        <option value="softsign">Softsign</option>
+                        <option value="hardtanh">HardTanh</option>
+                    </select>
+                </div>
+                <div class="ctrl-row">
                     <div class="ctrl-label">Quantization</div>
                     <select id="quantization">
                         <option value="none">None (fp32)</option>
@@ -99,14 +126,14 @@
                         <span class="ctrl-label">Embeddings LR</span>
                         <span class="slider-val" id="embed-lr-val">—</span>
                     </div>
-                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="67">
+                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="80">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">MLP LR</span>
                         <span class="slider-val" id="mlp-lr-val">—</span>
                     </div>
-                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="33">
+                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="80">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
@@ -195,10 +222,10 @@
                     </div>
                     <div class="panel-header panel-header--sep">
                         <span class="panel-title">Layers</span>
-                        <span class="panel-hint">L1 / L2 / L3 weights, normalized</span>
+                        <span class="panel-hint" id="layers-hint">inference flow</span>
                     </div>
                     <div class="canvas-wrap">
-                        <canvas id="layers-canvas" width="512" height="256"></canvas>
+                        <canvas id="layers-canvas" width="512" height="320"></canvas>
                     </div>
                 </div>
 
@@ -290,6 +317,7 @@
                     <tr><td>Embedding Grid</td><td>Spatial resolution of the feature grid (N×N). Larger = finer detail, bigger model.</td></tr>
                     <tr><td>Embedding Channels</td><td>Feature dimensions per grid cell. More channels = richer representation.</td></tr>
                     <tr><td>MLP Width</td><td>Hidden layer size of the 3-layer decoder MLP. Larger = more capacity, slower training.</td></tr>
+                    <tr><td>Activation</td><td>Hidden-layer activation function. SIREN (sin) works well for natural images. Tanh and Softsign are smooth alternatives. HardTanh (clamp) is fastest but may cause dead neurons.</td></tr>
                     <tr><td>Quantization</td><td>MLP weight precision. QAT trains with simulated 8-bit quantization, yielding a much smaller GLSL export.</td></tr>
                     <tr><td>Emb Bits</td><td>Quantization depth for the embedding grid. 4-bit halves storage vs 8-bit.</td></tr>
                     <tr><td>Smooth Interp</td><td>Bicubic-like grid sampling via IQ's smooth-step trick. Improves quality at negligible cost.</td></tr>
@@ -301,8 +329,8 @@
                 <div class="help-h">Training Settings</div>
                 <table class="help-table">
                     <tr><td>Max Iterations</td><td>Training stops after N steps. Set to 0 to run indefinitely.</td></tr>
-                    <tr><td>Embeddings LR</td><td>Adam learning rate for the embedding grid (log scale: 1e-4 … 1e-1).</td></tr>
-                    <tr><td>MLP LR</td><td>Adam learning rate for MLP weights (log scale: 1e-4 … 1e-1).</td></tr>
+                    <tr><td>Embeddings LR</td><td>Adam learning rate for the embedding grid (log scale: 1e-4 … ~1.2e-1; default 3.0e-2).</td></tr>
+                    <tr><td>MLP LR</td><td>Adam learning rate for MLP weights (log scale: 1e-4 … ~1.2e-1; default 3.0e-2).</td></tr>
                     <tr><td>Emb / MLP ratio</td><td>How many embedding-only Adam steps are taken per MLP step. Higher = focus training on the grid.</td></tr>
                     <tr><td>Num Loops</td><td>Repeats each phase N times per super-cycle. With ratio=5 and loops=3: 15 consecutive EMB steps then 3 MLP steps, then repeat.</td></tr>
                     <tr><td>Bwd pixel stride</td><td>Subsample every Nth pixel during backprop. Speeds up steps at the cost of noisier gradients.</td></tr>
@@ -312,6 +340,11 @@
             <div class="help-section">
                 <div class="help-h">ROI Mask</div>
                 <div class="help-p">Paint focus regions directly on the source image. The training loss is scaled by <em>ROI Strength</em> inside painted areas, biasing the network to prioritize those regions. The mask decays over time unless frozen. <em>Auto Mask</em> detects high-variance (high-detail) areas automatically.</div>
+                <table class="help-table">
+                    <tr><td>Brush Radius</td><td>Size of the paint brush in pixels.</td></tr>
+                    <tr><td>ROI Strength</td><td>Loss multiplier inside painted regions. Higher = stronger bias toward those areas.</td></tr>
+                    <tr><td>Freeze Mask</td><td>Prevent the mask from decaying over training steps.</td></tr>
+                </table>
             </div>
 
             <div class="help-section">

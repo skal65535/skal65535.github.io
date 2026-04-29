@@ -1,7 +1,24 @@
 // shader_builder.js
 
+function wgslActivFns(activation) {
+    switch (activation) {
+        case 'tanh':
+            return `fn activ(x: f32) -> f32 { return tanh(x); }
+fn activ_prime(x: f32) -> f32 { let t = tanh(x); return 1.0 - t * t; }`;
+        case 'softsign':
+            return `fn activ(x: f32) -> f32 { return x / (1.0 + abs(x)); }
+fn activ_prime(x: f32) -> f32 { let d = 1.0 + abs(x); return 1.0 / (d * d); }`;
+        case 'hardtanh':
+            return `fn activ(x: f32) -> f32 { return clamp(x, -1.0, 1.0); }
+fn activ_prime(x: f32) -> f32 { return f32(abs(x) < 1.0); }`;
+        default:
+            return `fn activ(x: f32) -> f32 { return sin(x); }
+fn activ_prime(x: f32) -> f32 { return cos(x); }`;
+    }
+}
+
 export function buildShader(config) {
-    const { gridSize, embeddingChannels, mlpWidth, quantization, smoothInterpolation } = config;
+    const { gridSize, embeddingChannels, mlpWidth, quantization, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
     const numU32 = embeddingChannels / channelsPerU32;
@@ -88,6 +105,7 @@ ${matVecMulFn('mat_vec_mul_output', mlpWidth,          4)}
 ${quantizationFunctions}
 ${interpolationFunctions}
 ${mlpFunctions}
+${wgslActivFns(activation)}
 
 struct Uniforms {
     gridSize:          u32,
@@ -178,7 +196,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     for (var i: u32 = 0u; i < uniforms.mlpWidth; i = i + 1u) {
         layer1_out[i] = layer1_out[i] + layer1_biases[i];
         out_inter_layer1[pixel_index * uniforms.mlpWidth + i] = layer1_out[i]; // pre-activation
-        layer1_out[i] = sin(layer1_out[i]);
+        layer1_out[i] = activ(layer1_out[i]);
     }
 
     // Layer 2: mlpWidth -> mlpWidth
@@ -186,7 +204,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     for (var i: u32 = 0u; i < uniforms.mlpWidth; i = i + 1u) {
         layer2_out[i] = layer2_out[i] + layer2_biases[i];
         out_inter_layer2[pixel_index * uniforms.mlpWidth + i] = layer2_out[i]; // pre-activation
-        layer2_out[i] = sin(layer2_out[i]);
+        layer2_out[i] = activ(layer2_out[i]);
     }
 
     // Layer 3: mlpWidth -> 4 (RGBA)

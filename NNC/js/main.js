@@ -6,7 +6,7 @@ import { get_target_pixels, calculate_loss } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
-import { drawOutputCanvas, drawEmbeddings, drawLayers, drawLossCurve } from './viz.js';
+import { drawOutputCanvas, drawEmbeddings, drawFlowDiagram, drawLossCurve } from './viz.js';
 import { computeEmbRange, normalizeEmbAndAdjustL1, buildFwdUniforms, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
 
@@ -25,6 +25,20 @@ const embeddingChannelsSelect   = document.getElementById('embedding-channels');
 const mlpWidthSelect            = document.getElementById('mlp-width');
 const quantizationSelect        = document.getElementById('quantization');
 const embBitsSelect             = document.getElementById('emb-bits');
+const activationSelect          = document.getElementById('activation');
+function syncActivationButtons() {
+    document.querySelectorAll('.activ-btn').forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.val === activationSelect.value);
+    });
+}
+document.querySelectorAll('.activ-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        activationSelect.value = btn.dataset.val;
+        syncActivationButtons();
+        activationSelect.dispatchEvent(new Event('change'));
+    });
+});
+syncActivationButtons();
 const smoothInterpolationCheckbox = document.getElementById('smooth-interpolation');
 const noOffsetCheckbox            = document.getElementById('no-offset');
 const maxIterInput  = document.getElementById('max-iter');
@@ -81,7 +95,10 @@ let trainingActive  = false;
 let animationFrameId = null;
 let lastWeights     = null;
 let snapshotWeights = null;
-let layerRangeEma = null; // EMA of [min, max] per layer for visualization
+let layerRangeEma  = null; // EMA of [min, max] per layer for flow diagram
+let lastInterData  = { inter1: null, inter2: null }; // inter-layer activations, updated every VIZ_INTERVAL steps
+const VIZ_INTERVAL = 10;
+document.getElementById('layers-hint').textContent = `inference flow · activations update every ${VIZ_INTERVAL} steps`;
 let stepCount     = 0;
 let lossHistory   = [];
 let lastStepTime  = 0;
@@ -122,8 +139,8 @@ function updateSizeDisplay() {
     modelSizeEl.textContent = `${sizeStr} (${bpp} bpp)`;
 }
 
-// --- LR slider helpers (log scale: slider 0–100 → 1e-4 … 1e-1) ---
-const sliderToLR = v => Math.pow(10, -4 + (v / 100) * 3);
+// --- LR slider helpers (log scale: slider 0–100 → 1e-4 … ~1.2e-1; v=80 → 3e-2) ---
+const sliderToLR = v => 1e-4 * Math.pow(300, v / 80);
 const formatLR   = lr => lr.toExponential(1);
 
 function syncSliderDisplay(input, display) {
@@ -251,7 +268,7 @@ roiAutoBtn.addEventListener('click', () => {
 });
 
 {
-    let isPainting = false;
+    let isPainting = false, didPaint = false;
     function sourceCanvasCoords(e) {
         const r = sourceCanvas.getBoundingClientRect();
         return [
@@ -262,6 +279,7 @@ roiAutoBtn.addEventListener('click', () => {
     sourceCanvas.addEventListener('mousedown', (e) => {
         if (!loadedImage) return;
         isPainting = true;
+        didPaint = false;
         const [x, y] = sourceCanvasCoords(e);
         roiMask.paint(x, y, parseInt(roiBrushInput.value));
         drawSourceImage();
@@ -269,22 +287,23 @@ roiAutoBtn.addEventListener('click', () => {
     });
     sourceCanvas.addEventListener('mousemove', (e) => {
         if (!isPainting) return;
+        didPaint = true;
         const [x, y] = sourceCanvasCoords(e);
         roiMask.paint(x, y, parseInt(roiBrushInput.value));
         drawSourceImage();
     });
     window.addEventListener('mouseup',    () => { isPainting = false; });
     sourceCanvas.addEventListener('mouseleave', () => { isPainting = false; });
-}
 
-// --- File / drop zone ---
-dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
-sourcePanel.addEventListener('click', (e) => {
-    if (e.target !== fileInput && (e.target !== sourceCanvas || !loadedImage)) fileInput.click();
-});
-fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) handleFile(e.target.files[0]);
-});
+    // --- File / drop zone ---
+    dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+    sourcePanel.addEventListener('click', (e) => {
+        if (e.target !== fileInput && !(e.target === sourceCanvas && didPaint)) fileInput.click();
+    });
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) { handleFile(e.target.files[0]); fileInput.value = ''; }
+    });
+}
 sourcePanel.addEventListener('dragover', (e) => {
     e.preventDefault();
     dropOverlay.classList.remove('hidden');
@@ -376,6 +395,7 @@ function buildConfigFromUI() {
         mlpWidth:            parseInt(mlpWidthSelect.value),
         quantization:        quantizationSelect.value,
         embBits:             parseInt(embBitsSelect.value),
+        activation:          activationSelect.value,
         smoothInterpolation: smoothInterpolationCheckbox.checked,
         width:  BASE_CANVAS_W,
         height: BASE_CANVAS_H,
@@ -399,17 +419,20 @@ function createBindGroup() {
 
     const pixelCount = canvas.width * canvas.height;
     const embSize    = gridSize * gridSize * embeddingChannels;
+    const stride     = mlpWidth * 4; // bytes per pixel in inter-layer buffers (mlpWidth f32)
 
-    outputBuffers.interLayer1 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
-    outputBuffers.interLayer2 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    outputBuffers.interLayer1 = webGpuContext.outputBuffer(pixelCount * stride);
+    outputBuffers.interLayer2 = webGpuContext.outputBuffer(pixelCount * stride);
     outputBuffers.final       = webGpuContext.outputBuffer(pixelCount * 4 * 4);
 
     readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
     readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4);
     readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth * embeddingChannels * 4);
-    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(mlpWidth * 4);
-    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * mlpWidth * 4);
-    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer(4 * mlpWidth * 4);
+    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride);
+    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * stride);
+    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer(4 * stride);
+    readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride);
+    readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride);
 
     bindGroup = webGpuContext.device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
@@ -460,10 +483,11 @@ function createBackwardPipelines() {
     // ROI mask (one f32 per pixel, uploaded from CPU each step)
     bwdBuffers.roiMask = webGpuContext.zeroBuffer(pixelCount);
 
+    const stride = mlpWidth * 4;
     // Per-pixel intermediate gradient buffers (no races, plain f32, GPU-only)
     bwdBuffers.gradFinal        = webGpuContext.storageBuffer(pixelCount * 4 * 4);
-    bwdBuffers.gradInter2Preact = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
-    bwdBuffers.gradInter1Preact = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    bwdBuffers.gradInter2Preact = webGpuContext.storageBuffer(pixelCount * stride);
+    bwdBuffers.gradInter1Preact = webGpuContext.storageBuffer(pixelCount * stride);
 
     // Adam uniform buffers (one per parameter tensor, updated each step)
     const makeAdamBuf = () => webGpuContext.uniformBuffer(10 * 4);
@@ -606,23 +630,34 @@ async function train() {
     }
     adamPass.end();
 
+    const doVizUpdate = stepCount % VIZ_INTERVAL === 0;
+
     ce.copyBufferToBuffer(outputBuffers.final,    0, readbackBuffers.final,         0, outputBuffers.final.size);
     ce.copyBufferToBuffer(model.embeddings,       0, readbackBuffers.embeddings,    0, model.embeddings.size);
     ce.copyBufferToBuffer(model.layer1.weights,   0, readbackBuffers.layer1Weights, 0, model.layer1.weights.size);
     ce.copyBufferToBuffer(model.layer1.biases,    0, readbackBuffers.layer1Biases,  0, model.layer1.biases.size);
     ce.copyBufferToBuffer(model.layer2.weights,   0, readbackBuffers.layer2Weights, 0, model.layer2.weights.size);
     ce.copyBufferToBuffer(model.layer3.weights,   0, readbackBuffers.layer3Weights, 0, model.layer3.weights.size);
+    if (doVizUpdate) {
+        ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
+        ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
+    }
 
     device.queue.submit([ce.finish()]);
 
-    await Promise.all([
+    const mapPromises = [
         readbackBuffers.final.mapAsync(GPUMapMode.READ),
         readbackBuffers.embeddings.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer1Weights.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer1Biases.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer2Weights.mapAsync(GPUMapMode.READ),
         readbackBuffers.layer3Weights.mapAsync(GPUMapMode.READ),
-    ]);
+    ];
+    if (doVizUpdate) {
+        mapPromises.push(readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ));
+        mapPromises.push(readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ));
+    }
+    await Promise.all(mapPromises);
 
     const finalData = new Float32Array(readbackBuffers.final.getMappedRange());
     const embData   = new Float32Array(readbackBuffers.embeddings.getMappedRange()).slice();
@@ -633,6 +668,7 @@ async function train() {
 
     drawOutputCanvas(canvas, finalData);
     const loss = calculate_loss(finalData, targetPixels);
+    const finalSlice = finalData.slice();
 
     readbackBuffers.final.unmap();
     readbackBuffers.embeddings.unmap();
@@ -640,6 +676,12 @@ async function train() {
     readbackBuffers.layer1Biases.unmap();
     readbackBuffers.layer2Weights.unmap();
     readbackBuffers.layer3Weights.unmap();
+    if (doVizUpdate) {
+        lastInterData.inter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
+        lastInterData.inter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
+        readbackBuffers.interLayer1.unmap();
+        readbackBuffers.interLayer2.unmap();
+    }
 
     // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
     normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth);
@@ -659,6 +701,7 @@ async function train() {
         layer1Weights: l1wData,
         layer2Weights: l2wData,
         layer3Weights: l3wData,
+        finalOutput:   finalSlice,
     };
 
     stepCount++;
@@ -673,7 +716,8 @@ async function train() {
     rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
 
     drawEmbeddings(embedCanvas, lastWeights, config);
-    layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
+    layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
+        lastWeights.finalOutput, canvas.width, canvas.height, config, channelMask, layerRangeEma);
     drawLossCurve(lossCanvas, lossHistory);
     drawSourceImage();
 
@@ -697,6 +741,7 @@ function run(initialWeights) {
     lossHistory   = [];
     lastStepTime  = 0;
     layerRangeEma = null;
+    lastInterData = { inter1: null, inter2: null };
 
     // Clear visualizations
     embedCanvas.getContext('2d').clearRect(0, 0, embedCanvas.width, embedCanvas.height);
@@ -899,8 +944,9 @@ async function runZoomInference(W, H) {
     device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range));
     uploadChannelMask(channelMask, unifBuf, device);
     const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
-    const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
-    const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth * 4);
+    const stride  = mlpWidth * 4;
+    const interL1 = webGpuContext.storageBuffer(pixelCount * stride);
+    const interL2 = webGpuContext.storageBuffer(pixelCount * stride);
     const rbBuf   = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
 
     const bg = device.createBindGroup({
@@ -1010,15 +1056,29 @@ async function runInference() {
     fwdPass.setBindGroup(0, bindGroup);
     fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
     fwdPass.end();
-    ce.copyBufferToBuffer(outputBuffers.final, 0, readbackBuffers.final, 0, outputBuffers.final.size);
+    ce.copyBufferToBuffer(outputBuffers.final,      0, readbackBuffers.final,      0, outputBuffers.final.size);
+    ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
+    ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
     device.queue.submit([ce.finish()]);
 
-    await readbackBuffers.final.mapAsync(GPUMapMode.READ);
-    drawOutputCanvas(canvas, new Float32Array(readbackBuffers.final.getMappedRange()));
+    await Promise.all([
+        readbackBuffers.final.mapAsync(GPUMapMode.READ),
+        readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
+        readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
+    ]);
+    const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
+    const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
+    const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
+    drawOutputCanvas(canvas, inferFinal);
     readbackBuffers.final.unmap();
+    readbackBuffers.interLayer1.unmap();
+    readbackBuffers.interLayer2.unmap();
 
+    lastInterData = { inter1: inferInter1, inter2: inferInter2 };
+    lastWeights.finalOutput = inferFinal;
     drawEmbeddings(embedCanvas, lastWeights, config);
-    layerRangeEma = drawLayers(layersCanvas, lastWeights, config, layerRangeEma);
+    layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
+        inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma);
 }
 
 async function loadModelFile(file) {
@@ -1045,6 +1105,7 @@ async function loadModelFile(file) {
     // Restore saved UI settings
     if (uiSettings.quantization) quantizationSelect.value = uiSettings.quantization;
     if (savedConfig.embBits) embBitsSelect.value = String(savedConfig.embBits);
+    if (savedConfig.activation) { activationSelect.value = savedConfig.activation; syncActivationButtons(); }
     if (uiSettings.smoothInterpolation !== undefined)
         smoothInterpolationCheckbox.checked = uiSettings.smoothInterpolation === 'true';
     if (uiSettings.noOffset !== undefined)
@@ -1067,6 +1128,7 @@ async function loadModelFile(file) {
         mlpWidth:            savedConfig.mlpWidth,
         quantization:        quantizationSelect.value,
         embBits:             loadedEmbBits,
+        activation:          savedConfig.activation || 'sin',
         smoothInterpolation: smoothInterpolationCheckbox.checked,
         width:  canvas.width,
         height: canvas.height,
@@ -1136,8 +1198,20 @@ function updateEmbBitsOptions() {
 }
 
 // Update start button label and size when model config dropdowns change
-[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect, embBitsSelect].forEach(sel => {
-    sel.addEventListener('change', () => { updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay(); });
+[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect, embBitsSelect, activationSelect].forEach(sel => {
+    sel.addEventListener('change', () => {
+        updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay();
+        if (!trainingActive) {
+            if (lastConfig && lastWeights?.layer1Weights) {
+                layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
+                    lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma);
+            } else {
+                layersCanvas.getContext('2d').clearRect(0, 0, layersCanvas.width, layersCanvas.height);
+                layerRangeEma = null;
+                lastInterData = { inter1: null, inter2: null };
+            }
+        }
+    });
 });
 updateEmbBitsOptions();
 
@@ -1212,4 +1286,4 @@ startupImg.onload = async () => {
         } catch (_) {}
     }
 };
-startupImg.src = 'Mona_Lisa.jpg';
+startupImg.src = 'Mona_Lisa.webp';

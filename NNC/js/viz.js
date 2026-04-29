@@ -53,68 +53,187 @@ export function drawEmbeddings(canvas, lastWeights, config) {
     ctx.putImageData(imgData, 0, 0);
 }
 
-// L1/L2/L3 weight matrices as stacked grayscale bands with per-layer EMA range.
-// Returns updated layerRangeEma (pass null to reset).
-export function drawLayers(canvas, lastWeights, config, layerRangeEma) {
-    const w = lastWeights;
-    if (!w?.layer1Weights || !config.mlpWidth) return layerRangeEma;
-    const { mlpWidth, embeddingChannels } = config;
+// Horizontal flow diagram: Emb → L1 → Act1 → L2 → Act2 → L3 → RGBA
+// interLayer1/2: Float32Array [imgW*imgH*mlpWidth] or null (shown as placeholder)
+// finalOutput: Float32Array [imgW*imgH*4] or null
+// Returns updated ema (pass null to reset).
+export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, finalOutput, imgW, imgH, config, channelMask, ema) {
+    const w = weights;
+    if (!w?.layer1Weights || !config.mlpWidth) return ema;
+    const { mlpWidth, embeddingChannels: embCh, gridSize } = config;
     const ctx = canvas.getContext('2d');
     const cw = canvas.width, ch = canvas.height;
+    const EMA_ALPHA = 0.98;
 
-    const layers = [
-        { data: w.layer1Weights, rows: mlpWidth, cols: embeddingChannels, label: 'L1' },
-        { data: w.layer2Weights, rows: mlpWidth, cols: mlpWidth,          label: 'L2' },
-        { data: w.layer3Weights, rows: 4,        cols: mlpWidth,          label: 'L3' },
+    if (!ema) ema = [{mn:null,mx:null}, {mn:null,mx:null}, {mn:null,mx:null}];
+
+    const matDefs = [
+        { data: w.layer1Weights, rows: mlpWidth, cols: embCh },
+        { data: w.layer2Weights, rows: mlpWidth, cols: mlpWidth },
+        { data: w.layer3Weights, rows: 4,        cols: mlpWidth },
     ];
-    const totalRows = layers.reduce((s, l) => s + l.rows, 0);
-    const bandHs    = layers.map(l => Math.round(l.rows / totalRows * ch));
-    const imgData   = ctx.createImageData(cw, ch);
-    const data      = imgData.data;
+    for (let i = 0; i < 3; i++) {
+        let mn = Infinity, mx = -Infinity;
+        for (const v of matDefs[i].data) { if (v < mn) mn = v; if (v > mx) mx = v; }
+        const e = ema[i];
+        if (e.mn === null) { e.mn = mn; e.mx = mx; }
+        else { e.mn = EMA_ALPHA*e.mn + (1-EMA_ALPHA)*mn; e.mx = EMA_ALPHA*e.mx + (1-EMA_ALPHA)*mx; }
+    }
 
-    const EMA_ALPHA = 0.98; // ~50-step lag
-    if (!layerRangeEma) layerRangeEma = layers.map(() => ({ mn: null, mx: null }));
+    const PAD = 4, THUMB_W = 48;
+    const BODY_H = ch - PAD * 2;
 
-    let yOffset = 0;
-    for (let li = 0; li < layers.length; li++) {
-        const layer = layers[li], bandH = bandHs[li];
-        let cmn = Infinity, cmx = -Infinity;
-        for (let i = 0; i < layer.data.length; i++) {
-            if (layer.data[i] < cmn) cmn = layer.data[i];
-            if (layer.data[i] > cmx) cmx = layer.data[i];
-        }
-        const ema = layerRangeEma[li];
-        if (ema.mn === null) { ema.mn = cmn; ema.mx = cmx; }
-        else {
-            ema.mn = EMA_ALPHA * ema.mn + (1 - EMA_ALPHA) * cmn;
-            ema.mx = EMA_ALPHA * ema.mx + (1 - EMA_ALPHA) * cmx;
-        }
-        const mn = ema.mn, mx = ema.mx;
-        const scale = mx > mn ? 255 / (mx - mn) : 1;
-        for (let py = yOffset; py < yOffset + bandH; py++) {
-            const row = Math.min(Math.floor((py - yOffset) / bandH * layer.rows), layer.rows - 1);
-            for (let px = 0; px < cw; px++) {
-                const col = Math.min(Math.floor(px / cw * layer.cols), layer.cols - 1);
-                const v   = (layer.data[row * layer.cols + col] - mn) * scale | 0;
-                const idx = (py * cw + px) * 4;
-                data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
+    // Matrices use 72% of non-thumb space; remainder goes to the 6 gaps → wider fan-line areas
+    const spaceForMatsAndGaps = cw - 2*PAD - 4*THUMB_W;
+    const totalMatCols = embCh + 2 * mlpWidth;
+    const cell = Math.max(1, Math.min(
+        Math.floor(spaceForMatsAndGaps * 0.72 / totalMatCols),
+        Math.floor(BODY_H / mlpWidth)
+    ));
+    const totalMatWidth = totalMatCols * cell;
+    const GAP = Math.max(6, Math.floor((spaceForMatsAndGaps - totalMatWidth) / 6));
+
+    const matW_L1 = embCh * cell, matW_L2 = mlpWidth * cell, matW_L3 = mlpWidth * cell;
+
+    const xEmb  = PAD;
+    const xL1   = xEmb  + THUMB_W + GAP;
+    const xAct1 = xL1   + matW_L1 + GAP;
+    const xL2   = xAct1 + THUMB_W + GAP;
+    const xAct2 = xL2   + matW_L2 + GAP;
+    const xL3   = xAct2 + THUMB_W + GAP;
+    const xRGBA = xL3   + matW_L3 + GAP;
+
+    const imgData = ctx.createImageData(cw, ch);
+    const px = imgData.data;
+    for (let i = 0; i < px.length; i += 4) { px[i]=px[i+1]=px[i+2]=22; px[i+3]=255; }
+
+    // Square-pixel weight matrix, vertically centered; returns {y0, h} for fan lines
+    function drawMatrix(matData, rows, cols, x0, matW, e) {
+        const matH = rows * cell;
+        const oy = PAD + ((BODY_H - matH) >> 1);
+        const mn = e.mn, scale = e.mx > e.mn ? 255 / (e.mx - e.mn) : 1;
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const v = Math.max(0, Math.min(255, (matData[r * cols + c] - mn) * scale | 0));
+                for (let dy = 0; dy < cell; dy++)
+                    for (let dx = 0; dx < cell; dx++) {
+                        const idx = ((oy + r*cell + dy) * cw + x0 + c*cell + dx) * 4;
+                        px[idx]=v*3/4|0; px[idx+1]=v*7/8|0; px[idx+2]=v; px[idx+3]=255;
+                    }
             }
         }
-        yOffset += bandH;
+        return { y0: oy, h: matH };
     }
+
+    // N channels stacked vertically; getValue(c, lx, ly, lw, lh)→float; tints[c]=[r,g,b] optional
+    // Returns {y0, h} for fan lines
+    function drawChannelStack(nCh, x0, w0, getValue, tints) {
+        for (let c = 0; c < nCh; c++) {
+            const cy0 = PAD + (c * BODY_H / nCh | 0);
+            const cy1 = PAD + ((c+1) * BODY_H / nCh | 0);
+            const lh = cy1 - cy0, tint = tints?.[c];
+            let mn = Infinity, mx = -Infinity;
+            for (let py = cy0; py < cy1; py++)
+                for (let qx = x0; qx < x0+w0; qx++) {
+                    const v = getValue(c, qx-x0, py-cy0, w0, lh);
+                    if (v < mn) mn = v; if (v > mx) mx = v;
+                }
+            const sc = mx > mn ? 1 / (mx - mn) : 1;
+            for (let py = cy0; py < cy1; py++)
+                for (let qx = x0; qx < x0+w0; qx++) {
+                    const vf  = (getValue(c, qx-x0, py-cy0, w0, lh) - mn) * sc;
+                    const idx = (py * cw + qx) * 4;
+                    if (tint) {
+                        px[idx]=(tint[0]*vf)|0; px[idx+1]=(tint[1]*vf)|0; px[idx+2]=(tint[2]*vf)|0;
+                    } else { const v=vf*255|0; px[idx]=px[idx+1]=px[idx+2]=v; }
+                    px[idx+3]=255;
+                }
+            if (c > 0)
+                for (let qx = x0; qx < x0+w0; qx++) {
+                    const idx=(cy0*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=40; px[idx+3]=255;
+                }
+        }
+        return { y0: PAD, h: BODY_H };
+    }
+
+    function drawPlaceholder(x0, w0) {
+        for (let py = PAD; py < PAD+BODY_H; py++)
+            for (let qx = x0; qx < x0+w0; qx++) {
+                const idx=(py*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=30; px[idx+3]=255;
+            }
+        return { y0: PAD, h: BODY_H };
+    }
+
+    const embTints = Array.from({length: embCh}, (_, c) =>
+        ((channelMask >>> c) & 1) ? null : [200, 40, 40]);
+
+    const bbEmb = w.embeddings
+        ? drawChannelStack(embCh, xEmb, THUMB_W, (c, lx, ly, lw, lh) => {
+            const gx = Math.min(lx*gridSize/lw|0, gridSize-1);
+            const gy = Math.min(ly*gridSize/lh|0, gridSize-1);
+            return w.embeddings[(gy*gridSize+gx)*embCh+c];
+          }, embTints)
+        : drawPlaceholder(xEmb, THUMB_W);
+
+    const bbL1 = drawMatrix(w.layer1Weights, mlpWidth, embCh,   xL1, matW_L1, ema[0]);
+    const bbL2 = drawMatrix(w.layer2Weights, mlpWidth, mlpWidth, xL2, matW_L2, ema[1]);
+    const bbL3 = drawMatrix(w.layer3Weights, 4,        mlpWidth, xL3, matW_L3, ema[2]);
+
+    const bbAct1 = interLayer1
+        ? drawChannelStack(mlpWidth, xAct1, THUMB_W, (c, lx, ly, lw, lh) => {
+            const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
+            return interLayer1[(sy*imgW+sx)*mlpWidth+c];
+          }, null)
+        : drawPlaceholder(xAct1, THUMB_W);
+
+    const bbAct2 = interLayer2
+        ? drawChannelStack(mlpWidth, xAct2, THUMB_W, (c, lx, ly, lw, lh) => {
+            const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
+            return interLayer2[(sy*imgW+sx)*mlpWidth+c];
+          }, null)
+        : drawPlaceholder(xAct2, THUMB_W);
+
+    const bbRGBA = finalOutput
+        ? drawChannelStack(4, xRGBA, THUMB_W, (c, lx, ly, lw, lh) => {
+            const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
+            return finalOutput[(sy*imgW+sx)*4+c];
+          }, [[255,80,80],[80,220,80],[80,120,255],[180,180,180]])
+        : drawPlaceholder(xRGBA, THUMB_W);
+
     ctx.putImageData(imgData, 0, 0);
 
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.font = '11px monospace';
-    yOffset = 0;
-    for (let li = 0; li < layers.length; li++) {
-        const layer = layers[li], bandH = bandHs[li];
-        ctx.fillText(layer.label, 4, yOffset + 12);
-        if (yOffset > 0) ctx.fillRect(0, yOffset, cw, 1);
-        yOffset += bandH;
+    // Fan-out lines between adjacent blocks
+    function fanLines(x1, src, x2, dst, n) {
+        ctx.beginPath();
+        const nLines = Math.min(n, 24);
+        for (let i = 0; i < nLines; i++) {
+            const t = (i + 0.5) / nLines;
+            ctx.moveTo(x1, src.y0 + t * src.h);
+            ctx.lineTo(x2, dst.y0 + t * dst.h);
+        }
+        ctx.stroke();
     }
+    ctx.strokeStyle = 'rgba(255,210,0,0.75)';
+    ctx.lineWidth = 0.8;
+    fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,  embCh);
+    fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth);
+    fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,  mlpWidth);
+    fanLines(xL2  + matW_L2,      bbL2,   xAct2,          bbAct2, mlpWidth);
+    fanLines(xAct2 + THUMB_W,     bbAct2, xL3,            bbL3,  mlpWidth);
+    fanLines(xL3  + matW_L3,      bbL3,   xRGBA,          bbRGBA, 4);
 
-    return layerRangeEma;
+    // Labels
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(200,200,200,0.8)';
+    const labels = [
+        ['Emb',     xEmb,  THUMB_W], ['Layer 1', xL1,  matW_L1], ['Act1', xAct1, THUMB_W],
+        ['Layer 2', xL2,   matW_L2], ['Act2',   xAct2, THUMB_W], ['Layer 3', xL3, matW_L3],
+        ['RGBA',xRGBA, THUMB_W],
+    ];
+    for (const [lbl, lx, lw] of labels) ctx.fillText(lbl, lx + lw/2, PAD + 10);
+
+    return ema;
 }
 
 export function drawLossCurve(canvas, lossHistory) {

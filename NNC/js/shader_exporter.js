@@ -41,6 +41,17 @@ function fmtUintPackedArray(u32Array, perLine = 6) {
     return lines.join(',\n');
 }
 
+function glslActivDecl(activation) {
+    switch (activation) {
+        case 'softsign': return `vec4 softsign(vec4 x) { return x / (1.0 + abs(x)); }`;
+        case 'hardtanh': return `vec4 hardtanh(vec4 x) { return clamp(x, -1.0, 1.0); }`;
+        default: return '';
+    }
+}
+function glslActivName(activation) {
+    return { sin: 'sin', tanh: 'tanh', softsign: 'softsign', hardtanh: 'hardtanh' }[activation] || 'sin';
+}
+
 // All arrays (weights, biases, inputs, outputs) are vec4[].
 // rows and cols must be multiples of 4.
 // Computes rows/4 output vec4s, each from 4 consecutive rows of the matrix.
@@ -135,7 +146,7 @@ EMB_BUFFER_MAINIMAGE(embed${p})`;
 }
 
 export function export_to_glsl(config, weights) {
-    const { gridSize, embeddingChannels, mlpWidth, smoothInterpolation, quantization, width, height } = config;
+    const { gridSize, embeddingChannels, mlpWidth, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
     const numPlanes = embeddingChannels / 4;
 
     const offsets = config.embOffsets
@@ -208,12 +219,15 @@ const vec4 l3_b[1] = vec4[1](
 ${fmtVec4Array(weights.layer3_biases, qw)}
 );`;
 
+    const activDecl = glslActivDecl(activation);
+    const activName = glslActivName(activation);
+
     const mainShader = `// === Image tab === (requires Common tab for embed_texture${packWeights ? ', unpack8' : ''})
 precision highp float;
 uniform vec2 iResolution;
 ${textureDecls}
 ${sampleFn}
-${weightDecls}
+${activDecl ? activDecl + '\n' : ''}${weightDecls}
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord )
 {
@@ -231,10 +245,10 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 ${embInit}
     // Layer 1
     vec4 l1_out[${NW}];
-${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', 'sin', packWeights)}
+${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', activName, packWeights)}
     // Layer 2
     vec4 l2_out[${NW}];
-${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', 'sin', packWeights)}
+${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', activName, packWeights)}
     // Layer 3
     vec4 l3_out[1];
 ${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}

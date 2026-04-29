@@ -4,6 +4,23 @@
 
 export const FP_SCALE = 1 << 14; // 16384 — safe for all expected gradient magnitudes
 
+function wgslActivFns(activation) {
+    switch (activation) {
+        case 'tanh':
+            return `fn activ(x: f32) -> f32 { return tanh(x); }
+fn activ_prime(x: f32) -> f32 { let t = tanh(x); return 1.0 - t * t; }`;
+        case 'softsign':
+            return `fn activ(x: f32) -> f32 { return x / (1.0 + abs(x)); }
+fn activ_prime(x: f32) -> f32 { let d = 1.0 + abs(x); return 1.0 / (d * d); }`;
+        case 'hardtanh':
+            return `fn activ(x: f32) -> f32 { return clamp(x, -1.0, 1.0); }
+fn activ_prime(x: f32) -> f32 { return f32(abs(x) < 1.0); }`;
+        default:
+            return `fn activ(x: f32) -> f32 { return sin(x); }
+fn activ_prime(x: f32) -> f32 { return cos(x); }`;
+    }
+}
+
 // Common uniform block shared by all backward shaders (group 0, binding 0)
 const BWD_UNIFORMS = `
 struct BwdUniforms {
@@ -17,13 +34,13 @@ struct BwdUniforms {
 `;
 
 export function buildBackwardShaders(config) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth, smoothInterpolation } = config;
+    const { gridSize, embeddingChannels: embCh, mlpWidth, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
     return {
         gradOutput:      gradOutputShader(),
-        gradL3:          gradL3Shader(mlpWidth),
-        gradL2:          gradL2Shader(mlpWidth),
-        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, config.embOffsets, embBits),
+        gradL3:          gradL3Shader(mlpWidth, activation),
+        gradL2:          gradL2Shader(mlpWidth, activation),
+        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, config.embOffsets, embBits, activation),
         adamStep:        adamStepShader(),
         packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
@@ -49,20 +66,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let wt = 1.0 + roi_mask[p] * uni.roi_strength;
-    grad_final[p*4u]    = wt * 2.0 * (out_final[p*4u]    - tgt[p*4u]);
-    grad_final[p*4u+1u] = wt * 2.0 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
-    grad_final[p*4u+2u] = wt * 2.0 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
-    grad_final[p*4u+3u] = wt * 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u]);
+    grad_final[p*4u]    = wt * 2.0 * 0.299 * (out_final[p*4u]    - tgt[p*4u]);
+    grad_final[p*4u+1u] = wt * 2.0 * 0.587 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
+    grad_final[p*4u+2u] = wt * 2.0 * 0.114 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
+    grad_final[p*4u+3u] = wt * 2.0 *         (out_final[p*4u+3u] - tgt[p*4u+3u]);
 }
 `;
 }
 
 // ---------------------------------------------------------------------------
 // Shader 2: backprop through Layer 3 (linear: inter2_activated -> output)
-// Reads pre-activation inter_layer2; input to L3 is sin(inter_layer2).
+// Reads pre-activation inter_layer2; input to L3 is activ(inter_layer2).
 // ---------------------------------------------------------------------------
-function gradL3Shader(mlpWidth) {
+function gradL3Shader(mlpWidth, activation) {
     return `${BWD_UNIFORMS}
+${wgslActivFns(activation)}
 @group(0) @binding(1) var<storage, read>       grad_final:         array<f32>;
 @group(0) @binding(2) var<storage, read>       inter_layer2:       array<f32>;
 @group(0) @binding(3) var<storage, read>       layer3_weights:     array<f32>;
@@ -88,7 +106,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     for (var i = 0u; i < 4u; i++) {
         for (var j = 0u; j < MW; j++) {
-            atomicAdd(&grad_l3_weights[i*MW+j], i32(gf[i] * sin(inter_layer2[p*MW+j]) * FPS));
+            atomicAdd(&grad_l3_weights[i*MW+j], i32(gf[i] * activ(inter_layer2[p*MW+j]) * FPS));
         }
     }
 }
@@ -96,10 +114,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------
-// Shader 3: backprop through Layer 2's sin activation + linear layer
+// Shader 3: backprop through Layer 2's activation + linear layer
 // ---------------------------------------------------------------------------
-function gradL2Shader(mlpWidth) {
+function gradL2Shader(mlpWidth, activation) {
     return `${BWD_UNIFORMS}
+${wgslActivFns(activation)}
 @group(0) @binding(1) var<storage, read>       grad_inter2_preact: array<f32>;
 @group(0) @binding(2) var<storage, read>       inter_layer2:       array<f32>;
 @group(0) @binding(3) var<storage, read>       inter_layer1:       array<f32>;
@@ -118,7 +137,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var g2: array<f32, ${mlpWidth}>;
     for (var i = 0u; i < MW; i++) {
-        g2[i] = grad_inter2_preact[p*MW+i] * cos(inter_layer2[p*MW+i]);
+        g2[i] = grad_inter2_preact[p*MW+i] * activ_prime(inter_layer2[p*MW+i]);
         atomicAdd(&grad_l2_biases[i], i32(g2[i] * FPS));
     }
 
@@ -141,7 +160,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     for (var i = 0u; i < MW; i++) {
         for (var j = 0u; j < MW; j++) {
-            atomicAdd(&grad_l2_weights[i*MW+j], i32(g2[i] * sin(inter_layer1[p*MW+j]) * FPS));
+            atomicAdd(&grad_l2_weights[i*MW+j], i32(g2[i] * activ(inter_layer1[p*MW+j]) * FPS));
         }
     }
 }
@@ -149,12 +168,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------
-// Shader 4: backprop through Layer 1's sin activation + linear layer
+// Shader 4: backprop through Layer 1's activation + linear layer
 //           + bilinear/smoothstep scatter to embedding gradients
 // Phase 2: 8×8 spatial workgroup so adjacent pixels map to nearby grid cells,
 //           reducing atomic contention on grad_embeddings.
 // ---------------------------------------------------------------------------
-function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embOffsets, embBits) {
+function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embOffsets, embBits, activation) {
     const channelsPerU32 = 32 / (embBits || 8);
     const numU32 = embCh / channelsPerU32;
     const offsets = embOffsets || new Float32Array(numU32 * 2);
@@ -164,6 +183,7 @@ function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embOffsets, embBi
     ty = ty*ty*(3.0 - 2.0*ty);` : '';
 
     return `${BWD_UNIFORMS}
+${wgslActivFns(activation)}
 @group(0) @binding(1) var<storage, read>       grad_inter1_preact: array<f32>;
 @group(0) @binding(2) var<storage, read>       inter_layer1:       array<f32>;
 @group(0) @binding(3) var<storage, read>       layer1_weights:     array<f32>;
@@ -191,7 +211,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Compute g[] from upstream gradient — independent of embedding layout
     var g: array<f32, ${mlpWidth}>;
     for (var i = 0u; i < MW; i++) {
-        g[i] = grad_inter1_preact[p*MW+i] * cos(inter_layer1[p*MW+i]);
+        g[i] = grad_inter1_preact[p*MW+i] * activ_prime(inter_layer1[p*MW+i]);
         atomicAdd(&grad_l1_biases[i], i32(g[i] * FPS));
     }
     var gv: array<vec4<f32>, ${mlpWidth >> 2}>;
