@@ -8,6 +8,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/png" href="favicon.png">
+    <link rel="shortcut icon" href="favicon.ico">
 </head>
 <body>
     <header>
@@ -36,8 +38,9 @@
 
     <div id="app">
         <aside id="sidebar">
-            <div class="ctrl-section collapsed">
+            <div class="ctrl-section collapsed" id="model-section">
                 <div class="section-label">Model</div>
+                <div id="model-controls">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
                     <select id="grid-size">
@@ -117,6 +120,7 @@
                         <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
+                </div><!-- #model-controls -->
             </div>
 
             <div class="ctrl-section collapsed">

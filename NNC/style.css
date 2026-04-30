@@ -107,7 +107,7 @@ select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ac
 
 .ctrl-section {
     padding: 14px 16px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 3px solid var(--border-2);
 }
 .ctrl-section:nth-child(1) { background: #121c2e; }
 .ctrl-section:nth-child(2) { background: #0f1e1a; }
@@ -117,7 +117,7 @@ select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ac
     font-weight: 700;
     font-size: var(--fs-xs);
     letter-spacing: 0.15em;
-    color: var(--text-dim);
+    color: var(--accent);
     text-transform: uppercase;
     margin-bottom: 13px;
     display: flex;
@@ -125,6 +125,11 @@ select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ac
     gap: 8px;
     cursor: pointer;
     user-select: none;
+    background: var(--accent-dim);
+    border: 1px solid rgba(245,166,36,0.25);
+    border-radius: 4px;
+    padding: 5px 8px;
+    width: 80%;
 }
 .section-label::after {
     content: '▾';
@@ -135,13 +140,16 @@ select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ac
 .ctrl-section.collapsed .section-label { margin-bottom: 0; }
 .ctrl-section.collapsed .section-label::after { transform: rotate(-90deg); }
 .ctrl-section.collapsed > :not(.section-label) { display: none; }
+#model-controls[inert] { opacity: 0.35; transition: opacity 0.2s; }
+#model-controls { transition: opacity 0.2s; }
 .section-label::before {
     content: '';
     display: block;
-    width: 2px;
-    height: 10px;
+    width: 4px;
+    height: 14px;
     background: var(--accent);
-    opacity: 0.5;
+    opacity: 1;
+    border-radius: 2px;
 }
 
 .ctrl-row {

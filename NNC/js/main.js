@@ -103,6 +103,8 @@ let lastConfig     = null;
 let channelMask    = 0xFFFFFFFF;
 let hoverState     = null;
 let layerCols      = [];
+let inferRunning   = false;
+let inferPending   = false;
 
 const isTraining = () => trainer?.active ?? false;
 const canInfer   = () => !!model && !!lastWeights && !isTraining();
@@ -217,7 +219,8 @@ function syncButtonStates() {
     resetBtn.disabled        = shouldDisable;
     shakeBtn.disabled        = shouldDisable;
     outputZoomInput.disabled = shouldDisable;
-    snapshotBtn.disabled     = !hasModel || (training && snapshotWeights !== null);
+    snapshotBtn.disabled = !hasModel || (training && snapshotWeights !== null);
+    loadBtn.disabled = training;
 }
 
 function updateStartLabel() {
@@ -234,11 +237,15 @@ function setStatus(s) {
     const labels = { idle: 'IDLE', training: 'TRAINING', stopped: 'STOPPED' };
     statusTextEl.textContent = labels[s] || s;
     statusDotEl.className    = 'status-dot ' + s;
+    const modelControls = document.getElementById('model-controls');
     if (s === 'training') {
         startBtn.textContent = '■ Stop';
         startBtn.classList.add('stopping');
+        modelControls.inert = true;
+        loadBtn.disabled = true;
     } else {
         startBtn.classList.remove('stopping');
+        modelControls.inert = false;
         updateStartLabel();
         return;
     }
@@ -664,6 +671,15 @@ async function readBackAllWeights() {
     return result;
 }
 
+function weightsViewFrom(rb) {
+    return {
+        embeddings:    rb.embeddings,
+        layer1Weights: rb.layer1_weights,
+        layer2Weights: rb.layer2_weights,
+        layer3Weights: rb.layer3_weights,
+    };
+}
+
 // --- Export button ---
 document.getElementById('export-btn').addEventListener('click', async () => {
     if (!model) {
@@ -718,6 +734,10 @@ snapshotBtn.addEventListener('click', async () => {
         device.queue.writeBuffer(model.layer2.biases,  0, snapshotWeights.layer2_biases);
         device.queue.writeBuffer(model.layer3.weights, 0, snapshotWeights.layer3_weights);
         device.queue.writeBuffer(model.layer3.biases,  0, snapshotWeights.layer3_biases);
+        if (lastWeights) {
+            Object.assign(lastWeights, weightsViewFrom(snapshotWeights));
+            await runInference();
+        }
         snapshotWeights = null;
         snapshotBtn.textContent = '● Snapshot';
     }
@@ -857,45 +877,52 @@ layersCanvas.addEventListener('click', (e) => {
 
 // --- Inference: pack embeddings (CPU) then run one forward pass ---
 async function runInference() {
-    const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh } = config;
+    if (inferRunning) { inferPending = true; return; }
+    inferRunning = true;
+    try {
+        const { device } = webGpuContext;
+        const { gridSize, embeddingChannels: embCh } = config;
 
-    const embF32 = lastWeights.embeddings;
-    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
-    device.queue.writeBuffer(model.embeddings_range, 0, range);
-    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
-    const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
-    device.queue.writeBuffer(model.embeddings_q, 0, packed);
+        const embF32 = lastWeights.embeddings;
+        const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
+        device.queue.writeBuffer(model.embeddings_range, 0, range);
+        uploadEmbRange(range, embCh, fwdUniformsBuf, device);
+        const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
+        device.queue.writeBuffer(model.embeddings_q, 0, packed);
 
-    uploadChannelMask(channelMask, fwdUniformsBuf, device);
-    const ce = device.createCommandEncoder();
-    const fwdPass = ce.beginComputePass();
-    fwdPass.setPipeline(pipeline);
-    fwdPass.setBindGroup(0, bindGroup);
-    fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
-    fwdPass.end();
-    ce.copyBufferToBuffer(outputBuffers.final,      0, readbackBuffers.final,      0, outputBuffers.final.size);
-    ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
-    ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
-    device.queue.submit([ce.finish()]);
+        uploadChannelMask(channelMask, fwdUniformsBuf, device);
+        const ce = device.createCommandEncoder();
+        const fwdPass = ce.beginComputePass();
+        fwdPass.setPipeline(pipeline);
+        fwdPass.setBindGroup(0, bindGroup);
+        fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+        fwdPass.end();
+        ce.copyBufferToBuffer(outputBuffers.final,       0, readbackBuffers.final,       0, outputBuffers.final.size);
+        ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
+        ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
+        device.queue.submit([ce.finish()]);
 
-    await Promise.all([
-        readbackBuffers.final.mapAsync(GPUMapMode.READ),
-        readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
-        readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
-    ]);
-    const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
-    const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
-    const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
-    drawOutputCanvas(canvas, inferFinal, config.hasAlpha);
-    readbackBuffers.final.unmap();
-    readbackBuffers.interLayer1.unmap();
-    readbackBuffers.interLayer2.unmap();
+        await Promise.all([
+            readbackBuffers.final.mapAsync(GPUMapMode.READ),
+            readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
+            readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
+        ]);
+        const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
+        const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
+        const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
+        drawOutputCanvas(canvas, inferFinal, config.hasAlpha);
+        readbackBuffers.final.unmap();
+        readbackBuffers.interLayer1.unmap();
+        readbackBuffers.interLayer2.unmap();
 
-    lastInterData = { inter1: inferInter1, inter2: inferInter2 };
-    lastWeights.finalOutput = inferFinal;
-    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
-        inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
+        lastInterData = { inter1: inferInter1, inter2: inferInter2 };
+        lastWeights.finalOutput = inferFinal;
+        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
+            inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
+    } finally {
+        inferRunning = false;
+        if (inferPending) { inferPending = false; runInference(); }
+    }
 }
 
 async function loadModelFile(file) {
@@ -972,12 +999,7 @@ async function loadModelFile(file) {
         lastConfig  = currentModelConfig();
         updateDirtyIndicators();
 
-        lastWeights = {
-            embeddings:    tensors.embeddings,
-            layer1Weights: tensors.layer1_weights,
-            layer2Weights: tensors.layer2_weights,
-            layer3Weights: tensors.layer3_weights,
-        };
+        lastWeights = weightsViewFrom(tensors);
 
         await runInference();
         setStatus('stopped');
@@ -1112,12 +1134,7 @@ startupImg.onload = async () => {
             channelMask = 0xFFFFFFFF;
             lastConfig = currentModelConfig();
             updateDirtyIndicators();
-            lastWeights = {
-                embeddings:    new Float32Array(initialWeights.embeddings),
-                layer1Weights: new Float32Array(initialWeights.layer1_weights),
-                layer2Weights: new Float32Array(initialWeights.layer2_weights),
-                layer3Weights: new Float32Array(initialWeights.layer3_weights),
-            };
+            lastWeights = weightsViewFrom(initialWeights);
             await runInference();
         } catch (err) { console.error('Initial inference failed:', err); }
         try {
