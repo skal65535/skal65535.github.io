@@ -30,15 +30,16 @@ export function createModel(ctx, config) {
     const layer2Weights = new Float32Array(layer2Size).map(() => (Math.random() * 2 - 1) * s2);
     const layer2Biases = new Float32Array(mlpWidth).fill(0);
 
-    const layer3Size = mlpWidth * 4;
+    const outCh = config.hasAlpha ? 4 : 3;
+    const layer3Size = mlpWidth * outCh;
     const layer3Weights = new Float32Array(layer3Size).map(() => (Math.random() * 2 - 1) * s2);
-    const layer3Biases = new Float32Array(4).fill(0);
+    const layer3Biases = new Float32Array(outCh).fill(0);
 
     const sizes = {
         embeddings:     embeddingSize,
         layer1_weights: layer1Size,  layer1_biases: mlpWidth,
         layer2_weights: layer2Size,  layer2_biases: mlpWidth,
-        layer3_weights: layer3Size,  layer3_biases: 4,
+        layer3_weights: layer3Size,  layer3_biases: outCh,
     };
     const zeroTensors = () => ModelTensors.create(k => ctx.zeroBuffer(sizes[k]));
 

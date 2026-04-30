@@ -36,7 +36,7 @@
 
     <div id="app">
         <aside id="sidebar">
-            <div class="ctrl-section">
+            <div class="ctrl-section collapsed">
                 <div class="section-label">Model</div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
@@ -119,7 +119,7 @@
                 </div>
             </div>
 
-            <div class="ctrl-section">
+            <div class="ctrl-section collapsed">
                 <div class="section-label">Training</div>
                 <div class="slider-row">
                     <div class="slider-header">
@@ -210,6 +210,10 @@
                             <div class="drop-text">Drop Image<br>or Click</div>
                         </div>
                     </div>
+                    <div class="layers-legend">
+                        <span class="layers-legend-item">Input Size</span>
+                        <span class="layers-legend-item layers-legend-val" id="input-size">—</span>
+                    </div>
                     <input type="file" id="file-input" accept="image/*">
                 </div>
 
@@ -230,6 +234,11 @@
                     <div class="canvas-wrap">
                         <canvas id="layers-canvas" width="512" height="512"></canvas>
                     </div>
+                    <div class="layers-legend">
+                        <span class="layers-legend-item"><span class="layers-legend-swatch blue"></span>learnt</span>
+                        <span class="layers-legend-item"><span class="layers-legend-swatch gray"></span>inferred</span>
+                        <span class="layers-legend-status"><span class="status-dot idle" id="status-dot"></span><span id="status-text" class="stat-label">IDLE</span></span>
+                    </div>
                 </div>
 
                 <div class="canvas-panel" id="output-panel">
@@ -245,39 +254,34 @@
                     <div class="canvas-wrap">
                         <canvas id="canvas" width="512" height="512"></canvas>
                     </div>
+                    <div class="layers-legend">
+                        <span class="layers-legend-item">Compressed Size</span>
+                        <span class="layers-legend-item layers-legend-val" id="model-size">—</span>
+                    </div>
                 </div>
             </div>
 
-            <div class="stats-bar">
-                <div class="stat-item">
-                    <span class="stat-label">Loss</span>
-                    <span class="stat-value" id="loss-value">—</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Step</span>
-                    <span class="stat-value" id="step-counter">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Rate</span>
-                    <span class="stat-value" id="rate-display">—</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Input Size</span>
-                    <span class="stat-value" id="input-size">—</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Compressed Size</span>
-                    <span class="stat-value" id="model-size">—</span>
-                </div>
-                <div class="stat-item stat-end">
-                    <span class="status-dot idle" id="status-dot"></span>
-                    <span id="status-text" class="stat-label">IDLE</span>
-                </div>
-            </div>
+            <div class="bottom-panel">
+                <div class="stats-bar">
+                    <div class="stat-item">
+                        <span class="stat-label">Loss</span>
+                        <span class="stat-value" id="loss-value">—</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Step</span>
+                        <span class="stat-value" id="step-counter">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Rate</span>
+                        <span class="stat-value" id="rate-display">—</span>
+                    </div>
 
-            <div class="loss-section">
-                <div class="loss-label">Loss Curve</div>
-                <canvas id="loss-canvas" width="900" height="72"></canvas>
+                </div>
+
+                <div class="loss-section">
+                    <div class="loss-label">Loss Curve</div>
+                    <canvas id="loss-canvas" width="900" height="72"></canvas>
+                </div>
             </div>
         </main>
     </div>

@@ -377,9 +377,54 @@ function loadImageOntoCanvas(img) {
     sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     drawSourceImage();
-    const bytes = BASE_CANVAS_W * BASE_CANVAS_H * 3;
+    {
+        const ctx = sourceCanvas.getContext('2d');
+        const px = ctx.getImageData(0, 0, BASE_CANVAS_W, BASE_CANVAS_H).data;
+        let hasAlpha = false;
+        for (let i = 3; i < px.length; i += 4) { if (px[i] < 255) { hasAlpha = true; break; } }
+        config.hasAlpha = hasAlpha;
+    }
+    const outCh = config.hasAlpha ? 4 : 3;
+    const bytes = BASE_CANVAS_W * BASE_CANVAS_H * outCh;
     inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
     requestAnimationFrame(fitSidePanels);
+}
+
+async function previewGeometry() {
+    if (!webGpuContext || !loadedImage) return;
+    trainer?.destroy();
+    trainer = null;
+    config = buildConfigFromUI();
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+    const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
+    model = buffers;
+    await createPipeline();
+    createBindGroup();
+    channelMask = 0xFFFFFFFF;
+    lastConfig = currentModelConfig();
+    updateDirtyIndicators();
+    clearTrainingUI();
+    trainer = new Trainer({
+        webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
+        outputBuffers, readbackBuffers,
+        targetPixels: get_target_pixels(loadedImage, canvas),
+        roiMask,
+        getHyperparams: () => ({
+            stride: 1, mlpRatio: 1, numLoops: 1,
+            embedLr: sliderToLR(parseInt(embedLrInput.value)),
+            mlpLr:   sliderToLR(parseInt(mlpLrInput.value)),
+            roiStrength: 0, roiFreeze: true, maxIter: 1,
+        }),
+        onStep({ lastWeights: w, inter1, inter2 }) {
+            lastWeights = w;
+            if (inter1 !== null) lastInterData = { inter1, inter2 };
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(
+                layersCanvas, w, lastInterData.inter1, lastInterData.inter2,
+                w.finalOutput, canvas.width, canvas.height, config, channelMask, null, hoverState));
+        },
+        onStop() { trainer?.destroy(); trainer = null; syncButtonStates(); },
+    });
+    trainer.start(freshWeights);
 }
 
 async function startTraining(fullReset) {
@@ -542,7 +587,7 @@ function makeTrainer() {
             lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
             stepCounterEl.textContent = step.toLocaleString();
             rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-            drawOutputCanvas(canvas, w.finalOutput);
+            drawOutputCanvas(canvas, w.finalOutput, config.hasAlpha);
             ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, w, lastInterData.inter1, lastInterData.inter2,
                 w.finalOutput, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
             drawLossCurve(lossCanvas, lossHistory);
@@ -729,7 +774,7 @@ async function runZoomInference(W, H) {
     await rbBuf.mapAsync(GPUMapMode.READ);
     canvas.width  = W;
     canvas.height = H;
-    drawOutputCanvas(canvas, new Float32Array(rbBuf.getMappedRange()));
+    drawOutputCanvas(canvas, new Float32Array(rbBuf.getMappedRange()), config.hasAlpha);
     rbBuf.unmap();
 
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
@@ -842,7 +887,7 @@ async function runInference() {
     const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
     const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
     const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
-    drawOutputCanvas(canvas, inferFinal);
+    drawOutputCanvas(canvas, inferFinal, config.hasAlpha);
     readbackBuffers.final.unmap();
     readbackBuffers.interLayer1.unmap();
     readbackBuffers.interLayer2.unmap();
@@ -977,6 +1022,8 @@ function updateEmbBitsOptions() {
             if (lastWeights && configCompatible(lastConfig, cur)) {
                 ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
                     lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma, hoverState));
+            } else if (webGpuContext && loadedImage) {
+                previewGeometry();
             } else {
                 drawPlaceholder(layersCanvas);
                 layerRangeEma = null;

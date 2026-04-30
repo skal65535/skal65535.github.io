@@ -147,6 +147,7 @@ EMB_BUFFER_MAINIMAGE(embed${p})`;
 
 export function export_to_glsl(config, weights) {
     const { gridSize, embeddingChannels, mlpWidth, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
+    const outCh = config.hasAlpha ? 4 : 3;
     const numPlanes = embeddingChannels / 4;
 
     const offsets = config.embOffsets
@@ -213,11 +214,18 @@ const vec4 l2_b[${NW}] = vec4[${NW}](
 ${fmtVec4Array(weights.layer2_biases, qw)}
 );
 
-// Layer 3 weights/biases  (${mlpWidth} → 4)
-const ${wType} l3_w[${mlpWidth}] = ${fmtW(weights.layer3_weights, mlpWidth)};
+// Layer 3 weights/biases  (${mlpWidth} → ${outCh})
+${(() => {
+    // pad to 4 rows if outCh===3 so matMul(4,...) works; extra row is zero
+    const w4 = outCh === 4 ? weights.layer3_weights
+        : (() => { const p = new Float32Array(mlpWidth * 4); p.set(weights.layer3_weights); return p; })();
+    const b4 = outCh === 4 ? weights.layer3_biases
+        : (() => { const p = new Float32Array(4); p.set(weights.layer3_biases); return p; })();
+    return `const ${wType} l3_w[${mlpWidth}] = ${fmtW(w4, mlpWidth)};
 const vec4 l3_b[1] = vec4[1](
-${fmtVec4Array(weights.layer3_biases, qw)}
+${fmtVec4Array(b4, qw)}
 );`;
+})()}`;
 
     const activDecl = glslActivDecl(activation);
     const activName = glslActivName(activation);
@@ -252,7 +260,7 @@ ${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', activName, pack
     // Layer 3
     vec4 l3_out[1];
 ${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}
-    fragColor = clamp(vec4(l3_out[0].rgb, 1.0), 0.0, 1.0);
+    fragColor = clamp(${outCh === 4 ? 'l3_out[0]' : 'vec4(l3_out[0].rgb, 1.0)'}, 0.0, 1.0);
 }
 `;
 

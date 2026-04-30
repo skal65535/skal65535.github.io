@@ -19,6 +19,7 @@ fn activ_prime(x: f32) -> f32 { return cos(x); }`;
 
 export function buildShader(config) {
     const { gridSize, embeddingChannels, mlpWidth, quantization, smoothInterpolation, activation = 'sin' } = config;
+    const outCh = config.hasAlpha ? 4 : 3;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
     const numU32 = embeddingChannels / channelsPerU32;
@@ -98,7 +99,7 @@ ${dotLoop}
     const mlpFunctions = `
 ${matVecMulFn('mat_vec_mul',        embeddingChannels, mlpWidth)}
 ${matVecMulFn('mat_vec_mul_hidden', mlpWidth,          mlpWidth)}
-${matVecMulFn('mat_vec_mul_output', mlpWidth,          4)}
+${matVecMulFn('mat_vec_mul_output', mlpWidth,          outCh)}
 `;
 
     const shaderCode = `
@@ -207,9 +208,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         layer2_out[i] = activ(layer2_out[i]);
     }
 
-    // Layer 3: mlpWidth -> 4 (RGBA)
-    var layer3_out = mat_vec_mul_output(&layer3_weights, layer2_out, uniforms.mlpWidth, 4u);
-    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+    // Layer 3: mlpWidth -> ${outCh}
+    var layer3_out = mat_vec_mul_output(&layer3_weights, layer2_out, uniforms.mlpWidth, ${outCh}u);
+    for (var i: u32 = 0u; i < ${outCh}u; i = i + 1u) {
         layer3_out[i] = layer3_out[i] + layer3_biases[i];
     }
 
@@ -217,7 +218,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     out_final[pixel_index * 4 + 0] = clamp(layer3_out[0], 0.0, 1.0); // R
     out_final[pixel_index * 4 + 1] = clamp(layer3_out[1], 0.0, 1.0); // G
     out_final[pixel_index * 4 + 2] = clamp(layer3_out[2], 0.0, 1.0); // B
-    out_final[pixel_index * 4 + 3] = 1.0;                             // A
+    out_final[pixel_index * 4 + 3] = ${outCh === 4 ? 'clamp(layer3_out[3], 0.0, 1.0)' : '1.0'}; // A
 }
 `;
     return shaderCode;

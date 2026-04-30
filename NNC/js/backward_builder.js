@@ -36,9 +36,10 @@ struct BwdUniforms {
 export function buildBackwardShaders(config) {
     const { gridSize, embeddingChannels: embCh, mlpWidth, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
+    const outCh = config.hasAlpha ? 4 : 3;
     return {
-        gradOutput:      gradOutputShader(),
-        gradL3:          gradL3Shader(mlpWidth, activation),
+        gradOutput:      gradOutputShader(outCh),
+        gradL3:          gradL3Shader(mlpWidth, activation, outCh),
         gradL2:          gradL2Shader(mlpWidth, activation),
         gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, config.embOffsets, embBits, activation),
         adamStep:        adamStepShader(),
@@ -49,7 +50,7 @@ export function buildBackwardShaders(config) {
 // ---------------------------------------------------------------------------
 // Shader 1: compute grad_final from (out_final - target) per pixel
 // ---------------------------------------------------------------------------
-function gradOutputShader() {
+function gradOutputShader(outCh) {
     return `${BWD_UNIFORMS}
 @group(0) @binding(1) var<storage, read>       out_final:  array<f32>;
 @group(0) @binding(2) var<storage, read>       tgt:        array<f32>;
@@ -69,7 +70,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     grad_final[p*4u]    = wt * 2.0 * 0.299 * (out_final[p*4u]    - tgt[p*4u]);
     grad_final[p*4u+1u] = wt * 2.0 * 0.587 * (out_final[p*4u+1u] - tgt[p*4u+1u]);
     grad_final[p*4u+2u] = wt * 2.0 * 0.114 * (out_final[p*4u+2u] - tgt[p*4u+2u]);
-    grad_final[p*4u+3u] = wt * 2.0 *         (out_final[p*4u+3u] - tgt[p*4u+3u]);
+    grad_final[p*4u+3u] = ${outCh === 4 ? 'wt * 2.0 * (out_final[p*4u+3u] - tgt[p*4u+3u])' : '0.0'};
 }
 `;
 }
@@ -78,7 +79,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Shader 2: backprop through Layer 3 (linear: inter2_activated -> output)
 // Reads pre-activation inter_layer2; input to L3 is activ(inter_layer2).
 // ---------------------------------------------------------------------------
-function gradL3Shader(mlpWidth, activation) {
+function gradL3Shader(mlpWidth, activation, outCh) {
+    const OC = outCh;
+    const vecT = `vec${OC}<f32>`;
+    const gfInit = Array.from({length: OC}, (_, k) => `grad_final[p*4u+${k}u]`).join(', ');
+    const colInit = Array.from({length: OC}, (_, k) => `layer3_weights[${k}u*MW+j]`).join(', ');
     return `${BWD_UNIFORMS}
 ${wgslActivFns(activation)}
 @group(0) @binding(1) var<storage, read>       grad_final:         array<f32>;
@@ -96,15 +101,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = gid.x;
     if (p >= uni.width * uni.height || (uni.stride > 1u && p % uni.stride != 0u)) { return; }
 
-    let gf = vec4<f32>(grad_final[p*4u], grad_final[p*4u+1u], grad_final[p*4u+2u], grad_final[p*4u+3u]);
-    for (var i = 0u; i < 4u; i++) { atomicAdd(&grad_l3_biases[i], i32(gf[i] * FPS)); }
+    let gf = ${vecT}(${gfInit});
+    for (var i = 0u; i < ${OC}u; i++) { atomicAdd(&grad_l3_biases[i], i32(gf[i] * FPS)); }
 
-    // g2[j] = W3^T * gf  via dot over the 4 output channels
+    // g2[j] = W3^T * gf  via dot over the ${OC} output channels
     for (var j = 0u; j < MW; j++) {
-        let col = vec4<f32>(layer3_weights[0u*MW+j], layer3_weights[1u*MW+j], layer3_weights[2u*MW+j], layer3_weights[3u*MW+j]);
+        let col = ${vecT}(${colInit});
         grad_inter2_preact[p*MW+j] = dot(gf, col);
     }
-    for (var i = 0u; i < 4u; i++) {
+    for (var i = 0u; i < ${OC}u; i++) {
         for (var j = 0u; j < MW; j++) {
             atomicAdd(&grad_l3_weights[i*MW+j], i32(gf[i] * activ(inter_layer2[p*MW+j]) * FPS));
         }

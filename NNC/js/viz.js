@@ -3,7 +3,7 @@
 export const MAX_LOSS_HISTORY = 400;
 export const FLOW_PAD = 4, FLOW_EMB_W = 48;
 
-export function drawOutputCanvas(canvas, outputData) {
+export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
     const ctx = canvas.getContext('2d');
     const imageData = ctx.createImageData(canvas.width, canvas.height);
     const px = imageData.data;
@@ -11,7 +11,7 @@ export function drawOutputCanvas(canvas, outputData) {
         px[i]   = outputData[i]   * 255 | 0;
         px[i+1] = outputData[i+1] * 255 | 0;
         px[i+2] = outputData[i+2] * 255 | 0;
-        px[i+3] = 255;
+        px[i+3] = hasAlpha ? (outputData[i+3] * 255 | 0) : 255;
     }
     ctx.putImageData(imageData, 0, 0);
 }
