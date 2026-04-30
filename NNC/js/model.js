@@ -65,3 +65,17 @@ export function createModel(ctx, config) {
         }),
     };
 }
+
+export function destroyModel(m) {
+    if (!m) return;
+    m.embeddings?.destroy();
+    m.embeddings_q?.destroy();
+    m.embeddings_range?.destroy();
+    m.layer1?.weights?.destroy();  m.layer1?.biases?.destroy();
+    m.layer2?.weights?.destroy();  m.layer2?.biases?.destroy();
+    m.layer3?.weights?.destroy();  m.layer3?.biases?.destroy();
+    for (const mt of [m.adamM, m.adamV, m.gradAtomic]) {
+        if (!mt) continue;
+        for (const k of ModelTensors.KEYS) mt[k]?.destroy();
+    }
+}

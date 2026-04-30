@@ -20,7 +20,7 @@ export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
 // interLayer1/2: Float32Array [imgW*imgH*mlpWidth] or null (shown as placeholder)
 // finalOutput: Float32Array [imgW*imgH*4] or null
 // Returns updated ema (pass null to reset).
-export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null) {
+export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null }) {
     const w = weights;
     if (!w || !config.mlpWidth) return ema;
     const { mlpWidth, embeddingChannels: embCh, gridSize } = config;

@@ -1,7 +1,7 @@
 // main.js
 // Orchestrates UI, WebGPU setup, and GPU training loop (forward + backward + Adam).
 import { initWebGPU } from './webgpu_manager.js';
-import { createModel } from './model.js';
+import { createModel, destroyModel } from './model.js';
 import { buildShader } from './shader_builder.js';
 import { get_target_pixels } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
@@ -404,6 +404,7 @@ async function previewGeometry() {
     config = buildConfigFromUI();
     config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
     const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
+    destroyModel(model);
     model = buffers;
     await createPipeline();
     createBindGroup();
@@ -425,9 +426,10 @@ async function previewGeometry() {
         onStep({ lastWeights: w, inter1, inter2 }) {
             lastWeights = w;
             if (inter1 !== null) lastInterData = { inter1, inter2 };
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(
-                layersCanvas, w, lastInterData.inter1, lastInterData.inter2,
-                w.finalOutput, canvas.width, canvas.height, config, channelMask, null, hoverState));
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                  finalOutput: w.finalOutput, imgW: canvas.width, imgH: canvas.height,
+                  config, channelMask, ema: null, hoverState }));
         },
         onStop() { trainer?.destroy(); trainer = null; syncButtonStates(); },
     });
@@ -446,6 +448,7 @@ async function startTraining(fullReset) {
         if (fullReset || !configCompatible(lastConfig, currentModelConfig()) || !model) {
             config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
             const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
+            destroyModel(model);
             model = buffers;
             await createPipeline();
             createBindGroup();
@@ -519,6 +522,10 @@ async function createPipeline() {
 }
 
 function createBindGroup() {
+    fwdUniformsBuf?.destroy();
+    for (const b of Object.values(outputBuffers)) b?.destroy();
+    for (const b of Object.values(readbackBuffers)) b?.destroy();
+
     const { mlpWidth, gridSize, embeddingChannels } = config;
     fwdUniformsBuf = webGpuContext.uniformBuffer(160);
     webGpuContext.device.queue.writeBuffer(fwdUniformsBuf, 0,
@@ -537,7 +544,7 @@ function createBindGroup() {
     readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth * embeddingChannels * 4);
     readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride);
     readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * stride);
-    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer(4 * stride);
+    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer((config.hasAlpha ? 4 : 3) * stride);
     readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride);
     readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride);
 
@@ -595,8 +602,10 @@ function makeTrainer() {
             stepCounterEl.textContent = step.toLocaleString();
             rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
             drawOutputCanvas(canvas, w.finalOutput, config.hasAlpha);
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, w, lastInterData.inter1, lastInterData.inter2,
-                w.finalOutput, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                  finalOutput: w.finalOutput, imgW: canvas.width, imgH: canvas.height,
+                  config, channelMask, ema: layerRangeEma, hoverState }));
             drawLossCurve(lossCanvas, lossHistory);
             drawSourceImage();
         },
@@ -643,32 +652,18 @@ shakeBtn.addEventListener('click', async () => {
 
 // --- Weight readback (for export) ---
 async function readBackAllWeights() {
-    const { device } = webGpuContext;
     const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const outCh = config.hasAlpha ? 4 : 3;
     const tensors = {
         embeddings:     { buf: model.embeddings,     size: gridSize * gridSize * embCh },
         layer1_weights: { buf: model.layer1.weights, size: mlpWidth * embCh },
         layer1_biases:  { buf: model.layer1.biases,  size: mlpWidth },
         layer2_weights: { buf: model.layer2.weights, size: mlpWidth * mlpWidth },
         layer2_biases:  { buf: model.layer2.biases,  size: mlpWidth },
-        layer3_weights: { buf: model.layer3.weights, size: 4 * mlpWidth },
-        layer3_biases:  { buf: model.layer3.biases,  size: 4 },
+        layer3_weights: { buf: model.layer3.weights, size: outCh * mlpWidth },
+        layer3_biases:  { buf: model.layer3.biases,  size: outCh },
     };
-    const rbBufs = {};
-    const ce = device.createCommandEncoder();
-    for (const [k, { buf, size }] of Object.entries(tensors)) {
-        rbBufs[k] = webGpuContext.readbackBuffer(size * 4);
-        ce.copyBufferToBuffer(buf, 0, rbBufs[k], 0, size * 4);
-    }
-    device.queue.submit([ce.finish()]);
-    await Promise.all(Object.values(rbBufs).map(b => b.mapAsync(GPUMapMode.READ)));
-    const result = {};
-    for (const [k, b] of Object.entries(rbBufs)) {
-        result[k] = new Float32Array(b.getMappedRange()).slice();
-        b.unmap();
-        b.destroy();
-    }
-    return result;
+    return webGpuContext.readBackBuffers(tensors);
 }
 
 function weightsViewFrom(rb) {
@@ -726,14 +721,7 @@ snapshotBtn.addEventListener('click', async () => {
         snapshotWeights = await readBackAllWeights();
         snapshotBtn.textContent = '↺ Recall';
     } else {
-        const { device } = webGpuContext;
-        device.queue.writeBuffer(model.embeddings,     0, snapshotWeights.embeddings);
-        device.queue.writeBuffer(model.layer1.weights, 0, snapshotWeights.layer1_weights);
-        device.queue.writeBuffer(model.layer1.biases,  0, snapshotWeights.layer1_biases);
-        device.queue.writeBuffer(model.layer2.weights, 0, snapshotWeights.layer2_weights);
-        device.queue.writeBuffer(model.layer2.biases,  0, snapshotWeights.layer2_biases);
-        device.queue.writeBuffer(model.layer3.weights, 0, snapshotWeights.layer3_weights);
-        device.queue.writeBuffer(model.layer3.biases,  0, snapshotWeights.layer3_biases);
+        webGpuContext.uploadModelWeights(model, snapshotWeights);
         if (lastWeights) {
             Object.assign(lastWeights, weightsViewFrom(snapshotWeights));
             await runInference();
@@ -823,10 +811,10 @@ function layersCanvasCoords(e) {
 
 function redrawLayers() {
     if (!lastWeights || !config?.mlpWidth) return;
-    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights,
-        lastInterData.inter1, lastInterData.inter2,
-        lastWeights.finalOutput, canvas.width, canvas.height,
-        config, channelMask, layerRangeEma, hoverState));
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+        { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+          finalOutput: lastWeights.finalOutput, imgW: canvas.width, imgH: canvas.height,
+          config, channelMask, ema: layerRangeEma, hoverState }));
 }
 
 layersCanvas.addEventListener('mousemove', (e) => {
@@ -917,8 +905,10 @@ async function runInference() {
 
         lastInterData = { inter1: inferInter1, inter2: inferInter2 };
         lastWeights.finalOutput = inferFinal;
-        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
-            inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
+        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+            { weights: lastWeights, inter1: inferInter1, inter2: inferInter2,
+              finalOutput: inferFinal, imgW: canvas.width, imgH: canvas.height,
+              config, channelMask, ema: layerRangeEma, hoverState }));
     } finally {
         inferRunning = false;
         if (inferPending) { inferPending = false; runInference(); }
@@ -947,23 +937,22 @@ async function loadModelFile(file) {
     mlpWidthSelect.value          = String(savedConfig.mlpWidth);
 
     // Restore saved UI settings
-    if (uiSettings.quantization) quantizationSelect.value = uiSettings.quantization;
-    if (savedConfig.embBits) embBitsSelect.value = String(savedConfig.embBits);
-    if (savedConfig.activation) { activationSelect.value = savedConfig.activation; syncActivationButtons(); }
-    if (uiSettings.smoothInterpolation !== undefined)
-        smoothInterpolationCheckbox.checked = uiSettings.smoothInterpolation === 'true';
-    if (uiSettings.noOffset !== undefined)
-        noOffsetCheckbox.checked = uiSettings.noOffset === 'true';
-    if (uiSettings.maxIter !== undefined) {
-        maxIterInput.value = uiSettings.maxIter;
-        maxIterInput.dispatchEvent(new Event('input'));
-    }
-    if (uiSettings.embedLr !== undefined) syncSliderDisplay(Object.assign(embedLrInput, { value: uiSettings.embedLr }), embedLrVal);
-    if (uiSettings.mlpLr   !== undefined) syncSliderDisplay(Object.assign(mlpLrInput,   { value: uiSettings.mlpLr   }), mlpLrVal);
-    if (uiSettings.mlpRatio  !== undefined) { mlpRatioInput.value  = uiSettings.mlpRatio;  mlpRatioVal.textContent  = uiSettings.mlpRatio; }
-    if (uiSettings.numLoops  !== undefined) { numLoopsInput.value  = uiSettings.numLoops;  numLoopsVal.textContent  = uiSettings.numLoops; }
-    if (uiSettings.bwdStride !== undefined) { bwdStrideInput.value = uiSettings.bwdStride; bwdStrideVal.textContent = uiSettings.bwdStride; }
-    if (uiSettings.outputZoom !== undefined) { outputZoomInput.value = uiSettings.outputZoom; outputZoomVal.textContent = uiSettings.outputZoom + '×'; }
+    const src = { ...savedConfig, ...uiSettings };
+    const UI_RESTORE = [
+        [src, 'quantization',       v => { quantizationSelect.value = v; }],
+        [src, 'embBits',            v => { embBitsSelect.value = String(v); }],
+        [src, 'activation',         v => { activationSelect.value = v; syncActivationButtons(); }],
+        [src, 'smoothInterpolation',v => { smoothInterpolationCheckbox.checked = v === 'true'; }],
+        [src, 'noOffset',           v => { noOffsetCheckbox.checked = v === 'true'; }],
+        [src, 'maxIter',            v => { maxIterInput.value = v; maxIterInput.dispatchEvent(new Event('input')); }],
+        [src, 'embedLr',            v => syncSliderDisplay(Object.assign(embedLrInput, { value: v }), embedLrVal)],
+        [src, 'mlpLr',              v => syncSliderDisplay(Object.assign(mlpLrInput,   { value: v }), mlpLrVal)],
+        [src, 'mlpRatio',           v => { mlpRatioInput.value  = v; mlpRatioVal.textContent  = v; }],
+        [src, 'numLoops',           v => { numLoopsInput.value  = v; numLoopsVal.textContent  = v; }],
+        [src, 'bwdStride',          v => { bwdStrideInput.value = v; bwdStrideVal.textContent = v; }],
+        [src, 'outputZoom',         v => { outputZoomInput.value = v; outputZoomVal.textContent = v + '×'; }],
+    ];
+    for (const [obj, key, set] of UI_RESTORE) { if (obj[key] != null) set(obj[key]); }
 
     const loadedEmbBits = savedConfig.embBits || 8;
     config = {
@@ -974,6 +963,7 @@ async function loadModelFile(file) {
         embBits:             loadedEmbBits,
         activation:          savedConfig.activation || 'sin',
         smoothInterpolation: smoothInterpolationCheckbox.checked,
+        hasAlpha:            tensors.layer3_biases.length === 4,
         width:  canvas.width,
         height: canvas.height,
         embOffsets:          savedConfig.embOffsets || generateEmbOffsets(savedConfig.embeddingChannels, loadedEmbBits, savedConfig.gridSize, noOffsetCheckbox.checked),
@@ -982,16 +972,10 @@ async function loadModelFile(file) {
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
         const { buffers } = createModel(webGpuContext, config);
+        destroyModel(model);
         model = buffers;
 
-        const { device } = webGpuContext;
-        device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);
-        device.queue.writeBuffer(model.layer1.weights, 0, tensors.layer1_weights);
-        device.queue.writeBuffer(model.layer1.biases,  0, tensors.layer1_biases);
-        device.queue.writeBuffer(model.layer2.weights, 0, tensors.layer2_weights);
-        device.queue.writeBuffer(model.layer2.biases,  0, tensors.layer2_biases);
-        device.queue.writeBuffer(model.layer3.weights, 0, tensors.layer3_weights);
-        device.queue.writeBuffer(model.layer3.biases,  0, tensors.layer3_biases);
+        webGpuContext.uploadModelWeights(model, tensors);
 
         await createPipeline();
         createBindGroup();
@@ -1042,8 +1026,10 @@ function updateEmbBitsOptions() {
             updateDirtyIndicators();
             const cur = currentModelConfig();
             if (lastWeights && configCompatible(lastConfig, cur)) {
-                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
-                    lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma, hoverState));
+                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+                    { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                      finalOutput: lastWeights.finalOutput, imgW: canvas.width, imgH: canvas.height,
+                      config: lastConfig, channelMask, ema: layerRangeEma, hoverState }));
             } else if (webGpuContext && loadedImage) {
                 previewGeometry();
             } else {
@@ -1112,6 +1098,15 @@ function applyUrlParams() {
 }
 
 initTooltips();
+
+// --- Help modal ---
+const helpOverlay = document.getElementById('help-overlay');
+const openHelp = () => helpOverlay.classList.remove('hidden');
+document.getElementById('help-btn').addEventListener('click', openHelp);
+document.getElementById('app-title').addEventListener('click', openHelp);
+document.getElementById('help-close').addEventListener('click', () => helpOverlay.classList.add('hidden'));
+helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') helpOverlay.classList.add('hidden'); });
 
 // --- Startup: load default image then default model (or auto-start from URL params) ---
 const urlHasParams = applyUrlParams();

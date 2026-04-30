@@ -201,6 +201,7 @@ export class Trainer {
 
         const { device } = this._ctx;
         const { gridSize, embeddingChannels: embCh, mlpWidth, embBits } = this._config;
+        const outCh = this._config.hasAlpha ? 4 : 3;
         const cv  = this._canvas;
         const m   = this._model;
         const ob  = this._outBufs;
@@ -228,8 +229,8 @@ export class Trainer {
             layer1_biases:  { lr: mlpLR,   size: mlpWidth,            l2: 0, clamp: 0 },
             layer2_weights: { lr: mlpLR,   size: mlpWidth * mlpWidth, l2: 0, clamp: 0 },
             layer2_biases:  { lr: mlpLR,   size: mlpWidth,            l2: 0, clamp: 0 },
-            layer3_weights: { lr: mlpLR,   size: 4 * mlpWidth,        l2: 0, clamp: 0 },
-            layer3_biases:  { lr: mlpLR,   size: 4,                   l2: 0, clamp: 0 },
+            layer3_weights: { lr: mlpLR,   size: outCh * mlpWidth,    l2: 0, clamp: 0 },
+            layer3_biases:  { lr: mlpLR,   size: outCh,               l2: 0, clamp: 0 },
         };
 
         if (!hp.roiFreeze) this._roiMask.decay(performance.now());

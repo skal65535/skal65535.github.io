@@ -2,7 +2,7 @@
 // Generates WGSL shaders for GPU backward pass + Adam update.
 // Fixed-point accumulation: gradients stored as atomic<i32> scaled by FP_SCALE.
 
-export const FP_SCALE = 1 << 14; // 16384 — safe for all expected gradient magnitudes
+export const FP_SCALE = 1 << 10; // 1024 — prevents i32 overflow at 512×512 (262144*2*1024 ≈ 537M << INT32_MAX)
 
 function wgslActivFns(activation) {
     switch (activation) {

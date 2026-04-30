@@ -1,34 +1,5 @@
 // tooltips.js
-// Tooltip text for all UI controls; injected into the DOM on page load.
-const TIPS = {
-    'grid-size':            'Spatial resolution of the feature grid (N×N).\nLarger = finer detail, bigger model.',
-    'embedding-channels':   'Feature channels per grid cell.\nMore = richer representation.',
-    'mlp-width':            'Hidden layer size of the MLP decoder.\nLarger = more capacity, slower training.',
-    'quantization':         'MLP weight precision.\nQAT trains with simulated 8-bit quantization for compact GLSL export.',
-    'emb-bits':             'Bits per embedding channel.\n4-bit = 2× smaller; requires EMB ≥ 8.',
-    'smooth-interpolation': "Bicubic-like smooth grid sampling (IQ's technique).\nImproves reconstruction quality.",
-    'no-offset':            'Disable per-plane UV jitter.\nEach plane normally samples at a random offset to increase effective resolution.',
-    'max-iter':             'Stop training after N steps. 0 = run forever.',
-    'embed-lr':             'Adam learning rate for the embedding grid (log scale, 1e-4 … 1e-1).',
-    'mlp-lr':               'Adam learning rate for MLP weights (log scale, 1e-4 … 1e-1).',
-    'mlp-ratio':            'Embedding-only Adam steps per MLP step.\nHigher = focus more on the grid.',
-    'num-loops':            'Repeat each phase N times per super-cycle.\nratio=5, loops=3 → 15 EMB steps then 3 MLP steps.',
-    'bwd-stride':           'Subsample every Nth pixel during backprop.\nHigher = faster steps, noisier gradients.',
-    'roi-brush':            'Brush radius for painting the ROI mask (pixels).',
-    'roi-strength':         'Loss multiplier inside painted regions.\nHigher = network focuses more on those areas.',
-    'roi-freeze':           'Freeze the mask — prevent it from decaying over time.',
-    'roi-auto-btn':         'Auto-detect high-variance (high-detail) regions as ROI.',
-    'roi-clear-btn':        'Clear the entire ROI mask.',
-    'start-btn':            'Start or stop training.',
-    'shake-btn':            'Add small noise to embeddings to escape local minima.',
-    'reset-btn':            'Reset model weights and optimizer state.',
-    'snapshot-btn':         'Save a weight checkpoint in memory, or restore it.',
-    'save-btn':             'Download model weights as .safetensors.',
-    'load-btn':             'Load a .safetensors model file.',
-    'export-btn':           'Export trained model as a GLSL fragment shader.',
-    'help-btn':             'Show help — project overview, URL params, UI guide.',
-};
-
+// Tooltip display logic; tooltip text lives as data-tooltip attributes in the HTML.
 export function initTooltips() {
     const box = document.createElement('div');
     box.className = 'tooltip-box';
@@ -72,9 +43,8 @@ export function initTooltips() {
         return el.closest('label') ?? el;
     }
 
-    for (const [id, text] of Object.entries(TIPS)) {
-        const el = document.getElementById(id);
-        if (!el) continue;
+    for (const el of document.querySelectorAll('[data-tooltip]')) {
+        const text = el.dataset.tooltip;
         const a = anchor(el);
         a.addEventListener('mouseenter', () => show(text, a));
         a.addEventListener('mousemove',  () => position(a));

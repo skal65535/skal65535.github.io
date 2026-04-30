@@ -7,14 +7,15 @@ const TENSOR_ORDER = [
 
 function tensorShapes(config) {
     const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const outCh = config.hasAlpha ? 4 : 3;
     return {
         embeddings:     [gridSize * gridSize, embCh],
         layer1_weights: [mlpWidth, embCh],
         layer1_biases:  [mlpWidth],
         layer2_weights: [mlpWidth, mlpWidth],
         layer2_biases:  [mlpWidth],
-        layer3_weights: [4, mlpWidth],
-        layer3_biases:  [4],
+        layer3_weights: [outCh, mlpWidth],
+        layer3_biases:  [outCh],
     };
 }
 

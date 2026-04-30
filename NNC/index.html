@@ -9,25 +9,24 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/png" href="favicon.png">
-    <link rel="shortcut icon" href="favicon.ico">
 </head>
 <body>
     <header>
         <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
-        <button id="help-btn">?</button>
+        <button id="help-btn" data-tooltip="Show help — project overview, URL params, UI guide.">?</button>
         <div class="app-divider"></div>
         <div class="header-btns header-actions">
             <span class="header-links-label">Training:</span>
-            <button class="btn" id="start-btn">▶ Start</button>
-            <button class="btn" id="shake-btn" disabled>⚡ Shake</button>
-            <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset</button>
+            <button class="btn" id="start-btn" data-tooltip="Start or stop training.">▶ Start</button>
+            <button class="btn" id="shake-btn" disabled data-tooltip="Add small noise to embeddings to escape local minima.">⚡ Shake</button>
+            <button class="btn btn-danger" id="reset-btn" disabled data-tooltip="Reset model weights and optimizer state.">↺ Reset</button>
         </div>
         <div class="header-spacer"></div>
         <div class="header-btns">
-            <button class="btn" id="load-btn">↑ Load</button>
-            <button class="btn" id="save-btn">↓ Save</button>
-            <button class="btn" id="export-btn">↓ GLSL</button>
+            <button class="btn" id="load-btn" data-tooltip="Load a .safetensors model file.">↑ Load</button>
+            <button class="btn" id="save-btn" data-tooltip="Download model weights as .safetensors.">↓ Save</button>
+            <button class="btn" id="export-btn" data-tooltip="Export trained model as a GLSL fragment shader.">↓ GLSL</button>
         </div>
         <div class="header-links">
             <span class="header-links-label">Related papers:</span>
@@ -43,7 +42,7 @@
                 <div id="model-controls">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
-                    <select id="grid-size">
+                    <select id="grid-size" data-tooltip="Spatial resolution of the feature grid (N×N).&#10;Larger = finer detail, bigger model.">
                         <option value="16">16 × 16</option>
                         <option value="32">32 × 32</option>
                         <option value="64" selected>64 × 64</option>
@@ -51,7 +50,7 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Channels</div>
-                    <select id="embedding-channels">
+                    <select id="embedding-channels" data-tooltip="Feature channels per grid cell.&#10;More = richer representation.">
                         <option value="4">4</option>
                         <option value="8">8</option>
                         <option value="16" selected>16</option>
@@ -59,7 +58,7 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">MLP Width</div>
-                    <select id="mlp-width">
+                    <select id="mlp-width" data-tooltip="Hidden layer size of the MLP decoder.&#10;Larger = more capacity, slower training.">
                         <option value="4">4</option>
                         <option value="8">8</option>
                         <option value="16" selected>16</option>
@@ -96,27 +95,27 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Quantization</div>
-                    <select id="quantization">
+                    <select id="quantization" data-tooltip="MLP weight precision.&#10;QAT trains with simulated 8-bit quantization for compact GLSL export.">
                         <option value="none">None (fp32)</option>
                         <option value="qat8" selected>MLP 8-bit QAT</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Emb Bits</div>
-                    <select id="emb-bits">
+                    <select id="emb-bits" data-tooltip="Bits per embedding channel.&#10;4-bit = 2× smaller; requires EMB ≥ 8.">
                         <option value="8" selected>8-bit</option>
                         <option value="4">4-bit</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="smooth-interpolation" checked>
+                        <input type="checkbox" id="smooth-interpolation" checked data-tooltip="Bicubic-like smooth grid sampling (IQ's technique).&#10;Improves reconstruction quality.">
                         <span class="ctrl-label">Smooth <a href="https://iquilezles.org/articles/texture/" target="_blank" rel="noopener">Interpolation</a></span>
                     </label>
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="no-offset">
+                        <input type="checkbox" id="no-offset" data-tooltip="Disable per-plane UV jitter.&#10;Each plane normally samples at a random offset to increase effective resolution.">
                         <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
@@ -130,42 +129,42 @@
                         <span class="ctrl-label">Max Iterations</span>
                         <span class="slider-val" id="max-iter-val">1,000</span>
                     </div>
-                    <input type="range" id="max-iter" min="0" max="5000" step="100" value="1000">
+                    <input type="range" id="max-iter" min="0" max="5000" step="100" value="1000" data-tooltip="Stop training after N steps. 0 = run forever.">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Embeddings LR</span>
                         <span class="slider-val" id="embed-lr-val">—</span>
                     </div>
-                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="80">
+                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="80" data-tooltip="Adam learning rate for the embedding grid (log scale, 1e-4 … 1e-1).">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">MLP LR</span>
                         <span class="slider-val" id="mlp-lr-val">—</span>
                     </div>
-                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="80">
+                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="80" data-tooltip="Adam learning rate for MLP weights (log scale, 1e-4 … 1e-1).">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Emb steps / MLP step</span>
                         <span class="slider-val" id="mlp-ratio-val">3</span>
                     </div>
-                    <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3">
+                    <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3" data-tooltip="Embedding-only Adam steps per MLP step.&#10;Higher = focus more on the grid.">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Num Loops</span>
                         <span class="slider-val" id="num-loops-val">1</span>
                     </div>
-                    <input type="range" id="num-loops" min="1" max="8" step="1" value="1">
+                    <input type="range" id="num-loops" min="1" max="8" step="1" value="1" data-tooltip="Repeat each phase N times per super-cycle.&#10;ratio=5, loops=3 → 15 EMB steps then 3 MLP steps.">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Bwd pixel stride</span>
                         <span class="slider-val" id="bwd-stride-val">4</span>
                     </div>
-                    <input type="range" id="bwd-stride" min="1" max="16" step="1" value="4">
+                    <input type="range" id="bwd-stride" min="1" max="16" step="1" value="4" data-tooltip="Subsample every Nth pixel during backprop.&#10;Higher = faster steps, noisier gradients.">
                 </div>
             </div>
 
@@ -176,24 +175,24 @@
                         <span class="ctrl-label">Brush Radius</span>
                         <span class="slider-val" id="roi-brush-val">20</span>
                     </div>
-                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20">
+                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20" data-tooltip="Brush radius for painting the ROI mask (pixels).">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">ROI Strength</span>
                         <span class="slider-val" id="roi-strength-val">9</span>
                     </div>
-                    <input type="range" id="roi-strength" min="0" max="20" step="1" value="9">
+                    <input type="range" id="roi-strength" min="0" max="20" step="1" value="9" data-tooltip="Loss multiplier inside painted regions.&#10;Higher = network focuses more on those areas.">
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="roi-freeze">
+                        <input type="checkbox" id="roi-freeze" data-tooltip="Freeze the mask — prevent it from decaying over time.">
                         <span class="ctrl-label">Freeze Mask</span>
                     </label>
                 </div>
                 <div class="ctrl-row" style="gap:6px;">
-                    <button class="btn btn-dim" id="roi-auto-btn">⚙ Auto Mask</button>
-                    <button class="btn btn-dim" id="roi-clear-btn">✕ Clear Mask</button>
+                    <button class="btn btn-dim" id="roi-auto-btn" data-tooltip="Auto-detect high-variance (high-detail) regions as ROI.">⚙ Auto Mask</button>
+                    <button class="btn btn-dim" id="roi-clear-btn" data-tooltip="Clear the entire ROI mask.">✕ Clear Mask</button>
                 </div>
             </div>
 
@@ -253,7 +252,7 @@
                             <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1">
                             <span id="output-zoom-val">1×</span>
                         </label>
-                        <button class="btn" id="snapshot-btn">&#x25CF; Snapshot</button>
+                        <button class="btn" id="snapshot-btn" data-tooltip="Save a weight checkpoint in memory, or restore it.">&#x25CF; Snapshot</button>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="canvas" width="512" height="512"></canvas>
@@ -398,17 +397,7 @@
         </div>
     </div>
 
-    <script>
-        const helpOverlay = document.getElementById('help-overlay');
-        const openHelp = () => helpOverlay.classList.remove('hidden');
-        document.getElementById('help-btn').addEventListener('click', openHelp);
-        document.getElementById('app-title').addEventListener('click', openHelp);
-        document.getElementById('help-close').addEventListener('click', () => helpOverlay.classList.add('hidden'));
-        helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.add('hidden'); });
-        document.addEventListener('keydown', e => { if (e.key === 'Escape') helpOverlay.classList.add('hidden'); });
-    </script>
-
-    <input type="file" id="model-file-input" accept=".safetensors">
+<input type="file" id="model-file-input" accept=".safetensors">
     <script type="module" src="js/main.js"></script>
 </body>
 </html>

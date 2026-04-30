@@ -42,5 +42,33 @@ export async function initWebGPU() {
         readbackBuffer(size) {
             return device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
         },
+        // Read multiple GPU buffers in one submit. bufMap: {key: {buf, size}} → {key: Float32Array}
+        async readBackBuffers(bufMap) {
+            const rbBufs = {};
+            const ce = device.createCommandEncoder();
+            for (const [k, { buf, size }] of Object.entries(bufMap)) {
+                rbBufs[k] = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                ce.copyBufferToBuffer(buf, 0, rbBufs[k], 0, size * 4);
+            }
+            device.queue.submit([ce.finish()]);
+            await Promise.all(Object.values(rbBufs).map(b => b.mapAsync(GPUMapMode.READ)));
+            const result = {};
+            for (const [k, b] of Object.entries(rbBufs)) {
+                result[k] = new Float32Array(b.getMappedRange()).slice();
+                b.unmap();
+                b.destroy();
+            }
+            return result;
+        },
+        // Upload all MLP weight tensors to their GPU buffers.
+        uploadModelWeights(model, tensors) {
+            device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);
+            device.queue.writeBuffer(model.layer1.weights, 0, tensors.layer1_weights);
+            device.queue.writeBuffer(model.layer1.biases,  0, tensors.layer1_biases);
+            device.queue.writeBuffer(model.layer2.weights, 0, tensors.layer2_weights);
+            device.queue.writeBuffer(model.layer2.biases,  0, tensors.layer2_biases);
+            device.queue.writeBuffer(model.layer3.weights, 0, tensors.layer3_weights);
+            device.queue.writeBuffer(model.layer3.biases,  0, tensors.layer3_biases);
+        },
     };
 }
