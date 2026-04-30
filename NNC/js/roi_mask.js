@@ -9,6 +9,7 @@ export class ROIMask {
         this.w = w;
         this.h = h;
         this.weights = new Float32Array(w * h);
+        this.dirty        = false;
         this._lastDecayAt = 0;
         this._offscreen   = null;
     }
@@ -18,6 +19,7 @@ export class ROIMask {
         this.w = w;
         this.h = h;
         this.weights      = new Float32Array(w * h);
+        this.dirty        = false;  // GPU buffer is re-created zeroed
         this._lastDecayAt = 0;
         this._offscreen   = null;
     }
@@ -37,6 +39,7 @@ export class ROIMask {
         if (dt <= 0) return;
         const factor = Math.exp(-DECAY_RATE * dt);
         for (let i = 0; i < this.weights.length; i++) this.weights[i] *= factor;
+        this.dirty = true;
     }
 
     // Paint a soft radial brush at canvas coordinates (cx, cy).
@@ -57,11 +60,13 @@ export class ROIMask {
             }
         }
         if (this._lastDecayAt === 0) this._lastDecayAt = performance.now();
+        this.dirty = true;
     }
 
     clear() {
         this.weights.fill(0);
         this._lastDecayAt = 0;
+        this.dirty = true;
     }
 
     // Generate mask from image RGBA data: 75% local luminance variance + 25% luminosity.
@@ -103,6 +108,7 @@ export class ROIMask {
             this.weights[i] = Math.sqrt(0.75 * normVar + 0.25 * normLum);
         }
         this._lastDecayAt = performance.now();
+        this.dirty = true;
     }
 
     // Composite an orange tint over whatever is already drawn on ctx.

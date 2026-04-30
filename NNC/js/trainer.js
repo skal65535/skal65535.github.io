@@ -234,7 +234,10 @@ export class Trainer {
         };
 
         if (!hp.roiFreeze) this._roiMask.decay(performance.now());
-        device.queue.writeBuffer(bb.roiMask, 0, this._roiMask.weights);
+        if (this._roiMask.dirty) {
+            device.queue.writeBuffer(bb.roiMask, 0, this._roiMask.weights);
+            this._roiMask.dirty = false;
+        }
 
         for (const [k, buf] of Object.entries(m.gradAtomic)) {
             device.queue.writeBuffer(buf, 0, bb.gradZero[k]);
