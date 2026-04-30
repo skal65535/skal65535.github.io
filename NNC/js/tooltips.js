@@ -1,3 +1,5 @@
+// tooltips.js
+// Tooltip text for all UI controls; injected into the DOM on page load.
 const TIPS = {
     'grid-size':            'Spatial resolution of the feature grid (N×N).\nLarger = finer detail, bigger model.',
     'embedding-channels':   'Feature channels per grid cell.\nMore = richer representation.',

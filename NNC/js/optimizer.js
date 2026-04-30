@@ -1,5 +1,5 @@
 // optimizer.js
-
+// CPU-side Adam optimizer (reference/fallback; hot path runs on GPU via backward_builder.js).
 export class AdamOptimizer {
     constructor(parameters, learningRate = 0.001, beta1 = 0.9, beta2 = 0.999, epsilon = 1e-8, learningRateMap = null) {
         this.parameters = parameters;

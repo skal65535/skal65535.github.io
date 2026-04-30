@@ -1,5 +1,5 @@
 // loss.js
-
+// MSE loss computation between network output and target pixel values.
 export function calculate_loss(output, target) {
     let loss = 0;
     for (let i = 0; i < output.length; i++) {

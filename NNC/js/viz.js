@@ -1,4 +1,7 @@
+// viz.js
+// Canvas rendering helpers for output image, embedding thumbnails, and loss curve.
 export const MAX_LOSS_HISTORY = 400;
+export const FLOW_PAD = 4, FLOW_EMB_W = 48;
 
 export function drawOutputCanvas(canvas, outputData) {
     const ctx = canvas.getContext('2d');
@@ -13,53 +16,13 @@ export function drawOutputCanvas(canvas, outputData) {
     ctx.putImageData(imageData, 0, 0);
 }
 
-// All embedding channels as grayscale thumbnails; uses same bilinear sampling as forward shader.
-export function drawEmbeddings(canvas, lastWeights, config) {
-    if (!lastWeights?.embeddings || !config.gridSize) return;
-    const { gridSize, embeddingChannels } = config;
-    if (!Number.isInteger(embeddingChannels) || embeddingChannels < 1) return;
-    const emb = lastWeights.embeddings;
-    const w = canvas.width, h = canvas.height;
-    const ctx = canvas.getContext('2d');
-    const cols = Math.max(1, Math.ceil(Math.sqrt(embeddingChannels)));
-    const rows = Math.max(1, Math.ceil(embeddingChannels / cols));
-    const imgData = ctx.createImageData(w, h);
-    const data = imgData.data;
-
-    for (let screenY = 0; screenY < h; screenY++) {
-        for (let screenX = 0; screenX < w; screenX++) {
-            const col = Math.floor(screenX * cols / w);
-            const row = Math.floor(screenY * rows / h);
-            const ch  = row * cols + col;
-            let v = 0;
-            if (ch < embeddingChannels) {
-                const localX = screenX - Math.floor(col * w / cols);
-                const localY = screenY - Math.floor(row * h / rows);
-                const localW = Math.floor(w / cols);
-                const localH = Math.floor(h / rows);
-                if (localX === 0 || localY === 0 || localX === localW - 1 || localY === localH - 1) {
-                    v = 20;
-                } else {
-                    const gx = Math.min((localX - 1) * gridSize / Math.max(1, localW - 2) | 0, gridSize - 1);
-                    const gy = Math.min((localY - 1) * gridSize / Math.max(1, localH - 2) | 0, gridSize - 1);
-                    const val = emb[(gy * gridSize + gx) * embeddingChannels + ch];
-                    v = Math.max(0, Math.min(255, (val * 0.5 + 0.5) * 255 | 0));
-                }
-            }
-            const idx = (screenY * w + screenX) * 4;
-            data[idx] = v; data[idx+1] = v; data[idx+2] = v; data[idx+3] = 255;
-        }
-    }
-    ctx.putImageData(imgData, 0, 0);
-}
-
 // Horizontal flow diagram: Emb → L1 → Act1 → L2 → Act2 → L3 → RGBA
 // interLayer1/2: Float32Array [imgW*imgH*mlpWidth] or null (shown as placeholder)
 // finalOutput: Float32Array [imgW*imgH*4] or null
 // Returns updated ema (pass null to reset).
-export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, finalOutput, imgW, imgH, config, channelMask, ema) {
+export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null) {
     const w = weights;
-    if (!w?.layer1Weights || !config.mlpWidth) return ema;
+    if (!w || !config.mlpWidth) return ema;
     const { mlpWidth, embeddingChannels: embCh, gridSize } = config;
     const ctx = canvas.getContext('2d');
     const cw = canvas.width, ch = canvas.height;
@@ -80,10 +43,10 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
         else { e.mn = EMA_ALPHA*e.mn + (1-EMA_ALPHA)*mn; e.mx = EMA_ALPHA*e.mx + (1-EMA_ALPHA)*mx; }
     }
 
-    const PAD = 4, THUMB_W = 48;
+    const PAD = FLOW_PAD, THUMB_W = FLOW_EMB_W, ZOOM_SIZE = 140;
     const BODY_H = ch - PAD * 2;
 
-    // Matrices use 72% of non-thumb space; remainder goes to the 6 gaps → wider fan-line areas
+    // Matrices use 72% of non-thumb space; zoom inset overlays the empty lower-right corner
     const spaceForMatsAndGaps = cw - 2*PAD - 4*THUMB_W;
     const totalMatCols = embCh + 2 * mlpWidth;
     const cell = Math.max(1, Math.min(
@@ -102,6 +65,7 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
     const xAct2 = xL2   + matW_L2 + GAP;
     const xL3   = xAct2 + THUMB_W + GAP;
     const xRGBA = xL3   + matW_L3 + GAP;
+    const xZoom = cw - PAD - ZOOM_SIZE;
 
     const imgData = ctx.createImageData(cw, ch);
     const px = imgData.data;
@@ -126,11 +90,15 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
     }
 
     // N channels stacked vertically; getValue(c, lx, ly, lw, lh)→float; tints[c]=[r,g,b] optional
+    // cellH: fixed per-channel height (aspect-ratio mode); null → divide BODY_H equally
     // Returns {y0, h} for fan lines
-    function drawChannelStack(nCh, x0, w0, getValue, tints) {
+    function drawChannelStack(nCh, x0, w0, getValue, tints, cellH) {
+        const slotH = cellH != null ? cellH : (BODY_H / nCh | 0);
+        const totalH = nCh * slotH;
+        const baseY  = PAD + ((BODY_H - totalH) >> 1);
         for (let c = 0; c < nCh; c++) {
-            const cy0 = PAD + (c * BODY_H / nCh | 0);
-            const cy1 = PAD + ((c+1) * BODY_H / nCh | 0);
+            const cy0 = baseY + c * slotH;
+            const cy1 = cy0 + slotH;
             const lh = cy1 - cy0, tint = tints?.[c];
             let mn = Infinity, mx = -Infinity;
             for (let py = cy0; py < cy1; py++)
@@ -153,7 +121,7 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
                     const idx=(cy0*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=40; px[idx+3]=255;
                 }
         }
-        return { y0: PAD, h: BODY_H };
+        return { y0: baseY, h: totalH };
     }
 
     function drawPlaceholder(x0, w0) {
@@ -165,7 +133,7 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
     }
 
     const embTints = Array.from({length: embCh}, (_, c) =>
-        ((channelMask >>> c) & 1) ? null : [200, 40, 40]);
+        ((channelMask >>> c) & 1) ? [191, 223, 255] : [200, 40, 40]);
 
     const bbEmb = w.embeddings
         ? drawChannelStack(embCh, xEmb, THUMB_W, (c, lx, ly, lw, lh) => {
@@ -193,14 +161,94 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
           }, null)
         : drawPlaceholder(xAct2, THUMB_W);
 
+    const rgbaCellH = imgW > 0 ? Math.min(Math.round(THUMB_W * imgH / imgW), BODY_H >> 2) : null;
     const bbRGBA = finalOutput
         ? drawChannelStack(4, xRGBA, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
             return finalOutput[(sy*imgW+sx)*4+c];
-          }, [[255,80,80],[80,220,80],[80,120,255],[180,180,180]])
+          }, [[255,80,80],[80,220,80],[80,120,255],[180,180,180]], rgbaCellH)
         : drawPlaceholder(xRGBA, THUMB_W);
 
+    let zoomBounds = null;
+    if (hoverState) {
+        const hCol = hoverState.col, hCh = hoverState.ch;
+        const xZ = xZoom, yZ = ch - PAD - ZOOM_SIZE;
+        const fillZoom = (srcW, srcH, getVal, tint) => {
+            const scale = Math.min(ZOOM_SIZE / srcW, ZOOM_SIZE / srcH);
+            const rW = Math.round(srcW * scale), rH = Math.round(srcH * scale);
+            const rox = (ZOOM_SIZE - rW) >> 1, roy = (ZOOM_SIZE - rH) >> 1;
+            let mn = Infinity, mx = -Infinity;
+            for (let py = 0; py < rH; py++)
+                for (let qx = 0; qx < rW; qx++) {
+                    const v = getVal(qx * srcW / rW | 0, py * srcH / rH | 0);
+                    if (v < mn) mn = v; if (v > mx) mx = v;
+                }
+            const zsc = mx > mn ? 1 / (mx - mn) : 1;
+            for (let py = 0; py < rH; py++)
+                for (let qx = 0; qx < rW; qx++) {
+                    const vf = (getVal(qx * srcW / rW | 0, py * srcH / rH | 0) - mn) * zsc;
+                    const idx = ((yZ + roy + py) * cw + xZ + rox + qx) * 4;
+                    if (tint) {
+                        px[idx]=(tint[0]*vf)|0; px[idx+1]=(tint[1]*vf)|0; px[idx+2]=(tint[2]*vf)|0;
+                    } else { const v=vf*255|0; px[idx]=px[idx+1]=px[idx+2]=v; }
+                    px[idx+3] = 255;
+                }
+            zoomBounds = { xZ, yZ, rox, roy, rW, rH };
+        };
+        if      (hCol==='emb'  && w.embeddings)  fillZoom(gridSize, gridSize,
+            (sx,sy) => w.embeddings[(sy*gridSize+sx)*embCh+hCh], [191,223,255]);
+        else if (hCol==='l1')                     fillZoom(embCh, mlpWidth,
+            (sx,sy) => w.layer1Weights[sy*embCh+sx], [191,223,255]);
+        else if (hCol==='act1' && interLayer1)    fillZoom(imgW, imgH,
+            (sx,sy) => interLayer1[(sy*imgW+sx)*mlpWidth+hCh], null);
+        else if (hCol==='l2')                     fillZoom(mlpWidth, mlpWidth,
+            (sx,sy) => w.layer2Weights[sy*mlpWidth+sx], [191,223,255]);
+        else if (hCol==='act2' && interLayer2)    fillZoom(imgW, imgH,
+            (sx,sy) => interLayer2[(sy*imgW+sx)*mlpWidth+hCh], null);
+        else if (hCol==='l3')                     fillZoom(mlpWidth, 4,
+            (sx,sy) => w.layer3Weights[sy*mlpWidth+sx], [191,223,255]);
+        else if (hCol==='rgba' && finalOutput)    fillZoom(imgW, imgH,
+            (sx,sy) => finalOutput[(sy*imgW+sx)*4+hCh],
+            [[255,80,80],[80,220,80],[80,120,255],[180,180,180]][hCh]);
+    }
+
     ctx.putImageData(imgData, 0, 0);
+
+    if (hoverState) {
+        const hCol = hoverState.col, hCh = hoverState.ch;
+        ctx.strokeStyle = 'rgba(191,223,255,0.85)';
+        ctx.lineWidth = 1.5;
+        const hilightStack = (bb, nCh, x0, w0) => {
+            const slotH = bb.h / nCh;
+            ctx.strokeRect(x0 + 0.5, bb.y0 + hCh * slotH + 0.5, w0 - 1, slotH - 1);
+        };
+        const hilightMat = (bb, x0, w0) => ctx.strokeRect(x0 + 0.5, bb.y0 + 0.5, w0 - 1, bb.h - 1);
+        switch (hCol) {
+            case 'emb':  hilightStack(bbEmb,  embCh,    xEmb,  THUMB_W); break;
+            case 'l1':   hilightMat  (bbL1,             xL1,   matW_L1); break;
+            case 'act1': hilightStack(bbAct1, mlpWidth, xAct1, THUMB_W); break;
+            case 'l2':   hilightMat  (bbL2,             xL2,   matW_L2); break;
+            case 'act2': hilightStack(bbAct2, mlpWidth, xAct2, THUMB_W); break;
+            case 'l3':   hilightMat  (bbL3,             xL3,   matW_L3); break;
+            case 'rgba': hilightStack(bbRGBA, 4,        xRGBA, THUMB_W); break;
+        }
+        if (zoomBounds) {
+            const { xZ, yZ, rox, roy, rW, rH } = zoomBounds;
+            const zoomLabel = ({ emb:`emb ch ${hCh}`, l1:'Layer 1', act1:`act1 ch ${hCh}`,
+                l2:'Layer 2', act2:`act2 ch ${hCh}`, l3:'Layer 3',
+                rgba:['R','G','B','α'][hCh] })[hCol] ?? '';
+            ctx.strokeStyle = 'rgba(191,223,255,0.7)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(xZ + rox - 0.5, yZ + roy - 0.5, rW + 1, rH + 1);
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'left';
+            const tw = ctx.measureText(zoomLabel).width;
+            ctx.fillStyle = 'rgba(0,0,0,0.6)';
+            ctx.fillRect(xZ + rox + 2, yZ + roy + 1, tw + 4, 12);
+            ctx.fillStyle = 'rgba(191,223,255,0.95)';
+            ctx.fillText(zoomLabel, xZ + rox + 4, yZ + roy + 10);
+        }
+    }
 
     // Fan-out lines between adjacent blocks
     function fanLines(x1, src, x2, dst, n) {
@@ -233,7 +281,18 @@ export function drawFlowDiagram(canvas, weights, interLayer1, interLayer2, final
     ];
     for (const [lbl, lx, lw] of labels) ctx.fillText(lbl, lx + lw/2, PAD + 10);
 
-    return ema;
+    return {
+        ema,
+        cols: [
+            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  slotH:bbEmb.h/embCh,    nCh:embCh    },
+            { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   slotH:null,              nCh:mlpWidth },
+            { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, slotH:bbAct1.h/mlpWidth, nCh:mlpWidth },
+            { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   slotH:null,              nCh:mlpWidth },
+            { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, slotH:bbAct2.h/mlpWidth, nCh:mlpWidth },
+            { name:'l3',   x:xL3,   w:matW_L3, y0:bbL3.y0,   slotH:null,              nCh:4        },
+            { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, slotH:bbRGBA.h/4,        nCh:4        },
+        ],
+    };
 }
 
 export function drawLossCurve(canvas, lossHistory) {

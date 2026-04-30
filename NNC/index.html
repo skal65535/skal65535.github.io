@@ -215,23 +215,24 @@
 
                 <div class="canvas-panel">
                     <div class="panel-header">
-                        <span class="panel-title">Embeddings</span>
-                        <span class="panel-hint">click to toggle · shift+click to solo</span>
-                    </div>
-                    <div class="canvas-wrap">
-                        <canvas id="embed-canvas" width="512" height="512"></canvas>
-                        <div id="emb-overlay"></div>
-                    </div>
-                    <div class="panel-header panel-header--sep">
                         <span class="panel-title">Layers</span>
-                        <span class="panel-hint" id="layers-hint">inference flow</span>
+                        <span class="panel-hint">click emb · shift+click to solo</span>
+                        <label class="panel-hint layers-viz-label">update every
+                            <select id="viz-interval" class="viz-interval-sel">
+                                <option value="1">1</option>
+                                <option value="5">5</option>
+                                <option value="10" selected>10</option>
+                                <option value="50">50</option>
+                            </select>
+                            steps
+                        </label>
                     </div>
                     <div class="canvas-wrap">
-                        <canvas id="layers-canvas" width="512" height="320"></canvas>
+                        <canvas id="layers-canvas" width="512" height="512"></canvas>
                     </div>
                 </div>
 
-                <div class="canvas-panel">
+                <div class="canvas-panel" id="output-panel">
                     <div class="panel-header">
                         <span class="panel-title">Output <span id="output-res" class="panel-hint"></span></span>
                         <label class="panel-hint">

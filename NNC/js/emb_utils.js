@@ -1,3 +1,5 @@
+// emb_utils.js
+// Embedding utilities: per-plane UV offset generation and CPU-side packing helpers.
 export function generateEmbOffsets(embCh, embBits, gridSize, noOffset) {
     const numU32 = embCh / (32 / embBits);
     if (noOffset) return new Float32Array(numU32 * 2);

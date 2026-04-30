@@ -1,5 +1,5 @@
 // shader_exporter.js
-
+// Exports the trained model weights as a self-contained GLSL shader for ShaderToy.
 function fmtFloatArray(arr, fmt, valsPerLine = 4) {
     const vals = Array.from(arr).map(fmt);
     const lines = [];

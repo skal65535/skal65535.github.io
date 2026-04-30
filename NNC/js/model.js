@@ -1,5 +1,5 @@
 // model.js
-
+// Creates and manages GPU weight, Adam moment, and grad accumulation buffers.
 export class ModelTensors {
     static KEYS = ['embeddings', 'layer1_weights', 'layer1_biases', 'layer2_weights', 'layer2_biases', 'layer3_weights', 'layer3_biases'];
 

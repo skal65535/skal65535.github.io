@@ -1,5 +1,5 @@
 // webgpu_manager.js
-
+// Initialises the WebGPU adapter and device; returns the webGpuContext object.
 export async function initWebGPU() {
     if (!navigator.gpu) {
         throw new Error("WebGPU not supported on this browser.");

@@ -1,19 +1,22 @@
+// main.js
+// Orchestrates UI, WebGPU setup, and GPU training loop (forward + backward + Adam).
 import { initWebGPU } from './webgpu_manager.js';
-import { createModel, ModelTensors } from './model.js';
+import { createModel } from './model.js';
 import { buildShader } from './shader_builder.js';
-import { buildBackwardShaders, FP_SCALE } from './backward_builder.js';
-import { get_target_pixels, calculate_loss } from './loss.js';
+import { get_target_pixels } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
-import { drawOutputCanvas, drawEmbeddings, drawFlowDiagram, drawLossCurve } from './viz.js';
-import { computeEmbRange, normalizeEmbAndAdjustL1, buildFwdUniforms, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
+import { drawOutputCanvas, drawFlowDiagram, drawLossCurve, FLOW_PAD, FLOW_EMB_W } from './viz.js';
+import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
+import { Trainer, setVizInterval } from './trainer.js';
 
 // --- DOM references ---
 const sourcePanel  = document.getElementById('source-panel');
+const outputPanel  = document.getElementById('output-panel');
+const canvasRow    = document.querySelector('.canvas-row');
 const sourceCanvas = document.getElementById('source-canvas');
-const embedCanvas  = document.getElementById('embed-canvas');
 const layersCanvas = document.getElementById('layers-canvas');
 const canvas       = document.getElementById('canvas');
 const lossCanvas   = document.getElementById('loss-canvas');
@@ -88,48 +91,39 @@ let webGpuContext = null;
 let model         = null;
 let pipeline      = null;
 let bindGroup     = null;
+let fwdUniformsBuf = null; // 160-byte forward uniform buffer (includes emb_range)
 let outputBuffers  = {};
 let readbackBuffers = {};
-let targetPixels  = null;
-let trainingActive  = false;
-let animationFrameId = null;
-let lastWeights     = null;
+let trainer        = null;
+let lastWeights    = null;
 let snapshotWeights = null;
-let layerRangeEma  = null; // EMA of [min, max] per layer for flow diagram
-let lastInterData  = { inter1: null, inter2: null }; // inter-layer activations, updated every VIZ_INTERVAL steps
-const VIZ_INTERVAL = 10;
+let layerRangeEma  = null;
+let lastInterData  = { inter1: null, inter2: null };
+let lastConfig     = null;
+let channelMask    = 0xFFFFFFFF;
+let hoverState     = null;
+let layerCols      = [];
 
-function drawPlaceholder(canvas) {
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#1a1a2a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = '#555';
-    ctx.font = `${Math.max(12, Math.min(18, canvas.width / 14))}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('train or load a model', canvas.width / 2, canvas.height / 2);
-}
-document.getElementById('layers-hint').textContent = `inference flow · activations update every ${VIZ_INTERVAL} steps`;
-let stepCount     = 0;
-let lossHistory   = [];
-let lastStepTime  = 0;
-let lastConfig    = null; // { gridSize, embeddingChannels, mlpWidth } from last full init
-let adamT         = 0;   // GPU Adam timestep (incremented each step)
-let channelMask   = 0xFFFFFFFF; // bitmask: bit i=0 → zero out embedding channel i during inference
+const isTraining = () => trainer?.active ?? false;
+const canInfer   = () => !!model && !!lastWeights && !isTraining();
 
 // ROI mask state
 const roiMask  = new ROIMask(1, 1);
 let decayRafId = null;
 
-// Backward pipelines + bind groups (rebuilt on model change)
-let fwdUniformsBuf   = null; // 160-byte forward uniform buffer (includes emb_range)
-let bwdPipelines     = null;
-let bwdBindGroups    = null;
-let bwdBuffers       = {}; // intermediate per-pixel grad buffers (GPU only)
-let targetGpuBuf     = null; // target image uploaded once per training run
-let bwdUniformsBuf   = null; // BwdUniforms (width, height, stride, sampled_count)
-let adamUniformsBufs = {}; // AdamUniforms uniform buffer per parameter tensor
+function drawPlaceholder(ctx_canvas) {
+    const ctx = ctx_canvas.getContext('2d');
+    ctx.clearRect(0, 0, ctx_canvas.width, ctx_canvas.height);
+    ctx.fillStyle = '#1a1a2a';
+    ctx.fillRect(0, 0, ctx_canvas.width, ctx_canvas.height);
+    ctx.fillStyle = '#555';
+    ctx.font = `${Math.max(12, Math.min(18, ctx_canvas.width / 14))}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('train or load a model', ctx_canvas.width / 2, ctx_canvas.height / 2);
+}
+const vizIntervalSelect = document.getElementById('viz-interval');
+vizIntervalSelect.addEventListener('change', () => setVizInterval(parseInt(vizIntervalSelect.value)));
 
 // --- Compressed size estimate ---
 function computeModelSize() {
@@ -175,13 +169,19 @@ bwdStrideInput.addEventListener('input', () => { bwdStrideVal.textContent = bwdS
 outputZoomInput.addEventListener('input', () => {
     const scale = parseFloat(outputZoomInput.value);
     outputZoomVal.textContent = scale + '×';
-    if (!trainingActive && model && config.mlpWidth && lastWeights?.embeddings) {
+    if (canInfer()) {
         const W = Math.round(BASE_CANVAS_W * scale);
         const H = Math.round(BASE_CANVAS_H * scale);
         outputResEl.textContent = `${W}×${H}`;
         runZoomInference(W, H);
     }
 });
+
+function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth }) {
+    return [16, 32, 64].includes(gridSize) &&
+           [4, 8, 16].includes(embeddingChannels) &&
+           [4, 8, 16, 32, 64].includes(mlpWidth);
+}
 
 function configCompatible(a, b) {
     return a && b &&
@@ -201,14 +201,32 @@ function currentModelConfig() {
     };
 }
 
+const STRUCTURAL_CONTROLS = [gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect];
+function updateDirtyIndicators() {
+    if (!lastConfig) { STRUCTURAL_CONTROLS.forEach(el => el.removeAttribute('data-dirty')); return; }
+    const cur = currentModelConfig();
+    gridSizeSelect.toggleAttribute('data-dirty',          lastConfig.gridSize            !== cur.gridSize);
+    embeddingChannelsSelect.toggleAttribute('data-dirty', lastConfig.embeddingChannels   !== cur.embeddingChannels);
+    mlpWidthSelect.toggleAttribute('data-dirty',          lastConfig.mlpWidth            !== cur.mlpWidth);
+}
+
+function syncButtonStates() {
+    const training      = isTraining();
+    const hasModel      = !!model;
+    const shouldDisable = !hasModel || training;
+    resetBtn.disabled        = shouldDisable;
+    shakeBtn.disabled        = shouldDisable;
+    outputZoomInput.disabled = shouldDisable;
+    snapshotBtn.disabled     = !hasModel || (training && snapshotWeights !== null);
+}
+
 function updateStartLabel() {
     if (configCompatible(lastConfig, currentModelConfig()) && model) {
         startBtn.textContent = '▶ Continue';
     } else {
         startBtn.textContent = '▶ Start';
     }
-    resetBtn.disabled = !model || trainingActive;
-    shakeBtn.disabled = !model;
+    syncButtonStates();
 }
 
 // --- Status indicator ---
@@ -219,14 +237,12 @@ function setStatus(s) {
     if (s === 'training') {
         startBtn.textContent = '■ Stop';
         startBtn.classList.add('stopping');
-        resetBtn.disabled = true;
-        shakeBtn.disabled = !model;
-        outputZoomInput.disabled = true;
     } else {
         startBtn.classList.remove('stopping');
         updateStartLabel();
-        outputZoomInput.disabled = false;
+        return;
     }
+    syncButtonStates();
 }
 
 // --- Source canvas ---
@@ -262,7 +278,7 @@ document.querySelectorAll('#sidebar .section-label').forEach(label => {
 roiBrushInput.addEventListener('input', () => { roiBrushVal.textContent = roiBrushInput.value; });
 roiStrengthInput.addEventListener('input', () => { roiStrengthVal.textContent = roiStrengthInput.value; });
 roiFreezeChk.addEventListener('change', () => {
-    if (!roiFreezeChk.checked && roiMask.isActive() && !trainingActive) startDecayLoop();
+    if (!roiFreezeChk.checked && roiMask.isActive() && !isTraining()) startDecayLoop();
 });
 roiClearBtn.addEventListener('click', () => {
     roiMask.clear();
@@ -295,7 +311,7 @@ roiAutoBtn.addEventListener('click', () => {
         const [x, y] = sourceCanvasCoords(e);
         roiMask.paint(x, y, parseInt(roiBrushInput.value));
         drawSourceImage();
-        if (!trainingActive) startDecayLoop();
+        if (!isTraining()) startDecayLoop();
     });
     sourceCanvas.addEventListener('mousemove', (e) => {
         if (!isPainting) return;
@@ -331,6 +347,17 @@ sourcePanel.addEventListener('drop', (e) => {
     if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
 });
 
+function fitSidePanels() {
+    if (!loadedImage) return;
+    const rowH = canvasRow.clientHeight;
+    [sourcePanel, outputPanel].forEach(panel => {
+        const hdrH = panel.querySelector('.panel-header').offsetHeight;
+        const w = Math.round((rowH - hdrH) * BASE_CANVAS_W / BASE_CANVAS_H);
+        panel.style.width = w + 'px';
+    });
+}
+window.addEventListener('resize', fitSidePanels);
+
 function loadImageOntoCanvas(img) {
     loadedImage = img;
     const MAX = 512;
@@ -352,27 +379,43 @@ function loadImageOntoCanvas(img) {
     drawSourceImage();
     const bytes = BASE_CANVAS_W * BASE_CANVAS_H * 3;
     inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
+    requestAnimationFrame(fitSidePanels);
 }
 
-async function startFreshTraining() {
-    if (trainingActive) {
-        trainingActive = false;
-        cancelAnimationFrame(animationFrameId);
-        animationFrameId = null;
-    }
+async function startTraining(fullReset) {
+    trainer?.destroy();
+    trainer = null;
     resetCanvasToBase();
+    const prevOffsets = config.embOffsets;
+    const prevEmbBits = config.embBits;
     config = buildConfigFromUI();
-    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
-        const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
-        model = buffers;
-        await createPipeline();
-        createBindGroup();
-        initEmbChannelMaskClick();
-        lastConfig = currentModelConfig();
-        setStatus('training');
-        run(initialWeights);
+        if (fullReset || !configCompatible(lastConfig, currentModelConfig()) || !model) {
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+            const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
+            model = buffers;
+            await createPipeline();
+            createBindGroup();
+            channelMask = 0xFFFFFFFF;
+            lastConfig = currentModelConfig();
+            updateDirtyIndicators();
+            clearTrainingUI();
+            trainer = makeTrainer();
+            setStatus('training');
+            trainer.start(freshWeights);
+        } else {
+            config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+            await createPipeline();
+            createBindGroup();
+            channelMask = 0xFFFFFFFF;
+            clearTrainingUI();
+            trainer = makeTrainer();
+            trainer.lastWeights = lastWeights;
+            setStatus('training');
+            trainer.start(null);
+        }
     } catch (err) {
         console.error("Training start failed:", err);
         alert("Training start failed. Check the console for errors.");
@@ -385,7 +428,7 @@ async function handleFile(file) {
         const img = new Image();
         img.onload = async () => {
             loadImageOntoCanvas(img);
-            await startFreshTraining();
+            await startTraining(true);
         };
         img.src = e.target.result;
     };
@@ -464,331 +507,58 @@ function createBindGroup() {
     });
 }
 
-function createBackwardPipelines() {
-    const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
-    const pixelCount = canvas.width * canvas.height;
-    const shaders = buildBackwardShaders(config);
-
-    const makePipeline = code => device.createComputePipeline({
-        layout: 'auto',
-        compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
-    });
-
-    bwdPipelines = {
-        gradOutput:     makePipeline(shaders.gradOutput),
-        gradL3:         makePipeline(shaders.gradL3),
-        gradL2:         makePipeline(shaders.gradL2),
-        gradL1:         makePipeline(shaders.gradL1),
-        adamStep:       makePipeline(shaders.adamStep),
-        packEmbeddings: makePipeline(shaders.packEmbeddings),
-    };
-
-    // Upload target image once
-    if (targetGpuBuf) targetGpuBuf.destroy();
-    targetGpuBuf = webGpuContext.zeroBuffer(targetPixels.length);
-    device.queue.writeBuffer(targetGpuBuf, 0, targetPixels);
-
-    // BwdUniforms (width, height, stride, sampled_count, roi_strength)
-    bwdUniformsBuf = webGpuContext.uniformBuffer(5 * 4);
-
-    // ROI mask (one f32 per pixel, uploaded from CPU each step)
-    bwdBuffers.roiMask = webGpuContext.zeroBuffer(pixelCount);
-
-    const stride = mlpWidth * 4;
-    // Per-pixel intermediate gradient buffers (no races, plain f32, GPU-only)
-    bwdBuffers.gradFinal        = webGpuContext.storageBuffer(pixelCount * 4 * 4);
-    bwdBuffers.gradInter2Preact = webGpuContext.storageBuffer(pixelCount * stride);
-    bwdBuffers.gradInter1Preact = webGpuContext.storageBuffer(pixelCount * stride);
-
-    // Adam uniform buffers (one per parameter tensor, updated each step)
-    const makeAdamBuf = () => webGpuContext.uniformBuffer(10 * 4);
-    adamUniformsBufs = ModelTensors.create(() => makeAdamBuf());
-
-    // Pre-allocate scratch buffers reused every step (avoids per-frame heap allocation)
-    bwdBuffers.adamAB = new ArrayBuffer(10 * 4);
-    bwdBuffers.adamF  = new Float32Array(bwdBuffers.adamAB);
-    bwdBuffers.adamU  = new Uint32Array(bwdBuffers.adamAB);
-    bwdBuffers.uniAB  = new ArrayBuffer(5 * 4);
-    bwdBuffers.uniU32 = new Uint32Array(bwdBuffers.uniAB);
-    bwdBuffers.uniF32 = new Float32Array(bwdBuffers.uniAB);
-    bwdBuffers.gradZero = {};
-    for (const [k, buf] of Object.entries(model.gradAtomic)) {
-        bwdBuffers.gradZero[k] = new Int32Array(buf.size / 4); // zero-filled, reused
-    }
-
-    // Helper: bind group from flat buffer list
-    const makeBG = (pipeline, bufs) => device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })),
-    });
-
-    const m = model;
-    bwdBindGroups = {
-        gradOutput: makeBG(bwdPipelines.gradOutput, [
-            bwdUniformsBuf, outputBuffers.final, targetGpuBuf, bwdBuffers.gradFinal, bwdBuffers.roiMask,
-        ]),
-        gradL3: makeBG(bwdPipelines.gradL3, [
-            bwdUniformsBuf, bwdBuffers.gradFinal, outputBuffers.interLayer2, m.layer3.weights,
-            bwdBuffers.gradInter2Preact, m.gradAtomic.layer3_weights, m.gradAtomic.layer3_biases,
-        ]),
-        gradL2: makeBG(bwdPipelines.gradL2, [
-            bwdUniformsBuf, bwdBuffers.gradInter2Preact, outputBuffers.interLayer2,
-            outputBuffers.interLayer1, m.layer2.weights,
-            bwdBuffers.gradInter1Preact, m.gradAtomic.layer2_weights, m.gradAtomic.layer2_biases,
-        ]),
-        gradL1: makeBG(bwdPipelines.gradL1, [
-            bwdUniformsBuf, bwdBuffers.gradInter1Preact, outputBuffers.interLayer1,
-            m.layer1.weights, m.embeddings,
-            m.gradAtomic.layer1_weights, m.gradAtomic.layer1_biases, m.gradAtomic.embeddings,
-        ]),
-        adam: {
-            embeddings:     makeBG(bwdPipelines.adamStep, [adamUniformsBufs.embeddings,     m.gradAtomic.embeddings,     m.embeddings,     m.adamM.embeddings,     m.adamV.embeddings]),
-            layer1_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer1_weights,  m.gradAtomic.layer1_weights, m.layer1.weights, m.adamM.layer1_weights, m.adamV.layer1_weights]),
-            layer1_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer1_biases,   m.gradAtomic.layer1_biases,  m.layer1.biases,  m.adamM.layer1_biases,  m.adamV.layer1_biases]),
-            layer2_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer2_weights,  m.gradAtomic.layer2_weights, m.layer2.weights, m.adamM.layer2_weights, m.adamV.layer2_weights]),
-            layer2_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer2_biases,   m.gradAtomic.layer2_biases,  m.layer2.biases,  m.adamM.layer2_biases,  m.adamV.layer2_biases]),
-            layer3_weights: makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer3_weights,  m.gradAtomic.layer3_weights, m.layer3.weights, m.adamM.layer3_weights, m.adamV.layer3_weights]),
-            layer3_biases:  makeBG(bwdPipelines.adamStep, [adamUniformsBufs.layer3_biases,   m.gradAtomic.layer3_biases,  m.layer3.biases,  m.adamM.layer3_biases,  m.adamV.layer3_biases]),
-        },
-        packEmbeddings: makeBG(bwdPipelines.packEmbeddings, [m.embeddings, m.embeddings_q, m.embeddings_range]),
-    };
-
-    // Pack initial f32 embeddings → u32 before first forward pass
-    {
-        const { gridSize, embeddingChannels: embCh } = config;
-        const ce = device.createCommandEncoder();
-        const p  = ce.beginComputePass();
-        p.setPipeline(bwdPipelines.packEmbeddings);
-        p.setBindGroup(0, bwdBindGroups.packEmbeddings);
-        p.dispatchWorkgroups(Math.ceil(gridSize * gridSize * embCh / 4 / 64));
-        p.end();
-        device.queue.submit([ce.finish()]);
-    }
-}
-
-// --- Training loop ---
-async function train() {
-    const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth, embBits } = config;
-    const pixelCount = canvas.width * canvas.height;
-    const embSize    = gridSize * gridSize * embCh;
-
-    const stride       = parseInt(bwdStrideInput.value) || 1;
-    const sampledCount = Math.ceil(pixelCount / stride);
-    adamT++;
-
-    const mlpRatio   = parseInt(mlpRatioInput.value) || 1;
-    const numLoops   = parseInt(numLoopsInput.value) || 1;
-    const period     = (mlpRatio + 1) * numLoops;
-    const phasePos   = adamT % period;
-    const activeMLP  = phasePos >= mlpRatio * numLoops;
-    const embedLR    = activeMLP ? 0 : sliderToLR(parseInt(embedLrInput.value));
-    const mlpLR      = activeMLP ? sliderToLR(parseInt(mlpLrInput.value)) : 0;
-    const tensorCfg = {
-        embeddings:     { lr: embedLR, size: embSize,             l2: 0.002 / embSize, clamp: 1 },
-        layer1_weights: { lr: mlpLR,   size: mlpWidth * embCh,    l2: 0, clamp: 0 },
-        layer1_biases:  { lr: mlpLR,   size: mlpWidth,             l2: 0, clamp: 0 },
-        layer2_weights: { lr: mlpLR,   size: mlpWidth * mlpWidth,  l2: 0, clamp: 0 },
-        layer2_biases:  { lr: mlpLR,   size: mlpWidth,             l2: 0, clamp: 0 },
-        layer3_weights: { lr: mlpLR,   size: 4 * mlpWidth,         l2: 0, clamp: 0 },
-        layer3_biases:  { lr: mlpLR,   size: 4,                    l2: 0, clamp: 0 },
-    };
-
-    if (!roiFreezeChk.checked) roiMask.decay(performance.now());
-    device.queue.writeBuffer(bwdBuffers.roiMask, 0, roiMask.weights);
-
-    for (const [k, buf] of Object.entries(model.gradAtomic)) {
-        device.queue.writeBuffer(buf, 0, bwdBuffers.gradZero[k]);
-    }
-    const { adamAB, adamF, adamU, uniAB, uniU32, uniF32 } = bwdBuffers;
-    uniU32[0] = canvas.width; uniU32[1] = canvas.height;
-    uniU32[2] = stride;       uniU32[3] = sampledCount;
-    uniF32[4] = parseFloat(roiStrengthInput.value);
-    device.queue.writeBuffer(bwdUniformsBuf, 0, uniAB);
-    adamF[1] = 0.9; adamF[2] = 0.999; adamF[3] = 1e-8; adamF[6] = FP_SCALE;
-    adamU[4] = adamT; adamU[9] = sampledCount;
-    for (const [k, tc] of Object.entries(tensorCfg)) {
-        adamF[0] = tc.lr; adamU[5] = tc.size; adamF[7] = tc.l2; adamU[8] = tc.clamp;
-        device.queue.writeBuffer(adamUniformsBufs[k], 0, adamAB);
-    }
-
-    uploadChannelMask(0xFFFFFFFF, fwdUniformsBuf, device);
-    const ce = device.createCommandEncoder();
-
-    const fwdPass = ce.beginComputePass();
-    fwdPass.setPipeline(pipeline);
-    fwdPass.setBindGroup(0, bindGroup);
-    fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
-    fwdPass.end();
-
-    // separate compute pass per shader = implicit memory barrier between them
-    const bwdDispatch = Math.ceil(pixelCount / 64);
-    const runPass = (pl, bg, dx, dy = 1) => {
-        const p = ce.beginComputePass();
-        p.setPipeline(pl); p.setBindGroup(0, bg);
-        p.dispatchWorkgroups(dx, dy); p.end();
-    };
-    runPass(bwdPipelines.gradOutput, bwdBindGroups.gradOutput, bwdDispatch);
-    runPass(bwdPipelines.gradL3,     bwdBindGroups.gradL3,     bwdDispatch);
-    runPass(bwdPipelines.gradL2,     bwdBindGroups.gradL2,     bwdDispatch);
-    runPass(bwdPipelines.gradL1,     bwdBindGroups.gradL1,     Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
-
-    const adamPass = ce.beginComputePass();
-    for (const k of ModelTensors.KEYS) {
-        adamPass.setPipeline(bwdPipelines.adamStep);
-        adamPass.setBindGroup(0, bwdBindGroups.adam[k]);
-        adamPass.dispatchWorkgroups(Math.ceil(tensorCfg[k].size / 64));
-    }
-    adamPass.end();
-
-    const doVizUpdate = stepCount % VIZ_INTERVAL === 0;
-
-    ce.copyBufferToBuffer(outputBuffers.final,    0, readbackBuffers.final,         0, outputBuffers.final.size);
-    ce.copyBufferToBuffer(model.embeddings,       0, readbackBuffers.embeddings,    0, model.embeddings.size);
-    ce.copyBufferToBuffer(model.layer1.weights,   0, readbackBuffers.layer1Weights, 0, model.layer1.weights.size);
-    ce.copyBufferToBuffer(model.layer1.biases,    0, readbackBuffers.layer1Biases,  0, model.layer1.biases.size);
-    ce.copyBufferToBuffer(model.layer2.weights,   0, readbackBuffers.layer2Weights, 0, model.layer2.weights.size);
-    ce.copyBufferToBuffer(model.layer3.weights,   0, readbackBuffers.layer3Weights, 0, model.layer3.weights.size);
-    if (doVizUpdate) {
-        ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
-        ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
-    }
-
-    device.queue.submit([ce.finish()]);
-
-    const mapPromises = [
-        readbackBuffers.final.mapAsync(GPUMapMode.READ),
-        readbackBuffers.embeddings.mapAsync(GPUMapMode.READ),
-        readbackBuffers.layer1Weights.mapAsync(GPUMapMode.READ),
-        readbackBuffers.layer1Biases.mapAsync(GPUMapMode.READ),
-        readbackBuffers.layer2Weights.mapAsync(GPUMapMode.READ),
-        readbackBuffers.layer3Weights.mapAsync(GPUMapMode.READ),
-    ];
-    if (doVizUpdate) {
-        mapPromises.push(readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ));
-        mapPromises.push(readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ));
-    }
-    await Promise.all(mapPromises);
-
-    const finalData = new Float32Array(readbackBuffers.final.getMappedRange());
-    const embData   = new Float32Array(readbackBuffers.embeddings.getMappedRange()).slice();
-    const l1wData   = new Float32Array(readbackBuffers.layer1Weights.getMappedRange()).slice();
-    const l1bData   = new Float32Array(readbackBuffers.layer1Biases.getMappedRange()).slice();
-    const l2wData   = new Float32Array(readbackBuffers.layer2Weights.getMappedRange()).slice();
-    const l3wData   = new Float32Array(readbackBuffers.layer3Weights.getMappedRange()).slice();
-
-    drawOutputCanvas(canvas, finalData);
-    const loss = calculate_loss(finalData, targetPixels);
-    const finalSlice = finalData.slice();
-
-    readbackBuffers.final.unmap();
-    readbackBuffers.embeddings.unmap();
-    readbackBuffers.layer1Weights.unmap();
-    readbackBuffers.layer1Biases.unmap();
-    readbackBuffers.layer2Weights.unmap();
-    readbackBuffers.layer3Weights.unmap();
-    if (doVizUpdate) {
-        lastInterData.inter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
-        lastInterData.inter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
-        readbackBuffers.interLayer1.unmap();
-        readbackBuffers.interLayer2.unmap();
-    }
-
-    // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
-    normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth);
-    device.queue.writeBuffer(model.embeddings,    0, embData);
-    device.queue.writeBuffer(model.layer1.weights, 0, l1wData);
-    device.queue.writeBuffer(model.layer1.biases,  0, l1bData);
-
-    // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
-    const identityRange = new Float32Array(embCh * 2);
-    for (let c = 0; c < embCh; c++) { identityRange[c * 2] = -1; identityRange[c * 2 + 1] = 1; }
-    device.queue.writeBuffer(model.embeddings_q, 0, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
-    // Ensure fwdUniformsBuf emb_range matches identity packing (guards against stale range from restart)
-    uploadEmbRange(null, embCh, fwdUniformsBuf, device);
-
-    lastWeights = {
-        embeddings:    embData,
-        layer1Weights: l1wData,
-        layer2Weights: l2wData,
-        layer3Weights: l3wData,
-        finalOutput:   finalSlice,
-    };
-
-    stepCount++;
-    lossHistory.push(loss);
-
-    const now = performance.now();
-    const rate = lastStepTime > 0 ? (1000 / (now - lastStepTime)).toFixed(1) : '—';
-    lastStepTime = now;
-
-    lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
-    stepCounterEl.textContent = stepCount.toLocaleString();
-    rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-
-    drawEmbeddings(embedCanvas, lastWeights, config);
-    layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
-        lastWeights.finalOutput, canvas.width, canvas.height, config, channelMask, layerRangeEma);
-    drawLossCurve(lossCanvas, lossHistory);
-    drawSourceImage();
-
-    const maxIter = parseInt(maxIterInput.value);
-    if (maxIter > 0 && stepCount >= maxIter) {
-        trainingActive = false;
-        setStatus('stopped');
-        if (roiMask.isActive()) startDecayLoop();
-        return;
-    }
-
-    if (trainingActive) {
-        animationFrameId = requestAnimationFrame(train);
-    }
-}
-
-function run(initialWeights) {
+function clearTrainingUI() {
     stopDecayLoop();
-    targetPixels  = get_target_pixels(loadedImage, canvas);
-    stepCount     = 0;
-    lossHistory   = [];
-    lastStepTime  = 0;
-    layerRangeEma = null;
-    lastInterData = { inter1: null, inter2: null };
-
-    // Clear visualizations
-    drawPlaceholder(embedCanvas);
     lossCanvas.getContext('2d').clearRect(0, 0, lossCanvas.width, lossCanvas.height);
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
     lossValueEl.textContent   = '—';
     stepCounterEl.textContent = '0';
     rateDisplayEl.textContent = '—';
+    layerRangeEma = null;
+    layerCols     = [];
+    hoverState    = null;
+    lastInterData = { inter1: null, inter2: null };
+}
 
-    {
-        const { gridSize, embeddingChannels: embCh } = config;
-        const src = initialWeights !== null ? initialWeights.embeddings : lastWeights?.embeddings;
-        if (initialWeights !== null) {
-            adamT = 0;
-            lastWeights = { embeddings: new Float32Array(initialWeights.embeddings) };
-        }
-        if (src) {
-            const range = computeEmbRange(src, embCh, gridSize * gridSize);
-            webGpuContext.device.queue.writeBuffer(model.embeddings_range, 0, range);
-            uploadEmbRange(range, embCh, fwdUniformsBuf, webGpuContext.device);
-        }
-    }
-
-    createBackwardPipelines();
-
-    trainingActive   = true;
-    animationFrameId = requestAnimationFrame(train);
+function makeTrainer() {
+    return new Trainer({
+        webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
+        outputBuffers, readbackBuffers,
+        targetPixels: get_target_pixels(loadedImage, canvas),
+        roiMask,
+        getHyperparams: () => ({
+            stride:      parseInt(bwdStrideInput.value) || 1,
+            mlpRatio:    parseInt(mlpRatioInput.value)  || 1,
+            numLoops:    parseInt(numLoopsInput.value)  || 1,
+            embedLr:     sliderToLR(parseInt(embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(mlpLrInput.value)),
+            roiStrength: parseFloat(roiStrengthInput.value),
+            roiFreeze:   roiFreezeChk.checked,
+            maxIter:     parseInt(maxIterInput.value),
+        }),
+        onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
+            lastWeights = w;
+            if (inter1 !== null) lastInterData = { inter1, inter2 };
+            lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+            stepCounterEl.textContent = step.toLocaleString();
+            rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
+            drawOutputCanvas(canvas, w.finalOutput);
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, w, lastInterData.inter1, lastInterData.inter2,
+                w.finalOutput, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
+            drawLossCurve(lossCanvas, lossHistory);
+            drawSourceImage();
+        },
+        onStop() {
+            setStatus('stopped');
+            if (roiMask.isActive()) startDecayLoop();
+        },
+    });
 }
 
 // --- Start / Stop / Reset buttons ---
 startBtn.addEventListener('click', async () => {
-    if (trainingActive) {
-        trainingActive = false;
-        cancelAnimationFrame(animationFrameId);
-        animationFrameId = null;
+    if (isTraining()) {
+        trainer.stop();
         setStatus('stopped');
         if (roiMask.isActive()) startDecayLoop();
         return;
@@ -797,49 +567,18 @@ startBtn.addEventListener('click', async () => {
         alert("Please load an image first.");
         return;
     }
-    resetCanvasToBase();
-    const prevOffsets = config.embOffsets;
-    const prevEmbBits = config.embBits;
-    config = buildConfigFromUI();
-    try {
-        if (!webGpuContext) webGpuContext = await initWebGPU();
-        const isRestart = configCompatible(lastConfig, currentModelConfig()) && model;
-        if (isRestart) {
-            // Preserve offsets only when embBits unchanged (same buffer layout)
-            config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
-                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
-            // Rebuild pipeline (quantization/smooth may have changed), reuse model buffers + Adam state
-            await createPipeline();
-            createBindGroup();
-            initEmbChannelMaskClick();
-            setStatus('training');
-            run(null);
-        } else {
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
-            const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
-            model = buffers;
-            await createPipeline();
-            createBindGroup();
-            initEmbChannelMaskClick();
-            lastConfig = currentModelConfig();
-            setStatus('training');
-            run(initialWeights);
-        }
-    } catch (err) {
-        console.error("Training setup failed:", err);
-        alert("Training setup failed. Check the console for errors.");
-    }
+    await startTraining(false);
 });
 
 resetBtn.addEventListener('click', async () => {
     if (!loadedImage) return;
-    await startFreshTraining();
+    await startTraining(true);
 });
 
 // --- Shake: add small noise to embeddings to escape local minima ---
 const SHAKE_AMPLITUDE = 0.02;
 shakeBtn.addEventListener('click', async () => {
-    if (!model || !lastWeights?.embeddings) return;
+    if (!lastWeights) return;
     const emb = lastWeights.embeddings;
     for (let i = 0; i < emb.length; i++) emb[i] += (Math.random() * 2 - 1) * SHAKE_AMPLITUDE;
     const { device } = webGpuContext;
@@ -882,7 +621,7 @@ async function readBackAllWeights() {
 
 // --- Export button ---
 document.getElementById('export-btn').addEventListener('click', async () => {
-    if (!model || !config.mlpWidth) {
+    if (!model) {
         alert("Train the model first.");
         return;
     }
@@ -896,7 +635,7 @@ document.getElementById('export-btn').addEventListener('click', async () => {
 
 // --- Save model ---
 document.getElementById('save-btn').addEventListener('click', async () => {
-    if (!model || !config.mlpWidth) {
+    if (!model) {
         alert("Train or load a model first.");
         return;
     }
@@ -921,7 +660,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 
 // --- Snapshot / Recall ---
 snapshotBtn.addEventListener('click', async () => {
-    if (!model || !config.mlpWidth) { alert("Train or load a model first."); return; }
+    if (!model) { alert("Train or load a model first."); return; }
     if (!snapshotWeights) {
         snapshotWeights = await readBackAllWeights();
         snapshotBtn.textContent = '↺ Recall';
@@ -996,58 +735,80 @@ async function runZoomInference(W, H) {
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
 }
 
-// --- Channel mask: overlay divs on embedding thumbnails for click-to-toggle ---
-function repositionEmbOverlay() {
-    const overlay = document.getElementById('emb-overlay');
-    if (!overlay) return;
-    const wrapRect   = embedCanvas.parentElement.getBoundingClientRect();
-    const canvasRect = embedCanvas.getBoundingClientRect();
-    const scale  = Math.min(canvasRect.width / embedCanvas.width, canvasRect.height / embedCanvas.height);
-    const bitmapW = embedCanvas.width  * scale;
-    const bitmapH = embedCanvas.height * scale;
-    const offL = (canvasRect.left - wrapRect.left) + (canvasRect.width  - bitmapW) / 2;
-    const offT = (canvasRect.top  - wrapRect.top)  + (canvasRect.height - bitmapH) / 2;
-    overlay.style.left   = `${offL}px`;
-    overlay.style.top    = `${offT}px`;
-    overlay.style.width  = `${bitmapW}px`;
-    overlay.style.height = `${bitmapH}px`;
-}
-
-function initEmbChannelMaskClick() {
-    channelMask = 0xFFFFFFFF;
-    const overlay = document.getElementById('emb-overlay');
-    if (!overlay) return;
-    overlay.innerHTML = '';
-    const embCh = config?.embeddingChannels || 0;
-    const cols = Math.max(1, Math.ceil(Math.sqrt(embCh)));
-    const rows = Math.max(1, Math.ceil(embCh / cols));
-    for (let ch = 0; ch < embCh; ch++) {
-        const col = ch % cols;
-        const row = Math.floor(ch / cols);
-        const cell = document.createElement('div');
-        cell.style.cssText = `position:absolute;box-sizing:border-box;cursor:pointer;` +
-            `left:${col*100/cols}%;top:${row*100/rows}%;` +
-            `width:${100/cols}%;height:${100/rows}%;`;
-        cell.addEventListener('click', (e) => {
-            const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
-            if (e.shiftKey) {
-                channelMask = (channelMask ^ allBits) | (1 << ch);
-                Array.from(overlay.children).forEach((c, i) => {
-                    c.style.background = ((channelMask >>> i) & 1) ? '' : 'rgba(200,30,30,0.55)';
-                });
-            } else {
-                channelMask ^= (1 << ch);
-                cell.style.background = ((channelMask >>> ch) & 1) ? '' : 'rgba(200,30,30,0.55)';
-            }
-            if (!trainingActive && model && fwdUniformsBuf) runInference();
-        });
-        overlay.appendChild(cell);
+// --- Channel mask: click / shift+click on the Emb column in the Layers canvas ---
+// Map a mouse event to canvas pixel coords, accounting for object-fit:contain letterboxing.
+function layersCanvasCoords(e) {
+    const rect = layersCanvas.getBoundingClientRect();
+    const cw = layersCanvas.width, ch = layersCanvas.height;
+    const canvasAspect = cw / ch;
+    const rectAspect = rect.width / rect.height;
+    let contentW, contentH, ox, oy;
+    if (canvasAspect > rectAspect) {
+        contentW = rect.width; contentH = rect.width / canvasAspect;
+        ox = 0; oy = (rect.height - contentH) / 2;
+    } else {
+        contentH = rect.height; contentW = rect.height * canvasAspect;
+        ox = (rect.width - contentW) / 2; oy = 0;
     }
-    repositionEmbOverlay();
+    return {
+        cx: (e.clientX - rect.left - ox) * cw / contentW,
+        cy: (e.clientY - rect.top  - oy) * ch / contentH,
+    };
 }
 
-// Keep overlay aligned when the wrap is resized (e.g. window resize).
-new ResizeObserver(repositionEmbOverlay).observe(embedCanvas.parentElement);
+function redrawLayers() {
+    if (!lastWeights || !config?.mlpWidth) return;
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights,
+        lastInterData.inter1, lastInterData.inter2,
+        lastWeights.finalOutput, canvas.width, canvas.height,
+        config, channelMask, layerRangeEma, hoverState));
+}
+
+layersCanvas.addEventListener('mousemove', (e) => {
+    const { cx, cy } = layersCanvasCoords(e);
+    let newState = null;
+    for (const col of layerCols) {
+        if (cx >= col.x && cx < col.x + col.w) {
+            if (col.slotH != null) {
+                const ch = Math.min(Math.max(0, ((cy - col.y0) / col.slotH) | 0), col.nCh - 1);
+                newState = { col: col.name, ch };
+            } else {
+                newState = { col: col.name, ch: -1 };
+            }
+            break;
+        }
+    }
+    layersCanvas.style.cursor = (newState?.col === 'emb' && !isTraining()) ? 'pointer' : 'default';
+    if (newState?.col === hoverState?.col && newState?.ch === hoverState?.ch) return;
+    hoverState = newState;
+    redrawLayers();
+});
+
+layersCanvas.addEventListener('mouseleave', () => {
+    layersCanvas.style.cursor = 'default';
+    if (hoverState === null) return;
+    hoverState = null;
+    redrawLayers();
+});
+
+layersCanvas.addEventListener('click', (e) => {
+    if (isTraining()) return;
+    const embCol = layerCols.find(c => c.name === 'emb');
+    if (!embCol?.slotH) return;
+    const { cx, cy } = layersCanvasCoords(e);
+    if (cx < embCol.x || cx >= embCol.x + embCol.w) return;
+    const embCh = config?.embeddingChannels ?? 0;
+    if (!embCh) return;
+    const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), embCh - 1);
+    const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
+    if (e.shiftKey) {
+        channelMask = (channelMask ^ allBits) | (1 << ch);
+    } else {
+        channelMask ^= (1 << ch);
+    }
+    if (canInfer()) runInference();
+    else redrawLayers();
+});
 
 // --- Inference: pack embeddings (CPU) then run one forward pass ---
 async function runInference() {
@@ -1088,12 +849,13 @@ async function runInference() {
 
     lastInterData = { inter1: inferInter1, inter2: inferInter2 };
     lastWeights.finalOutput = inferFinal;
-    drawEmbeddings(embedCanvas, lastWeights, config);
-    layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
-        inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma);
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, inferInter1, inferInter2,
+        inferFinal, canvas.width, canvas.height, config, channelMask, layerRangeEma, hoverState));
 }
 
 async function loadModelFile(file) {
+    trainer?.destroy();
+    trainer = null;
     let parsed;
     try {
         parsed = await loadModelSafetensors(file);
@@ -1103,9 +865,7 @@ async function loadModelFile(file) {
     }
 
     const { config: savedConfig, tensors, uiSettings = {} } = parsed;
-    if (![16, 32, 64].includes(savedConfig.gridSize) ||
-        ![4, 8, 16].includes(savedConfig.embeddingChannels) ||
-        ![4, 8, 16, 32, 64].includes(savedConfig.mlpWidth)) {
+    if (!isValidModelConfig(savedConfig)) {
         alert('Unsupported model config in file.');
         return;
     }
@@ -1163,11 +923,9 @@ async function loadModelFile(file) {
 
         await createPipeline();
         createBindGroup();
-        initEmbChannelMaskClick();
+        channelMask = 0xFFFFFFFF;
         lastConfig  = currentModelConfig();
-        adamT       = 0;
-        stepCount   = 0;
-        lossHistory = [];
+        updateDirtyIndicators();
 
         lastWeights = {
             embeddings:    tensors.embeddings,
@@ -1213,18 +971,13 @@ function updateEmbBitsOptions() {
 [gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect, embBitsSelect, activationSelect].forEach(sel => {
     sel.addEventListener('change', () => {
         updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay();
-        if (!trainingActive) {
+        if (!isTraining()) {
+            updateDirtyIndicators();
             const cur = currentModelConfig();
-            const weightsMatch = lastConfig && lastWeights?.layer1Weights &&
-                lastConfig.embeddingChannels === cur.embeddingChannels &&
-                lastConfig.mlpWidth         === cur.mlpWidth &&
-                lastConfig.gridSize         === cur.gridSize;
-            if (weightsMatch) {
-                drawEmbeddings(embedCanvas, lastWeights, lastConfig);
-                layerRangeEma = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
-                    lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma);
+            if (lastWeights && configCompatible(lastConfig, cur)) {
+                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas, lastWeights, lastInterData.inter1, lastInterData.inter2,
+                    lastWeights.finalOutput, canvas.width, canvas.height, lastConfig, channelMask, layerRangeEma, hoverState));
             } else {
-                drawPlaceholder(embedCanvas);
                 drawPlaceholder(layersCanvas);
                 layerRangeEma = null;
                 lastInterData = { inter1: null, inter2: null };
@@ -1309,8 +1062,9 @@ startupImg.onload = async () => {
             model = buffers;
             await createPipeline();
             createBindGroup();
-            initEmbChannelMaskClick();
+            channelMask = 0xFFFFFFFF;
             lastConfig = currentModelConfig();
+            updateDirtyIndicators();
             lastWeights = {
                 embeddings:    new Float32Array(initialWeights.embeddings),
                 layer1Weights: new Float32Array(initialWeights.layer1_weights),

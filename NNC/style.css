@@ -78,6 +78,7 @@ header {
     animation: pulse-dot 1.2s ease-in-out infinite;
 }
 .status-dot.stopped { background: var(--red); }
+select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
 @keyframes pulse-dot {
     0%, 100% { opacity: 1;   transform: scale(1);   }
     50%      { opacity: 0.4; transform: scale(0.6); }
@@ -358,7 +359,7 @@ input[type="range"]::-moz-range-thumb {
     box-shadow: 0 0 8px var(--accent-glow);
 }
 .header-actions { margin-right: 0; }
-.header-actions .btn { font-size: var(--fs-xs); padding: 3px 0; width: 6.5em; text-align: center; }
+.header-actions .btn { font-size: var(--fs-xs); padding: 3px 0; min-width: 6.5em; text-align: center; }
 .header-actions #start-btn { background: var(--accent); color: #070b10; border: none; }
 .header-actions #start-btn:hover { background: #fbbf24; box-shadow: 0 0 10px var(--accent-glow); }
 .header-actions #start-btn.stopping { background: var(--red); color: #fff; }
@@ -366,8 +367,8 @@ input[type="range"]::-moz-range-thumb {
 .header-actions .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.1); opacity: 1; }
 }
 .panel-header .btn {
-    width: 5.5em;
-    font-size: var(--fs-xs); padding: 2px 0;
+    width: auto;
+    font-size: var(--fs-xs); padding: 2px 8px;
     background: transparent;
     color: var(--text-dim);
     border: 1px solid var(--border);
@@ -416,6 +417,8 @@ input[type="range"]::-moz-range-thumb {
 }
 .panel-header--sep { border-top: 1px solid var(--border); }
 label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: default; flex-shrink: 0; }
+.layers-viz-label { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.viz-interval-sel { width: auto; padding: 1px 18px 1px 4px; font-size: var(--fs-xs); background-size: 7px; background-position: right 4px center; }
 #output-zoom { width: 52px; }
 #output-zoom-val { display: inline-block; width: 4ch; text-align: right; }
 .panel-title {
@@ -491,6 +494,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
     text-transform: uppercase;
     line-height: 1.7;
 }
+#source-panel, #output-panel { flex: none; }
 #source-panel { cursor: pointer; }
 #source-panel.has-image .canvas-wrap { cursor: crosshair; }
 

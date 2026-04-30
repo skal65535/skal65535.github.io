@@ -1,5 +1,5 @@
 // shader_builder.js
-
+// Generates the WGSL forward-pass compute shader for the embedding + MLP model.
 function wgslActivFns(activation) {
     switch (activation) {
         case 'tanh':
