@@ -138,24 +138,27 @@ function loadImageOntoCanvas(img) {
     requestAnimationFrame(() => fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H));
 }
 
-async function previewGeometry() {
-    if (!webGpuContext || !loadedImage) return;
-    trainer?.destroy();
-    trainer = null;
+async function resetToRandomModel() {
+    destroyModel(model);
     config = buildConfigFromUI();
     config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
-    const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
-    destroyModel(model);
+    const { buffers, weights } = createModel(webGpuContext, config);
     model = buffers;
     await createPipeline();
     createBindGroup();
     channelMask = 0xFFFFFFFF;
     lastConfig = currentModelConfig();
     updateDirtyIndicators(lastConfig, currentModelConfig());
-    clearTrainingUI();
-    lastWeights = weightsViewFrom(freshWeights);
-    layerRangeEma = null;
+    lastWeights = weightsViewFrom(weights);
     await runInference();
+}
+
+async function previewGeometry() {
+    if (!webGpuContext || !loadedImage) return;
+    trainer?.destroy(); trainer = null;
+    clearTrainingUI();
+    layerRangeEma = null;
+    await resetToRandomModel();
     syncButtonStates(isTraining(), !!model, !!snapshotWeights);
 }
 
@@ -716,6 +719,7 @@ async function loadAndResetModelFile(file) {
     trainer = null;
     clearTrainingUI();
     snapshotWeights = null;
+    roiMask.clear();
     await loadModelFile(file);
     syncButtonStates(false, !!model, !!snapshotWeights);
 }
@@ -837,7 +841,30 @@ initUI({
     },
 });
 initROI({ roiMask, isTraining, drawSourceImage });
-initFileHandler({ onImageFile: handleFile, onModelFile: loadAndResetModelFile, hasPainted });
+initFileHandler({ onImageFile: handleFile, onModelFile: loadAndResetModelFile, onExampleSelect: loadExample, hasPainted });
+
+async function loadExample({ image, model: modelUrl }) {
+    await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => { loadImageOntoCanvas(img); resolve(); };
+        img.src = image;
+    });
+    try {
+        if (!webGpuContext) webGpuContext = await initWebGPU();
+        let modelLoaded = false;
+        try {
+            const resp = await fetch(modelUrl);
+            if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
+        } catch (err) { console.warn('Example model fetch failed:', err); }
+        if (!modelLoaded) {
+            trainer?.destroy(); trainer = null; clearTrainingUI(); snapshotWeights = null;
+            roiMask.clear();
+            await resetToRandomModel();
+            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+            updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+        }
+    } catch (err) { console.warn('Example load failed:', err); }
+}
 
 // Default engine: CPU on mobile / no WebGPU, GPU otherwise
 if (!navigator.gpu) DOM.engineSelect.value = 'cpu';
@@ -873,25 +900,14 @@ startupImg.onload = async () => {
         // Try loading the saved model first; fall back to random-weights inference if absent.
         let modelLoaded = false;
         try {
-            const resp = await fetch('mona_lisa.safetensors');
+            const resp = await fetch('imgs/mona_lisa.safetensors');
             if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
         } catch (err) { console.warn('Auto-load failed:', err); }
         if (!modelLoaded) {
-            try {
-                config = buildConfigFromUI();
-                config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
-                const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
-                model = buffers;
-                await createPipeline();
-                createBindGroup();
-                channelMask = 0xFFFFFFFF;
-                lastConfig = currentModelConfig();
-                updateDirtyIndicators(lastConfig, currentModelConfig());
-                lastWeights = weightsViewFrom(initialWeights);
-                await runInference();
-            } catch (err) { console.error('Initial inference failed:', err); }
+            try { await resetToRandomModel(); }
+            catch (err) { console.error('Initial inference failed:', err); }
         }
         document.dispatchEvent(new Event('startup-complete'));
     }
 };
-startupImg.src = 'Mona_Lisa.webp';
+startupImg.src = 'imgs/mona_lisa.webp';

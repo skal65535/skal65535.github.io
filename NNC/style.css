@@ -396,6 +396,7 @@ input[type="range"]::-moz-range-thumb {
 .ctrl-row.btn-row .btn { flex: 1; font-size: var(--fs-xs); padding: 4px 8px; }
 .header-btns { display: flex; align-items: center; gap: 6px; margin-right: 14px; }
 .header-btns .btn { width: auto; font-size: var(--fs-xs); padding: 3px 9px; }
+#example-select { width: auto; font-size: var(--fs-xs); padding: 3px 24px 3px 7px; background-position: right 6px center; }
 .header-actions { margin-right: 0; }
 #start-tooltip { position: fixed; background: var(--accent); color: #070b10; font-size: 0.8rem; font-weight: 700; padding: 8px 16px; border-radius: 6px; white-space: nowrap; pointer-events: none; opacity: 0; z-index: 9999; transform: translateX(-50%); box-shadow: 0 4px 16px rgba(0,0,0,0.4); letter-spacing: 0.03em; }
 #start-tooltip::before { content: ''; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-bottom-color: var(--accent); }

@@ -45,6 +45,7 @@ export const DOM = {
     shakeMlpBtn:   document.getElementById('shake-mlp-btn'),
     saveBtn:       document.getElementById('save-btn'),
     loadBtn:       document.getElementById('load-btn'),
+    exampleSelect: document.getElementById('example-select'),
     snapshotBtn:   document.getElementById('snapshot-btn'),
     recallBtn:     document.getElementById('recall-btn'),
     modelFileInput: document.getElementById('model-file-input'),
@@ -134,7 +135,8 @@ export function syncButtonStates(isTraining, hasModel, snapshotWeights) {
     DOM.outputZoomInput.disabled = shouldDisable;
     DOM.snapshotBtn.disabled = !hasModel || training;
     DOM.recallBtn.disabled   = !snapshotWeights;
-    DOM.loadBtn.disabled    = training;
+    DOM.loadBtn.disabled      = training;
+    DOM.exampleSelect.disabled = training;
     DOM.engineSelect.disabled = training;
 }
 
@@ -156,7 +158,8 @@ export function setStatus(s, isCompatible, hasModel, isTraining, snapshotWeights
         DOM.startBtn.textContent = '■ Stop';
         DOM.startBtn.classList.add('stopping');
         modelControls.inert = true;
-        DOM.loadBtn.disabled = true;
+        DOM.loadBtn.disabled      = true;
+        DOM.exampleSelect.disabled = true;
     } else {
         DOM.startBtn.classList.remove('stopping');
         modelControls.inert = false;
