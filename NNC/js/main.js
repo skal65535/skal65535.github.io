@@ -621,7 +621,7 @@ DOM.layersCanvas.addEventListener('mousemove', (e) => {
             break;
         }
     }
-    DOM.layersCanvas.style.cursor = newState?.col === 'emb' ? 'pointer' : 'default';
+    DOM.layersCanvas.style.cursor = newState?.col === 'emb' && !isTraining() ? 'pointer' : 'default';
     if (newState?.col === hoverState?.col && newState?.ch === hoverState?.ch) return;
     hoverState = newState;
     redrawLayers();
@@ -635,6 +635,7 @@ DOM.layersCanvas.addEventListener('mouseleave', () => {
 });
 
 DOM.layersCanvas.addEventListener('click', (e) => {
+    if (isTraining()) return;
     const embCol = layerCols.find(c => c.name === 'emb');
     if (!embCol?.slotH) return;
     const { cx, cy } = layersCanvasCoords(e);
