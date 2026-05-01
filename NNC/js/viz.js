@@ -220,6 +220,18 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
 
     ctx.putImageData(imgData, 0, 0);
 
+    // Draws text with a dark background pill; cx/cy is the text anchor point.
+    function drawLabel(text, cx, cy, font = '10px monospace', align = 'center', color = 'rgba(191,223,255,0.95)') {
+        ctx.font = font;
+        ctx.textAlign = align;
+        const tw = ctx.measureText(text).width;
+        const ox = align === 'center' ? tw / 2 : align === 'right' ? tw : 0;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(cx - ox - 2, cy - 9, tw + 4, 12);
+        ctx.fillStyle = color;
+        ctx.fillText(text, cx, cy);
+    }
+
     if (hoverState) {
         const hCol = hoverState.col, hCh = hoverState.ch;
         ctx.strokeStyle = 'rgba(191,223,255,0.85)';
@@ -246,13 +258,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
             ctx.strokeStyle = 'rgba(191,223,255,0.7)';
             ctx.lineWidth = 1;
             ctx.strokeRect(xZ + rox - 0.5, yZ + roy - 0.5, rW + 1, rH + 1);
-            ctx.font = '9px monospace';
-            ctx.textAlign = 'left';
-            const tw = ctx.measureText(zoomLabel).width;
-            ctx.fillStyle = 'rgba(0,0,0,0.6)';
-            ctx.fillRect(xZ + rox + 2, yZ + roy + 1, tw + 4, 12);
-            ctx.fillStyle = 'rgba(191,223,255,0.95)';
-            ctx.fillText(zoomLabel, xZ + rox + 4, yZ + roy + 10);
+            drawLabel(zoomLabel, xZ + rox + 4, yZ + roy + 10, '9px monospace', 'left');
         }
     }
 
@@ -277,39 +283,32 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     fanLines(xL3  + matW_L3,      bbL3,   xRGBA,          bbRGBA, outCh);
 
     // Labels at top for non-matrix columns
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(200,200,200,0.8)';
     for (const [lbl, lx, lw] of [
         ['Emb', xEmb, THUMB_W], ['Act1', xAct1, THUMB_W], ['Act2', xAct2, THUMB_W],
-    ]) ctx.fillText(lbl, lx + lw/2, PAD + 10);
-
-    ctx.fillText(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
+    ]) drawLabel(lbl, lx + lw/2, PAD + 10);
+    drawLabel(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
 
     // Labels just above each weight matrix: name + channel count, in blue
-    ctx.fillStyle = 'rgba(100,160,255,0.9)';
-    const matLabels = [
-        ['Layer 1', `${embCh}→${mlpWidth1}`,  xL1, matW_L1, bbL1.y0],
-        ['Layer 2', `${mlpWidth1}→${mlpWidth2}`, xL2, matW_L2, bbL2.y0],
-        ['Layer 3', `${mlpWidth2}→${outCh}`,  xL3, matW_L3, bbL3.y0],
-    ];
-    for (const [name, ch, lx, lw, my0] of matLabels) {
-        ctx.font = '10px monospace';
-        ctx.fillText(name, lx + lw/2, my0 - 28);
-        ctx.font = '13px monospace';
-        ctx.fillText(ch,   lx + lw/2, my0 - 16);
+    const BLUE = 'rgba(100,160,255,0.9)';
+    for (const [name, ch, lx, lw, my0] of [
+        ['Layer 1', `${embCh}→${mlpWidth1}`,     xL1, matW_L1, bbL1.y0],
+        ['Layer 2', `${mlpWidth1}→${mlpWidth2}`,  xL2, matW_L2, bbL2.y0],
+        ['Layer 3', `${mlpWidth2}→${outCh}`,      xL3, matW_L3, bbL3.y0],
+    ]) {
+        drawLabel(name, lx + lw/2, my0 - 28, '10px monospace', 'center', BLUE);
+        drawLabel(ch,   lx + lw/2, my0 - 16, '13px monospace', 'center', BLUE);
     }
 
     return {
         ema,
         cols: [
-            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  slotH:bbEmb.h/embCh,     nCh:embCh    },
-            { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   slotH:null,               nCh:mlpWidth1 },
-            { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, slotH:bbAct1.h/mlpWidth1, nCh:mlpWidth1 },
-            { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   slotH:null,               nCh:mlpWidth2 },
-            { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, slotH:bbAct2.h/mlpWidth2, nCh:mlpWidth2 },
-            { name:'l3',   x:xL3,   w:matW_L3, y0:bbL3.y0,   slotH:null,              nCh:outCh    },
-            { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, slotH:bbRGBA.h/outCh,    nCh:outCh    },
+            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  h:bbEmb.h,  slotH:bbEmb.h/embCh,     nCh:embCh    },
+            { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   h:bbL1.h,   slotH:null,               nCh:mlpWidth1 },
+            { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, h:bbAct1.h, slotH:bbAct1.h/mlpWidth1, nCh:mlpWidth1 },
+            { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   h:bbL2.h,   slotH:null,               nCh:mlpWidth2 },
+            { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, h:bbAct2.h, slotH:bbAct2.h/mlpWidth2, nCh:mlpWidth2 },
+            { name:'l3',   x:xL3,   w:matW_L3, y0:bbL3.y0,   h:bbL3.h,   slotH:null,               nCh:outCh    },
+            { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, h:bbRGBA.h, slotH:bbRGBA.h/outCh,     nCh:outCh    },
         ],
     };
 }

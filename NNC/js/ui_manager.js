@@ -9,6 +9,7 @@ export const DOM = {
     canvasRow:    document.querySelector('.canvas-row'),
     sourceCanvas: document.getElementById('source-canvas'),
     layersCanvas: document.getElementById('layers-canvas'),
+    sweepCanvas:  document.getElementById('sweep-canvas'),
     canvas:       document.getElementById('canvas'),
     lossCanvas:   document.getElementById('loss-canvas'),
     fileInput:    document.getElementById('file-input'),

@@ -505,6 +505,7 @@ label:has(#output-zoom) { display: flex; align-items: center; gap: 5px; cursor: 
 }
 
 #emb-overlay { position: absolute; inset: 0; }
+#sweep-canvas { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 #emb-overlay > div:hover { outline: 2px solid rgba(255,60,60,0.9); outline-offset: -2px; }
 
 #drop-overlay {

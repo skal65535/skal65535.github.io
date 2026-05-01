@@ -13,6 +13,7 @@ import { CpuTrainer } from './optimizer.js';
 import { DOM, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui_manager.js';
 import { init as initROI, startDecayLoop, stopDecayLoop, hasPainted } from './roi_controls.js';
 import { init as initFileHandler } from './file_handler.js';
+import { SweepOverlay } from './sweep.js';
 
 // --- State ---
 let BASE_CANVAS_W = DOM.canvas.width;
@@ -38,6 +39,7 @@ let hoverState     = null;
 let layerCols      = [];
 let inferRunning   = false;
 let inferPending   = false;
+const sweep        = new SweepOverlay(DOM.sweepCanvas);
 
 const isTraining = () => trainer?.active ?? false;
 const canInfer   = () => !!model && !!lastWeights && !isTraining();
@@ -183,13 +185,13 @@ async function startTraining(fullReset) {
             const cpuStartWeights = (!fullReset && !configChanged && model && webGpuContext)
                 ? await readBackAllWeights()
                 : initCpuWeights(config);
-            trainer.start(cpuStartWeights);
+            sweep.resetDecay(); trainer.start(cpuStartWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
                 : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
             clearTrainingUI();
             setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
-            trainer.start(null);
+            sweep.resetDecay(); trainer.start(null);
         }
         return;
     }
@@ -210,7 +212,7 @@ async function startTraining(fullReset) {
             snapshotWeights = null;
             trainer = makeTrainer();
             setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
-            trainer.start(freshWeights);
+            sweep.resetDecay(); trainer.start(freshWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
                 : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
@@ -230,7 +232,7 @@ async function startTraining(fullReset) {
             trainer = makeTrainer();
             trainer.lastWeights = lastWeights;
             setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
-            trainer.start(null);
+            sweep.resetDecay(); trainer.start(null);
         }
     } catch (err) {
         console.error("Training start failed:", err);
@@ -365,6 +367,7 @@ function makeCpuTrainer() {
                 { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
                   finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
                   config, channelMask, ema: layerRangeEma, hoverState }));
+            sweep.setCols(layerCols); if (inter1 !== null) sweep.triggerStep();
             drawLossCurve(DOM.lossCanvas, lossHistory);
             drawSourceImage();
         },
@@ -404,6 +407,7 @@ function makeTrainer() {
                 { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
                   finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
                   config, channelMask, ema: layerRangeEma, hoverState }));
+            sweep.setCols(layerCols); if (inter1 !== null) sweep.triggerStep();
             drawLossCurve(DOM.lossCanvas, lossHistory);
             drawSourceImage();
         },
@@ -679,6 +683,7 @@ async function runInference() {
         ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
         ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
         device.queue.submit([ce.finish()]);
+        sweep.setCols(layerCols); sweep.triggerFwd();
 
         await Promise.all([
             readbackBuffers.final.mapAsync(GPUMapMode.READ),
@@ -699,6 +704,7 @@ async function runInference() {
             { weights: lastWeights, inter1: inferInter1, inter2: inferInter2,
               finalOutput: inferFinal, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
               config, channelMask, ema: layerRangeEma, hoverState }));
+        sweep.setCols(layerCols);
     } finally {
         inferRunning = false;
         if (inferPending) { inferPending = false; runInference(); }
