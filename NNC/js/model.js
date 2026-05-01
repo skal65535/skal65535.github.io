@@ -42,22 +42,22 @@ export function createModel(ctx, config) {
         layer2_weights: layer2Size,  layer2_biases: mlpWidth2,
         layer3_weights: layer3Size,  layer3_biases: outCh,
     };
-    const zeroTensors = () => ModelTensors.create(k => ctx.zeroBuffer(sizes[k]));
+    const zeroTensors = (prefix) => ModelTensors.create(k => ctx.zeroBuffer(sizes[k], undefined, `${prefix}/${k}`));
 
     const numU32 = embeddingChannels / channelsPerU32;
     const embOffsets = config.embOffsets || new Float32Array(numU32 * 2);
 
     const modelBuffers = {
-        embeddings:       ctx.createBuffer(embeddingData),
-        embeddings_q:     ctx.zeroBuffer(embeddingSize / channelsPerU32),  // packed u32: channelsPerU32 per u32
-        embeddings_range: ctx.zeroBuffer(embeddingChannels * 2), // [min, max] per channel (f32)
-        emb_offsets:      ctx.createBuffer(embOffsets),
-        layer1: { weights: ctx.createBuffer(layer1Weights), biases: ctx.createBuffer(layer1Biases) },
-        layer2: { weights: ctx.createBuffer(layer2Weights), biases: ctx.createBuffer(layer2Biases) },
-        layer3: { weights: ctx.createBuffer(layer3Weights), biases: ctx.createBuffer(layer3Biases) },
-        adamM:      zeroTensors(),
-        adamV:      zeroTensors(),
-        gradAtomic: zeroTensors(),
+        embeddings:       ctx.createBuffer(embeddingData, undefined, 'emb'),
+        embeddings_q:     ctx.zeroBuffer(embeddingSize / channelsPerU32, undefined, 'emb_q'),
+        embeddings_range: ctx.zeroBuffer(embeddingChannels * 2, undefined, 'emb_range'),
+        emb_offsets:      ctx.createBuffer(embOffsets, undefined, 'emb_offsets'),
+        layer1: { weights: ctx.createBuffer(layer1Weights, undefined, 'L1/weights'), biases: ctx.createBuffer(layer1Biases, undefined, 'L1/biases') },
+        layer2: { weights: ctx.createBuffer(layer2Weights, undefined, 'L2/weights'), biases: ctx.createBuffer(layer2Biases, undefined, 'L2/biases') },
+        layer3: { weights: ctx.createBuffer(layer3Weights, undefined, 'L3/weights'), biases: ctx.createBuffer(layer3Biases, undefined, 'L3/biases') },
+        adamM:      zeroTensors('adamM'),
+        adamV:      zeroTensors('adamV'),
+        gradAtomic: zeroTensors('grad'),
     };
 
     return {
@@ -68,6 +68,21 @@ export function createModel(ctx, config) {
             layer2_weights: layer2Weights, layer2_biases: layer2Biases,
             layer3_weights: layer3Weights, layer3_biases: layer3Biases,
         }),
+    };
+}
+
+export function initCpuWeights(config) {
+    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2 } = config;
+    const outCh = config.hasAlpha ? 4 : 3;
+    const s2 = Math.sqrt(6 / mlpWidth1), s3 = Math.sqrt(6 / mlpWidth2);
+    return {
+        embeddings:     new Float32Array(gridSize * gridSize * embeddingChannels).map(() => Math.random() * 2 - 1),
+        layer1_weights: new Float32Array(embeddingChannels * mlpWidth1).map(() => (Math.random() * 2 - 1) / embeddingChannels),
+        layer1_biases:  new Float32Array(mlpWidth1),
+        layer2_weights: new Float32Array(mlpWidth1 * mlpWidth2).map(() => (Math.random() * 2 - 1) * s2),
+        layer2_biases:  new Float32Array(mlpWidth2),
+        layer3_weights: new Float32Array(mlpWidth2 * outCh).map(() => (Math.random() * 2 - 1) * s3),
+        layer3_biases:  new Float32Array(outCh),
     };
 }
 

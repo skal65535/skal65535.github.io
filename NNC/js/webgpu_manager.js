@@ -21,31 +21,31 @@ export async function initWebGPU() {
 
     return {
         device,
-        createBuffer(data, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC) {
-            const buffer = device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true });
+        createBuffer(data, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, label = '') {
+            const buffer = device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true, label });
             new Float32Array(buffer.getMappedRange()).set(data);
             buffer.unmap();
             return buffer;
         },
-        zeroBuffer(count, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST) {
-            return device.createBuffer({ size: count * 4, usage });
+        zeroBuffer(count, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label = '') {
+            return device.createBuffer({ size: count * 4, usage, label });
         },
-        uniformBuffer(size) {
-            return device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        uniformBuffer(size, label = '') {
+            return device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label });
         },
-        storageBuffer(size) {
-            return device.createBuffer({ size, usage: GPUBufferUsage.STORAGE });
+        storageBuffer(size, label = '') {
+            return device.createBuffer({ size, usage: GPUBufferUsage.STORAGE, label });
         },
-        outputBuffer(size) {
-            return device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        outputBuffer(size, label = '') {
+            return device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, label });
         },
-        readbackBuffer(size) {
-            return device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        readbackBuffer(size, label = '') {
+            return device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label });
         },
         // Read multiple GPU buffers in one submit. bufMap: {key: {buf, size}} → {key: Float32Array}
         async readBackBuffers(bufMap) {
             const rbBufs = {};
-            const ce = device.createCommandEncoder();
+            const ce = device.createCommandEncoder({ label: 'readBackBuffers' });
             for (const [k, { buf, size }] of Object.entries(bufMap)) {
                 rbBufs[k] = device.createBuffer({ size: size * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
                 ce.copyBufferToBuffer(buf, 0, rbBufs[k], 0, size * 4);

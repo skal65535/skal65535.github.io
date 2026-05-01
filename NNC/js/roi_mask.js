@@ -46,6 +46,7 @@ export class ROIMask {
     paint(cx, cy, radius) {
         const r  = Math.ceil(radius);
         const r2 = radius * radius;
+        const inv_r2 = 1 / r2;
         const x0 = Math.max(0,          (cx - r) | 0);
         const x1 = Math.min(this.w - 1, (cx + r) | 0);
         const y0 = Math.max(0,          (cy - r) | 0);
@@ -55,7 +56,7 @@ export class ROIMask {
                 const d2 = (x - cx) ** 2 + (y - cy) ** 2;
                 if (d2 <= r2) {
                     const i = y * this.w + x;
-                    this.weights[i] = Math.min(1, this.weights[i] + (1 - d2 / r2) * 0.08);
+                    this.weights[i] = Math.min(1, this.weights[i] + (1 - d2 * inv_r2) * 0.08);
                 }
             }
         }

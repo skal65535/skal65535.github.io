@@ -18,18 +18,8 @@
         <div class="app-divider"></div>
         <div class="header-btns header-actions">
             <button class="btn" id="start-btn">▶ Start</button>
-            <div id="start-tooltip">↑ click to train</div>
         </div>
-        <div class="header-spacer"></div>
-        <div class="header-btns">
-            <button class="btn btn-accent" id="load-btn">↑ Load</button>
-            <button class="btn btn-accent" id="save-btn">↓ Save</button>
-            <button class="btn btn-accent" id="export-btn">↓ GLSL</button>
-        </div>
-
-    </header>
-
-    <div id="app">
+        <div class="app-divider"></div>
         <aside id="sidebar">
             <div class="ctrl-section collapsed" id="model-section">
                 <div class="section-label">Model</div>
@@ -61,7 +51,6 @@
                             <option value="64">W1: 64</option>
                         </select>
                         <select id="mlp-width2" style="flex:1;min-width:0;">
-                            <option value="4">W2: 4</option>
                             <option value="8">W2: 8</option>
                             <option value="16" selected>W2: 16</option>
                             <option value="32">W2: 32</option>
@@ -127,6 +116,14 @@
 
             <div class="ctrl-section collapsed">
                 <div class="section-label">Training</div>
+                <div class="section-body">
+                <div class="ctrl-row">
+                    <div class="ctrl-label">Engine</div>
+                    <select id="engine">
+                        <option value="gpu">GPU</option>
+                        <option value="cpu">CPU</option>
+                    </select>
+                </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Max Iterations</span>
@@ -187,10 +184,12 @@
                 <div class="ctrl-row btn-row">
                     <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset Model</button>
                 </div>
+                </div><!-- .section-body -->
             </div>
 
             <div class="ctrl-section collapsed">
                 <div class="section-label">ROI Mask</div>
+                <div class="section-body">
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Brush Radius</span>
@@ -215,10 +214,19 @@
                     <button class="btn btn-dim" id="roi-auto-btn">⚙ Auto Mask</button>
                     <button class="btn btn-dim" id="roi-clear-btn">✕ Clear Mask</button>
                 </div>
+                </div><!-- .section-body -->
             </div>
 
         </aside>
+        <div class="header-spacer"></div>
+        <div class="header-btns">
+            <button class="btn btn-accent" id="load-btn">↑ Load</button>
+            <button class="btn btn-accent" id="save-btn">↓ Save</button>
+            <button class="btn btn-accent" id="export-btn">↓ GLSL</button>
+        </div>
+    </header>
 
+    <div id="app">
         <main id="workspace">
             <div class="mobile-notice">Training requires desktop — load/save still work</div>
             <div class="canvas-row">
@@ -257,11 +265,17 @@
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="layers-canvas" width="512" height="512"></canvas>
+                        <div class="loss-overlay">
+                            <canvas id="loss-canvas" width="400" height="40"></canvas>
+                        </div>
                     </div>
                     <div class="layers-legend">
                         <span class="layers-legend-item"><span class="layers-legend-swatch blue"></span>learnt</span>
                         <span class="layers-legend-item"><span class="layers-legend-swatch gray"></span>inferred</span>
                         <span class="layers-legend-status"><span class="status-dot idle" id="status-dot"></span><span id="status-text" class="stat-label">IDLE</span></span>
+                        <span class="layers-legend-item stat-inline"><span class="stat-label">Loss</span> <span class="stat-value" id="loss-value">—</span></span>
+                        <span class="layers-legend-item stat-inline"><span class="stat-label">Step</span> <span class="stat-value" id="step-counter">0</span></span>
+                        <span class="layers-legend-item stat-inline"><span class="stat-label">Rate</span> <span class="stat-value" id="rate-display">—</span></span>
                     </div>
                 </div>
 
@@ -274,6 +288,7 @@
                             <span id="output-zoom-val">1×</span>
                         </label>
                         <button class="btn" id="snapshot-btn">&#x25CF; Snapshot</button>
+                        <button class="btn" id="recall-btn" disabled>&#x21BA; Recall</button>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="canvas" width="512" height="512"></canvas>
@@ -285,28 +300,6 @@
                 </div>
             </div>
 
-            <div class="bottom-panel">
-                <div class="stats-bar">
-                    <div class="stat-item">
-                        <span class="stat-label">Loss</span>
-                        <span class="stat-value" id="loss-value">—</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Step</span>
-                        <span class="stat-value" id="step-counter">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Rate</span>
-                        <span class="stat-value" id="rate-display">—</span>
-                    </div>
-
-                </div>
-
-                <div class="loss-section">
-                    <div class="loss-label">Loss Curve</div>
-                    <canvas id="loss-canvas" width="900" height="72"></canvas>
-                </div>
-            </div>
         </main>
     </div>
 
@@ -412,7 +405,8 @@
                     <tr><td>↑ Load</td><td>Load a .safetensors model file (also drag-and-drop onto the page). Restores weights and all UI settings.</td></tr>
                     <tr><td>↓ Save</td><td>Save model weights and current UI settings as .safetensors.</td></tr>
                     <tr><td>↓ GLSL</td><td>Export the trained model as a self-contained GLSL fragment shader (ShaderToy-compatible).</td></tr>
-                    <tr><td>● Snapshot</td><td>Store current weights as an in-memory checkpoint. Click again (↺ Recall) to restore.</td></tr>
+                    <tr><td>● Snapshot</td><td>Store current weights as an in-memory checkpoint.</td></tr>
+                    <tr><td>↺ Recall</td><td>Restore weights from the last snapshot (enabled only when a snapshot exists).</td></tr>
                     <tr><td>⚡ Shake Emb</td><td>Add small noise to the embedding grid to escape local minima. Resets embedding Adam moments.</td></tr>
                     <tr><td>⚡ Shake MLP</td><td>Add small noise to all MLP weights and biases to escape local minima. Resets MLP Adam moments.</td></tr>
                     <tr><td>↺ Reset Model</td><td>Reinitialize the model and optimizer from scratch (Training panel in sidebar).</td></tr>
@@ -422,6 +416,7 @@
         </div>
     </div>
 
+<div id="start-tooltip">↑ click to train</div>
 <input type="file" id="model-file-input" accept=".safetensors">
     <script type="module" src="js/main.js"></script>
 </body>

@@ -144,6 +144,10 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
           }, embTints)
         : drawPlaceholder(xEmb, THUMB_W);
 
+    const aspectCellH = imgW > 0 ? Math.round(THUMB_W * imgH / imgW) : BODY_H;
+    const maxActCh = Math.max(mlpWidth1, mlpWidth2, outCh);
+    const actCellH = Math.min(aspectCellH, BODY_H / maxActCh | 0);
+
     const bbL1 = drawMatrix(w.layer1Weights, mlpWidth1, embCh,    xL1, matW_L1, ema[0]);
     const bbL2 = drawMatrix(w.layer2Weights, mlpWidth2, mlpWidth1, xL2, matW_L2, ema[1]);
     const bbL3 = drawMatrix(w.layer3Weights, outCh,      mlpWidth2, xL3, matW_L3, ema[2]);
@@ -152,23 +156,22 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         ? drawChannelStack(mlpWidth1, xAct1, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
             return interLayer1[(sy*imgW+sx)*mlpWidth1+c];
-          }, null)
+          }, null, actCellH)
         : drawPlaceholder(xAct1, THUMB_W);
 
     const bbAct2 = interLayer2
         ? drawChannelStack(mlpWidth2, xAct2, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
             return interLayer2[(sy*imgW+sx)*mlpWidth2+c];
-          }, null)
+          }, null, actCellH)
         : drawPlaceholder(xAct2, THUMB_W);
 
-    const rgbaCellH = imgW > 0 ? Math.min(Math.round(THUMB_W * imgH / imgW), BODY_H / outCh | 0) : null;
     const rgbaTints = [[255,80,80],[80,220,80],[80,120,255],[180,180,180]].slice(0, outCh);
     const bbRGBA = finalOutput
         ? drawChannelStack(outCh, xRGBA, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
             return finalOutput[(sy*imgW+sx)*4+c];
-          }, rgbaTints, rgbaCellH)
+          }, rgbaTints, Math.min(aspectCellH, BODY_H / outCh | 0))
         : drawPlaceholder(xRGBA, THUMB_W);
 
     let zoomBounds = null;
@@ -179,16 +182,17 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
             const scale = Math.min(ZOOM_SIZE / srcW, ZOOM_SIZE / srcH);
             const rW = Math.round(srcW * scale), rH = Math.round(srcH * scale);
             const rox = (ZOOM_SIZE - rW) >> 1, roy = (ZOOM_SIZE - rH) >> 1;
+            const inv_rW = srcW / rW, inv_rH = srcH / rH;
             let mn = Infinity, mx = -Infinity;
             for (let py = 0; py < rH; py++)
                 for (let qx = 0; qx < rW; qx++) {
-                    const v = getVal(qx * srcW / rW | 0, py * srcH / rH | 0);
+                    const v = getVal(qx * inv_rW | 0, py * inv_rH | 0);
                     if (v < mn) mn = v; if (v > mx) mx = v;
                 }
             const zsc = mx > mn ? 1 / (mx - mn) : 1;
             for (let py = 0; py < rH; py++)
                 for (let qx = 0; qx < rW; qx++) {
-                    const vf = (getVal(qx * srcW / rW | 0, py * srcH / rH | 0) - mn) * zsc;
+                    const vf = (getVal(qx * inv_rW | 0, py * inv_rH | 0) - mn) * zsc;
                     const idx = ((yZ + roy + py) * cw + xZ + rox + qx) * 4;
                     if (tint) {
                         px[idx]=(tint[0]*vf)|0; px[idx+1]=(tint[1]*vf)|0; px[idx+2]=(tint[2]*vf)|0;

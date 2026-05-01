@@ -1,7 +1,5 @@
-// main.js
-// Orchestrates UI, WebGPU setup, and GPU training loop (forward + backward + Adam).
 import { initWebGPU } from './webgpu_manager.js';
-import { createModel, destroyModel, shakeEmbeddings, shakeMlp } from './model.js';
+import { ModelTensors, createModel, destroyModel, initCpuWeights, shakeEmbeddings, shakeMlp } from './model.js';
 import { buildShader } from './shader_builder.js';
 import { get_target_pixels } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
@@ -11,82 +9,14 @@ import { drawOutputCanvas, drawFlowDiagram, drawLossCurve, FLOW_PAD, FLOW_EMB_W 
 import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
 import { Trainer } from './trainer.js';
-
-// --- DOM references ---
-const sourcePanel  = document.getElementById('source-panel');
-const outputPanel  = document.getElementById('output-panel');
-const canvasRow    = document.querySelector('.canvas-row');
-const sourceCanvas = document.getElementById('source-canvas');
-const layersCanvas = document.getElementById('layers-canvas');
-const canvas       = document.getElementById('canvas');
-const lossCanvas   = document.getElementById('loss-canvas');
-const fileInput    = document.getElementById('file-input');
-const dropOverlay  = document.getElementById('drop-overlay');
-
-const gridSizeSelect            = document.getElementById('grid-size');
-const embeddingChannelsSelect   = document.getElementById('embedding-channels');
-const mlpWidth1Select           = document.getElementById('mlp-width1');
-const mlpWidth2Select           = document.getElementById('mlp-width2');
-const quantizationSelect        = document.getElementById('quantization');
-const embBitsSelect             = document.getElementById('emb-bits');
-const activationSelect          = document.getElementById('activation');
-function syncActivationButtons() {
-    document.querySelectorAll('.activ-btn').forEach(btn => {
-        btn.classList.toggle('selected', btn.dataset.val === activationSelect.value);
-    });
-}
-document.querySelectorAll('.activ-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        activationSelect.value = btn.dataset.val;
-        syncActivationButtons();
-        activationSelect.dispatchEvent(new Event('change'));
-    });
-});
-syncActivationButtons();
-const smoothInterpolationCheckbox = document.getElementById('smooth-interpolation');
-const noOffsetCheckbox            = document.getElementById('no-offset');
-const maxIterInput  = document.getElementById('max-iter');
-const embedLrInput  = document.getElementById('embed-lr');
-const mlpLrInput    = document.getElementById('mlp-lr');
-const maxIterVal    = document.getElementById('max-iter-val');
-const embedLrVal    = document.getElementById('embed-lr-val');
-const mlpLrVal      = document.getElementById('mlp-lr-val');
-const mlpRatioInput  = document.getElementById('mlp-ratio');
-const mlpRatioVal    = document.getElementById('mlp-ratio-val');
-const numLoopsInput  = document.getElementById('num-loops');
-const numLoopsVal    = document.getElementById('num-loops-val');
-const bwdStrideInput = document.getElementById('bwd-stride');
-const bwdStrideVal   = document.getElementById('bwd-stride-val');
-const outputZoomInput = document.getElementById('output-zoom');
-const outputZoomVal   = document.getElementById('output-zoom-val');
-const startBtn      = document.getElementById('start-btn');
-const resetBtn      = document.getElementById('reset-btn');
-const shakeEmbBtn   = document.getElementById('shake-emb-btn');
-const shakeMlpBtn   = document.getElementById('shake-mlp-btn');
-const saveBtn       = document.getElementById('save-btn');
-const loadBtn       = document.getElementById('load-btn');
-const snapshotBtn   = document.getElementById('snapshot-btn');
-const modelFileInput = document.getElementById('model-file-input');
-const lossValueEl   = document.getElementById('loss-value');
-const stepCounterEl = document.getElementById('step-counter');
-const rateDisplayEl = document.getElementById('rate-display');
-const modelSizeEl   = document.getElementById('model-size');
-const inputSizeEl   = document.getElementById('input-size');
-const statusDotEl   = document.getElementById('status-dot');
-const statusTextEl  = document.getElementById('status-text');
-const sourceResEl   = document.getElementById('source-res');
-const outputResEl   = document.getElementById('output-res');
-const roiBrushInput    = document.getElementById('roi-brush');
-const roiBrushVal      = document.getElementById('roi-brush-val');
-const roiStrengthInput = document.getElementById('roi-strength');
-const roiStrengthVal   = document.getElementById('roi-strength-val');
-const roiFreezeChk     = document.getElementById('roi-freeze');
-const roiClearBtn      = document.getElementById('roi-clear-btn');
-const roiAutoBtn       = document.getElementById('roi-auto-btn');
+import { CpuTrainer } from './optimizer.js';
+import { DOM, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui_manager.js';
+import { init as initROI, startDecayLoop, stopDecayLoop, hasPainted } from './roi_controls.js';
+import { init as initFileHandler } from './file_handler.js';
 
 // --- State ---
-let BASE_CANVAS_W = canvas.width;
-let BASE_CANVAS_H = canvas.height;
+let BASE_CANVAS_W = DOM.canvas.width;
+let BASE_CANVAS_H = DOM.canvas.height;
 let config = {};
 let imageHasAlpha = false;  // set from image pixels in loadImageOntoCanvas
 let loadedImage   = null;
@@ -113,82 +43,41 @@ const isTraining = () => trainer?.active ?? false;
 const canInfer   = () => !!model && !!lastWeights && !isTraining();
 
 // ROI mask state
-const roiMask  = new ROIMask(1, 1);
-let decayRafId = null;
+const roiMask = new ROIMask(1, 1);
 
-function drawPlaceholder(ctx_canvas) {
-    const ctx = ctx_canvas.getContext('2d');
-    ctx.clearRect(0, 0, ctx_canvas.width, ctx_canvas.height);
-    ctx.fillStyle = '#1a1a2a';
-    ctx.fillRect(0, 0, ctx_canvas.width, ctx_canvas.height);
-    ctx.fillStyle = '#555';
-    ctx.font = `${Math.max(12, Math.min(18, ctx_canvas.width / 14))}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('train or load a model', ctx_canvas.width / 2, ctx_canvas.height / 2);
-}
-const vizIntervalSelect          = document.getElementById('viz-interval');
-const offsetSampleIntervalSelect = document.getElementById('offset-sample-interval');
-
-// --- Compressed size estimate ---
-function computeModelSize() {
-    const gs   = parseInt(gridSizeSelect.value);
-    const embCh = parseInt(embeddingChannelsSelect.value);
-    const mlpW1 = parseInt(mlpWidth1Select.value);
-    const mlpW2 = parseInt(mlpWidth2Select.value);
-    const emb   = gs * gs * embCh;
-    const outCh = 3; // conservative estimate (no alpha)
-    const mlp   = embCh*mlpW1 + mlpW1 + mlpW1*mlpW2 + mlpW2 + mlpW2*outCh + outCh;
-    const mlpBpp = quantizationSelect.value === 'none' ? 4 : 1;
-    const embBpp = parseInt(embBitsSelect.value) / 8;
-    return emb * embBpp + mlp * mlpBpp;
+// --- Source canvas ---
+function drawSourceImage() {
+    if (!loadedImage) return;
+    const ctx = DOM.sourceCanvas.getContext('2d');
+    ctx.clearRect(0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
+    ctx.drawImage(loadedImage, 0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
+    roiMask.drawOverlay(ctx);
+    DOM.dropOverlay.classList.add('hidden');
 }
 
-function updateSizeDisplay() {
-    const b = computeModelSize();
-    const pixels = BASE_CANVAS_W * BASE_CANVAS_H;
-    const bpp = pixels > 0 ? (b * 8 / pixels).toFixed(2) : '—';
-    const sizeStr = b >= 1024 ? (b / 1024).toFixed(1) + ' KB' : b + ' B';
-    modelSizeEl.textContent = `${sizeStr} (${bpp} bpp)`;
-}
-
-// --- LR slider helpers (log scale: slider 0–100 → 1e-4 … ~1.2e-1; v=80 → 3e-2) ---
-const sliderToLR = v => 1e-4 * Math.pow(300, v / 80);
-const formatLR   = lr => lr.toExponential(1);
-
-function syncSliderDisplay(input, display) {
-    display.textContent = formatLR(sliderToLR(parseInt(input.value)));
-}
-
-syncSliderDisplay(embedLrInput, embedLrVal);
-syncSliderDisplay(mlpLrInput,   mlpLrVal);
-updateSizeDisplay();
-
-embedLrInput.addEventListener('input', () => syncSliderDisplay(embedLrInput, embedLrVal));
-mlpLrInput.addEventListener('input',   () => syncSliderDisplay(mlpLrInput, mlpLrVal));
-maxIterInput.addEventListener('input', () => {
-    const v = parseInt(maxIterInput.value);
-    maxIterVal.textContent = v === 0 ? '∞' : v.toLocaleString();
-});
-mlpRatioInput.addEventListener('input', () => { mlpRatioVal.textContent = mlpRatioInput.value; });
-numLoopsInput.addEventListener('input', () => { numLoopsVal.textContent = numLoopsInput.value; });
-bwdStrideInput.addEventListener('input', () => { bwdStrideVal.textContent = bwdStrideInput.value; });
-outputZoomInput.addEventListener('input', () => {
-    const scale = parseFloat(outputZoomInput.value);
-    outputZoomVal.textContent = scale + '×';
+DOM.outputZoomInput.addEventListener('input', () => {
+    const scale = parseFloat(DOM.outputZoomInput.value);
+    DOM.outputZoomVal.textContent = scale + '×';
     if (canInfer()) {
         const W = Math.round(BASE_CANVAS_W * scale);
         const H = Math.round(BASE_CANVAS_H * scale);
-        outputResEl.textContent = `${W}×${H}`;
+        DOM.outputResEl.textContent = `${W}×${H}`;
         runZoomInference(W, H);
     }
 });
 
-function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth1, mlpWidth2 }) {
-    const valid = [4, 8, 16, 32, 64];
-    return [16, 32, 64].includes(gridSize) &&
-           [4, 8, 16].includes(embeddingChannels) &&
-           valid.includes(mlpWidth1) && valid.includes(mlpWidth2);
+const VALID_GRID_SIZES   = [16, 32, 64];
+const VALID_EMB_CHANNELS = [4, 8, 16];
+const VALID_MLP_WIDTHS1  = [4, 8, 16, 32, 64];
+const VALID_MLP_WIDTHS2  = [8, 16, 32, 64];
+const VALID_EMB_BITS     = [4, 8];
+
+function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth1, mlpWidth2, embBits = 8 }) {
+    return VALID_GRID_SIZES.includes(gridSize)       &&
+           VALID_EMB_CHANNELS.includes(embeddingChannels) &&
+           VALID_MLP_WIDTHS1.includes(mlpWidth1)     &&
+           VALID_MLP_WIDTHS2.includes(mlpWidth2)     &&
+           VALID_EMB_BITS.includes(embBits);
 }
 
 function configCompatible(a, b) {
@@ -200,181 +89,19 @@ function configCompatible(a, b) {
 }
 
 function currentModelConfig() {
-    const mlpWidth1 = parseInt(mlpWidth1Select.value);
-    const mlpWidth2 = parseInt(mlpWidth2Select.value);
-    const embeddingChannels = parseInt(embeddingChannelsSelect.value);
+    const mlpWidth1 = parseInt(DOM.mlpWidth1Select.value);
+    const mlpWidth2 = parseInt(DOM.mlpWidth2Select.value);
+    const embeddingChannels = parseInt(DOM.embeddingChannelsSelect.value);
     return {
-        gridSize:          parseInt(gridSizeSelect.value),
+        gridSize:          parseInt(DOM.gridSizeSelect.value),
         embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
         mlpWidth1:         Math.ceil(mlpWidth1 / 4) * 4,
         mlpWidth2:         Math.ceil(mlpWidth2 / 4) * 4,
-        embBits:           parseInt(embBitsSelect.value),
+        embBits:           parseInt(DOM.embBitsSelect.value),
     };
 }
 
-const STRUCTURAL_CONTROLS = [gridSizeSelect, embeddingChannelsSelect, mlpWidth1Select, mlpWidth2Select];
-function updateDirtyIndicators() {
-    if (!lastConfig) { STRUCTURAL_CONTROLS.forEach(el => el.removeAttribute('data-dirty')); return; }
-    const cur = currentModelConfig();
-    gridSizeSelect.toggleAttribute('data-dirty',          lastConfig.gridSize            !== cur.gridSize);
-    embeddingChannelsSelect.toggleAttribute('data-dirty', lastConfig.embeddingChannels   !== cur.embeddingChannels);
-    mlpWidth1Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth1           !== cur.mlpWidth1);
-    mlpWidth2Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth2           !== cur.mlpWidth2);
-}
-
-function syncButtonStates() {
-    const training      = isTraining();
-    const hasModel      = !!model;
-    const shouldDisable = !hasModel || training;
-    resetBtn.disabled        = shouldDisable;
-    shakeEmbBtn.disabled     = shouldDisable;
-    shakeMlpBtn.disabled     = shouldDisable;
-    outputZoomInput.disabled = shouldDisable;
-    snapshotBtn.disabled = !hasModel || (training && snapshotWeights !== null);
-    loadBtn.disabled = training;
-}
-
-function updateStartLabel() {
-    if (configCompatible(lastConfig, currentModelConfig()) && model) {
-        startBtn.textContent = '▶ Resume';
-    } else {
-        startBtn.textContent = '▶ Start';
-    }
-    syncButtonStates();
-}
-
-// --- Status indicator ---
-function setStatus(s) {
-    const labels = { idle: 'IDLE', training: 'TRAINING', stopped: 'STOPPED' };
-    statusTextEl.textContent = labels[s] || s;
-    statusDotEl.className    = 'status-dot ' + s;
-    const modelControls = document.getElementById('model-controls');
-    if (s === 'training') {
-        startBtn.textContent = '■ Stop';
-        startBtn.classList.add('stopping');
-        modelControls.inert = true;
-        loadBtn.disabled = true;
-    } else {
-        startBtn.classList.remove('stopping');
-        modelControls.inert = false;
-        updateStartLabel();
-        return;
-    }
-    syncButtonStates();
-}
-
-// --- Source canvas ---
-function drawSourceImage() {
-    if (!loadedImage) return;
-    const ctx = sourceCanvas.getContext('2d');
-    ctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
-    ctx.drawImage(loadedImage, 0, 0, sourceCanvas.width, sourceCanvas.height);
-    roiMask.drawOverlay(ctx);
-    dropOverlay.classList.add('hidden');
-}
-
-function startDecayLoop() {
-    if (decayRafId !== null || !roiMask.isActive()) return;
-    function tick(now) {
-        if (!roiFreezeChk.checked) roiMask.decay(now);
-        drawSourceImage();
-        decayRafId = (roiFreezeChk.checked || roiMask.isActive()) ? requestAnimationFrame(tick) : null;
-    }
-    decayRafId = requestAnimationFrame(tick);
-}
-
-function stopDecayLoop() {
-    if (decayRafId !== null) { cancelAnimationFrame(decayRafId); decayRafId = null; }
-}
-
-// --- Collapsible sidebar sections ---
-document.querySelectorAll('#sidebar .section-label').forEach(label => {
-    label.addEventListener('click', () => label.closest('.ctrl-section').classList.toggle('collapsed'));
-});
-
-// --- ROI mask controls ---
-roiBrushInput.addEventListener('input', () => { roiBrushVal.textContent = roiBrushInput.value; });
-roiStrengthInput.addEventListener('input', () => { roiStrengthVal.textContent = roiStrengthInput.value; });
-roiFreezeChk.addEventListener('change', () => {
-    if (!roiFreezeChk.checked && roiMask.isActive() && !isTraining()) startDecayLoop();
-});
-roiClearBtn.addEventListener('click', () => {
-    roiMask.clear();
-    stopDecayLoop();
-    drawSourceImage();
-});
-roiAutoBtn.addEventListener('click', () => {
-    if (!loadedImage) return;
-    const ctx = sourceCanvas.getContext('2d');
-    const id  = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-    roiMask.autoMask(id.data);
-    roiFreezeChk.checked = true;
-    stopDecayLoop();
-    drawSourceImage();
-});
-
-{
-    let isPainting = false, didPaint = false;
-    function sourceCanvasCoords(e) {
-        const r = sourceCanvas.getBoundingClientRect();
-        return [
-            (e.clientX - r.left) * sourceCanvas.width  / r.width,
-            (e.clientY - r.top)  * sourceCanvas.height / r.height,
-        ];
-    }
-    sourceCanvas.addEventListener('mousedown', (e) => {
-        if (!loadedImage) return;
-        isPainting = true;
-        didPaint = false;
-        const [x, y] = sourceCanvasCoords(e);
-        roiMask.paint(x, y, parseInt(roiBrushInput.value));
-        drawSourceImage();
-        if (!isTraining()) startDecayLoop();
-    });
-    sourceCanvas.addEventListener('mousemove', (e) => {
-        if (!isPainting) return;
-        didPaint = true;
-        const [x, y] = sourceCanvasCoords(e);
-        roiMask.paint(x, y, parseInt(roiBrushInput.value));
-        drawSourceImage();
-    });
-    window.addEventListener('mouseup',    () => { isPainting = false; });
-    sourceCanvas.addEventListener('mouseleave', () => { isPainting = false; });
-
-    // --- File / drop zone ---
-    dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
-    sourcePanel.addEventListener('click', (e) => {
-        if (e.target !== fileInput && !(e.target === sourceCanvas && didPaint)) fileInput.click();
-    });
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) { handleFile(e.target.files[0]); fileInput.value = ''; }
-    });
-}
-sourcePanel.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropOverlay.classList.remove('hidden');
-    dropOverlay.classList.add('dragover');
-});
-sourcePanel.addEventListener('dragleave', () => {
-    dropOverlay.classList.remove('dragover');
-    if (loadedImage) dropOverlay.classList.add('hidden');
-});
-sourcePanel.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropOverlay.classList.remove('dragover');
-    if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
-});
-
-function fitSidePanels() {
-    if (!loadedImage) return;
-    const rowH = canvasRow.clientHeight;
-    [sourcePanel, outputPanel].forEach(panel => {
-        const hdrH = panel.querySelector('.panel-header').offsetHeight;
-        const w = Math.round((rowH - hdrH) * BASE_CANVAS_W / BASE_CANVAS_H);
-        panel.style.width = w + 'px';
-    });
-}
-window.addEventListener('resize', fitSidePanels);
+window.addEventListener('resize', () => { if (loadedImage) fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H); });
 
 function loadImageOntoCanvas(img) {
     loadedImage = img;
@@ -382,21 +109,21 @@ function loadImageOntoCanvas(img) {
     const aspect = img.naturalWidth / img.naturalHeight;
     BASE_CANVAS_W = aspect >= 1 ? MAX : Math.round(MAX * aspect);
     BASE_CANVAS_H = aspect >= 1 ? Math.round(MAX / aspect) : MAX;
-    sourceCanvas.width  = BASE_CANVAS_W;
-    sourceCanvas.height = BASE_CANVAS_H;
-    canvas.width  = BASE_CANVAS_W;
-    canvas.height = BASE_CANVAS_H;
-    canvas.style.width = '';
-    canvas.style.height = '';
-    canvas.style.maxWidth = '';
-    canvas.style.maxHeight = '';
+    DOM.sourceCanvas.width  = BASE_CANVAS_W;
+    DOM.sourceCanvas.height = BASE_CANVAS_H;
+    DOM.canvas.width  = BASE_CANVAS_W;
+    DOM.canvas.height = BASE_CANVAS_H;
+    DOM.canvas.style.width = '';
+    DOM.canvas.style.height = '';
+    DOM.canvas.style.maxWidth = '';
+    DOM.canvas.style.maxHeight = '';
     roiMask.resize(BASE_CANVAS_W, BASE_CANVAS_H);
-    sourcePanel.classList.add('has-image');
-    sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
-    outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    DOM.sourcePanel.classList.add('has-image');
+    DOM.sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    DOM.outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     drawSourceImage();
     {
-        const ctx = sourceCanvas.getContext('2d');
+        const ctx = DOM.sourceCanvas.getContext('2d');
         const px = ctx.getImageData(0, 0, BASE_CANVAS_W, BASE_CANVAS_H).data;
         let hasAlpha = false;
         for (let i = 3; i < px.length; i += 4) { if (px[i] < 255) { hasAlpha = true; break; } }
@@ -405,8 +132,8 @@ function loadImageOntoCanvas(img) {
     }
     const outCh = config.hasAlpha ? 4 : 3;
     const bytes = BASE_CANVAS_W * BASE_CANVAS_H * outCh;
-    inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
-    requestAnimationFrame(fitSidePanels);
+    DOM.inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
+    requestAnimationFrame(() => fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H));
 }
 
 async function previewGeometry() {
@@ -414,7 +141,7 @@ async function previewGeometry() {
     trainer?.destroy();
     trainer = null;
     config = buildConfigFromUI();
-    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
     const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
     destroyModel(model);
     model = buffers;
@@ -422,43 +149,55 @@ async function previewGeometry() {
     createBindGroup();
     channelMask = 0xFFFFFFFF;
     lastConfig = currentModelConfig();
-    updateDirtyIndicators();
+    updateDirtyIndicators(lastConfig, currentModelConfig());
     clearTrainingUI();
-    trainer = new Trainer({
-        webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
-        outputBuffers, readbackBuffers,
-        targetPixels: get_target_pixels(loadedImage, canvas),
-        roiMask,
-        getHyperparams: () => ({
-            stride: 1, mlpRatio: 1, numLoops: 1,
-            embedLr: sliderToLR(parseInt(embedLrInput.value)),
-            mlpLr:   sliderToLR(parseInt(mlpLrInput.value)),
-            roiStrength: 0, roiFreeze: true, maxIter: 1,
-        }),
-        onStep({ lastWeights: w, inter1, inter2 }) {
-            lastWeights = w;
-            if (inter1 !== null) lastInterData = { inter1, inter2 };
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
-                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                  finalOutput: w.finalOutput, imgW: canvas.width, imgH: canvas.height,
-                  config, channelMask, ema: null, hoverState }));
-        },
-        onStop() { trainer?.destroy(); trainer = null; syncButtonStates(); },
-    });
-    trainer.start(freshWeights);
+    lastWeights = weightsViewFrom(freshWeights);
+    layerRangeEma = null;
+    await runInference();
+    syncButtonStates(isTraining(), !!model, !!snapshotWeights);
 }
 
 async function startTraining(fullReset) {
-    trainer?.destroy();
-    trainer = null;
+    const useCpu = DOM.engineSelect.value === 'cpu';
+    const configChanged = !configCompatible(lastConfig, currentModelConfig());
+
+    const canTransferCpu = trainer?.type === 'cpu' && !fullReset && !configChanged;
+    const prevCpuWeights = (!useCpu && canTransferCpu) ? trainer.getWeights() : null;
+    const keepCpu        = ( useCpu && canTransferCpu);
+    if (!keepCpu) { trainer?.destroy(); trainer = null; }
+
     resetCanvasToBase();
     const prevOffsets = config.embOffsets;
     const prevEmbBits = config.embBits;
     config = buildConfigFromUI();
+
+    if (useCpu) {
+        if (!trainer) {
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+            lastConfig = currentModelConfig();
+            updateDirtyIndicators(lastConfig, currentModelConfig());
+            clearTrainingUI();
+            snapshotWeights = null;
+            trainer = makeCpuTrainer();
+            setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+            const cpuStartWeights = (!fullReset && !configChanged && model && webGpuContext)
+                ? await readBackAllWeights()
+                : initCpuWeights(config);
+            trainer.start(cpuStartWeights);
+        } else {
+            config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+            clearTrainingUI();
+            setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+            trainer.start(null);
+        }
+        return;
+    }
+
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
-        if (fullReset || !configCompatible(lastConfig, currentModelConfig()) || !model) {
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+        if (fullReset || configChanged || !model) {
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
             const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
             destroyModel(model);
             model = buffers;
@@ -466,24 +205,31 @@ async function startTraining(fullReset) {
             createBindGroup();
             channelMask = 0xFFFFFFFF;
             lastConfig = currentModelConfig();
-            updateDirtyIndicators();
+            updateDirtyIndicators(lastConfig, currentModelConfig());
             clearTrainingUI();
             snapshotWeights = null;
-            snapshotBtn.textContent = '● Snapshot';
             trainer = makeTrainer();
-            setStatus('training');
+            setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
             trainer.start(freshWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
-                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
             webGpuContext.writeBuffer(model.emb_offsets, config.embOffsets);
+            if (prevCpuWeights) {
+                webGpuContext.uploadModelWeights(model, prevCpuWeights);
+                for (const k of ModelTensors.KEYS) {
+                    webGpuContext.clearBuffer(model.adamM[k]);
+                    webGpuContext.clearBuffer(model.adamV[k]);
+                }
+                lastWeights = weightsViewFrom(prevCpuWeights);
+            }
             await createPipeline();
             createBindGroup();
             channelMask = 0xFFFFFFFF;
             clearTrainingUI();
             trainer = makeTrainer();
             trainer.lastWeights = lastWeights;
-            setStatus('training');
+            setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
             trainer.start(null);
         }
     } catch (err) {
@@ -506,23 +252,23 @@ async function handleFile(file) {
 }
 
 function resetCanvasToBase() {
-    canvas.width  = BASE_CANVAS_W;
-    canvas.height = BASE_CANVAS_H;
-    canvas.style.width = '';
-    canvas.style.height = '';
-    canvas.parentElement.style.overflow = 'hidden';
+    DOM.canvas.width  = BASE_CANVAS_W;
+    DOM.canvas.height = BASE_CANVAS_H;
+    DOM.canvas.style.width = '';
+    DOM.canvas.style.height = '';
+    DOM.canvas.parentElement.style.overflow = 'hidden';
 }
 
 function buildConfigFromUI() {
     return {
-        gridSize:            parseInt(gridSizeSelect.value),
-        embeddingChannels:   parseInt(embeddingChannelsSelect.value),
-        mlpWidth1:           parseInt(mlpWidth1Select.value),
-        mlpWidth2:           parseInt(mlpWidth2Select.value),
-        quantization:        quantizationSelect.value,
-        embBits:             parseInt(embBitsSelect.value),
-        activation:          activationSelect.value,
-        smoothInterpolation: smoothInterpolationCheckbox.checked,
+        gridSize:            parseInt(DOM.gridSizeSelect.value),
+        embeddingChannels:   parseInt(DOM.embeddingChannelsSelect.value),
+        mlpWidth1:           parseInt(DOM.mlpWidth1Select.value),
+        mlpWidth2:           parseInt(DOM.mlpWidth2Select.value),
+        quantization:        DOM.quantizationSelect.value,
+        embBits:             parseInt(DOM.embBitsSelect.value),
+        activation:          DOM.activationSelect.value,
+        smoothInterpolation: DOM.smoothInterpolationCheckbox.checked,
         hasAlpha:            imageHasAlpha,
         width:  BASE_CANVAS_W,
         height: BASE_CANVAS_H,
@@ -544,27 +290,27 @@ function createBindGroup() {
     for (const b of Object.values(readbackBuffers)) b?.destroy();
 
     const { mlpWidth1, mlpWidth2, gridSize, embeddingChannels } = config;
-    fwdUniformsBuf = webGpuContext.uniformBuffer(224);
+    fwdUniformsBuf = webGpuContext.uniformBuffer(224, 'fwdUniforms');
     webGpuContext.writeBuffer(fwdUniformsBuf,
-        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth1, mlpWidth2, canvas.width, canvas.height, null, config.embOffsets));
+        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth1, mlpWidth2, DOM.canvas.width, DOM.canvas.height, null, config.embOffsets));
 
-    const pixelCount = canvas.width * canvas.height;
+    const pixelCount = DOM.canvas.width * DOM.canvas.height;
     const embSize    = gridSize * gridSize * embeddingChannels;
     const stride1    = mlpWidth1 * 4; // bytes per pixel in interLayer1
     const stride2    = mlpWidth2 * 4; // bytes per pixel in interLayer2
 
-    outputBuffers.interLayer1 = webGpuContext.outputBuffer(pixelCount * stride1);
-    outputBuffers.interLayer2 = webGpuContext.outputBuffer(pixelCount * stride2);
-    outputBuffers.final       = webGpuContext.outputBuffer(pixelCount * 4 * 4);
+    outputBuffers.interLayer1 = webGpuContext.outputBuffer(pixelCount * stride1, 'out/inter1');
+    outputBuffers.interLayer2 = webGpuContext.outputBuffer(pixelCount * stride2, 'out/inter2');
+    outputBuffers.final       = webGpuContext.outputBuffer(pixelCount * 4 * 4,   'out/final');
 
-    readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
-    readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4);
-    readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth1 * embeddingChannels * 4);
-    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride1);
-    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth2 * stride1);
-    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer((config.hasAlpha ? 4 : 3) * stride2);
-    readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride1);
-    readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride2);
+    readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4,                  'rb/final');
+    readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4,                          'rb/emb');
+    readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth1 * embeddingChannels * 4,    'rb/L1w');
+    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride1,                              'rb/L1b');
+    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth2 * stride1,                  'rb/L2w');
+    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer((config.hasAlpha ? 4 : 3) * stride2,  'rb/L3w');
+    readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride1,                 'rb/inter1');
+    readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride2,                 'rb/inter2');
 
     bindGroup = webGpuContext.device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
@@ -586,61 +332,93 @@ function createBindGroup() {
 
 function clearTrainingUI() {
     stopDecayLoop();
-    lossCanvas.getContext('2d').clearRect(0, 0, lossCanvas.width, lossCanvas.height);
-    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    lossValueEl.textContent   = '—';
-    stepCounterEl.textContent = '0';
-    rateDisplayEl.textContent = '—';
+    DOM.lossCanvas.getContext('2d').clearRect(0, 0, DOM.lossCanvas.width, DOM.lossCanvas.height);
+    DOM.canvas.getContext('2d').clearRect(0, 0, DOM.canvas.width, DOM.canvas.height);
+    DOM.lossValueEl.textContent   = '—';
+    DOM.stepCounterEl.textContent = '0';
+    DOM.rateDisplayEl.textContent = '—';
     layerRangeEma = null;
     layerCols     = [];
     hoverState    = null;
     lastInterData = { inter1: null, inter2: null };
 }
 
-function makeTrainer() {
-    return new Trainer({
-        webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
-        outputBuffers, readbackBuffers,
-        targetPixels: get_target_pixels(loadedImage, canvas),
-        roiMask,
+function makeCpuTrainer() {
+    return new CpuTrainer({
+        config,
+        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
         getHyperparams: () => ({
-            stride:      parseInt(bwdStrideInput.value) || 1,
-            mlpRatio:    parseInt(mlpRatioInput.value)  || 1,
-            numLoops:    parseInt(numLoopsInput.value)  || 1,
-            embedLr:     sliderToLR(parseInt(embedLrInput.value)),
-            mlpLr:       sliderToLR(parseInt(mlpLrInput.value)),
-            roiStrength: parseFloat(roiStrengthInput.value),
-            roiFreeze:   roiFreezeChk.checked,
-            maxIter:     parseInt(maxIterInput.value),
-            vizInterval:          parseInt(vizIntervalSelect.value),
-            offsetSampleInterval: parseInt(offsetSampleIntervalSelect.value),
+            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
+            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
+            maxIter:     parseInt(DOM.maxIterInput.value),
+            vizInterval: parseInt(DOM.vizIntervalSelect.value),
         }),
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
             if (inter1 !== null) lastInterData = { inter1, inter2 };
-            lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
-            stepCounterEl.textContent = step.toLocaleString();
-            rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-            drawOutputCanvas(canvas, w.finalOutput, config.hasAlpha);
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+            DOM.lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+            DOM.stepCounterEl.textContent = step.toLocaleString();
+            DOM.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
+            drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
                 { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                  finalOutput: w.finalOutput, imgW: canvas.width, imgH: canvas.height,
+                  finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
                   config, channelMask, ema: layerRangeEma, hoverState }));
-            drawLossCurve(lossCanvas, lossHistory);
+            drawLossCurve(DOM.lossCanvas, lossHistory);
             drawSourceImage();
         },
         onStop() {
-            setStatus('stopped');
+            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+            if (roiMask.isActive()) startDecayLoop();
+        },
+    });
+}
+
+function makeTrainer() {
+    return new Trainer({
+        webGpuContext, canvas: DOM.canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
+        outputBuffers, readbackBuffers,
+        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
+        roiMask,
+        getHyperparams: () => ({
+            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
+            mlpRatio:    parseInt(DOM.mlpRatioInput.value)  || 1,
+            numLoops:    parseInt(DOM.numLoopsInput.value)  || 1,
+            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
+            roiStrength: parseFloat(DOM.roiStrengthInput.value),
+            roiFreeze:   DOM.roiFreezeChk.checked,
+            maxIter:     parseInt(DOM.maxIterInput.value),
+            vizInterval:          parseInt(DOM.vizIntervalSelect.value),
+            offsetSampleInterval: parseInt(DOM.offsetSampleIntervalSelect.value),
+        }),
+        onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
+            lastWeights = w;
+            if (inter1 !== null) lastInterData = { inter1, inter2 };
+            DOM.lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+            DOM.stepCounterEl.textContent = step.toLocaleString();
+            DOM.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
+            drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
+            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                  finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+                  config, channelMask, ema: layerRangeEma, hoverState }));
+            drawLossCurve(DOM.lossCanvas, lossHistory);
+            drawSourceImage();
+        },
+        onStop() {
+            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
             if (roiMask.isActive()) startDecayLoop();
         },
     });
 }
 
 // --- Start / Stop / Reset buttons ---
-startBtn.addEventListener('click', async () => {
+DOM.startBtn.addEventListener('click', async () => {
     if (isTraining()) {
         trainer.stop();
-        setStatus('stopped');
+        setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
         if (roiMask.isActive()) startDecayLoop();
         return;
     }
@@ -651,18 +429,18 @@ startBtn.addEventListener('click', async () => {
     await startTraining(false);
 });
 
-resetBtn.addEventListener('click', async () => {
+DOM.resetBtn.addEventListener('click', async () => {
     if (!loadedImage) return;
     await startTraining(true);
 });
 
 // --- Shake: add small noise to escape local minima ---
-shakeEmbBtn.addEventListener('click', () => {
+DOM.shakeEmbBtn.addEventListener('click', () => {
     if (!lastWeights) return;
     shakeEmbeddings(webGpuContext, model, lastWeights.embeddings);
 });
 
-shakeMlpBtn.addEventListener('click', async () => {
+DOM.shakeMlpBtn.addEventListener('click', async () => {
     if (!model) return;
     shakeMlp(webGpuContext, model, await readBackAllWeights());
 });
@@ -707,24 +485,25 @@ document.getElementById('export-btn').addEventListener('click', async () => {
 });
 
 // --- Save model ---
-document.getElementById('save-btn').addEventListener('click', async () => {
-    if (!model) {
-        alert("Train or load a model first.");
-        return;
-    }
+async function serializeModel() {
     const weights = await readBackAllWeights();
     const saveConfig = {
         ...config,
-        maxIter:    maxIterInput.value,
-        embedLr:    embedLrInput.value,
-        mlpLr:      mlpLrInput.value,
-        mlpRatio:   mlpRatioInput.value,
-        numLoops:   numLoopsInput.value,
-        bwdStride:  bwdStrideInput.value,
-        outputZoom: outputZoomInput.value,
-        noOffset:   noOffsetCheckbox.checked,
+        maxIter:    DOM.maxIterInput.value,
+        embedLr:    DOM.embedLrInput.value,
+        mlpLr:      DOM.mlpLrInput.value,
+        mlpRatio:   DOM.mlpRatioInput.value,
+        numLoops:   DOM.numLoopsInput.value,
+        bwdStride:  DOM.bwdStrideInput.value,
+        outputZoom: DOM.outputZoomInput.value,
+        noOffset:   DOM.noOffsetCheckbox.checked,
     };
-    const buf = saveModelSafetensors(saveConfig, weights);
+    return saveModelSafetensors(saveConfig, weights);
+}
+
+document.getElementById('save-btn').addEventListener('click', async () => {
+    if (!model) { alert("Train or load a model first."); return; }
+    const buf = await serializeModel();
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
     const a   = Object.assign(document.createElement('a'), { href: url, download: 'model.safetensors' });
     a.click();
@@ -732,20 +511,15 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 });
 
 // --- Snapshot / Recall ---
-snapshotBtn.addEventListener('click', async () => {
+DOM.snapshotBtn.addEventListener('click', async () => {
     if (!model) { alert("Train or load a model first."); return; }
-    if (!snapshotWeights) {
-        snapshotWeights = await readBackAllWeights();
-        snapshotBtn.textContent = '↺ Recall';
-    } else {
-        webGpuContext.uploadModelWeights(model, snapshotWeights);
-        if (lastWeights) {
-            Object.assign(lastWeights, weightsViewFrom(snapshotWeights));
-            await runInference();
-        }
-        snapshotWeights = null;
-        snapshotBtn.textContent = '● Snapshot';
-    }
+    snapshotWeights = await serializeModel();
+    syncButtonStates(isTraining(), !!model, !!snapshotWeights);
+});
+
+DOM.recallBtn.addEventListener('click', async () => {
+    if (!snapshotWeights) return;
+    await loadModelFile(new Blob([snapshotWeights], { type: 'application/octet-stream' }));
 });
 
 // --- Zoom inference: forward pass at arbitrary resolution using temp buffers ---
@@ -786,8 +560,8 @@ async function runZoomInference(W, H) {
         ],
     });
 
-    const ce = device.createCommandEncoder();
-    const fwdPass = ce.beginComputePass();
+    const ce = device.createCommandEncoder({ label: 'zoom-inference' });
+    const fwdPass = ce.beginComputePass({ label: 'fwd' });
     fwdPass.setPipeline(pipeline);
     fwdPass.setBindGroup(0, bg);
     fwdPass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
@@ -796,9 +570,9 @@ async function runZoomInference(W, H) {
     device.queue.submit([ce.finish()]);
 
     await rbBuf.mapAsync(GPUMapMode.READ);
-    canvas.width  = W;
-    canvas.height = H;
-    drawOutputCanvas(canvas, new Float32Array(rbBuf.getMappedRange()), config.hasAlpha);
+    DOM.canvas.width  = W;
+    DOM.canvas.height = H;
+    drawOutputCanvas(DOM.canvas, new Float32Array(rbBuf.getMappedRange()), config.hasAlpha);
     rbBuf.unmap();
 
     unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
@@ -807,8 +581,8 @@ async function runZoomInference(W, H) {
 // --- Channel mask: click / shift+click on the Emb column in the Layers canvas ---
 // Map a mouse event to canvas pixel coords, accounting for object-fit:contain letterboxing.
 function layersCanvasCoords(e) {
-    const rect = layersCanvas.getBoundingClientRect();
-    const cw = layersCanvas.width, ch = layersCanvas.height;
+    const rect = DOM.layersCanvas.getBoundingClientRect();
+    const cw = DOM.layersCanvas.width, ch = DOM.layersCanvas.height;
     const canvasAspect = cw / ch;
     const rectAspect = rect.width / rect.height;
     let contentW, contentH, ox, oy;
@@ -827,13 +601,13 @@ function layersCanvasCoords(e) {
 
 function redrawLayers() {
     if (!lastWeights || !config?.mlpWidth1) return;
-    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
         { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-          finalOutput: lastWeights.finalOutput, imgW: canvas.width, imgH: canvas.height,
+          finalOutput: lastWeights.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
           config, channelMask, ema: layerRangeEma, hoverState }));
 }
 
-layersCanvas.addEventListener('mousemove', (e) => {
+DOM.layersCanvas.addEventListener('mousemove', (e) => {
     const { cx, cy } = layersCanvasCoords(e);
     let newState = null;
     for (const col of layerCols) {
@@ -847,21 +621,20 @@ layersCanvas.addEventListener('mousemove', (e) => {
             break;
         }
     }
-    layersCanvas.style.cursor = (newState?.col === 'emb' && !isTraining()) ? 'pointer' : 'default';
+    DOM.layersCanvas.style.cursor = newState?.col === 'emb' ? 'pointer' : 'default';
     if (newState?.col === hoverState?.col && newState?.ch === hoverState?.ch) return;
     hoverState = newState;
     redrawLayers();
 });
 
-layersCanvas.addEventListener('mouseleave', () => {
-    layersCanvas.style.cursor = 'default';
+DOM.layersCanvas.addEventListener('mouseleave', () => {
+    DOM.layersCanvas.style.cursor = 'default';
     if (hoverState === null) return;
     hoverState = null;
     redrawLayers();
 });
 
-layersCanvas.addEventListener('click', (e) => {
-    if (isTraining()) return;
+DOM.layersCanvas.addEventListener('click', (e) => {
     const embCol = layerCols.find(c => c.name === 'emb');
     if (!embCol?.slotH) return;
     const { cx, cy } = layersCanvasCoords(e);
@@ -895,11 +668,11 @@ async function runInference() {
         webGpuContext.writeBuffer(model.embeddings_q, packed);
 
         uploadChannelMask(channelMask, fwdUniformsBuf, device);
-        const ce = device.createCommandEncoder();
-        const fwdPass = ce.beginComputePass();
+        const ce = device.createCommandEncoder({ label: 'inference' });
+        const fwdPass = ce.beginComputePass({ label: 'fwd' });
         fwdPass.setPipeline(pipeline);
         fwdPass.setBindGroup(0, bindGroup);
-        fwdPass.dispatchWorkgroups(Math.ceil(canvas.width / 8), Math.ceil(canvas.height / 8));
+        fwdPass.dispatchWorkgroups(Math.ceil(DOM.canvas.width / 8), Math.ceil(DOM.canvas.height / 8));
         fwdPass.end();
         ce.copyBufferToBuffer(outputBuffers.final,       0, readbackBuffers.final,       0, outputBuffers.final.size);
         ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
@@ -914,16 +687,16 @@ async function runInference() {
         const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
         const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
         const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
-        drawOutputCanvas(canvas, inferFinal, config.hasAlpha);
+        drawOutputCanvas(DOM.canvas, inferFinal, config.hasAlpha);
         readbackBuffers.final.unmap();
         readbackBuffers.interLayer1.unmap();
         readbackBuffers.interLayer2.unmap();
 
         lastInterData = { inter1: inferInter1, inter2: inferInter2 };
         lastWeights.finalOutput = inferFinal;
-        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
+        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
             { weights: lastWeights, inter1: inferInter1, inter2: inferInter2,
-              finalOutput: inferFinal, imgW: canvas.width, imgH: canvas.height,
+              finalOutput: inferFinal, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
               config, channelMask, ema: layerRangeEma, hoverState }));
     } finally {
         inferRunning = false;
@@ -931,12 +704,16 @@ async function runInference() {
     }
 }
 
-async function loadModelFile(file) {
+async function loadAndResetModelFile(file) {
     trainer?.destroy();
     trainer = null;
     clearTrainingUI();
     snapshotWeights = null;
-    snapshotBtn.textContent = '● Snapshot';
+    await loadModelFile(file);
+    syncButtonStates(false, !!model, !!snapshotWeights);
+}
+
+async function loadModelFile(file) {
     let parsed;
     try {
         parsed = await loadModelSafetensors(file);
@@ -951,43 +728,54 @@ async function loadModelFile(file) {
         return;
     }
 
-    gridSizeSelect.value          = String(savedConfig.gridSize);
-    embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
-    mlpWidth1Select.value         = String(savedConfig.mlpWidth1);
-    mlpWidth2Select.value         = String(savedConfig.mlpWidth2);
+    DOM.gridSizeSelect.value          = String(savedConfig.gridSize);
+    DOM.embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
+    DOM.mlpWidth1Select.value         = String(savedConfig.mlpWidth1);
+    DOM.mlpWidth2Select.value         = String(savedConfig.mlpWidth2);
 
-    // Restore saved UI settings
-    const src = { ...savedConfig, ...uiSettings };
-    const UI_RESTORE = [
-        [src, 'quantization',       v => { quantizationSelect.value = v; }],
-        [src, 'embBits',            v => { embBitsSelect.value = String(v); }],
-        [src, 'activation',         v => { activationSelect.value = v; syncActivationButtons(); }],
-        [src, 'smoothInterpolation',v => { smoothInterpolationCheckbox.checked = v === 'true'; }],
-        [src, 'noOffset',           v => { noOffsetCheckbox.checked = v === 'true'; }],
-        [src, 'maxIter',            v => { maxIterInput.value = v; maxIterInput.dispatchEvent(new Event('input')); }],
-        [src, 'embedLr',            v => syncSliderDisplay(Object.assign(embedLrInput, { value: v }), embedLrVal)],
-        [src, 'mlpLr',              v => syncSliderDisplay(Object.assign(mlpLrInput,   { value: v }), mlpLrVal)],
-        [src, 'mlpRatio',           v => { mlpRatioInput.value  = v; mlpRatioVal.textContent  = v; }],
-        [src, 'numLoops',           v => { numLoopsInput.value  = v; numLoopsVal.textContent  = v; }],
-        [src, 'bwdStride',          v => { bwdStrideInput.value = v; bwdStrideVal.textContent = v; }],
-        [src, 'outputZoom',         v => { outputZoomInput.value = v; outputZoomVal.textContent = v + '×'; }],
-    ];
-    for (const [obj, key, set] of UI_RESTORE) { if (obj[key] != null) set(obj[key]); }
+    restoreUISettings({ savedConfig, uiSettings });
 
     const loadedEmbBits = savedConfig.embBits || 8;
+    DOM.embBitsSelect.value = String(loadedEmbBits);
+
+    const outCh = tensors.layer3_biases.length;  // 3 or 4
+    imageHasAlpha = outCh === 4;
+    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = savedConfig;
+    const expectedSizes = {
+        embeddings:     gridSize * gridSize * embCh,
+        layer1_weights: embCh * mlpWidth1,
+        layer1_biases:  mlpWidth1,
+        layer2_weights: mlpWidth1 * mlpWidth2,
+        layer2_biases:  mlpWidth2,
+        layer3_weights: outCh * mlpWidth2,
+        layer3_biases:  outCh,
+    };
+    for (const [k, expected] of Object.entries(expectedSizes)) {
+        if (tensors[k].length !== expected) {
+            alert(`Incompatible model: '${k}' has ${tensors[k].length} values, expected ${expected}`);
+            return;
+        }
+    }
+    for (const [k, arr] of Object.entries(tensors)) {
+        if (arr.some(v => !isFinite(v))) {
+            alert(`Corrupt model: '${k}' contains NaN or Inf values.`);
+            return;
+        }
+    }
+
     config = {
-        gridSize:            savedConfig.gridSize,
-        embeddingChannels:   savedConfig.embeddingChannels,
-        mlpWidth1:           savedConfig.mlpWidth1,
-        mlpWidth2:           savedConfig.mlpWidth2,
-        quantization:        quantizationSelect.value,
+        gridSize:            gridSize,
+        embeddingChannels:   embCh,
+        mlpWidth1:           mlpWidth1,
+        mlpWidth2:           mlpWidth2,
+        quantization:        DOM.quantizationSelect.value,
         embBits:             loadedEmbBits,
-        activation:          savedConfig.activation || 'sin',
-        smoothInterpolation: smoothInterpolationCheckbox.checked,
-        hasAlpha:            tensors.layer3_biases.length === 4,
-        width:  canvas.width,
-        height: canvas.height,
-        embOffsets:          savedConfig.embOffsets ?? new Float32Array(savedConfig.embeddingChannels / (32 / loadedEmbBits) * 2),
+        activation:          DOM.activationSelect.value,
+        smoothInterpolation: DOM.smoothInterpolationCheckbox.checked,
+        hasAlpha:            outCh === 4,
+        width:  DOM.canvas.width,
+        height: DOM.canvas.height,
+        embOffsets:          savedConfig.embOffsets ?? new Float32Array(embCh / (32 / loadedEmbBits) * 2),
     };
 
     try {
@@ -1002,161 +790,76 @@ async function loadModelFile(file) {
         createBindGroup();
         channelMask = 0xFFFFFFFF;
         lastConfig  = currentModelConfig();
-        updateDirtyIndicators();
+        updateDirtyIndicators(lastConfig, currentModelConfig());
 
         lastWeights = weightsViewFrom(tensors);
 
         await runInference();
-        setStatus('stopped');
-        updateSizeDisplay();
-        updateStartLabel();
+        setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+        updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
     } catch (err) {
         console.error('Load model failed:', err);
         alert('Load model failed. Check console for errors.');
     }
 }
 
-loadBtn.addEventListener('click', () => modelFileInput.click());
-modelFileInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    modelFileInput.value = '';
-    await loadModelFile(file);
-});
 
-// Page-level drop for .safetensors (image drops still handled by source panel)
-document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file?.name.endsWith('.safetensors')) await loadModelFile(file);
-});
-
-function updateEmbBitsOptions() {
-    const embCh = parseInt(embeddingChannelsSelect.value);
-    const opt4 = embBitsSelect.querySelector('option[value="4"]');
-    opt4.disabled = embCh < 8;
-    if (opt4.disabled && embBitsSelect.value === '4') embBitsSelect.value = '8';
-}
-
-// Update start button label and size when model config dropdowns change
-[gridSizeSelect, embeddingChannelsSelect, mlpWidth1Select, mlpWidth2Select, quantizationSelect, embBitsSelect, activationSelect].forEach(sel => {
-    sel.addEventListener('change', () => {
-        updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay();
+initTooltips();
+initUI({
+    onConfigChange: () => {
+        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+        updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+    },
+    onSelectChange: () => {
+        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+        updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
         if (!isTraining()) {
-            updateDirtyIndicators();
+            updateDirtyIndicators(lastConfig, currentModelConfig());
             const cur = currentModelConfig();
             if (lastWeights && configCompatible(lastConfig, cur)) {
-                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
-                    { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                      finalOutput: lastWeights.finalOutput, imgW: canvas.width, imgH: canvas.height,
-                      config: lastConfig, channelMask, ema: layerRangeEma, hoverState }));
+                if (canInfer()) runInference(); else redrawLayers();
             } else if (webGpuContext && loadedImage) {
                 previewGeometry();
             } else {
-                drawPlaceholder(layersCanvas);
+                drawPlaceholder(DOM.layersCanvas);
                 layerRangeEma = null;
                 lastInterData = { inter1: null, inter2: null };
             }
         }
-    });
+    },
 });
-updateEmbBitsOptions();
+initROI({ roiMask, isTraining, drawSourceImage });
+initFileHandler({ onImageFile: handleFile, onModelFile: loadAndResetModelFile, hasPainted });
 
-// --- URL parameter parsing ---
-// Supported: ?grid=64&EMB=16&MLP1=16&MLP2=8&iters=4000&8qat&4b&numLoops=3
-// Flags: 8qat (MLP 8-bit QAT), 4b (4-bit embeddings), 8b (8-bit embeddings)
-function applyUrlParams() {
-    const params = new URLSearchParams(window.location.search);
-    let hasParams = false;
-
-    const setSelect = (el, val, allowed) => {
-        const n = parseInt(val);
-        if (val !== null && allowed.includes(n)) { el.value = String(n); hasParams = true; }
-    };
-
-    setSelect(gridSizeSelect,          params.get('grid'), [16, 32, 64]);
-    setSelect(embeddingChannelsSelect, params.get('EMB'),  [4, 8, 16]);
-    setSelect(mlpWidth1Select,         params.get('MLP1'), [4, 8, 16, 32, 64]);
-    setSelect(mlpWidth2Select,         params.get('MLP2'), [4, 8, 16, 32, 64]);
-
-    if (params.has('8qat')) { quantizationSelect.value = 'qat8'; hasParams = true; }
-    if (params.has('none')) { quantizationSelect.value = 'none'; hasParams = true; }
-    if (params.has('4b'))   { embBitsSelect.value = '4'; hasParams = true; }
-    if (params.has('8b'))   { embBitsSelect.value = '8'; hasParams = true; }
-
-    const iters = params.get('iters');
-    if (iters !== null) {
-        const v = parseInt(iters);
-        if (!isNaN(v) && v >= 0) {
-            maxIterInput.value = v;
-            maxIterInput.dispatchEvent(new Event('input'));
-            hasParams = true;
-        }
-    }
-
-    const setLR = (el, valEl, param) => {
-        const v = parseInt(params.get(param));
-        if (!isNaN(v) && v >= 0 && v <= 100) {
-            syncSliderDisplay(Object.assign(el, { value: v }), valEl);
-            hasParams = true;
-        }
-    };
-    setLR(embedLrInput, embedLrVal, 'embedLr');
-    setLR(mlpLrInput,   mlpLrVal,   'mlpLr');
-
-    const numLoopsParam = parseInt(params.get('numLoops'));
-    if (!isNaN(numLoopsParam) && numLoopsParam >= 1 && numLoopsParam <= 8) {
-        numLoopsInput.value = numLoopsParam;
-        numLoopsVal.textContent = numLoopsParam;
-        hasParams = true;
-    }
-
-    if (params.has('smooth')) { smoothInterpolationCheckbox.checked = true;  hasParams = true; }
-    if (params.has('nosmooth')) { smoothInterpolationCheckbox.checked = false; hasParams = true; }
-
-    if (hasParams) { updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay(); }
-    return hasParams;
-}
-
-initTooltips();
-
-// --- Help modal ---
-const helpOverlay = document.getElementById('help-overlay');
-const openHelp = () => helpOverlay.classList.remove('hidden');
-document.getElementById('help-btn').addEventListener('click', openHelp);
-document.getElementById('app-title').addEventListener('click', openHelp);
-document.getElementById('help-close').addEventListener('click', () => helpOverlay.classList.add('hidden'));
-helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.add('hidden'); });
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { helpOverlay.classList.add('hidden'); return; }
-    if (e.key === ' ' && e.target === document.body) {
-        e.preventDefault();
-        startBtn.click();
-    }
-});
+// Default engine: CPU on mobile / no WebGPU, GPU otherwise
+if (!navigator.gpu) DOM.engineSelect.value = 'cpu';
 
 // --- Start tooltip: show once startup is complete ---
 (function() {
     const tip = document.getElementById('start-tooltip');
     const dismiss = () => tip.remove();
     document.addEventListener('startup-complete', () => {
-        const r = startBtn.getBoundingClientRect();
+        const r = DOM.startBtn.getBoundingClientRect();
         tip.style.left = (r.left + r.width / 2) + 'px';
         tip.style.top = (r.bottom + 10) + 'px';
         tip.classList.add('visible');
         tip.addEventListener('animationend', dismiss, { once: true });
     }, { once: true });
-    startBtn.addEventListener('click', dismiss, { once: true });
+    DOM.startBtn.addEventListener('click', dismiss, { once: true });
 })();
 
 // --- Startup: load default image then default model (or auto-start from URL params) ---
 const urlHasParams = applyUrlParams();
+if (urlHasParams) {
+    updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+    updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+}
 const startupImg = new Image();
 startupImg.onload = async () => {
     loadImageOntoCanvas(startupImg);
     if (urlHasParams) {
-        startBtn.click();
+        DOM.startBtn.click();
     } else {
         try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
         catch (err) { console.error('WebGPU init failed:', err); return; }
@@ -1164,19 +867,19 @@ startupImg.onload = async () => {
         let modelLoaded = false;
         try {
             const resp = await fetch('mona_lisa.safetensors');
-            if (resp.ok) { await loadModelFile(await resp.blob()); modelLoaded = true; }
-        } catch (_) {}
+            if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
+        } catch (err) { console.warn('Auto-load failed:', err); }
         if (!modelLoaded) {
             try {
                 config = buildConfigFromUI();
-                config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+                config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
                 const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
                 model = buffers;
                 await createPipeline();
                 createBindGroup();
                 channelMask = 0xFFFFFFFF;
                 lastConfig = currentModelConfig();
-                updateDirtyIndicators();
+                updateDirtyIndicators(lastConfig, currentModelConfig());
                 lastWeights = weightsViewFrom(initialWeights);
                 await runInference();
             } catch (err) { console.error('Initial inference failed:', err); }
