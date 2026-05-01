@@ -3,16 +3,16 @@
 import { buildBackwardShaders, FP_SCALE } from './backward_builder.js';
 import { calculate_loss } from './loss.js';
 import { ModelTensors } from './model.js';
-import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings } from './emb_utils.js';
+import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 
-let _vizInterval = 10;
-export const getVizInterval = () => _vizInterval;
-export const setVizInterval = v => { _vizInterval = v; };
+
+const OFFSET_SAMPLE_INTERVAL   = 100;
+const OFFSET_SAMPLE_CANDIDATES = 8;
 
 export class Trainer {
     // webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
     // outputBuffers, readbackBuffers, targetPixels, roiMask,
-    // getHyperparams: () => { stride, mlpRatio, numLoops, embedLr, mlpLr, roiStrength, roiFreeze, maxIter }
+    // getHyperparams: () => { stride, mlpRatio, numLoops, embedLr, mlpLr, roiStrength, roiFreeze, maxIter, vizInterval }
     // onStep: ({ loss, step, rate, lastWeights, inter1, inter2, lossHistory }) => void
     // onStop: () => void
     constructor({ webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
@@ -173,6 +173,7 @@ export class Trainer {
                 bu, bb.gradInter1Preact, ob.interLayer1,
                 m.layer1.weights, m.embeddings,
                 m.gradAtomic.layer1_weights, m.gradAtomic.layer1_biases, m.gradAtomic.embeddings,
+                m.emb_offsets,
             ]),
             adam: {
                 embeddings:     makeBG(pl.adamStep, [au.embeddings,     m.gradAtomic.embeddings,     m.embeddings,     m.adamM.embeddings,     m.adamV.embeddings]),
@@ -283,7 +284,7 @@ export class Trainer {
         }
         adamPass.end();
 
-        const doViz = this._stepCount % _vizInterval === 0;
+        const doViz = this._stepCount % hp.vizInterval === 0;
 
         ce.copyBufferToBuffer(ob.final,         0, rb.final,         0, ob.final.size);
         ce.copyBufferToBuffer(m.embeddings,     0, rb.embeddings,    0, m.embeddings.size);
@@ -372,6 +373,50 @@ export class Trainer {
             this._onStop();
             return;
         }
+        if (this.active && this._config.embOffsets?.some(v => v !== 0) && this._stepCount % OFFSET_SAMPLE_INTERVAL === 0) {
+            await this._sampleOffsets();
+        }
         if (this.active) this._rafId = requestAnimationFrame(() => this._train());
+    }
+
+    async _sampleOffsets() {
+        const { device } = this._ctx;
+        const { gridSize, embeddingChannels: embCh, embBits } = this._config;
+        const cv = this._canvas;
+        const pixelCount = cv.width * cv.height;
+
+        const evalOffsets = async (offsets) => {
+            uploadEmbOffsets(offsets, this._fwdUniforms, device);
+            const ce = device.createCommandEncoder();
+            const p  = ce.beginComputePass();
+            p.setPipeline(this._pipeline);
+            p.setBindGroup(0, this._bindGroup);
+            p.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            p.end();
+            const rb = device.createBuffer({ size: pixelCount * 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+            ce.copyBufferToBuffer(this._outBufs.final, 0, rb, 0, pixelCount * 16);
+            device.queue.submit([ce.finish()]);
+            await rb.mapAsync(GPUMapMode.READ);
+            const loss = calculate_loss(new Float32Array(rb.getMappedRange()), this._target);
+            rb.unmap(); rb.destroy();
+            return loss;
+        };
+
+        const current  = this._config.embOffsets;
+        let bestOffsets = current;
+        let bestLoss    = await evalOffsets(current);
+
+        for (let i = 0; i < OFFSET_SAMPLE_CANDIDATES; i++) {
+            const candidate = generateEmbOffsets(embCh, embBits, gridSize, false);
+            const loss = await evalOffsets(candidate);
+            if (loss < bestLoss) { bestLoss = loss; bestOffsets = candidate; }
+        }
+
+        // Upload winner to both uniform (fwd) and storage (bwd gradL1)
+        if (bestOffsets !== current) {
+            this._config.embOffsets = bestOffsets;
+        }
+        uploadEmbOffsets(bestOffsets, this._fwdUniforms, device);
+        device.queue.writeBuffer(this._model.emb_offsets, 0, bestOffsets);
     }
 }

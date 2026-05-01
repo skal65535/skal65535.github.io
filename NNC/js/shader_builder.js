@@ -24,10 +24,6 @@ export function buildShader(config) {
     const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
     const numU32 = embeddingChannels / channelsPerU32;
 
-    const offsets = config.embOffsets || new Float32Array(numU32 * 2);
-    const offsetVals = Array.from(offsets).map(v => v.toFixed(6) + 'f').join(', ');
-    const embOffsetConst = `const EMB_OFFSETS: array<f32, ${numU32 * 2}> = array<f32, ${numU32 * 2}>(${offsetVals});`;
-
     // keep numPlanes for 8-bit MLP/range indexing (always embCh/4)
     const numPlanes = embeddingChannels / 4;
 
@@ -42,10 +38,10 @@ fn quantize_dequantize_8bit(val: f32) -> f32 {
         : '';
 
     const interpolationFunctions = embBits === 8 ? `
-${embOffsetConst}
 fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
-    let ox = EMB_OFFSETS[plane * 2u];
-    let oy = EMB_OFFSETS[plane * 2u + 1u];
+    let off = uniforms.emb_offsets[plane >> 1u];
+    let ox = select(off.x, off.z, (plane & 1u) == 1u);
+    let oy = select(off.y, off.w, (plane & 1u) == 1u);
     let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
     let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
     let c      = floor(scaled);
@@ -66,7 +62,6 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
     return (interp + vec4<f32>(1.0)) * 0.5 * (mx - mn) + mn;
 }
 ` : `
-${embOffsetConst}
 fn dequant4(n: u32) -> f32 { return f32(select(i32(n), i32(n) - 16, n >= 8u)) / 7.0; }
 `;
 
@@ -115,7 +110,8 @@ struct Uniforms {
     canvasWidth:       u32,
     canvasHeight:      u32,
     channelMask: u32, _p1: u32, _p2: u32,  // channelMask: bit i=0 → zero out emb channel i
-    emb_range: array<vec4<f32>, 8>,  // [mn_plane0, mx_plane0, mn_plane1, mx_plane1, ...]
+    emb_range:   array<vec4<f32>, 8>,  // [mn_plane0, mx_plane0, mn_plane1, mx_plane1, ...]
+    emb_offsets: array<vec4<f32>, 4>,  // packed (ox_{2k}, oy_{2k}, ox_{2k+1}, oy_{2k+1})
 };
 
 @group(0) @binding(0) var<uniform>      uniforms:     Uniforms;
@@ -154,8 +150,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         embedding_vector[plane*4u+3u] = v.w;
     }` : `
     for (var grp = 0u; grp < ${numU32}u; grp++) {
-        let ox = EMB_OFFSETS[grp * 2u];
-        let oy = EMB_OFFSETS[grp * 2u + 1u];
+        let off = uniforms.emb_offsets[grp >> 1u];
+        let ox = select(off.x, off.z, (grp & 1u) == 1u);
+        let oy = select(off.y, off.w, (grp & 1u) == 1u);
         let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
         let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
         let c = floor(scaled);

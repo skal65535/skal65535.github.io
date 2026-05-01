@@ -12,7 +12,7 @@ export async function initWebGPU() {
 
     const device = await adapter.requestDevice({
         requiredLimits: {
-            maxStorageBuffersPerShaderStage: 10
+            maxStorageBuffersPerShaderStage: Math.min(10, adapter.limits.maxStorageBuffersPerShaderStage)
         }
     });
     if (!device) {

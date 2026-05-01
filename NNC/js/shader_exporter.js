@@ -167,9 +167,23 @@ export function export_to_glsl(config, weights) {
         `uniform sampler2D iChannel${p}; // embedding plane ${p}: channels ${p*4}–${p*4+3}`
     ).join('\n');
 
-    // Rescale uv [0,1] to the gridSize×gridSize region with align-corners=true,
-    // so the GPU sampler bilinear matches the training interpolation.
-    const sampleFn = `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
+    // Rescale uv [0,1] to the gridSize×gridSize region with align-corners=true.
+    // When smoothInterpolation is on, use manual 4-tap texelFetch + smoothstep to
+    // match training; otherwise let the GPU sampler handle plain bilinear.
+    const sampleFn = smoothInterpolation
+        ? `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
+    vec2 scaled = uv * float(embed_texture - 1);
+    ivec2 c0 = ivec2(floor(scaled));
+    ivec2 c1 = min(c0 + ivec2(1), ivec2(embed_texture - 1));
+    vec2 t = scaled - vec2(c0);
+    t = t * t * (3.0 - 2.0 * t);
+    vec4 v00 = texelFetch(smp, c0,                0);
+    vec4 v10 = texelFetch(smp, ivec2(c1.x, c0.y), 0);
+    vec4 v01 = texelFetch(smp, ivec2(c0.x, c1.y), 0);
+    vec4 v11 = texelFetch(smp, c1,                0);
+    return mix(mix(v00, v10, t.x), mix(v01, v11, t.x), t.y);
+}`
+        : `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
     vec2 bufUV = (uv * float(embed_texture - 1) + 0.5) / iResolution.xy;
     return texture(smp, bufUV);
 }`;

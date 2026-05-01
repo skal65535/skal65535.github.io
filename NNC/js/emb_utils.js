@@ -68,19 +68,29 @@ export function buildEmbRangeF32(range, embCh) {
     return f32;
 }
 
-// Build 160-byte ArrayBuffer for the forward Uniforms struct.
-// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32).
-export function buildFwdUniforms(gSize, embCh, mlpW, w, h, range) {
-    const ab  = new ArrayBuffer(160);
+// Build 224-byte ArrayBuffer for the forward Uniforms struct.
+// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32) + 4×vec4<f32> emb_offsets (offset 160).
+// emb_offsets packing: vec4[k] = (ox_{2k}, oy_{2k}, ox_{2k+1}, oy_{2k+1})
+export function buildFwdUniforms(gSize, embCh, mlpW, w, h, range, offsets) {
+    const ab  = new ArrayBuffer(224);
     const u32 = new Uint32Array(ab);
     u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
     new Float32Array(ab, 32).set(buildEmbRangeF32(range, embCh));
+    if (offsets) new Float32Array(ab, 160).set(offsets.slice(0, 16));
     return ab;
 }
 
 // Update only the emb_range portion of fwdUniformsBuf (byte offset 32).
 export function uploadEmbRange(range, embCh, buf, device) {
     device.queue.writeBuffer(buf, 32, buildEmbRangeF32(range, embCh));
+}
+
+// Update only the emb_offsets portion of fwdUniformsBuf (byte offset 160).
+export function uploadEmbOffsets(offsets, buf, device) {
+    if (!offsets) return;
+    const data = new Float32Array(16);
+    data.set(offsets.slice(0, 16));
+    device.queue.writeBuffer(buf, 160, data);
 }
 
 // Update only the channelMask field of fwdUniformsBuf (byte offset 20, u32[5]).

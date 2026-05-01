@@ -41,7 +41,7 @@ export function buildBackwardShaders(config) {
         gradOutput:      gradOutputShader(outCh),
         gradL3:          gradL3Shader(mlpWidth, activation, outCh),
         gradL2:          gradL2Shader(mlpWidth, activation),
-        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, config.embOffsets, embBits, activation),
+        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, embBits, activation),
         adamStep:        adamStepShader(),
         packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
@@ -178,11 +178,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Phase 2: 8×8 spatial workgroup so adjacent pixels map to nearby grid cells,
 //           reducing atomic contention on grad_embeddings.
 // ---------------------------------------------------------------------------
-function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embOffsets, embBits, activation) {
+function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embBits, activation) {
     const channelsPerU32 = 32 / (embBits || 8);
     const numU32 = embCh / channelsPerU32;
-    const offsets = embOffsets || new Float32Array(numU32 * 2);
-    const offsetVals = Array.from(offsets).map(v => v.toFixed(6) + 'f').join(', ');
     const smoothCode = smoothInterp ? `
     tx = tx*tx*(3.0 - 2.0*tx);
     ty = ty*ty*(3.0 - 2.0*ty);` : '';
@@ -196,6 +194,7 @@ ${wgslActivFns(activation)}
 @group(0) @binding(5) var<storage, read_write> grad_l1_weights:    array<atomic<i32>>;
 @group(0) @binding(6) var<storage, read_write> grad_l1_biases:     array<atomic<i32>>;
 @group(0) @binding(7) var<storage, read_write> grad_embeddings:    array<atomic<i32>>;
+@group(0) @binding(8) var<storage, read>       emb_offsets:         array<f32>;
 
 const MW:  u32 = ${mlpWidth}u;
 const EC:  u32 = ${embCh}u;
@@ -203,7 +202,6 @@ const GS:  u32 = ${gridSize}u;
 const NU:  u32 = ${numU32}u;
 const CPG: u32 = ${channelsPerU32}u;
 const FPS: f32 = ${FP_SCALE}.0;
-const EMB_OFFSETS: array<f32, ${numU32 * 2}> = array<f32, ${numU32 * 2}>(${offsetVals});
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -230,8 +228,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Per-u32 group: each has its own UV offset → distinct bilinear footprint
     for (var grp = 0u; grp < NU; grp++) {
-        let ox = EMB_OFFSETS[grp * 2u];
-        let oy = EMB_OFFSETS[grp * 2u + 1u];
+        let ox = emb_offsets[grp * 2u];
+        let oy = emb_offsets[grp * 2u + 1u];
         let sx = clamp(uvx + ox, 0.0, 1.0) * f32(GS - 1u);
         let sy = clamp(uvy + oy, 0.0, 1.0) * f32(GS - 1u);
         let x0 = u32(sx); let y0 = u32(sy);

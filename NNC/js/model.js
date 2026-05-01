@@ -43,10 +43,14 @@ export function createModel(ctx, config) {
     };
     const zeroTensors = () => ModelTensors.create(k => ctx.zeroBuffer(sizes[k]));
 
+    const numU32 = embeddingChannels / channelsPerU32;
+    const embOffsets = config.embOffsets || new Float32Array(numU32 * 2);
+
     const modelBuffers = {
         embeddings:       ctx.createBuffer(embeddingData),
         embeddings_q:     ctx.zeroBuffer(embeddingSize / channelsPerU32),  // packed u32: channelsPerU32 per u32
         embeddings_range: ctx.zeroBuffer(embeddingChannels * 2), // [min, max] per channel (f32)
+        emb_offsets:      ctx.createBuffer(embOffsets),
         layer1: { weights: ctx.createBuffer(layer1Weights), biases: ctx.createBuffer(layer1Biases) },
         layer2: { weights: ctx.createBuffer(layer2Weights), biases: ctx.createBuffer(layer2Biases) },
         layer3: { weights: ctx.createBuffer(layer3Weights), biases: ctx.createBuffer(layer3Biases) },
@@ -71,6 +75,7 @@ export function destroyModel(m) {
     m.embeddings?.destroy();
     m.embeddings_q?.destroy();
     m.embeddings_range?.destroy();
+    m.emb_offsets?.destroy();
     m.layer1?.weights?.destroy();  m.layer1?.biases?.destroy();
     m.layer2?.weights?.destroy();  m.layer2?.biases?.destroy();
     m.layer3?.weights?.destroy();  m.layer3?.biases?.destroy();

@@ -34,7 +34,7 @@ export class ROIMask {
     // dt-based exponential decay; call with performance.now()
     decay(now) {
         if (this._lastDecayAt === 0) { this._lastDecayAt = now; return; }
-        const dt = now - this._lastDecayAt;
+        const dt = Math.min(now - this._lastDecayAt, 100);  // clamp: freeze then unfreeze shouldn't wipe the mask
         this._lastDecayAt = now;
         if (dt <= 0) return;
         const factor = Math.exp(-DECAY_RATE * dt);

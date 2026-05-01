@@ -8,9 +8,9 @@ import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
 import { drawOutputCanvas, drawFlowDiagram, drawLossCurve, FLOW_PAD, FLOW_EMB_W } from './viz.js';
-import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
+import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
-import { Trainer, setVizInterval } from './trainer.js';
+import { Trainer } from './trainer.js';
 
 // --- DOM references ---
 const sourcePanel  = document.getElementById('source-panel');
@@ -86,6 +86,7 @@ const roiAutoBtn       = document.getElementById('roi-auto-btn');
 let BASE_CANVAS_W = canvas.width;
 let BASE_CANVAS_H = canvas.height;
 let config = {};
+let imageHasAlpha = false;  // set from image pixels in loadImageOntoCanvas
 let loadedImage   = null;
 let webGpuContext = null;
 let model         = null;
@@ -125,7 +126,6 @@ function drawPlaceholder(ctx_canvas) {
     ctx.fillText('train or load a model', ctx_canvas.width / 2, ctx_canvas.height / 2);
 }
 const vizIntervalSelect = document.getElementById('viz-interval');
-vizIntervalSelect.addEventListener('change', () => setVizInterval(parseInt(vizIntervalSelect.value)));
 
 // --- Compressed size estimate ---
 function computeModelSize() {
@@ -389,6 +389,7 @@ function loadImageOntoCanvas(img) {
         const px = ctx.getImageData(0, 0, BASE_CANVAS_W, BASE_CANVAS_H).data;
         let hasAlpha = false;
         for (let i = 3; i < px.length; i += 4) { if (px[i] < 255) { hasAlpha = true; break; } }
+        imageHasAlpha = hasAlpha;
         config.hasAlpha = hasAlpha;
     }
     const outCh = config.hasAlpha ? 4 : 3;
@@ -456,12 +457,15 @@ async function startTraining(fullReset) {
             lastConfig = currentModelConfig();
             updateDirtyIndicators();
             clearTrainingUI();
+            snapshotWeights = null;
+            snapshotBtn.textContent = '● Snapshot';
             trainer = makeTrainer();
             setStatus('training');
             trainer.start(freshWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
                 : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+            webGpuContext.device.queue.writeBuffer(model.emb_offsets, 0, config.embOffsets);
             await createPipeline();
             createBindGroup();
             channelMask = 0xFFFFFFFF;
@@ -507,6 +511,7 @@ function buildConfigFromUI() {
         embBits:             parseInt(embBitsSelect.value),
         activation:          activationSelect.value,
         smoothInterpolation: smoothInterpolationCheckbox.checked,
+        hasAlpha:            imageHasAlpha,
         width:  BASE_CANVAS_W,
         height: BASE_CANVAS_H,
     };
@@ -527,9 +532,9 @@ function createBindGroup() {
     for (const b of Object.values(readbackBuffers)) b?.destroy();
 
     const { mlpWidth, gridSize, embeddingChannels } = config;
-    fwdUniformsBuf = webGpuContext.uniformBuffer(160);
+    fwdUniformsBuf = webGpuContext.uniformBuffer(224);
     webGpuContext.device.queue.writeBuffer(fwdUniformsBuf, 0,
-        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth, canvas.width, canvas.height, null));
+        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth, canvas.width, canvas.height, null, config.embOffsets));
 
     const pixelCount = canvas.width * canvas.height;
     const embSize    = gridSize * gridSize * embeddingChannels;
@@ -594,6 +599,7 @@ function makeTrainer() {
             roiStrength: parseFloat(roiStrengthInput.value),
             roiFreeze:   roiFreezeChk.checked,
             maxIter:     parseInt(maxIterInput.value),
+            vizInterval: parseInt(vizIntervalSelect.value),
         }),
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
@@ -744,8 +750,8 @@ async function runZoomInference(W, H) {
     const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
     device.queue.writeBuffer(model.embeddings_q, 0, packed);
 
-    const unifBuf = webGpuContext.uniformBuffer(160);
-    device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range));
+    const unifBuf = webGpuContext.uniformBuffer(224);
+    device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range, config.embOffsets));
     uploadChannelMask(channelMask, unifBuf, device);
     const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
     const stride  = mlpWidth * 4;
@@ -918,6 +924,9 @@ async function runInference() {
 async function loadModelFile(file) {
     trainer?.destroy();
     trainer = null;
+    clearTrainingUI();
+    snapshotWeights = null;
+    snapshotBtn.textContent = '● Snapshot';
     let parsed;
     try {
         parsed = await loadModelSafetensors(file);
@@ -966,7 +975,7 @@ async function loadModelFile(file) {
         hasAlpha:            tensors.layer3_biases.length === 4,
         width:  canvas.width,
         height: canvas.height,
-        embOffsets:          savedConfig.embOffsets || generateEmbOffsets(savedConfig.embeddingChannels, loadedEmbBits, savedConfig.gridSize, noOffsetCheckbox.checked),
+        embOffsets:          savedConfig.embOffsets ?? new Float32Array(savedConfig.embeddingChannels / (32 / loadedEmbBits) * 2),
     };
 
     try {
@@ -1116,26 +1125,29 @@ startupImg.onload = async () => {
     if (urlHasParams) {
         startBtn.click();
     } else {
-        // Always init model + run one inference (random weights) for immediate visual feedback.
-        // Then overwrite with saved weights if available.
-        try {
-            if (!webGpuContext) webGpuContext = await initWebGPU();
-            config = buildConfigFromUI();
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
-            const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
-            model = buffers;
-            await createPipeline();
-            createBindGroup();
-            channelMask = 0xFFFFFFFF;
-            lastConfig = currentModelConfig();
-            updateDirtyIndicators();
-            lastWeights = weightsViewFrom(initialWeights);
-            await runInference();
-        } catch (err) { console.error('Initial inference failed:', err); }
+        try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
+        catch (err) { console.error('WebGPU init failed:', err); return; }
+        // Try loading the saved model first; fall back to random-weights inference if absent.
+        let modelLoaded = false;
         try {
             const resp = await fetch('mona_lisa.safetensors');
-            if (resp.ok) await loadModelFile(await resp.blob());
+            if (resp.ok) { await loadModelFile(await resp.blob()); modelLoaded = true; }
         } catch (_) {}
+        if (!modelLoaded) {
+            try {
+                config = buildConfigFromUI();
+                config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
+                const { buffers, weights: initialWeights } = createModel(webGpuContext, config);
+                model = buffers;
+                await createPipeline();
+                createBindGroup();
+                channelMask = 0xFFFFFFFF;
+                lastConfig = currentModelConfig();
+                updateDirtyIndicators();
+                lastWeights = weightsViewFrom(initialWeights);
+                await runInference();
+            } catch (err) { console.error('Initial inference failed:', err); }
+        }
     }
 };
 startupImg.src = 'Mona_Lisa.webp';

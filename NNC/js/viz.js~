@@ -265,11 +265,11 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     }
     ctx.strokeStyle = 'rgba(255,210,0,0.75)';
     ctx.lineWidth = 0.8;
-    fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,   embCh);
+    fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,  embCh);
     fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth);
-    fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,   mlpWidth);
+    fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,  mlpWidth);
     fanLines(xL2  + matW_L2,      bbL2,   xAct2,          bbAct2, mlpWidth);
-    fanLines(xAct2 + THUMB_W,     bbAct2, xL3,            bbL3,   mlpWidth);
+    fanLines(xAct2 + THUMB_W,     bbAct2, xL3,            bbL3,  mlpWidth);
     fanLines(xL3  + matW_L3,      bbL3,   xRGBA,          bbRGBA, outCh);
 
     // Labels
@@ -286,13 +286,13 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     return {
         ema,
         cols: [
-            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  slotH:bbEmb.h/embCh,     nCh:embCh    },
+            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  slotH:bbEmb.h/embCh,    nCh:embCh    },
             { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   slotH:null,              nCh:mlpWidth },
             { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, slotH:bbAct1.h/mlpWidth, nCh:mlpWidth },
             { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   slotH:null,              nCh:mlpWidth },
             { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, slotH:bbAct2.h/mlpWidth, nCh:mlpWidth },
             { name:'l3',   x:xL3,   w:matW_L3, y0:bbL3.y0,   slotH:null,              nCh:outCh    },
-            { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, slotH:bbRGBA.h/outCh,    nCh:outCh    },
+            { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, slotH:bbRGBA.h/outCh,   nCh:outCh    },
         ],
     };
 }
@@ -337,8 +337,7 @@ export function drawLossCurve(canvas, lossHistory) {
     ctx.shadowBlur  = 5;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
-        const X = toX(i), Y = toY(hist[i]);
-        i === 0 ? ctx.moveTo(X, Y) : ctx.lineTo(X, Y);
+        i === 0 ? ctx.moveTo(toX(i), toY(hist[i])) : ctx.lineTo(toX(i), toY(hist[i]));
     }
     ctx.stroke();
     ctx.shadowBlur = 0;
