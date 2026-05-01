@@ -146,7 +146,7 @@ EMB_BUFFER_MAINIMAGE(embed${p})`;
 }
 
 export function export_to_glsl(config, weights) {
-    const { gridSize, embeddingChannels, mlpWidth, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
+    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const numPlanes = embeddingChannels / 4;
 
@@ -206,8 +206,8 @@ export function export_to_glsl(config, weights) {
         embInit += `    l0_out[${p}] = sample_plane(iChannel${p}, ${uvExpr});\n`;
     }
 
-    const N1 = mlpWidth * embeddingChannels / 4, N2 = mlpWidth * mlpWidth / 4;
-    const NW = mlpWidth / 4;
+    const N1 = mlpWidth1 * embeddingChannels / 4, N2 = mlpWidth2 * mlpWidth1 / 4;
+    const NW1 = mlpWidth1 / 4, NW2 = mlpWidth2 / 4;
     const packWeights = quantization === 'qat8';
 
     const wType = packWeights ? 'uint' : 'vec4';
@@ -216,26 +216,26 @@ export function export_to_glsl(config, weights) {
         : `vec4[${n}](\n${fmtVec4Array(arr, qw)}\n)`;
 
     const weightDecls = `
-// Layer 1 weights/biases  (${embeddingChannels} → ${mlpWidth})
+// Layer 1 weights/biases  (${embeddingChannels} → ${mlpWidth1})
 const ${wType} l1_w[${N1}] = ${fmtW(weights.layer1_weights, N1)};
-const vec4 l1_b[${NW}] = vec4[${NW}](
+const vec4 l1_b[${NW1}] = vec4[${NW1}](
 ${fmtVec4Array(weights.layer1_biases, qw)}
 );
 
-// Layer 2 weights/biases  (${mlpWidth} → ${mlpWidth})
+// Layer 2 weights/biases  (${mlpWidth1} → ${mlpWidth2})
 const ${wType} l2_w[${N2}] = ${fmtW(weights.layer2_weights, N2)};
-const vec4 l2_b[${NW}] = vec4[${NW}](
+const vec4 l2_b[${NW2}] = vec4[${NW2}](
 ${fmtVec4Array(weights.layer2_biases, qw)}
 );
 
-// Layer 3 weights/biases  (${mlpWidth} → ${outCh})
+// Layer 3 weights/biases  (${mlpWidth2} → ${outCh})
 ${(() => {
     // pad to 4 rows if outCh===3 so matMul(4,...) works; extra row is zero
     const w4 = outCh === 4 ? weights.layer3_weights
-        : (() => { const p = new Float32Array(mlpWidth * 4); p.set(weights.layer3_weights); return p; })();
+        : (() => { const p = new Float32Array(mlpWidth2 * 4); p.set(weights.layer3_weights); return p; })();
     const b4 = outCh === 4 ? weights.layer3_biases
         : (() => { const p = new Float32Array(4); p.set(weights.layer3_biases); return p; })();
-    return `const ${wType} l3_w[${mlpWidth}] = ${fmtW(w4, mlpWidth)};
+    return `const ${wType} l3_w[${mlpWidth2}] = ${fmtW(w4, mlpWidth2)};
 const vec4 l3_b[1] = vec4[1](
 ${fmtVec4Array(b4, qw)}
 );`;
@@ -266,14 +266,14 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
     // Layer 0: embeddings (${embeddingChannels} channels from ${numPlanes} buffer(s))
 ${embInit}
     // Layer 1
-    vec4 l1_out[${NW}];
-${matMul(mlpWidth, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', activName, packWeights)}
+    vec4 l1_out[${NW1}];
+${matMul(mlpWidth1, embeddingChannels, 'l0_out', 'l1_out', 'l1_w', 'l1_b', activName, packWeights)}
     // Layer 2
-    vec4 l2_out[${NW}];
-${matMul(mlpWidth, mlpWidth, 'l1_out', 'l2_out', 'l2_w', 'l2_b', activName, packWeights)}
+    vec4 l2_out[${NW2}];
+${matMul(mlpWidth2, mlpWidth1, 'l1_out', 'l2_out', 'l2_w', 'l2_b', activName, packWeights)}
     // Layer 3
     vec4 l3_out[1];
-${matMul(4, mlpWidth, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}
+${matMul(4, mlpWidth2, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}
     fragColor = clamp(${outCh === 4 ? 'l3_out[0]' : 'vec4(l3_out[0].rgb, 1.0)'}, 0.0, 1.0);
 }
 `;

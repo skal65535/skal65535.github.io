@@ -360,26 +360,30 @@ input[type="range"]::-moz-range-thumb {
     opacity: 0.3;
     cursor: not-allowed;
 }
-.header-btns { display: flex; align-items: center; gap: 6px; margin-right: 14px; }
-.header-btns .btn {
-    width: auto;
-    font-size: var(--fs-xs); padding: 3px 9px;
+.btn-accent {
     background: var(--accent-dim);
     color: var(--accent);
     border: 1px solid rgba(245,166,36,0.4);
 }
-.header-btns .btn:hover {
+.btn-accent:hover:not(:disabled) {
     background: rgba(245,166,36,0.22);
     border-color: var(--accent);
     box-shadow: 0 0 8px var(--accent-glow);
 }
+.ctrl-row.btn-row { flex-direction: row; gap: 6px; }
+.ctrl-row.btn-row .btn { flex: 1; font-size: var(--fs-xs); padding: 4px 8px; }
+.header-btns { display: flex; align-items: center; gap: 6px; margin-right: 14px; }
+.header-btns .btn { width: auto; font-size: var(--fs-xs); padding: 3px 9px; }
 .header-actions { margin-right: 0; }
-.header-actions .btn { font-size: var(--fs-xs); padding: 3px 0; min-width: 6.5em; text-align: center; }
-.header-actions #start-btn { background: var(--accent); color: #070b10; border: none; animation: start-btn-pulse 2s ease-in-out infinite; }
-.header-actions #start-btn:hover { background: #fbbf24; box-shadow: 0 0 10px var(--accent-glow); animation: none; }
+#start-tooltip { position: fixed; background: var(--accent); color: #070b10; font-size: 0.8rem; font-weight: 700; padding: 8px 16px; border-radius: 6px; white-space: nowrap; pointer-events: none; opacity: 0; z-index: 9999; transform: translateX(-50%); box-shadow: 0 4px 16px rgba(0,0,0,0.4); letter-spacing: 0.03em; }
+#start-tooltip::before { content: ''; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-bottom-color: var(--accent); }
+#start-tooltip.visible { animation: tooltip-show 5s ease forwards; }
+@keyframes tooltip-show { 0% { opacity: 0; } 15% { opacity: 1; } 75% { opacity: 1; } 100% { opacity: 0; } }
+.header-actions #start-btn { font-size: 0.85rem; font-weight: 600; padding: 5px 18px; min-width: 8em; text-align: center; background: var(--accent); color: #070b10; border: none; border-radius: 4px; animation: start-btn-pulse 2s ease-in-out infinite; letter-spacing: 0.04em; }
+.header-actions #start-btn:hover { background: #fbbf24; box-shadow: 0 0 12px var(--accent-glow); animation: none; }
 .header-actions #start-btn.stopping { background: var(--red); color: #fff; animation: none; }
-.header-actions .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--red); opacity: 0.7; }
-.header-actions .btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.1); opacity: 1; }
+#reset-btn { width: 100%; background: transparent; color: var(--red); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); opacity: 0.65; }
+#reset-btn:hover:not(:disabled) { opacity: 1; background: rgba(248,113,113,0.08); }
 .panel-header .btn {
     font-size: var(--fs-xs); padding: 2px 8px;
     background: transparent;

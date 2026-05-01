@@ -6,8 +6,6 @@ import { ModelTensors } from './model.js';
 import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 
 
-const OFFSET_SAMPLE_INTERVAL   = 100;
-const OFFSET_SAMPLE_CANDIDATES = 8;
 
 export class Trainer {
     // webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
@@ -68,7 +66,7 @@ export class Trainer {
         }
         if (src) {
             const range = computeEmbRange(src, embCh, gridSize * gridSize);
-            device.queue.writeBuffer(this._model.embeddings_range, 0, range);
+            this._ctx.writeBuffer(this._model.embeddings_range, range);
             uploadEmbRange(range, embCh, this._fwdUniforms, device);
         }
 
@@ -94,13 +92,12 @@ export class Trainer {
 
     _initBackward() {
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh, mlpWidth } = this._config;
+        const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = this._config;
         const cv  = this._canvas;
         const m   = this._model;
         const ob  = this._outBufs;
         const ctx = this._ctx;
         const pixelCount = cv.width * cv.height;
-        const stride     = mlpWidth * 4;
         const shaders    = buildBackwardShaders(this._config);
 
         const makePL = code => device.createComputePipeline({
@@ -125,7 +122,7 @@ export class Trainer {
 
         if (this._targetGpuBuf) this._targetGpuBuf.destroy();
         this._targetGpuBuf = ctx.zeroBuffer(this._target.length);
-        device.queue.writeBuffer(this._targetGpuBuf, 0, this._target);
+        ctx.writeBuffer(this._targetGpuBuf, this._target);
 
         if (this._bwdUniformsBuf) this._bwdUniformsBuf.destroy();
         this._bwdUniformsBuf = ctx.uniformBuffer(5 * 4);
@@ -137,8 +134,8 @@ export class Trainer {
         if (bb.gradInter2Preact?.destroy)  bb.gradInter2Preact.destroy();
         if (bb.gradInter1Preact?.destroy)  bb.gradInter1Preact.destroy();
         bb.gradFinal        = ctx.storageBuffer(pixelCount * 4 * 4);
-        bb.gradInter2Preact = ctx.storageBuffer(pixelCount * stride);
-        bb.gradInter1Preact = ctx.storageBuffer(pixelCount * stride);
+        bb.gradInter2Preact = ctx.storageBuffer(pixelCount * mlpWidth2 * 4);
+        bb.gradInter1Preact = ctx.storageBuffer(pixelCount * mlpWidth1 * 4);
 
         if (this._adamUniformsBufs) {
             for (const k of ModelTensors.KEYS) this._adamUniformsBufs[k]?.destroy();
@@ -201,7 +198,7 @@ export class Trainer {
         if (!this.active) return;
 
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh, mlpWidth, embBits } = this._config;
+        const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits } = this._config;
         const outCh = this._config.hasAlpha ? 4 : 3;
         const cv  = this._canvas;
         const m   = this._model;
@@ -225,34 +222,34 @@ export class Trainer {
         const embedLR   = activeMLP ? 0 : hp.embedLr;
         const mlpLR     = activeMLP ? hp.mlpLr : 0;
         const tensorCfg = {
-            embeddings:     { lr: embedLR, size: embSize,            l2: 0.002 / embSize, clamp: 1 },
-            layer1_weights: { lr: mlpLR,   size: mlpWidth * embCh,   l2: 0, clamp: 0 },
-            layer1_biases:  { lr: mlpLR,   size: mlpWidth,            l2: 0, clamp: 0 },
-            layer2_weights: { lr: mlpLR,   size: mlpWidth * mlpWidth, l2: 0, clamp: 0 },
-            layer2_biases:  { lr: mlpLR,   size: mlpWidth,            l2: 0, clamp: 0 },
-            layer3_weights: { lr: mlpLR,   size: outCh * mlpWidth,    l2: 0, clamp: 0 },
-            layer3_biases:  { lr: mlpLR,   size: outCh,               l2: 0, clamp: 0 },
+            embeddings:     { lr: embedLR, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
+            layer1_weights: { lr: mlpLR,   size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
+            layer1_biases:  { lr: mlpLR,   size: mlpWidth1,             l2: 0, clamp: 0 },
+            layer2_weights: { lr: mlpLR,   size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
+            layer2_biases:  { lr: mlpLR,   size: mlpWidth2,             l2: 0, clamp: 0 },
+            layer3_weights: { lr: mlpLR,   size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
+            layer3_biases:  { lr: mlpLR,   size: outCh,                 l2: 0, clamp: 0 },
         };
 
         if (!hp.roiFreeze) this._roiMask.decay(performance.now());
         if (this._roiMask.dirty) {
-            device.queue.writeBuffer(bb.roiMask, 0, this._roiMask.weights);
+            this._ctx.writeBuffer(bb.roiMask, this._roiMask.weights);
             this._roiMask.dirty = false;
         }
 
         for (const [k, buf] of Object.entries(m.gradAtomic)) {
-            device.queue.writeBuffer(buf, 0, bb.gradZero[k]);
+            this._ctx.writeBuffer(buf, bb.gradZero[k]);
         }
         const { adamAB, adamF, adamU, uniAB, uniU32, uniF32 } = bb;
         uniU32[0] = cv.width; uniU32[1] = cv.height;
         uniU32[2] = stride;   uniU32[3] = sampledCount;
         uniF32[4] = hp.roiStrength;
-        device.queue.writeBuffer(this._bwdUniformsBuf, 0, uniAB);
+        this._ctx.writeBuffer(this._bwdUniformsBuf, uniAB);
         adamF[1] = 0.9; adamF[2] = 0.999; adamF[3] = 1e-8; adamF[6] = FP_SCALE;
         adamU[4] = this._adamT; adamU[9] = sampledCount;
         for (const [k, tc] of Object.entries(tensorCfg)) {
             adamF[0] = tc.lr; adamU[5] = tc.size; adamF[7] = tc.l2; adamU[8] = tc.clamp;
-            device.queue.writeBuffer(au[k], 0, adamAB);
+            this._ctx.writeBuffer(au[k], adamAB);
         }
 
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
@@ -334,15 +331,15 @@ export class Trainer {
         }
 
         // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
-        normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth);
-        device.queue.writeBuffer(m.embeddings,     0, embData);
-        device.queue.writeBuffer(m.layer1.weights, 0, l1wData);
-        device.queue.writeBuffer(m.layer1.biases,  0, l1bData);
+        normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth1);
+        this._ctx.writeBuffer(m.embeddings,     embData);
+        this._ctx.writeBuffer(m.layer1.weights, l1wData);
+        this._ctx.writeBuffer(m.layer1.biases,  l1bData);
 
         // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
         const identityRange = new Float32Array(embCh * 2);
         for (let c = 0; c < embCh; c++) { identityRange[c*2] = -1; identityRange[c*2+1] = 1; }
-        device.queue.writeBuffer(m.embeddings_q, 0, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
+        this._ctx.writeBuffer(m.embeddings_q, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
         // Guard against stale range from restart
         uploadEmbRange(null, embCh, this._fwdUniforms, device);
 
@@ -373,7 +370,7 @@ export class Trainer {
             this._onStop();
             return;
         }
-        if (this.active && this._config.embOffsets?.some(v => v !== 0) && this._stepCount % OFFSET_SAMPLE_INTERVAL === 0) {
+        if (this.active && this._config.embOffsets?.some(v => v !== 0) && hp.offsetSampleInterval > 0 && this._stepCount % hp.offsetSampleInterval === 0) {
             await this._sampleOffsets();
         }
         if (this.active) this._rafId = requestAnimationFrame(() => this._train());
@@ -393,8 +390,8 @@ export class Trainer {
             p.setBindGroup(0, this._bindGroup);
             p.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
             p.end();
-            const rb = device.createBuffer({ size: pixelCount * 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-            ce.copyBufferToBuffer(this._outBufs.final, 0, rb, 0, pixelCount * 16);
+            const rb = this._ctx.readbackBuffer(pixelCount * 4 * 4);
+            ce.copyBufferToBuffer(this._outBufs.final, 0, rb, 0, pixelCount * 4 * 4);
             device.queue.submit([ce.finish()]);
             await rb.mapAsync(GPUMapMode.READ);
             const loss = calculate_loss(new Float32Array(rb.getMappedRange()), this._target);
@@ -402,11 +399,12 @@ export class Trainer {
             return loss;
         };
 
+        const numCandidates = 8;
         const current  = this._config.embOffsets;
         let bestOffsets = current;
         let bestLoss    = await evalOffsets(current);
 
-        for (let i = 0; i < OFFSET_SAMPLE_CANDIDATES; i++) {
+        for (let i = 0; i < numCandidates; i++) {
             const candidate = generateEmbOffsets(embCh, embBits, gridSize, false);
             const loss = await evalOffsets(candidate);
             if (loss < bestLoss) { bestLoss = loss; bestOffsets = candidate; }
@@ -417,6 +415,6 @@ export class Trainer {
             this._config.embOffsets = bestOffsets;
         }
         uploadEmbOffsets(bestOffsets, this._fwdUniforms, device);
-        device.queue.writeBuffer(this._model.emb_offsets, 0, bestOffsets);
+        this._ctx.writeBuffer(this._model.emb_offsets, bestOffsets);
     }
 }

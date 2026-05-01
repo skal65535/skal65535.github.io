@@ -24,7 +24,7 @@ export function computeEmbRange(embData, embCh, gridCount) {
 
 // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1 weights/biases.
 // Math: e_norm = (e - center) / scale → W1_new[:,c] = W1[:,c]*scale, b1_new += W1[:,c]*center
-export function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlpWidth) {
+export function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlpWidth1) {
     const gridCount = embData.length / embCh;
     for (let c = 0; c < embCh; c++) {
         let mn = Infinity, mx = -Infinity;
@@ -40,7 +40,7 @@ export function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlp
         for (let i = 0; i < gridCount; i++) {
             embData[i * embCh + c] = (embData[i * embCh + c] - center) / scale;
         }
-        for (let j = 0; j < mlpWidth; j++) {
+        for (let j = 0; j < mlpWidth1; j++) {
             const w = l1Weights[j * embCh + c];
             l1Weights[j * embCh + c] = w * scale;
             l1Biases[j] += w * center;
@@ -69,12 +69,12 @@ export function buildEmbRangeF32(range, embCh) {
 }
 
 // Build 224-byte ArrayBuffer for the forward Uniforms struct.
-// Layout: 5 u32 + 3 u32 padding + 8×vec4<f32> emb_range (offset 32) + 4×vec4<f32> emb_offsets (offset 160).
-// emb_offsets packing: vec4[k] = (ox_{2k}, oy_{2k}, ox_{2k+1}, oy_{2k+1})
-export function buildFwdUniforms(gSize, embCh, mlpW, w, h, range, offsets) {
+// Layout: u32[0..7] + 8×vec4<f32> emb_range (offset 32) + 4×vec4<f32> emb_offsets (offset 160).
+// u32[2]=mlpWidth1, u32[6]=mlpWidth2 (u32[5]=channelMask written separately).
+export function buildFwdUniforms(gSize, embCh, mlpW1, mlpW2, w, h, range, offsets) {
     const ab  = new ArrayBuffer(224);
     const u32 = new Uint32Array(ab);
-    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW; u32[3] = w; u32[4] = h;
+    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW1; u32[3] = w; u32[4] = h; u32[6] = mlpW2;
     new Float32Array(ab, 32).set(buildEmbRangeF32(range, embCh));
     if (offsets) new Float32Array(ab, 160).set(offsets.slice(0, 16));
     return ab;

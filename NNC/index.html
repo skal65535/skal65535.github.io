@@ -14,19 +14,17 @@
     <header>
         <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
-        <button id="help-btn" data-tooltip="Show help — project overview, URL params, UI guide.">?</button>
+        <button id="help-btn">?</button>
         <div class="app-divider"></div>
         <div class="header-btns header-actions">
-            <span class="header-links-label">Training:</span>
-            <button class="btn" id="start-btn" data-tooltip="Start or stop training.">▶ Start</button>
-            <button class="btn" id="shake-btn" disabled data-tooltip="Add small noise to embeddings to escape local minima.">⚡ Shake</button>
-            <button class="btn btn-danger" id="reset-btn" disabled data-tooltip="Reset model weights and optimizer state.">↺ Reset</button>
+            <button class="btn" id="start-btn">▶ Start</button>
+            <div id="start-tooltip">↑ click to train</div>
         </div>
         <div class="header-spacer"></div>
         <div class="header-btns">
-            <button class="btn" id="load-btn" data-tooltip="Load a .safetensors model file.">↑ Load</button>
-            <button class="btn" id="save-btn" data-tooltip="Download model weights as .safetensors.">↓ Save</button>
-            <button class="btn" id="export-btn" data-tooltip="Export trained model as a GLSL fragment shader.">↓ GLSL</button>
+            <button class="btn btn-accent" id="load-btn">↑ Load</button>
+            <button class="btn btn-accent" id="save-btn">↓ Save</button>
+            <button class="btn btn-accent" id="export-btn">↓ GLSL</button>
         </div>
 
     </header>
@@ -38,7 +36,7 @@
                 <div id="model-controls">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
-                    <select id="grid-size" data-tooltip="Spatial resolution of the feature grid (N×N).&#10;Larger = finer detail, bigger model.">
+                    <select id="grid-size">
                         <option value="16">16 × 16</option>
                         <option value="32">32 × 32</option>
                         <option value="64" selected>64 × 64</option>
@@ -46,21 +44,30 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Channels</div>
-                    <select id="embedding-channels" data-tooltip="Feature channels per grid cell.&#10;More = richer representation.">
+                    <select id="embedding-channels">
                         <option value="4">4</option>
                         <option value="8">8</option>
                         <option value="16" selected>16</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
-                    <div class="ctrl-label">MLP Width</div>
-                    <select id="mlp-width" data-tooltip="Hidden layer size of the MLP decoder.&#10;Larger = more capacity, slower training.">
-                        <option value="4">4</option>
-                        <option value="8">8</option>
-                        <option value="16" selected>16</option>
-                        <option value="32">32</option>
-                        <option value="64">64</option>
-                    </select>
+                    <div class="ctrl-label">MLP Widths</div>
+                    <div style="display:flex;gap:6px;">
+                        <select id="mlp-width1" style="flex:1;min-width:0;">
+                            <option value="4">W1: 4</option>
+                            <option value="8">W1: 8</option>
+                            <option value="16" selected>W1: 16</option>
+                            <option value="32">W1: 32</option>
+                            <option value="64">W1: 64</option>
+                        </select>
+                        <select id="mlp-width2" style="flex:1;min-width:0;">
+                            <option value="4">W2: 4</option>
+                            <option value="8">W2: 8</option>
+                            <option value="16" selected>W2: 16</option>
+                            <option value="32">W2: 32</option>
+                            <option value="64">W2: 64</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Activation</div>
@@ -91,27 +98,27 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Quantization</div>
-                    <select id="quantization" data-tooltip="MLP weight precision.&#10;QAT trains with simulated 8-bit quantization for compact GLSL export.">
+                    <select id="quantization">
                         <option value="none">None (fp32)</option>
                         <option value="qat8" selected>MLP 8-bit QAT</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Emb Bits</div>
-                    <select id="emb-bits" data-tooltip="Bits per embedding channel.&#10;4-bit = 2× smaller; requires EMB ≥ 8.">
+                    <select id="emb-bits">
                         <option value="8" selected>8-bit</option>
                         <option value="4">4-bit</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="smooth-interpolation" checked data-tooltip="Bicubic-like smooth grid sampling (IQ's technique).&#10;Improves reconstruction quality.">
+                        <input type="checkbox" id="smooth-interpolation" checked>
                         <span class="ctrl-label">Smooth <a href="https://iquilezles.org/articles/texture/" target="_blank" rel="noopener">Interpolation</a></span>
                     </label>
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="no-offset" data-tooltip="Disable per-plane UV jitter.&#10;Each plane normally samples at a random offset to increase effective resolution.">
+                        <input type="checkbox" id="no-offset">
                         <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
@@ -123,44 +130,62 @@
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Max Iterations</span>
-                        <span class="slider-val" id="max-iter-val">1,000</span>
+                        <span class="slider-val" id="max-iter-val">∞</span>
                     </div>
-                    <input type="range" id="max-iter" min="0" max="5000" step="100" value="1000" data-tooltip="Stop training after N steps. 0 = run forever.">
+                    <input type="range" id="max-iter" min="0" max="5000" step="100" value="0">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Embeddings LR</span>
                         <span class="slider-val" id="embed-lr-val">—</span>
                     </div>
-                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="80" data-tooltip="Adam learning rate for the embedding grid (log scale, 1e-4 … 1e-1).">
+                    <input type="range" id="embed-lr" class="lr-slider" min="0" max="100" step="1" value="80">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">MLP LR</span>
                         <span class="slider-val" id="mlp-lr-val">—</span>
                     </div>
-                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="80" data-tooltip="Adam learning rate for MLP weights (log scale, 1e-4 … 1e-1).">
+                    <input type="range" id="mlp-lr" class="lr-slider" min="0" max="100" step="1" value="80">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Emb steps / MLP step</span>
                         <span class="slider-val" id="mlp-ratio-val">3</span>
                     </div>
-                    <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3" data-tooltip="Embedding-only Adam steps per MLP step.&#10;Higher = focus more on the grid.">
+                    <input type="range" id="mlp-ratio" min="1" max="8" step="1" value="3">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Num Loops</span>
                         <span class="slider-val" id="num-loops-val">1</span>
                     </div>
-                    <input type="range" id="num-loops" min="1" max="8" step="1" value="1" data-tooltip="Repeat each phase N times per super-cycle.&#10;ratio=5, loops=3 → 15 EMB steps then 3 MLP steps.">
+                    <input type="range" id="num-loops" min="1" max="8" step="1" value="1">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Bwd pixel stride</span>
                         <span class="slider-val" id="bwd-stride-val">4</span>
                     </div>
-                    <input type="range" id="bwd-stride" min="1" max="16" step="1" value="4" data-tooltip="Subsample every Nth pixel during backprop.&#10;Higher = faster steps, noisier gradients.">
+                    <input type="range" id="bwd-stride" min="1" max="16" step="1" value="4">
+                </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-label">Offset Resample</label>
+                    <select id="offset-sample-interval">
+                        <option value="0">off</option>
+                        <option value="1">1</option>
+                        <option value="10">10</option>
+                        <option value="50">50</option>
+                        <option value="100" selected>100</option>
+                    </select>
+                    <span class="ctrl-label" style="font-size:0.75em;opacity:0.6">steps</span>
+                </div>
+                <div class="ctrl-row btn-row">
+                    <button class="btn btn-accent" id="shake-emb-btn" disabled>⚡ Shake Emb</button>
+                    <button class="btn btn-accent" id="shake-mlp-btn" disabled>⚡ Shake MLP</button>
+                </div>
+                <div class="ctrl-row btn-row">
+                    <button class="btn btn-danger" id="reset-btn" disabled>↺ Reset Model</button>
                 </div>
             </div>
 
@@ -171,24 +196,24 @@
                         <span class="ctrl-label">Brush Radius</span>
                         <span class="slider-val" id="roi-brush-val">20</span>
                     </div>
-                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20" data-tooltip="Brush radius for painting the ROI mask (pixels).">
+                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">ROI Strength</span>
                         <span class="slider-val" id="roi-strength-val">9</span>
                     </div>
-                    <input type="range" id="roi-strength" min="0" max="20" step="1" value="9" data-tooltip="Loss multiplier inside painted regions.&#10;Higher = network focuses more on those areas.">
+                    <input type="range" id="roi-strength" min="0" max="20" step="1" value="9">
                 </div>
                 <div class="ctrl-row">
                     <label class="ctrl-check">
-                        <input type="checkbox" id="roi-freeze" data-tooltip="Freeze the mask — prevent it from decaying over time.">
+                        <input type="checkbox" id="roi-freeze">
                         <span class="ctrl-label">Freeze Mask</span>
                     </label>
                 </div>
                 <div class="ctrl-row" style="gap:6px;">
-                    <button class="btn btn-dim" id="roi-auto-btn" data-tooltip="Auto-detect high-variance (high-detail) regions as ROI.">⚙ Auto Mask</button>
-                    <button class="btn btn-dim" id="roi-clear-btn" data-tooltip="Clear the entire ROI mask.">✕ Clear Mask</button>
+                    <button class="btn btn-dim" id="roi-auto-btn">⚙ Auto Mask</button>
+                    <button class="btn btn-dim" id="roi-clear-btn">✕ Clear Mask</button>
                 </div>
             </div>
 
@@ -248,7 +273,7 @@
                             <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1">
                             <span id="output-zoom-val">1×</span>
                         </label>
-                        <button class="btn" id="snapshot-btn" data-tooltip="Save a weight checkpoint in memory, or restore it.">&#x25CF; Snapshot</button>
+                        <button class="btn" id="snapshot-btn">&#x25CF; Snapshot</button>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="canvas" width="512" height="512"></canvas>
@@ -302,7 +327,8 @@
                 <table class="help-table">
                     <tr><td>grid=N</td><td>Embedding grid resolution — 16, 32, or 64</td></tr>
                     <tr><td>EMB=N</td><td>Embedding channels per cell — 4, 8, or 16</td></tr>
-                    <tr><td>MLP=N</td><td>MLP hidden layer width — 4, 8, 16, 32, or 64</td></tr>
+                    <tr><td>MLP1=N</td><td>Layer 1 output width — 4, 8, 16, 32, or 64</td></tr>
+                    <tr><td>MLP2=N</td><td>Layer 2 output width — 4, 8, 16, 32, or 64</td></tr>
                     <tr><td>iters=N</td><td>Max training steps (0 = run forever)</td></tr>
                     <tr><td>embedLr=N</td><td>Embedding learning rate slider value (0–100)</td></tr>
                     <tr><td>mlpLr=N</td><td>MLP learning rate slider value (0–100)</td></tr>
@@ -314,7 +340,7 @@
                     <tr><td>none</td><td>Disable MLP quantization (fp32 weights)</td></tr>
                     <tr><td>numLoops=N</td><td>Number of times each EMB/MLP phase is repeated per super-cycle (1–8)</td></tr>
                 </table>
-                <div class="help-example">Example: <code>?grid=64&amp;EMB=16&amp;MLP=8&amp;8qat&amp;4b&amp;iters=4000&amp;numLoops=3</code></div>
+                <div class="help-example">Example: <code>?grid=64&amp;EMB=16&amp;MLP1=16&amp;MLP2=8&amp;8qat&amp;4b&amp;iters=4000&amp;numLoops=3</code></div>
             </div>
 
             <div class="help-section">
@@ -322,7 +348,8 @@
                 <table class="help-table">
                     <tr><td>Embedding Grid</td><td>Spatial resolution of the feature grid (N×N). Larger = finer detail, bigger model.</td></tr>
                     <tr><td>Embedding Channels</td><td>Feature dimensions per grid cell. More channels = richer representation.</td></tr>
-                    <tr><td>MLP Width</td><td>Hidden layer size of the 3-layer decoder MLP. Larger = more capacity, slower training.</td></tr>
+                    <tr><td>MLP Width 1</td><td>Output width of Layer 1 (embCh → W1). Larger = more capacity, slower training.</td></tr>
+                    <tr><td>MLP Width 2</td><td>Output width of Layer 2 (W1 → W2). Independent from W1.</td></tr>
                     <tr><td>Activation</td><td>Hidden-layer activation function. SIREN (sin) works well for natural images. Tanh and Softsign are smooth alternatives. HardTanh (clamp) is fastest but may cause dead neurons.</td></tr>
                     <tr><td>Quantization</td><td>MLP weight precision. QAT trains with simulated 8-bit quantization, yielding a much smaller GLSL export.</td></tr>
                     <tr><td>Emb Bits</td><td>Quantization depth for the embedding grid. 4-bit halves storage vs 8-bit.</td></tr>
@@ -386,8 +413,10 @@
                     <tr><td>↓ Save</td><td>Save model weights and current UI settings as .safetensors.</td></tr>
                     <tr><td>↓ GLSL</td><td>Export the trained model as a self-contained GLSL fragment shader (ShaderToy-compatible).</td></tr>
                     <tr><td>● Snapshot</td><td>Store current weights as an in-memory checkpoint. Click again (↺ Recall) to restore.</td></tr>
-                    <tr><td>⚡ Shake</td><td>Add small noise to the embedding grid to escape local minima. Resets embedding Adam moments.</td></tr>
-                    <tr><td>↺ Reset</td><td>Reinitialize the model and optimizer from scratch with the current settings.</td></tr>
+                    <tr><td>⚡ Shake Emb</td><td>Add small noise to the embedding grid to escape local minima. Resets embedding Adam moments.</td></tr>
+                    <tr><td>⚡ Shake MLP</td><td>Add small noise to all MLP weights and biases to escape local minima. Resets MLP Adam moments.</td></tr>
+                    <tr><td>↺ Reset Model</td><td>Reinitialize the model and optimizer from scratch (Training panel in sidebar).</td></tr>
+                    <tr><td>Space</td><td>Toggle training on/off (Stop / Continue).</td></tr>
                 </table>
             </div>
         </div>

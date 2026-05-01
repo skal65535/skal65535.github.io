@@ -60,6 +60,12 @@ export async function initWebGPU() {
             }
             return result;
         },
+        writeBuffer(buf, data) {
+            device.queue.writeBuffer(buf, 0, data);
+        },
+        clearBuffer(buf) {
+            device.queue.writeBuffer(buf, 0, new Uint8Array(buf.size));
+        },
         // Upload all MLP weight tensors to their GPU buffers.
         uploadModelWeights(model, tensors) {
             device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);

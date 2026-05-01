@@ -1,7 +1,7 @@
 // main.js
 // Orchestrates UI, WebGPU setup, and GPU training loop (forward + backward + Adam).
 import { initWebGPU } from './webgpu_manager.js';
-import { createModel, destroyModel } from './model.js';
+import { createModel, destroyModel, shakeEmbeddings, shakeMlp } from './model.js';
 import { buildShader } from './shader_builder.js';
 import { get_target_pixels } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
@@ -25,7 +25,8 @@ const dropOverlay  = document.getElementById('drop-overlay');
 
 const gridSizeSelect            = document.getElementById('grid-size');
 const embeddingChannelsSelect   = document.getElementById('embedding-channels');
-const mlpWidthSelect            = document.getElementById('mlp-width');
+const mlpWidth1Select           = document.getElementById('mlp-width1');
+const mlpWidth2Select           = document.getElementById('mlp-width2');
 const quantizationSelect        = document.getElementById('quantization');
 const embBitsSelect             = document.getElementById('emb-bits');
 const activationSelect          = document.getElementById('activation');
@@ -60,7 +61,8 @@ const outputZoomInput = document.getElementById('output-zoom');
 const outputZoomVal   = document.getElementById('output-zoom-val');
 const startBtn      = document.getElementById('start-btn');
 const resetBtn      = document.getElementById('reset-btn');
-const shakeBtn      = document.getElementById('shake-btn');
+const shakeEmbBtn   = document.getElementById('shake-emb-btn');
+const shakeMlpBtn   = document.getElementById('shake-mlp-btn');
 const saveBtn       = document.getElementById('save-btn');
 const loadBtn       = document.getElementById('load-btn');
 const snapshotBtn   = document.getElementById('snapshot-btn');
@@ -125,15 +127,18 @@ function drawPlaceholder(ctx_canvas) {
     ctx.textBaseline = 'middle';
     ctx.fillText('train or load a model', ctx_canvas.width / 2, ctx_canvas.height / 2);
 }
-const vizIntervalSelect = document.getElementById('viz-interval');
+const vizIntervalSelect          = document.getElementById('viz-interval');
+const offsetSampleIntervalSelect = document.getElementById('offset-sample-interval');
 
 // --- Compressed size estimate ---
 function computeModelSize() {
     const gs   = parseInt(gridSizeSelect.value);
     const embCh = parseInt(embeddingChannelsSelect.value);
-    const mlpW  = parseInt(mlpWidthSelect.value);
+    const mlpW1 = parseInt(mlpWidth1Select.value);
+    const mlpW2 = parseInt(mlpWidth2Select.value);
     const emb   = gs * gs * embCh;
-    const mlp   = embCh*mlpW + mlpW + mlpW*mlpW + mlpW + mlpW*4 + 4;
+    const outCh = 3; // conservative estimate (no alpha)
+    const mlp   = embCh*mlpW1 + mlpW1 + mlpW1*mlpW2 + mlpW2 + mlpW2*outCh + outCh;
     const mlpBpp = quantizationSelect.value === 'none' ? 4 : 1;
     const embBpp = parseInt(embBitsSelect.value) / 8;
     return emb * embBpp + mlp * mlpBpp;
@@ -179,37 +184,42 @@ outputZoomInput.addEventListener('input', () => {
     }
 });
 
-function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth }) {
+function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth1, mlpWidth2 }) {
+    const valid = [4, 8, 16, 32, 64];
     return [16, 32, 64].includes(gridSize) &&
            [4, 8, 16].includes(embeddingChannels) &&
-           [4, 8, 16, 32, 64].includes(mlpWidth);
+           valid.includes(mlpWidth1) && valid.includes(mlpWidth2);
 }
 
 function configCompatible(a, b) {
     return a && b &&
         a.gridSize === b.gridSize &&
         a.embeddingChannels === b.embeddingChannels &&
-        a.mlpWidth === b.mlpWidth;
+        a.mlpWidth1 === b.mlpWidth1 &&
+        a.mlpWidth2 === b.mlpWidth2;
 }
 
 function currentModelConfig() {
-    const mlpWidth = parseInt(mlpWidthSelect.value);
+    const mlpWidth1 = parseInt(mlpWidth1Select.value);
+    const mlpWidth2 = parseInt(mlpWidth2Select.value);
     const embeddingChannels = parseInt(embeddingChannelsSelect.value);
     return {
         gridSize:          parseInt(gridSizeSelect.value),
         embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
-        mlpWidth:          Math.ceil(mlpWidth / 4) * 4,
+        mlpWidth1:         Math.ceil(mlpWidth1 / 4) * 4,
+        mlpWidth2:         Math.ceil(mlpWidth2 / 4) * 4,
         embBits:           parseInt(embBitsSelect.value),
     };
 }
 
-const STRUCTURAL_CONTROLS = [gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect];
+const STRUCTURAL_CONTROLS = [gridSizeSelect, embeddingChannelsSelect, mlpWidth1Select, mlpWidth2Select];
 function updateDirtyIndicators() {
     if (!lastConfig) { STRUCTURAL_CONTROLS.forEach(el => el.removeAttribute('data-dirty')); return; }
     const cur = currentModelConfig();
     gridSizeSelect.toggleAttribute('data-dirty',          lastConfig.gridSize            !== cur.gridSize);
     embeddingChannelsSelect.toggleAttribute('data-dirty', lastConfig.embeddingChannels   !== cur.embeddingChannels);
-    mlpWidthSelect.toggleAttribute('data-dirty',          lastConfig.mlpWidth            !== cur.mlpWidth);
+    mlpWidth1Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth1           !== cur.mlpWidth1);
+    mlpWidth2Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth2           !== cur.mlpWidth2);
 }
 
 function syncButtonStates() {
@@ -217,7 +227,8 @@ function syncButtonStates() {
     const hasModel      = !!model;
     const shouldDisable = !hasModel || training;
     resetBtn.disabled        = shouldDisable;
-    shakeBtn.disabled        = shouldDisable;
+    shakeEmbBtn.disabled     = shouldDisable;
+    shakeMlpBtn.disabled     = shouldDisable;
     outputZoomInput.disabled = shouldDisable;
     snapshotBtn.disabled = !hasModel || (training && snapshotWeights !== null);
     loadBtn.disabled = training;
@@ -225,7 +236,7 @@ function syncButtonStates() {
 
 function updateStartLabel() {
     if (configCompatible(lastConfig, currentModelConfig()) && model) {
-        startBtn.textContent = '▶ Continue';
+        startBtn.textContent = '▶ Resume';
     } else {
         startBtn.textContent = '▶ Start';
     }
@@ -465,7 +476,7 @@ async function startTraining(fullReset) {
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
                 : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, noOffsetCheckbox.checked);
-            webGpuContext.device.queue.writeBuffer(model.emb_offsets, 0, config.embOffsets);
+            webGpuContext.writeBuffer(model.emb_offsets, config.embOffsets);
             await createPipeline();
             createBindGroup();
             channelMask = 0xFFFFFFFF;
@@ -506,7 +517,8 @@ function buildConfigFromUI() {
     return {
         gridSize:            parseInt(gridSizeSelect.value),
         embeddingChannels:   parseInt(embeddingChannelsSelect.value),
-        mlpWidth:            parseInt(mlpWidthSelect.value),
+        mlpWidth1:           parseInt(mlpWidth1Select.value),
+        mlpWidth2:           parseInt(mlpWidth2Select.value),
         quantization:        quantizationSelect.value,
         embBits:             parseInt(embBitsSelect.value),
         activation:          activationSelect.value,
@@ -531,27 +543,28 @@ function createBindGroup() {
     for (const b of Object.values(outputBuffers)) b?.destroy();
     for (const b of Object.values(readbackBuffers)) b?.destroy();
 
-    const { mlpWidth, gridSize, embeddingChannels } = config;
+    const { mlpWidth1, mlpWidth2, gridSize, embeddingChannels } = config;
     fwdUniformsBuf = webGpuContext.uniformBuffer(224);
-    webGpuContext.device.queue.writeBuffer(fwdUniformsBuf, 0,
-        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth, canvas.width, canvas.height, null, config.embOffsets));
+    webGpuContext.writeBuffer(fwdUniformsBuf,
+        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth1, mlpWidth2, canvas.width, canvas.height, null, config.embOffsets));
 
     const pixelCount = canvas.width * canvas.height;
     const embSize    = gridSize * gridSize * embeddingChannels;
-    const stride     = mlpWidth * 4; // bytes per pixel in inter-layer buffers (mlpWidth f32)
+    const stride1    = mlpWidth1 * 4; // bytes per pixel in interLayer1
+    const stride2    = mlpWidth2 * 4; // bytes per pixel in interLayer2
 
-    outputBuffers.interLayer1 = webGpuContext.outputBuffer(pixelCount * stride);
-    outputBuffers.interLayer2 = webGpuContext.outputBuffer(pixelCount * stride);
+    outputBuffers.interLayer1 = webGpuContext.outputBuffer(pixelCount * stride1);
+    outputBuffers.interLayer2 = webGpuContext.outputBuffer(pixelCount * stride2);
     outputBuffers.final       = webGpuContext.outputBuffer(pixelCount * 4 * 4);
 
     readbackBuffers.final         = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
     readbackBuffers.embeddings    = webGpuContext.readbackBuffer(embSize * 4);
-    readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth * embeddingChannels * 4);
-    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride);
-    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth * stride);
-    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer((config.hasAlpha ? 4 : 3) * stride);
-    readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride);
-    readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride);
+    readbackBuffers.layer1Weights = webGpuContext.readbackBuffer(mlpWidth1 * embeddingChannels * 4);
+    readbackBuffers.layer1Biases  = webGpuContext.readbackBuffer(stride1);
+    readbackBuffers.layer2Weights = webGpuContext.readbackBuffer(mlpWidth2 * stride1);
+    readbackBuffers.layer3Weights = webGpuContext.readbackBuffer((config.hasAlpha ? 4 : 3) * stride2);
+    readbackBuffers.interLayer1   = webGpuContext.readbackBuffer(pixelCount * stride1);
+    readbackBuffers.interLayer2   = webGpuContext.readbackBuffer(pixelCount * stride2);
 
     bindGroup = webGpuContext.device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
@@ -599,7 +612,8 @@ function makeTrainer() {
             roiStrength: parseFloat(roiStrengthInput.value),
             roiFreeze:   roiFreezeChk.checked,
             maxIter:     parseInt(maxIterInput.value),
-            vizInterval: parseInt(vizIntervalSelect.value),
+            vizInterval:          parseInt(vizIntervalSelect.value),
+            offsetSampleInterval: parseInt(offsetSampleIntervalSelect.value),
         }),
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
@@ -642,31 +656,28 @@ resetBtn.addEventListener('click', async () => {
     await startTraining(true);
 });
 
-// --- Shake: add small noise to embeddings to escape local minima ---
-const SHAKE_AMPLITUDE = 0.02;
-shakeBtn.addEventListener('click', async () => {
+// --- Shake: add small noise to escape local minima ---
+shakeEmbBtn.addEventListener('click', () => {
     if (!lastWeights) return;
-    const emb = lastWeights.embeddings;
-    for (let i = 0; i < emb.length; i++) emb[i] += (Math.random() * 2 - 1) * SHAKE_AMPLITUDE;
-    const { device } = webGpuContext;
-    device.queue.writeBuffer(model.embeddings, 0, emb);
-    // Reset Adam moments so accumulated momentum doesn't immediately undo the perturbation
-    const zeros = new Float32Array(emb.length);
-    device.queue.writeBuffer(model.adamM.embeddings, 0, zeros);
-    device.queue.writeBuffer(model.adamV.embeddings, 0, zeros);
+    shakeEmbeddings(webGpuContext, model, lastWeights.embeddings);
+});
+
+shakeMlpBtn.addEventListener('click', async () => {
+    if (!model) return;
+    shakeMlp(webGpuContext, model, await readBackAllWeights());
 });
 
 // --- Weight readback (for export) ---
 async function readBackAllWeights() {
-    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const tensors = {
         embeddings:     { buf: model.embeddings,     size: gridSize * gridSize * embCh },
-        layer1_weights: { buf: model.layer1.weights, size: mlpWidth * embCh },
-        layer1_biases:  { buf: model.layer1.biases,  size: mlpWidth },
-        layer2_weights: { buf: model.layer2.weights, size: mlpWidth * mlpWidth },
-        layer2_biases:  { buf: model.layer2.biases,  size: mlpWidth },
-        layer3_weights: { buf: model.layer3.weights, size: outCh * mlpWidth },
+        layer1_weights: { buf: model.layer1.weights, size: mlpWidth1 * embCh },
+        layer1_biases:  { buf: model.layer1.biases,  size: mlpWidth1 },
+        layer2_weights: { buf: model.layer2.weights, size: mlpWidth2 * mlpWidth1 },
+        layer2_biases:  { buf: model.layer2.biases,  size: mlpWidth2 },
+        layer3_weights: { buf: model.layer3.weights, size: outCh * mlpWidth2 },
         layer3_biases:  { buf: model.layer3.biases,  size: outCh },
     };
     return webGpuContext.readBackBuffers(tensors);
@@ -740,23 +751,22 @@ snapshotBtn.addEventListener('click', async () => {
 // --- Zoom inference: forward pass at arbitrary resolution using temp buffers ---
 async function runZoomInference(W, H) {
     const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth } = config;
+    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
     const embSize    = gridSize * gridSize * embCh;
     const pixelCount = W * H;
 
     const embF32 = lastWeights.embeddings;
     const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
-    device.queue.writeBuffer(model.embeddings_range, 0, range);
+    webGpuContext.writeBuffer(model.embeddings_range, range);
     const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
-    device.queue.writeBuffer(model.embeddings_q, 0, packed);
+    webGpuContext.writeBuffer(model.embeddings_q, packed);
 
     const unifBuf = webGpuContext.uniformBuffer(224);
-    device.queue.writeBuffer(unifBuf, 0, buildFwdUniforms(gridSize, embCh, mlpWidth, W, H, range, config.embOffsets));
+    webGpuContext.writeBuffer(unifBuf, buildFwdUniforms(gridSize, embCh, mlpWidth1, mlpWidth2, W, H, range, config.embOffsets));
     uploadChannelMask(channelMask, unifBuf, device);
     const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
-    const stride  = mlpWidth * 4;
-    const interL1 = webGpuContext.storageBuffer(pixelCount * stride);
-    const interL2 = webGpuContext.storageBuffer(pixelCount * stride);
+    const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth1 * 4);
+    const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth2 * 4);
     const rbBuf   = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
 
     const bg = device.createBindGroup({
@@ -816,7 +826,7 @@ function layersCanvasCoords(e) {
 }
 
 function redrawLayers() {
-    if (!lastWeights || !config?.mlpWidth) return;
+    if (!lastWeights || !config?.mlpWidth1) return;
     ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(layersCanvas,
         { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
           finalOutput: lastWeights.finalOutput, imgW: canvas.width, imgH: canvas.height,
@@ -879,10 +889,10 @@ async function runInference() {
 
         const embF32 = lastWeights.embeddings;
         const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
-        device.queue.writeBuffer(model.embeddings_range, 0, range);
+        webGpuContext.writeBuffer(model.embeddings_range, range);
         uploadEmbRange(range, embCh, fwdUniformsBuf, device);
         const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
-        device.queue.writeBuffer(model.embeddings_q, 0, packed);
+        webGpuContext.writeBuffer(model.embeddings_q, packed);
 
         uploadChannelMask(channelMask, fwdUniformsBuf, device);
         const ce = device.createCommandEncoder();
@@ -943,7 +953,8 @@ async function loadModelFile(file) {
 
     gridSizeSelect.value          = String(savedConfig.gridSize);
     embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
-    mlpWidthSelect.value          = String(savedConfig.mlpWidth);
+    mlpWidth1Select.value         = String(savedConfig.mlpWidth1);
+    mlpWidth2Select.value         = String(savedConfig.mlpWidth2);
 
     // Restore saved UI settings
     const src = { ...savedConfig, ...uiSettings };
@@ -967,7 +978,8 @@ async function loadModelFile(file) {
     config = {
         gridSize:            savedConfig.gridSize,
         embeddingChannels:   savedConfig.embeddingChannels,
-        mlpWidth:            savedConfig.mlpWidth,
+        mlpWidth1:           savedConfig.mlpWidth1,
+        mlpWidth2:           savedConfig.mlpWidth2,
         quantization:        quantizationSelect.value,
         embBits:             loadedEmbBits,
         activation:          savedConfig.activation || 'sin',
@@ -1028,7 +1040,7 @@ function updateEmbBitsOptions() {
 }
 
 // Update start button label and size when model config dropdowns change
-[gridSizeSelect, embeddingChannelsSelect, mlpWidthSelect, quantizationSelect, embBitsSelect, activationSelect].forEach(sel => {
+[gridSizeSelect, embeddingChannelsSelect, mlpWidth1Select, mlpWidth2Select, quantizationSelect, embBitsSelect, activationSelect].forEach(sel => {
     sel.addEventListener('change', () => {
         updateEmbBitsOptions(); updateStartLabel(); updateSizeDisplay();
         if (!isTraining()) {
@@ -1052,7 +1064,7 @@ function updateEmbBitsOptions() {
 updateEmbBitsOptions();
 
 // --- URL parameter parsing ---
-// Supported: ?grid=64&EMB=16&MLP=8&iters=4000&8qat&4b&numLoops=3
+// Supported: ?grid=64&EMB=16&MLP1=16&MLP2=8&iters=4000&8qat&4b&numLoops=3
 // Flags: 8qat (MLP 8-bit QAT), 4b (4-bit embeddings), 8b (8-bit embeddings)
 function applyUrlParams() {
     const params = new URLSearchParams(window.location.search);
@@ -1065,7 +1077,8 @@ function applyUrlParams() {
 
     setSelect(gridSizeSelect,          params.get('grid'), [16, 32, 64]);
     setSelect(embeddingChannelsSelect, params.get('EMB'),  [4, 8, 16]);
-    setSelect(mlpWidthSelect,          params.get('MLP'),  [4, 8, 16, 32, 64]);
+    setSelect(mlpWidth1Select,         params.get('MLP1'), [4, 8, 16, 32, 64]);
+    setSelect(mlpWidth2Select,         params.get('MLP2'), [4, 8, 16, 32, 64]);
 
     if (params.has('8qat')) { quantizationSelect.value = 'qat8'; hasParams = true; }
     if (params.has('none')) { quantizationSelect.value = 'none'; hasParams = true; }
@@ -1115,7 +1128,27 @@ document.getElementById('help-btn').addEventListener('click', openHelp);
 document.getElementById('app-title').addEventListener('click', openHelp);
 document.getElementById('help-close').addEventListener('click', () => helpOverlay.classList.add('hidden'));
 helpOverlay.addEventListener('click', e => { if (e.target === helpOverlay) helpOverlay.classList.add('hidden'); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') helpOverlay.classList.add('hidden'); });
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { helpOverlay.classList.add('hidden'); return; }
+    if (e.key === ' ' && e.target === document.body) {
+        e.preventDefault();
+        startBtn.click();
+    }
+});
+
+// --- Start tooltip: show once startup is complete ---
+(function() {
+    const tip = document.getElementById('start-tooltip');
+    const dismiss = () => tip.remove();
+    document.addEventListener('startup-complete', () => {
+        const r = startBtn.getBoundingClientRect();
+        tip.style.left = (r.left + r.width / 2) + 'px';
+        tip.style.top = (r.bottom + 10) + 'px';
+        tip.classList.add('visible');
+        tip.addEventListener('animationend', dismiss, { once: true });
+    }, { once: true });
+    startBtn.addEventListener('click', dismiss, { once: true });
+})();
 
 // --- Startup: load default image then default model (or auto-start from URL params) ---
 const urlHasParams = applyUrlParams();
@@ -1148,6 +1181,7 @@ startupImg.onload = async () => {
                 await runInference();
             } catch (err) { console.error('Initial inference failed:', err); }
         }
+        document.dispatchEvent(new Event('startup-complete'));
     }
 };
 startupImg.src = 'Mona_Lisa.webp';

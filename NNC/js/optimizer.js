@@ -58,7 +58,7 @@ export class AdamOptimizer {
  * @returns {object} - An object containing the gradients for each parameter.
  */
 export function backward(config, model, outputs, targetImage, weights, stride = 1) {
-    const { gridSize, embeddingChannels, mlpWidth } = config;
+    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2 } = config;
     const pixelCount = outputs.final.length / 4;
     const sampledCount = Math.ceil(pixelCount / stride);
 
@@ -74,8 +74,8 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
     const grad_l3_weights = new Float32Array(weights.layer3_weights.length).fill(0);
     const grad_l3_biases = new Float32Array(weights.layer3_biases.length).fill(0);
     const grad_inter2_output = new Float32Array(outputs.interLayer2.length).fill(0);
-    
-    // The input to layer 3 is the output of layer 2's sine activation
+
+    // Input to L3 is activ(interLayer2); interLayer2 stride is mlpWidth2
     const l2_output_activated = new Float32Array(outputs.interLayer2.length);
     for (let i = 0; i < l2_output_activated.length; i++) {
         l2_output_activated[i] = Math.sin(outputs.interLayer2[i]);
@@ -84,25 +84,22 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
     for (let p = 0; p < pixelCount; p += stride) {
         for (let i = 0; i < 4; i++) { // Output channels (RGBA)
             const grad_out_p = grad_final[p * 4 + i];
-            for (let j = 0; j < mlpWidth; j++) { // Input channels to L3
-                // Gradient w.r.t. weights
-                grad_l3_weights[i * mlpWidth + j] += grad_out_p * l2_output_activated[p * mlpWidth + j];
-                // Gradient w.r.t. input (output of L2 activation)
-                grad_inter2_output[p * mlpWidth + j] += grad_out_p * weights.layer3_weights[i * mlpWidth + j];
+            for (let j = 0; j < mlpWidth2; j++) {
+                grad_l3_weights[i * mlpWidth2 + j] += grad_out_p * l2_output_activated[p * mlpWidth2 + j];
+                grad_inter2_output[p * mlpWidth2 + j] += grad_out_p * weights.layer3_weights[i * mlpWidth2 + j];
             }
-            // Gradient w.r.t. biases
             grad_l3_biases[i] += grad_out_p;
         }
     }
 
     // --- 3. Backprop through Layer 2's sine activation ---
     const grad_inter2_input = new Float32Array(outputs.interLayer2.length);
-     for (let i = 0; i < grad_inter2_input.length; i++) {
-        // d(sin(x))/dx = cos(x)
+    for (let i = 0; i < grad_inter2_input.length; i++) {
         grad_inter2_input[i] = grad_inter2_output[i] * Math.cos(outputs.interLayer2[i]);
     }
 
     // --- 4. Backprop through Layer 2 ---
+    // L2 weights: [mlpWidth2 × mlpWidth1], interLayer1 stride = mlpWidth1
     const grad_l2_weights = new Float32Array(weights.layer2_weights.length).fill(0);
     const grad_l2_biases = new Float32Array(weights.layer2_biases.length).fill(0);
     const grad_inter1_output = new Float32Array(outputs.interLayer1.length).fill(0);
@@ -113,11 +110,11 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
     }
 
     for (let p = 0; p < pixelCount; p += stride) {
-        for (let i = 0; i < mlpWidth; i++) {
-            const grad_l2_in_p = grad_inter2_input[p * mlpWidth + i];
-            for (let j = 0; j < mlpWidth; j++) {
-                grad_l2_weights[i * mlpWidth + j] += grad_l2_in_p * l1_output_activated[p * mlpWidth + j];
-                grad_inter1_output[p * mlpWidth + j] += grad_l2_in_p * weights.layer2_weights[i * mlpWidth + j];
+        for (let i = 0; i < mlpWidth2; i++) {
+            const grad_l2_in_p = grad_inter2_input[p * mlpWidth2 + i];
+            for (let j = 0; j < mlpWidth1; j++) {
+                grad_l2_weights[i * mlpWidth1 + j] += grad_l2_in_p * l1_output_activated[p * mlpWidth1 + j];
+                grad_inter1_output[p * mlpWidth1 + j] += grad_l2_in_p * weights.layer2_weights[i * mlpWidth1 + j];
             }
             grad_l2_biases[i] += grad_l2_in_p;
         }
@@ -128,8 +125,9 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
     for (let i = 0; i < grad_inter1_input.length; i++) {
         grad_inter1_input[i] = grad_inter1_output[i] * Math.cos(outputs.interLayer1[i]);
     }
-    
+
     // --- 6. Backprop through Layer 1 ---
+    // L1 weights: [mlpWidth1 × embeddingChannels], interLayer1 stride = mlpWidth1
     const grad_l1_weights = new Float32Array(weights.layer1_weights.length).fill(0);
     const grad_l1_biases = new Float32Array(weights.layer1_biases.length).fill(0);
     const grad_embeddings = new Float32Array(weights.embeddings.length).fill(0);
@@ -161,7 +159,6 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
         const idx01 = (y1 * gridSize + x0) * embeddingChannels;
         const idx11 = (y1 * gridSize + x1) * embeddingChannels;
 
-        // Interpolated embedding (matches forward pass input to L1)
         const interp = new Float32Array(embeddingChannels);
         for (let j = 0; j < embeddingChannels; j++) {
             interp[j] = w00 * weights.embeddings[idx00 + j]
@@ -170,8 +167,8 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
                       + w11 * weights.embeddings[idx11 + j];
         }
 
-        for (let i = 0; i < mlpWidth; i++) {
-            const grad_l1_in_p = grad_inter1_input[p * mlpWidth + i];
+        for (let i = 0; i < mlpWidth1; i++) {
+            const grad_l1_in_p = grad_inter1_input[p * mlpWidth1 + i];
             for (let j = 0; j < embeddingChannels; j++) {
                 grad_l1_weights[i * embeddingChannels + j] += grad_l1_in_p * interp[j];
                 const g = grad_l1_in_p * weights.layer1_weights[i * embeddingChannels + j];

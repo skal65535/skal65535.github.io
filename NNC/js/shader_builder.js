@@ -18,7 +18,7 @@ fn activ_prime(x: f32) -> f32 { return cos(x); }`;
 }
 
 export function buildShader(config) {
-    const { gridSize, embeddingChannels, mlpWidth, quantization, smoothInterpolation, activation = 'sin' } = config;
+    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2, quantization, smoothInterpolation, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
@@ -65,36 +65,36 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
 fn dequant4(n: u32) -> f32 { return f32(select(i32(n), i32(n) - 16, n >= 8u)) / 7.0; }
 `;
 
-    // Generate dot-product inner loop (width must be a multiple of 4)
-    const dotLoop = quantization === 'qat8'
-        ? `        for (var j: u32 = 0u; j < width; j = j + 4u) {
-            let base = i * width + j;
+    // Generate mat-vec multiply with hardcoded sizes (inSize must be multiple of 4)
+    const makeDotLoop = inSize => quantization === 'qat8'
+        ? `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
+            let base = i * ${inSize}u + j;
             let w = vec4<f32>(quantize_dequantize_8bit((*mat)[base]), quantize_dequantize_8bit((*mat)[base+1u]), quantize_dequantize_8bit((*mat)[base+2u]), quantize_dequantize_8bit((*mat)[base+3u]));
             let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
             sum += dot(w, v);
         }`
-        : `        for (var j: u32 = 0u; j < width; j = j + 4u) {
-            let base = i * width + j;
+        : `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
+            let base = i * ${inSize}u + j;
             let w = vec4<f32>((*mat)[base], (*mat)[base+1u], (*mat)[base+2u], (*mat)[base+3u]);
             let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
             sum += dot(w, v);
         }`;
 
     const matVecMulFn = (name, inSize, outSize) => `
-fn ${name}(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${inSize}>, width: u32, height: u32) -> array<f32, ${outSize}> {
+fn ${name}(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${inSize}>) -> array<f32, ${outSize}> {
     var result: array<f32, ${outSize}>;
-    for (var i: u32 = 0u; i < height; i = i + 1u) {
+    for (var i: u32 = 0u; i < ${outSize}u; i = i + 1u) {
         var sum = 0.0;
-${dotLoop}
+${makeDotLoop(inSize)}
         result[i] = sum;
     }
     return result;
 }`;
 
     const mlpFunctions = `
-${matVecMulFn('mat_vec_mul',        embeddingChannels, mlpWidth)}
-${matVecMulFn('mat_vec_mul_hidden', mlpWidth,          mlpWidth)}
-${matVecMulFn('mat_vec_mul_output', mlpWidth,          outCh)}
+${matVecMulFn('mat_vec_mul_l1', embeddingChannels, mlpWidth1)}
+${matVecMulFn('mat_vec_mul_l2', mlpWidth1,         mlpWidth2)}
+${matVecMulFn('mat_vec_mul_l3', mlpWidth2,         outCh)}
 `;
 
     const shaderCode = `
@@ -106,10 +106,10 @@ ${wgslActivFns(activation)}
 struct Uniforms {
     gridSize:          u32,
     embeddingChannels: u32,
-    mlpWidth:          u32,
+    mlpWidth1:         u32,
     canvasWidth:       u32,
     canvasHeight:      u32,
-    channelMask: u32, _p1: u32, _p2: u32,  // channelMask: bit i=0 → zero out emb channel i
+    channelMask: u32, mlpWidth2: u32, _p2: u32,
     emb_range:   array<vec4<f32>, 8>,  // [mn_plane0, mx_plane0, mn_plane1, mx_plane1, ...]
     emb_offsets: array<vec4<f32>, 4>,  // packed (ox_{2k}, oy_{2k}, ox_{2k+1}, oy_{2k+1})
 };
@@ -189,24 +189,24 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let pixel_index = y * uniforms.canvasWidth + x;
 
-    // Layer 1: embeddingChannels -> mlpWidth
-    var layer1_out = mat_vec_mul(&layer1_weights, embedding_vector, uniforms.embeddingChannels, uniforms.mlpWidth);
-    for (var i: u32 = 0u; i < uniforms.mlpWidth; i = i + 1u) {
+    // Layer 1: embeddingChannels -> mlpWidth1
+    var layer1_out = mat_vec_mul_l1(&layer1_weights, embedding_vector);
+    for (var i: u32 = 0u; i < ${mlpWidth1}u; i = i + 1u) {
         layer1_out[i] = layer1_out[i] + layer1_biases[i];
-        out_inter_layer1[pixel_index * uniforms.mlpWidth + i] = layer1_out[i]; // pre-activation
+        out_inter_layer1[pixel_index * ${mlpWidth1}u + i] = layer1_out[i]; // pre-activation
         layer1_out[i] = activ(layer1_out[i]);
     }
 
-    // Layer 2: mlpWidth -> mlpWidth
-    var layer2_out = mat_vec_mul_hidden(&layer2_weights, layer1_out, uniforms.mlpWidth, uniforms.mlpWidth);
-    for (var i: u32 = 0u; i < uniforms.mlpWidth; i = i + 1u) {
+    // Layer 2: mlpWidth1 -> mlpWidth2
+    var layer2_out = mat_vec_mul_l2(&layer2_weights, layer1_out);
+    for (var i: u32 = 0u; i < ${mlpWidth2}u; i = i + 1u) {
         layer2_out[i] = layer2_out[i] + layer2_biases[i];
-        out_inter_layer2[pixel_index * uniforms.mlpWidth + i] = layer2_out[i]; // pre-activation
+        out_inter_layer2[pixel_index * ${mlpWidth2}u + i] = layer2_out[i]; // pre-activation
         layer2_out[i] = activ(layer2_out[i]);
     }
 
-    // Layer 3: mlpWidth -> ${outCh}
-    var layer3_out = mat_vec_mul_output(&layer3_weights, layer2_out, uniforms.mlpWidth, ${outCh}u);
+    // Layer 3: mlpWidth2 -> ${outCh}
+    var layer3_out = mat_vec_mul_l3(&layer3_weights, layer2_out);
     for (var i: u32 = 0u; i < ${outCh}u; i = i + 1u) {
         layer3_out[i] = layer3_out[i] + layer3_biases[i];
     }

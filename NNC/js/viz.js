@@ -22,8 +22,8 @@ export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
 // Returns updated ema (pass null to reset).
 export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null }) {
     const w = weights;
-    if (!w || !config.mlpWidth) return ema;
-    const { mlpWidth, embeddingChannels: embCh, gridSize } = config;
+    if (!w || !config.mlpWidth1) return ema;
+    const { mlpWidth1, mlpWidth2, embeddingChannels: embCh, gridSize } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const ctx = canvas.getContext('2d');
     const cw = canvas.width, ch = canvas.height;
@@ -32,9 +32,9 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     if (!ema) ema = [{mn:null,mx:null}, {mn:null,mx:null}, {mn:null,mx:null}];
 
     const matDefs = [
-        { data: w.layer1Weights, rows: mlpWidth, cols: embCh },
-        { data: w.layer2Weights, rows: mlpWidth, cols: mlpWidth },
-        { data: w.layer3Weights, rows: outCh,     cols: mlpWidth },
+        { data: w.layer1Weights, rows: mlpWidth1, cols: embCh },
+        { data: w.layer2Weights, rows: mlpWidth2, cols: mlpWidth1 },
+        { data: w.layer3Weights, rows: outCh,      cols: mlpWidth2 },
     ];
     for (let i = 0; i < 3; i++) {
         let mn = Infinity, mx = -Infinity;
@@ -49,15 +49,15 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
 
     // Matrices use 72% of non-thumb space; zoom inset overlays the empty lower-right corner
     const spaceForMatsAndGaps = cw - 2*PAD - 4*THUMB_W;
-    const totalMatCols = embCh + 2 * mlpWidth;
+    const totalMatCols = embCh + mlpWidth1 + mlpWidth2;
     const cell = Math.max(1, Math.min(
         Math.floor(spaceForMatsAndGaps * 0.72 / totalMatCols),
-        Math.floor(BODY_H / mlpWidth)
+        Math.floor(BODY_H / Math.max(mlpWidth1, mlpWidth2))
     ));
     const totalMatWidth = totalMatCols * cell;
     const GAP = Math.max(6, Math.floor((spaceForMatsAndGaps - totalMatWidth) / 6));
 
-    const matW_L1 = embCh * cell, matW_L2 = mlpWidth * cell, matW_L3 = mlpWidth * cell;
+    const matW_L1 = embCh * cell, matW_L2 = mlpWidth1 * cell, matW_L3 = mlpWidth2 * cell;
 
     const xEmb  = PAD;
     const xL1   = xEmb  + THUMB_W + GAP;
@@ -144,21 +144,21 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
           }, embTints)
         : drawPlaceholder(xEmb, THUMB_W);
 
-    const bbL1 = drawMatrix(w.layer1Weights, mlpWidth, embCh,   xL1, matW_L1, ema[0]);
-    const bbL2 = drawMatrix(w.layer2Weights, mlpWidth, mlpWidth, xL2, matW_L2, ema[1]);
-    const bbL3 = drawMatrix(w.layer3Weights, outCh,     mlpWidth, xL3, matW_L3, ema[2]);
+    const bbL1 = drawMatrix(w.layer1Weights, mlpWidth1, embCh,    xL1, matW_L1, ema[0]);
+    const bbL2 = drawMatrix(w.layer2Weights, mlpWidth2, mlpWidth1, xL2, matW_L2, ema[1]);
+    const bbL3 = drawMatrix(w.layer3Weights, outCh,      mlpWidth2, xL3, matW_L3, ema[2]);
 
     const bbAct1 = interLayer1
-        ? drawChannelStack(mlpWidth, xAct1, THUMB_W, (c, lx, ly, lw, lh) => {
+        ? drawChannelStack(mlpWidth1, xAct1, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
-            return interLayer1[(sy*imgW+sx)*mlpWidth+c];
+            return interLayer1[(sy*imgW+sx)*mlpWidth1+c];
           }, null)
         : drawPlaceholder(xAct1, THUMB_W);
 
     const bbAct2 = interLayer2
-        ? drawChannelStack(mlpWidth, xAct2, THUMB_W, (c, lx, ly, lw, lh) => {
+        ? drawChannelStack(mlpWidth2, xAct2, THUMB_W, (c, lx, ly, lw, lh) => {
             const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
-            return interLayer2[(sy*imgW+sx)*mlpWidth+c];
+            return interLayer2[(sy*imgW+sx)*mlpWidth2+c];
           }, null)
         : drawPlaceholder(xAct2, THUMB_W);
 
@@ -199,16 +199,16 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         };
         if      (hCol==='emb'  && w.embeddings)  fillZoom(gridSize, gridSize,
             (sx,sy) => w.embeddings[(sy*gridSize+sx)*embCh+hCh], [191,223,255]);
-        else if (hCol==='l1')                     fillZoom(embCh, mlpWidth,
+        else if (hCol==='l1')                     fillZoom(embCh, mlpWidth1,
             (sx,sy) => w.layer1Weights[sy*embCh+sx], [191,223,255]);
         else if (hCol==='act1' && interLayer1)    fillZoom(imgW, imgH,
-            (sx,sy) => interLayer1[(sy*imgW+sx)*mlpWidth+hCh], null);
-        else if (hCol==='l2')                     fillZoom(mlpWidth, mlpWidth,
-            (sx,sy) => w.layer2Weights[sy*mlpWidth+sx], [191,223,255]);
+            (sx,sy) => interLayer1[(sy*imgW+sx)*mlpWidth1+hCh], null);
+        else if (hCol==='l2')                     fillZoom(mlpWidth1, mlpWidth2,
+            (sx,sy) => w.layer2Weights[sy*mlpWidth1+sx], [191,223,255]);
         else if (hCol==='act2' && interLayer2)    fillZoom(imgW, imgH,
-            (sx,sy) => interLayer2[(sy*imgW+sx)*mlpWidth+hCh], null);
-        else if (hCol==='l3')                     fillZoom(mlpWidth, outCh,
-            (sx,sy) => w.layer3Weights[sy*mlpWidth+sx], [191,223,255]);
+            (sx,sy) => interLayer2[(sy*imgW+sx)*mlpWidth2+hCh], null);
+        else if (hCol==='l3')                     fillZoom(mlpWidth2, outCh,
+            (sx,sy) => w.layer3Weights[sy*mlpWidth2+sx], [191,223,255]);
         else if (hCol==='rgba' && finalOutput)    fillZoom(imgW, imgH,
             (sx,sy) => finalOutput[(sy*imgW+sx)*4+hCh],
             [[255,80,80],[80,220,80],[80,120,255],[180,180,180]][hCh]);
@@ -228,9 +228,9 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         switch (hCol) {
             case 'emb':  hilightStack(bbEmb,  embCh,    xEmb,  THUMB_W); break;
             case 'l1':   hilightMat  (bbL1,             xL1,   matW_L1); break;
-            case 'act1': hilightStack(bbAct1, mlpWidth, xAct1, THUMB_W); break;
-            case 'l2':   hilightMat  (bbL2,             xL2,   matW_L2); break;
-            case 'act2': hilightStack(bbAct2, mlpWidth, xAct2, THUMB_W); break;
+            case 'act1': hilightStack(bbAct1, mlpWidth1, xAct1, THUMB_W); break;
+            case 'l2':   hilightMat  (bbL2,              xL2,   matW_L2); break;
+            case 'act2': hilightStack(bbAct2, mlpWidth2, xAct2, THUMB_W); break;
             case 'l3':   hilightMat  (bbL3,             xL3,   matW_L3); break;
             case 'rgba': hilightStack(bbRGBA, outCh,    xRGBA, THUMB_W); break;
         }
@@ -266,31 +266,44 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     ctx.strokeStyle = 'rgba(255,210,0,0.75)';
     ctx.lineWidth = 0.8;
     fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,   embCh);
-    fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth);
-    fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,   mlpWidth);
-    fanLines(xL2  + matW_L2,      bbL2,   xAct2,          bbAct2, mlpWidth);
-    fanLines(xAct2 + THUMB_W,     bbAct2, xL3,            bbL3,   mlpWidth);
+    fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth1);
+    fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,   mlpWidth1);
+    fanLines(xL2  + matW_L2,      bbL2,   xAct2,          bbAct2, mlpWidth2);
+    fanLines(xAct2 + THUMB_W,     bbAct2, xL3,            bbL3,   mlpWidth2);
     fanLines(xL3  + matW_L3,      bbL3,   xRGBA,          bbRGBA, outCh);
 
-    // Labels
+    // Labels at top for non-matrix columns
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(200,200,200,0.8)';
-    const labels = [
-        ['Emb',     xEmb,  THUMB_W], ['Layer 1', xL1,  matW_L1], ['Act1', xAct1, THUMB_W],
-        ['Layer 2', xL2,   matW_L2], ['Act2',   xAct2, THUMB_W], ['Layer 3', xL3, matW_L3],
-        [config.hasAlpha ? 'RGBA' : 'RGB', xRGBA, THUMB_W],
+    for (const [lbl, lx, lw] of [
+        ['Emb', xEmb, THUMB_W], ['Act1', xAct1, THUMB_W], ['Act2', xAct2, THUMB_W],
+    ]) ctx.fillText(lbl, lx + lw/2, PAD + 10);
+
+    ctx.fillText(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
+
+    // Labels just above each weight matrix: name + channel count, in blue
+    ctx.fillStyle = 'rgba(100,160,255,0.9)';
+    const matLabels = [
+        ['Layer 1', `${embCh}→${mlpWidth1}`,  xL1, matW_L1, bbL1.y0],
+        ['Layer 2', `${mlpWidth1}→${mlpWidth2}`, xL2, matW_L2, bbL2.y0],
+        ['Layer 3', `${mlpWidth2}→${outCh}`,  xL3, matW_L3, bbL3.y0],
     ];
-    for (const [lbl, lx, lw] of labels) ctx.fillText(lbl, lx + lw/2, PAD + 10);
+    for (const [name, ch, lx, lw, my0] of matLabels) {
+        ctx.font = '10px monospace';
+        ctx.fillText(name, lx + lw/2, my0 - 28);
+        ctx.font = '13px monospace';
+        ctx.fillText(ch,   lx + lw/2, my0 - 16);
+    }
 
     return {
         ema,
         cols: [
             { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  slotH:bbEmb.h/embCh,     nCh:embCh    },
-            { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   slotH:null,              nCh:mlpWidth },
-            { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, slotH:bbAct1.h/mlpWidth, nCh:mlpWidth },
-            { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   slotH:null,              nCh:mlpWidth },
-            { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, slotH:bbAct2.h/mlpWidth, nCh:mlpWidth },
+            { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   slotH:null,               nCh:mlpWidth1 },
+            { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, slotH:bbAct1.h/mlpWidth1, nCh:mlpWidth1 },
+            { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   slotH:null,               nCh:mlpWidth2 },
+            { name:'act2', x:xAct2, w:THUMB_W, y0:bbAct2.y0, slotH:bbAct2.h/mlpWidth2, nCh:mlpWidth2 },
             { name:'l3',   x:xL3,   w:matW_L3, y0:bbL3.y0,   slotH:null,              nCh:outCh    },
             { name:'rgba', x:xRGBA, w:THUMB_W, y0:bbRGBA.y0, slotH:bbRGBA.h/outCh,    nCh:outCh    },
         ],

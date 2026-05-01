@@ -34,14 +34,14 @@ struct BwdUniforms {
 `;
 
 export function buildBackwardShaders(config) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth, smoothInterpolation, activation = 'sin' } = config;
+    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
     const outCh = config.hasAlpha ? 4 : 3;
     return {
         gradOutput:      gradOutputShader(outCh),
-        gradL3:          gradL3Shader(mlpWidth, activation, outCh),
-        gradL2:          gradL2Shader(mlpWidth, activation),
-        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth, smoothInterpolation, embBits, activation),
+        gradL3:          gradL3Shader(mlpWidth2, activation, outCh),
+        gradL2:          gradL2Shader(mlpWidth1, mlpWidth2, activation),
+        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth1, smoothInterpolation, embBits, activation),
         adamStep:        adamStepShader(),
         packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
@@ -120,8 +120,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ---------------------------------------------------------------------------
 // Shader 3: backprop through Layer 2's activation + linear layer
+// mlpWidth1 = W1 (inter1 width = L2 input), mlpWidth2 = W2 (inter2 width = L2 output)
 // ---------------------------------------------------------------------------
-function gradL2Shader(mlpWidth, activation) {
+function gradL2Shader(mlpWidth1, mlpWidth2, activation) {
     return `${BWD_UNIFORMS}
 ${wgslActivFns(activation)}
 @group(0) @binding(1) var<storage, read>       grad_inter2_preact: array<f32>;
@@ -132,7 +133,8 @@ ${wgslActivFns(activation)}
 @group(0) @binding(6) var<storage, read_write> grad_l2_weights:    array<atomic<i32>>;
 @group(0) @binding(7) var<storage, read_write> grad_l2_biases:     array<atomic<i32>>;
 
-const MW: u32 = ${mlpWidth}u;
+const MW1: u32 = ${mlpWidth1}u; // inter1 / L2 input width
+const MW2: u32 = ${mlpWidth2}u; // inter2 / L2 output width
 const FPS: f32 = ${FP_SCALE}.0;
 
 @compute @workgroup_size(64)
@@ -140,32 +142,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = gid.x;
     if (p >= uni.width * uni.height || (uni.stride > 1u && p % uni.stride != 0u)) { return; }
 
-    var g2: array<f32, ${mlpWidth}>;
-    for (var i = 0u; i < MW; i++) {
-        g2[i] = grad_inter2_preact[p*MW+i] * activ_prime(inter_layer2[p*MW+i]);
+    var g2: array<f32, ${mlpWidth2}>;
+    for (var i = 0u; i < MW2; i++) {
+        g2[i] = grad_inter2_preact[p*MW2+i] * activ_prime(inter_layer2[p*MW2+i]);
         atomicAdd(&grad_l2_biases[i], i32(g2[i] * FPS));
     }
 
     // Pack g2 into vec4 chunks for dot() below
-    var gv: array<vec4<f32>, ${mlpWidth >> 2}>;
-    for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
+    var gv: array<vec4<f32>, ${mlpWidth2 >> 2}>;
+    for (var k = 0u; k < ${mlpWidth2 >> 2}u; k++) {
         let b = k * 4u;
         gv[k] = vec4<f32>(g2[b], g2[b+1u], g2[b+2u], g2[b+3u]);
     }
 
     // g1[j] = W2^T * g2  via dot over vec4 chunks of g2
-    for (var j = 0u; j < MW; j++) {
+    // layer2_weights layout: row i (0..MW2), col j (0..MW1) → weights[i*MW1+j]
+    for (var j = 0u; j < MW1; j++) {
         var acc = 0.0;
-        for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
+        for (var k = 0u; k < ${mlpWidth2 >> 2}u; k++) {
             let b = k * 4u;
-            let col = vec4<f32>(layer2_weights[b*MW+j], layer2_weights[(b+1u)*MW+j], layer2_weights[(b+2u)*MW+j], layer2_weights[(b+3u)*MW+j]);
+            let col = vec4<f32>(layer2_weights[b*MW1+j], layer2_weights[(b+1u)*MW1+j], layer2_weights[(b+2u)*MW1+j], layer2_weights[(b+3u)*MW1+j]);
             acc += dot(gv[k], col);
         }
-        grad_inter1_preact[p*MW+j] = acc;
+        grad_inter1_preact[p*MW1+j] = acc;
     }
-    for (var i = 0u; i < MW; i++) {
-        for (var j = 0u; j < MW; j++) {
-            atomicAdd(&grad_l2_weights[i*MW+j], i32(g2[i] * activ(inter_layer1[p*MW+j]) * FPS));
+    for (var i = 0u; i < MW2; i++) {
+        for (var j = 0u; j < MW1; j++) {
+            atomicAdd(&grad_l2_weights[i*MW1+j], i32(g2[i] * activ(inter_layer1[p*MW1+j]) * FPS));
         }
     }
 }
@@ -178,7 +181,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Phase 2: 8×8 spatial workgroup so adjacent pixels map to nearby grid cells,
 //           reducing atomic contention on grad_embeddings.
 // ---------------------------------------------------------------------------
-function gradL1Shader(gridSize, embCh, mlpWidth, smoothInterp, embBits, activation) {
+function gradL1Shader(gridSize, embCh, mlpWidth1, smoothInterp, embBits, activation) {
     const channelsPerU32 = 32 / (embBits || 8);
     const numU32 = embCh / channelsPerU32;
     const smoothCode = smoothInterp ? `
@@ -196,7 +199,7 @@ ${wgslActivFns(activation)}
 @group(0) @binding(7) var<storage, read_write> grad_embeddings:    array<atomic<i32>>;
 @group(0) @binding(8) var<storage, read>       emb_offsets:         array<f32>;
 
-const MW:  u32 = ${mlpWidth}u;
+const MW:  u32 = ${mlpWidth1}u;
 const EC:  u32 = ${embCh}u;
 const GS:  u32 = ${gridSize}u;
 const NU:  u32 = ${numU32}u;
@@ -212,13 +215,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (uni.stride > 1u && p % uni.stride != 0u) { return; }
 
     // Compute g[] from upstream gradient — independent of embedding layout
-    var g: array<f32, ${mlpWidth}>;
+    var g: array<f32, ${mlpWidth1}>;
     for (var i = 0u; i < MW; i++) {
         g[i] = grad_inter1_preact[p*MW+i] * activ_prime(inter_layer1[p*MW+i]);
         atomicAdd(&grad_l1_biases[i], i32(g[i] * FPS));
     }
-    var gv: array<vec4<f32>, ${mlpWidth >> 2}>;
-    for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
+    var gv: array<vec4<f32>, ${mlpWidth1 >> 2}>;
+    for (var k = 0u; k < ${mlpWidth1 >> 2}u; k++) {
         let bk = k * 4u;
         gv[k] = vec4<f32>(g[bk], g[bk+1u], g[bk+2u], g[bk+3u]);
     }
@@ -255,7 +258,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 atomicAdd(&grad_l1_weights[i*EC+j], i32(g[i] * interp_j * FPS));
             }
             var ge = 0.0;
-            for (var k = 0u; k < ${mlpWidth >> 2}u; k++) {
+            for (var k = 0u; k < ${mlpWidth1 >> 2}u; k++) {
                 let bk = k * 4u;
                 let col = vec4<f32>(layer1_weights[bk*EC+j], layer1_weights[(bk+1u)*EC+j],
                                     layer1_weights[(bk+2u)*EC+j], layer1_weights[(bk+3u)*EC+j]);
