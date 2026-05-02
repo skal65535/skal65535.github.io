@@ -34,10 +34,3 @@ After a few thousand steps the network can reconstruct the image from scratch.
 Open `index.html` in a browser with WebGPU support (Chrome 113+, Edge 113+).
 Drop an image onto the SOURCE panel, adjust settings, and press **Train**.
 
-## Deployment
-
-```bash
-./deploy.sh
-```
-
-Rsyncs the app to `../skal65535.github.io/NNC/` and auto-commits.

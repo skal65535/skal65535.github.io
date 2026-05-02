@@ -946,7 +946,7 @@ if (urlExample) {
             // Try loading the saved model first; fall back to random-weights inference if absent.
             let modelLoaded = false;
             try {
-                const resp = await fetch('imgs/mona_lisa.safetensors');
+                const resp = await fetch('imgs/model.safetensors');
                 if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
             } catch (err) { console.warn('Auto-load failed:', err); }
             if (!modelLoaded) {
@@ -956,5 +956,5 @@ if (urlExample) {
             document.dispatchEvent(new Event('startup-complete'));
         }
     };
-    startupImg.src = 'imgs/mona_lisa.webp';
+    startupImg.src = 'imgs/model.webp';
 }

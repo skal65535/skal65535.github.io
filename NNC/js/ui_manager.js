@@ -298,6 +298,9 @@ export function init(callbacks) {
 
     DOM.embedLrInput.addEventListener('input', () => syncSliderDisplay(DOM.embedLrInput, DOM.embedLrVal));
     DOM.mlpLrInput.addEventListener('input',   () => syncSliderDisplay(DOM.mlpLrInput, DOM.mlpLrVal));
+    DOM.mlpRatioInput.addEventListener('input',  () => { DOM.mlpRatioVal.textContent  = DOM.mlpRatioInput.value; });
+    DOM.numLoopsInput.addEventListener('input',  () => { DOM.numLoopsVal.textContent  = DOM.numLoopsInput.value; });
+    DOM.bwdStrideInput.addEventListener('input', () => { DOM.bwdStrideVal.textContent = DOM.bwdStrideInput.value; });
     DOM.maxIterInput.addEventListener('input', () => {
         const v = parseInt(DOM.maxIterInput.value);
         DOM.maxIterVal.textContent = v === 0 ? '∞' : v.toLocaleString();

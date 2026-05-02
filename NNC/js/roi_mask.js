@@ -1,8 +1,8 @@
 // roi_mask.js — Per-pixel ROI loss-weight mask.
 // Paint with mouse; weights decay exponentially toward zero.
 
-const HALF_LIFE_MS = 3000;
-const DECAY_RATE   = Math.LN2 / HALF_LIFE_MS; // weight halves every 3 s
+const HALF_LIFE_MS = 6000;
+const DECAY_RATE   = Math.LN2 / HALF_LIFE_MS; // weight halves every 6 s
 
 export class ROIMask {
     constructor(w, h) {

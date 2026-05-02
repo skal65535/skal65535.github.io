@@ -208,7 +208,8 @@ select {
     border-radius: 2px;
     transition: border-color 0.15s;
 }
-select:focus  { border-color: var(--accent); }
+select:focus    { border-color: var(--accent); }
+select:disabled { opacity: 0.75; cursor: default; }
 #activation   { display: none; }
 
 .activation-picker {
@@ -840,10 +841,10 @@ input[type="range"]::-moz-range-thumb {
 
 /* ── SPLASH SCREEN ────────────────────────── */
 #splash {
-    position: fixed; inset: 0;
+    position: fixed; inset: 44px 0 0 0;
     background: rgba(7, 11, 16, 0.72);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     cursor: pointer; opacity: 0; z-index: 9999;
@@ -884,6 +885,10 @@ input[type="range"]::-moz-range-thumb {
 .splash-conclusion::before { content: '⟹ '; color: #d4a017; font-family: 'Caveat',cursive; font-weight: 700; }
 .splash-dismiss { font-family: 'Courier New',monospace; font-size: clamp(9px,.9vw,11px); color: rgba(184,180,164,.28); letter-spacing: 2.5px; text-transform: uppercase; margin-top: 4px; }
 .splash-short { display: none; }
+.splash-tips { max-width: 920px; width: 100%; margin-top: 10px; padding: 9px 16px 10px; border-radius: 5px; background: rgba(255,255,255,.02); border: 1px solid rgba(212,160,23,.18); border-left: 3px solid rgba(212,160,23,.5); }
+.splash-tips-title { display: block; font-family: 'Caveat',cursive; font-size: clamp(14px,1.4vw,17px); font-weight: 700; color: #d4a017; margin-bottom: 4px; }
+.splash-tips-list { list-style: none; padding: 0; margin: 0; font-family: 'Nunito','Segoe UI',sans-serif; font-size: clamp(11px,1.1vw,13px); color: #a8a498; line-height: 1.6; }
+.splash-tips-list li::before { content: '✦ '; color: rgba(212,160,23,.6); font-size: 0.75em; }
 @media (max-width: 640px) {
   #splash h1 { font-size: 26px; }
   .splash-box { padding: 16px 14px 12px; gap: 8px; }
