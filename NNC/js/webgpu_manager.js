@@ -10,9 +10,8 @@ export async function initWebGPU() {
         throw new Error("No appropriate GPUAdapter found.");
     }
 
-    const hasTimestamps = adapter.features.has('timestamp-query');
     const device = await adapter.requestDevice({
-        requiredFeatures: hasTimestamps ? ['timestamp-query'] : [],
+        requiredFeatures: [],
         requiredLimits: {
             maxStorageBuffersPerShaderStage: Math.min(10, adapter.limits.maxStorageBuffersPerShaderStage)
         }
@@ -23,7 +22,6 @@ export async function initWebGPU() {
 
     return {
         device,
-        hasTimestamps,
         createBuffer(data, usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC, label = '') {
             const buffer = device.createBuffer({ size: data.byteLength, usage, mappedAtCreation: true, label });
             new Float32Array(buffer.getMappedRange()).set(data);

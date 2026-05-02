@@ -35,22 +35,9 @@ export class Trainer {
         this.active        = false;
         this.lastWeights   = null;
 
-        this._rafId        = null;
-        this._adamT        = 0;
-        this._stepCount    = 0;
-        this._lossHistory  = [];
-        this._lastStepTime = 0;
-        this._gpuMsEma     = 0;
-        this._lastInter    = { inter1: null, inter2: null };
-
-        if (this._ctx.hasTimestamps) {
-            const dev = this._ctx.device;
-            this._tsQuery    = dev.createQuerySet({ type: 'timestamp', count: 2 });
-            this._tsResolve  = dev.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
-            this._tsReadback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-        } else {
-            this._tsQuery = null;
-        }
+        this._rafId  = null;
+        this._adamT  = 0;
+        this._resetStats();
 
         this._bwdPipelines     = null;
         this._bwdBindGroups    = null;
@@ -65,11 +52,7 @@ export class Trainer {
         const { device } = this._ctx;
         const { gridSize, embeddingChannels: embCh } = this._config;
 
-        this._stepCount    = 0;
-        this._lossHistory  = [];
-        this._lastStepTime = 0;
-        this._gpuMsEma     = 0;
-        this._lastInter    = { inter1: null, inter2: null };
+        this._resetStats();
 
         const src = freshWeights !== null ? freshWeights.embeddings : this.lastWeights?.embeddings;
         if (freshWeights !== null) {
@@ -100,6 +83,15 @@ export class Trainer {
         if (this._adamUniformsBufs) {
             for (const k of ModelTensors.KEYS) this._adamUniformsBufs[k]?.destroy();
         }
+    }
+
+    _resetStats() {
+        this._stepCount     = 0;
+        this._lossHistory   = [];
+        this._lastStepTime  = 0;
+        this._lastRafT      = 0;
+        this._frameInterval = 16.67;  // ms; updated from rAF timestamps
+        this._stepsPerFrame = 4;
     }
 
     _initBackward() {
@@ -226,7 +218,7 @@ export class Trainer {
         const hp           = this._getHyperparams();
         const stride       = hp.stride;
         const sampledCount = Math.ceil(pixelCount / stride);
-        const stepsPerFrame = 64;
+        const stepsPerFrame = this._stepsPerFrame;
 
         // Fast inner steps: GPU-only, no readback, GPU pack instead of CPU normalize+pack
         for (let s = 0; s < stepsPerFrame - 1 && this.active; s++) {
@@ -349,9 +341,7 @@ export class Trainer {
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
         const ce = device.createCommandEncoder();
 
-        const fwdPass = ce.beginComputePass(this._tsQuery ? {
-            timestampWrites: { querySet: this._tsQuery, beginningOfPassWriteIndex: 0 }
-        } : undefined);
+        const fwdPass = ce.beginComputePass();
         fwdPass.setPipeline(this._pipeline);
         fwdPass.setBindGroup(0, this._bindGroup);
         fwdPass.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
@@ -369,9 +359,7 @@ export class Trainer {
         runPass(pl.gradL2,     bg.gradL2,     bwdDispatch);
         runPass(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
 
-        const adamPass = ce.beginComputePass(this._tsQuery ? {
-            timestampWrites: { querySet: this._tsQuery, endOfPassWriteIndex: 1 }
-        } : undefined);
+        const adamPass = ce.beginComputePass();
         for (const k of ModelTensors.KEYS) {
             adamPass.setPipeline(pl.adamStep);
             adamPass.setBindGroup(0, bg.adam[k]);
@@ -391,10 +379,6 @@ export class Trainer {
             ce.copyBufferToBuffer(ob.interLayer1, 0, rb.interLayer1, 0, rb.interLayer1.size);
             ce.copyBufferToBuffer(ob.interLayer2, 0, rb.interLayer2, 0, rb.interLayer2.size);
         }
-        if (this._tsQuery) {
-            ce.resolveQuerySet(this._tsQuery, 0, 2, this._tsResolve, 0);
-            ce.copyBufferToBuffer(this._tsResolve, 0, this._tsReadback, 0, 16);
-        }
         device.queue.submit([ce.finish()]);
 
         const maps = [
@@ -409,7 +393,6 @@ export class Trainer {
             maps.push(rb.interLayer1.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer2.mapAsync(GPUMapMode.READ));
         }
-        if (this._tsQuery) maps.push(this._tsReadback.mapAsync(GPUMapMode.READ));
         await Promise.all(maps);
 
         const finalData = new Float32Array(rb.final.getMappedRange());
@@ -430,16 +413,6 @@ export class Trainer {
             inter1 = new Float32Array(rb.interLayer1.getMappedRange()).slice();
             inter2 = new Float32Array(rb.interLayer2.getMappedRange()).slice();
             rb.interLayer1.unmap(); rb.interLayer2.unmap();
-            this._lastInter = { inter1, inter2 };
-        }
-
-        if (this._tsQuery) {
-            const tsData = new BigUint64Array(this._tsReadback.getMappedRange());
-            const gpuNs  = Number(tsData[1] - tsData[0]);
-            this._tsReadback.unmap();
-            if (gpuNs > 0) {
-                this._gpuMsEma = this._gpuMsEma > 0 ? 0.9 * this._gpuMsEma + 0.1 * gpuNs / 1e6 : gpuNs / 1e6;
-            }
         }
 
         // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
@@ -470,8 +443,20 @@ export class Trainer {
         this._stepCount++;
         this._lossHistory.push(loss);
 
-        const now  = performance.now();
+        const now = performance.now();
         const rate = this._lastStepTime > 0 ? (stepsPerFrame * 1000 / (now - this._lastStepTime)).toFixed(1) : '—';
+        if (this._lastStepTime > 0) {
+            // track actual display refresh interval from rAF timestamps
+            if (this._lastRafT > 0) {
+                const dt = rafT - this._lastRafT;
+                if (dt > 1) this._frameInterval = 0.9 * this._frameInterval + 0.1 * dt;
+            }
+            const elapsed   = now - this._lastStepTime;
+            const msPerStep = elapsed / stepsPerFrame;
+            const next = Math.max(1, Math.round(this._frameInterval / msPerStep));
+            this._stepsPerFrame = next;
+        }
+        this._lastRafT     = rafT;
         this._lastStepTime = now;
 
         this._onStep({
