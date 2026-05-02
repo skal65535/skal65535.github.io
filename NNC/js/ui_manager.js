@@ -143,7 +143,7 @@ export function syncButtonStates(isTraining, hasModel, snapshotWeights) {
 
 export function updateStartLabel(isCompatible, hasModel, isTraining, snapshotWeights) {
     if (isCompatible && hasModel) {
-        DOM.startBtn.textContent = '▶ Resume';
+        DOM.startBtn.textContent = '▶ Train';
     } else {
         DOM.startBtn.textContent = '▶ Start';
     }

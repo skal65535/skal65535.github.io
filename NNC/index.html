@@ -6,11 +6,70 @@
     <title>Compression using Implicit Neural Representation</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&family=Caveat:wght@500;700&family=Nunito:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/png" href="favicon.png">
 </head>
 <body>
+<div id="splash" tabindex="0">
+  <div class="splash-box">
+    <h1>How does it work?</h1>
+    <div class="splash-rule"></div>
+    <div class="splash-diagram">
+      <img src="splash_screen.svg" alt="Neural compression pipeline diagram">
+    </div>
+    <div class="splash-explanation">
+      <p class="splash-intro">
+        A tiny neural network learns to <em>memorize</em> a single image —
+        storing everything needed to repaint it, pixel by pixel, from scratch.
+      </p>
+      <div class="splash-cards">
+        <div class="splash-card c-gold">
+          <span class="splash-card-label">Embeddings</span>
+          <span class="splash-long">A low-resolution grid of learned tiles — one per region.
+          Each tile encodes <em>what this area looks like</em>:
+          a blurry hint the network looks up by position.</span>
+          <span class="splash-short">A grid of <em>learned region hints</em>.</span>
+        </div>
+        <div class="splash-card c-blue">
+          <span class="splash-card-label">Neurons</span>
+          <span class="splash-long">Three small layers of arithmetic that read the tiles
+          and learn <em>how to paint them</em> into real R·G·B pixels.
+          Each layer refines the result a little more.</span>
+          <span class="splash-short">Layers that <em>paint pixels</em> from hints.</span>
+        </div>
+        <div class="splash-card c-gold">
+          <span class="splash-card-label">Training</span>
+          <ul class="splash-steps">
+            <li>Construct and compare.</li>
+            <li>Score the error.</li>
+            <li>Nudge numbers.</li>
+            <li class="splash-long">Repeat thousands of times.</li>
+          </ul>
+          <div class="splash-conclusion splash-long">The image gradually sharpens.</div>
+        </div>
+      </div>
+    </div>
+    <p class="splash-dismiss">click &nbsp;·&nbsp; any key &nbsp;·&nbsp; to continue</p>
+  </div>
+</div>
+<script>
+  (function() {
+    const splash = document.getElementById('splash');
+    requestAnimationFrame(() => requestAnimationFrame(() => splash.classList.add('splash-visible')));
+    let gone = false;
+    function dismiss(e) {
+      if (gone) return;
+      gone = true;
+      if (e) e.stopPropagation();
+      splash.classList.add('dismissing');
+      splash.addEventListener('transitionend', () => { splash.style.display = 'none'; }, { once: true });
+    }
+    splash.addEventListener('click', dismiss);
+    document.addEventListener('keydown', dismiss, { once: true });
+    splash.focus();
+  })();
+</script>
     <header>
         <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
         <div class="app-divider"></div>
