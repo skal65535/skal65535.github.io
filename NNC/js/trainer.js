@@ -92,6 +92,8 @@ export class Trainer {
         this._lastRafT      = 0;
         this._frameInterval = 16.67;  // ms; updated from rAF timestamps
         this._stepsPerFrame = 4;
+        this._lastLoss       = 0;
+        this._lastFinalSlice = null;
     }
 
     _initBackward() {
@@ -381,50 +383,52 @@ export class Trainer {
 
         const doViz = (this._stepCount + 1) % hp.vizInterval === 0;
 
-        ce.copyBufferToBuffer(ob.final,         0, rb.final,         0, ob.final.size);
         ce.copyBufferToBuffer(m.embeddings,     0, rb.embeddings,    0, m.embeddings.size);
         ce.copyBufferToBuffer(m.layer1.weights, 0, rb.layer1Weights, 0, m.layer1.weights.size);
         ce.copyBufferToBuffer(m.layer1.biases,  0, rb.layer1Biases,  0, m.layer1.biases.size);
-        ce.copyBufferToBuffer(m.layer2.weights, 0, rb.layer2Weights, 0, m.layer2.weights.size);
-        ce.copyBufferToBuffer(m.layer3.weights, 0, rb.layer3Weights, 0, m.layer3.weights.size);
         if (doViz) {
+            ce.copyBufferToBuffer(ob.final,         0, rb.final,         0, ob.final.size);
+            ce.copyBufferToBuffer(m.layer2.weights, 0, rb.layer2Weights, 0, m.layer2.weights.size);
+            ce.copyBufferToBuffer(m.layer3.weights, 0, rb.layer3Weights, 0, m.layer3.weights.size);
             ce.copyBufferToBuffer(ob.interLayer1, 0, rb.interLayer1, 0, rb.interLayer1.size);
             ce.copyBufferToBuffer(ob.interLayer2, 0, rb.interLayer2, 0, rb.interLayer2.size);
         }
         device.queue.submit([ce.finish()]);
 
         const maps = [
-            rb.final.mapAsync(GPUMapMode.READ),
             rb.embeddings.mapAsync(GPUMapMode.READ),
             rb.layer1Weights.mapAsync(GPUMapMode.READ),
             rb.layer1Biases.mapAsync(GPUMapMode.READ),
-            rb.layer2Weights.mapAsync(GPUMapMode.READ),
-            rb.layer3Weights.mapAsync(GPUMapMode.READ),
         ];
         if (doViz) {
+            maps.push(rb.final.mapAsync(GPUMapMode.READ));
+            maps.push(rb.layer2Weights.mapAsync(GPUMapMode.READ));
+            maps.push(rb.layer3Weights.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer1.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer2.mapAsync(GPUMapMode.READ));
         }
         await Promise.all(maps);
 
-        const finalData = new Float32Array(rb.final.getMappedRange());
-        const embData   = new Float32Array(rb.embeddings.getMappedRange()).slice();
-        const l1wData   = new Float32Array(rb.layer1Weights.getMappedRange()).slice();
-        const l1bData   = new Float32Array(rb.layer1Biases.getMappedRange()).slice();
-        const l2wData   = new Float32Array(rb.layer2Weights.getMappedRange()).slice();
-        const l3wData   = new Float32Array(rb.layer3Weights.getMappedRange()).slice();
-        const loss      = calculate_loss(finalData, this._target);
-        const finalSlice = finalData.slice();
+        const embData = new Float32Array(rb.embeddings.getMappedRange()).slice();
+        const l1wData = new Float32Array(rb.layer1Weights.getMappedRange()).slice();
+        const l1bData = new Float32Array(rb.layer1Biases.getMappedRange()).slice();
+        rb.embeddings.unmap(); rb.layer1Weights.unmap(); rb.layer1Biases.unmap();
 
-        rb.final.unmap(); rb.embeddings.unmap();
-        rb.layer1Weights.unmap(); rb.layer1Biases.unmap();
-        rb.layer2Weights.unmap(); rb.layer3Weights.unmap();
-
+        let loss = this._lastLoss, finalSlice = null;
+        let l2wData = null, l3wData = null;
         let inter1 = null, inter2 = null;
         if (doViz) {
-            inter1 = new Float32Array(rb.interLayer1.getMappedRange()).slice();
-            inter2 = new Float32Array(rb.interLayer2.getMappedRange()).slice();
+            const finalData = new Float32Array(rb.final.getMappedRange());
+            loss = calculate_loss(finalData, this._target);
+            finalSlice = finalData.slice();
+            l2wData = new Float32Array(rb.layer2Weights.getMappedRange()).slice();
+            l3wData = new Float32Array(rb.layer3Weights.getMappedRange()).slice();
+            inter1  = new Float32Array(rb.interLayer1.getMappedRange()).slice();
+            inter2  = new Float32Array(rb.interLayer2.getMappedRange()).slice();
+            rb.final.unmap(); rb.layer2Weights.unmap(); rb.layer3Weights.unmap();
             rb.interLayer1.unmap(); rb.interLayer2.unmap();
+            this._lastLoss       = loss;
+            this._lastFinalSlice = finalSlice;
         }
 
         // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
@@ -450,9 +454,9 @@ export class Trainer {
         this.lastWeights = {
             embeddings:    embData,
             layer1Weights: l1wData,
-            layer2Weights: l2wData,
-            layer3Weights: l3wData,
-            finalOutput:   finalSlice,
+            layer2Weights: doViz ? l2wData : this.lastWeights?.layer2Weights ?? null,
+            layer3Weights: doViz ? l3wData : this.lastWeights?.layer3Weights ?? null,
+            finalOutput:   doViz ? finalSlice : this._lastFinalSlice,
         };
         this._stepCount++;
         this._lossHistory.push(loss);
@@ -476,8 +480,7 @@ export class Trainer {
         this._onStep({
             loss, step: this._stepCount, rate,
             lastWeights: this.lastWeights,
-            inter1: doViz ? inter1 : null,
-            inter2: doViz ? inter2 : null,
+            inter1, inter2,
             lossHistory: this._lossHistory,
         });
 

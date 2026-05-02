@@ -403,17 +403,20 @@ function trainerCallbacks() {
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
             if (inter1 !== null) lastInterData = { inter1, inter2 };
-            DOM.lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
             DOM.stepCounterEl.textContent = step.toLocaleString();
             DOM.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-            drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
-                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                  finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
-                  config, channelMask, ema: layerRangeEma, hoverState }));
-            sweep.setCols(layerCols); if (inter1 !== null) sweep.triggerStep();
-            drawLossCurve(DOM.lossCanvas, lossHistory);
-            drawSourceImage();
+            if (w.finalOutput !== null) {
+                DOM.lossValueEl.textContent = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+                drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
+                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+                    { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                      finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+                      config, channelMask, ema: layerRangeEma, hoverState }));
+                sweep.setCols(layerCols);
+                drawLossCurve(DOM.lossCanvas, lossHistory);
+                drawSourceImage();
+            }
+            if (inter1 !== null) sweep.triggerStep();
         },
         onStop() {
             setStoppedStatus();
