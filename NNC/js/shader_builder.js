@@ -8,9 +8,9 @@ fn activ_prime(x: f32) -> f32 { let t = tanh(x); return 1.0 - t * t; }`;
         case 'softsign':
             return `fn activ(x: f32) -> f32 { return x / (1.0 + abs(x)); }
 fn activ_prime(x: f32) -> f32 { let d = 1.0 + abs(x); return 1.0 / (d * d); }`;
-        case 'hardtanh':
-            return `fn activ(x: f32) -> f32 { return clamp(x, -1.0, 1.0); }
-fn activ_prime(x: f32) -> f32 { return f32(abs(x) < 1.0); }`;
+        case 'none':
+            return `fn activ(x: f32) -> f32 { return x; }
+fn activ_prime(x: f32) -> f32 { return 1.0; }`;
         default:
             return `fn activ(x: f32) -> f32 { return sin(x); }
 fn activ_prime(x: f32) -> f32 { return cos(x); }`;

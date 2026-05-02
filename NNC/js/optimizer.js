@@ -9,8 +9,8 @@ function makeActiv(name) {
             return { f: Math.tanh, df: x => { const t = Math.tanh(x); return 1 - t * t; } };
         case 'softsign':
             return { f: x => x / (1 + Math.abs(x)), df: x => { const d = 1 + Math.abs(x); return 1 / (d * d); } };
-        case 'hardtanh':
-            return { f: x => Math.max(-1, Math.min(1, x)), df: x => (Math.abs(x) < 1 ? 1 : 0) };
+        case 'none':
+            return { f: x => x, df: _ => 1 };
         default: // 'sin' / SIREN
             return { f: Math.sin, df: Math.cos };
     }

@@ -7,6 +7,11 @@ const EXAMPLES = [
     { label: 'kodim19',   image: 'imgs/kodim19.webp',     model: 'imgs/kodim19.safetensors' },
 ];
 
+export function getUrlExample() {
+    const idx = parseInt(new URLSearchParams(window.location.search).get('img'), 10);
+    return (!isNaN(idx) && EXAMPLES[idx]) ? EXAMPLES[idx] : null;
+}
+
 export function init({ onImageFile, onModelFile, onExampleSelect, hasPainted }) {
     DOM.dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); DOM.fileInput.click(); });
     DOM.sourcePanel.addEventListener('click', (e) => {

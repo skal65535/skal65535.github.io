@@ -14,7 +14,7 @@ export class Trainer {
     // onStep: ({ loss, step, rate, lastWeights, inter1, inter2, lossHistory }) => void
     // onStop: () => void
     constructor({ webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
-                  outputBuffers, readbackBuffers, targetPixels, roiMask,
+                  outputBuffers, readbackBuffers, targetPixels, alphaCellMask, roiMask,
                   getHyperparams, onStep, onStop }) {
         this._ctx          = webGpuContext;
         this._canvas       = canvas;
@@ -26,6 +26,7 @@ export class Trainer {
         this._outBufs      = outputBuffers;
         this._rbBufs       = readbackBuffers;
         this._target       = targetPixels;
+        this._alphaCellMask = alphaCellMask;
         this._roiMask      = roiMask;
         this._getHyperparams = getHyperparams;
         this._onStep       = onStep;
@@ -332,6 +333,11 @@ export class Trainer {
 
         // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
         normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth1);
+        if (this._alphaCellMask) {
+            for (let cell = 0; cell < this._alphaCellMask.length; cell++) {
+                if (this._alphaCellMask[cell] === 0) embData.fill(0, cell * embCh, (cell + 1) * embCh);
+            }
+        }
         this._ctx.writeBuffer(m.embeddings,     embData);
         this._ctx.writeBuffer(m.layer1.weights, l1wData);
         this._ctx.writeBuffer(m.layer1.biases,  l1bData);

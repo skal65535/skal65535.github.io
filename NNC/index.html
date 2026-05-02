@@ -42,15 +42,15 @@
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">MLP Widths</div>
-                    <div style="display:flex;gap:6px;">
-                        <select id="mlp-width1" style="flex:1;min-width:0;">
+                    <div class="flex-row">
+                        <select id="mlp-width1" class="flex-fill">
                             <option value="4">W1: 4</option>
                             <option value="8">W1: 8</option>
                             <option value="16" selected>W1: 16</option>
                             <option value="32">W1: 32</option>
                             <option value="64">W1: 64</option>
                         </select>
-                        <select id="mlp-width2" style="flex:1;min-width:0;">
+                        <select id="mlp-width2" class="flex-fill">
                             <option value="8">W2: 8</option>
                             <option value="16" selected>W2: 16</option>
                             <option value="32">W2: 32</option>
@@ -73,16 +73,16 @@
                             <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,17 3.3,16 6.7,16 10,16 13.3,15 16.7,14 20,10 23.3,6 26.7,5 30,4 33.3,4 36.7,4 40,3"/></svg>
                             <span>Softsign</span>
                         </button>
-                        <button type="button" class="activ-btn" data-val="hardtanh">
-                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,18 13.3,18 26.7,2 40,2"/></svg>
-                            <span>HardTanh</span>
+                        <button type="button" class="activ-btn" data-val="none">
+                            <svg viewBox="0 0 40 20"><line x1="0" y1="10" x2="40" y2="10" class="axis"/><polyline points="0,18 40,2"/></svg>
+                            <span>None</span>
                         </button>
                     </div>
-                    <select id="activation" style="display:none">
+                    <select id="activation">
                         <option value="sin" selected>SIREN (sin)</option>
                         <option value="tanh">Tanh</option>
                         <option value="softsign">Softsign</option>
-                        <option value="hardtanh">HardTanh</option>
+                        <option value="none">None (identity)</option>
                     </select>
                 </div>
                 <div class="ctrl-row">
@@ -175,7 +175,7 @@
                         <option value="50">50</option>
                         <option value="100" selected>100</option>
                     </select>
-                    <span class="ctrl-label" style="font-size:0.75em;opacity:0.6">steps</span>
+                    <span class="ctrl-label hint-tiny">steps</span>
                 </div>
                 <div class="ctrl-row btn-row">
                     <button class="btn btn-accent" id="shake-emb-btn" disabled>⚡ Shake Emb</button>
@@ -193,9 +193,9 @@
                 <div class="slider-row">
                     <div class="slider-header">
                         <span class="ctrl-label">Brush Radius</span>
-                        <span class="slider-val" id="roi-brush-val">20</span>
+                        <span class="slider-val" id="roi-brush-val">50</span>
                     </div>
-                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="20">
+                    <input type="range" id="roi-brush" min="5" max="80" step="1" value="50">
                 </div>
                 <div class="slider-row">
                     <div class="slider-header">
@@ -210,7 +210,7 @@
                         <span class="ctrl-label">Freeze Mask</span>
                     </label>
                 </div>
-                <div class="ctrl-row" style="gap:6px;">
+                <div class="ctrl-row flex-row">
                     <button class="btn btn-dim" id="roi-auto-btn">⚙ Auto Mask</button>
                     <button class="btn btn-dim" id="roi-clear-btn">✕ Clear Mask</button>
                 </div>
@@ -240,10 +240,10 @@
                 <div class="canvas-panel" id="source-panel">
                     <div class="panel-header">
                         <span class="panel-title">Source <span id="source-res" class="panel-hint"></span></span>
-                        <span class="panel-hint">click or drop · draw mask</span>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="source-canvas" width="512" height="512"></canvas>
+                        <canvas id="source-sweep-canvas"></canvas>
                         <div id="drop-overlay">
                             <div class="drop-icon">⊕</div>
                             <div class="drop-text">Drop Image<br>or Click</div>
@@ -252,6 +252,7 @@
                     <div class="layers-legend">
                         <span class="layers-legend-item">Input Size</span>
                         <span class="layers-legend-item layers-legend-val" id="input-size">—</span>
+                        <span class="layers-legend-item panel-hint" style="margin-left:auto">click or drop · draw mask</span>
                     </div>
                     <input type="file" id="file-input" accept="image/*">
                 </div>
@@ -290,19 +291,18 @@
                 <div class="canvas-panel" id="output-panel">
                     <div class="panel-header">
                         <span class="panel-title">Output <span id="output-res" class="panel-hint"></span></span>
-                        <label class="panel-hint">
-                            zoom
-                            <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1">
-                            <span id="output-zoom-val">1×</span>
-                        </label>
-                        <button class="btn" id="snapshot-btn">&#x25CF; Snapshot</button>
-                        <button class="btn" id="recall-btn" disabled>&#x21BA; Recall</button>
                     </div>
                     <div class="canvas-wrap">
                         <canvas id="canvas" width="512" height="512"></canvas>
+                        <label id="zoom-overlay">
+                            <input type="range" id="output-zoom" min="1" max="2" step="0.25" value="1">
+                            <span id="output-zoom-val">1×</span>
+                        </label>
                     </div>
                     <div class="layers-legend">
-                        <span class="layers-legend-item">Compressed Size</span>
+                        <button class="btn legend-btn" id="snapshot-btn">&#x25CF; Snapshot</button>
+                        <button class="btn legend-btn" id="recall-btn" disabled>&#x21BA; Recall</button>
+                        <span class="layers-legend-item" style="margin-left:auto">Compressed Size</span>
                         <span class="layers-legend-item layers-legend-val" id="model-size">—</span>
                     </div>
                 </div>
@@ -318,7 +318,7 @@
             <div class="help-title">◈ NNC — Neural Image Compressor</div>
             <div class="help-tagline">
                 Trains an implicit neural representation (embedding grid + 3-layer MLP) on a single image entirely
-                in WebGPU compute shaders. The activation function is selectable (SIREN, Tanh, Softsign, HardTanh).
+                in WebGPU compute shaders. The activation function is selectable (SIREN, Tanh, Softsign, None).
                 The trained model can be exported as a compact GLSL fragment shader for platforms like ShaderToy.
             </div>
 
@@ -351,7 +351,7 @@
                     <tr><td>Embedding Channels</td><td>Feature dimensions per grid cell. More channels = richer representation.</td></tr>
                     <tr><td>MLP Width 1</td><td>Output width of Layer 1 (embCh → W1). Larger = more capacity, slower training.</td></tr>
                     <tr><td>MLP Width 2</td><td>Output width of Layer 2 (W1 → W2). Independent from W1.</td></tr>
-                    <tr><td>Activation</td><td>Hidden-layer activation function. SIREN (sin) works well for natural images. Tanh and Softsign are smooth alternatives. HardTanh (clamp) is fastest but may cause dead neurons.</td></tr>
+                    <tr><td>Activation</td><td>Hidden-layer activation function. SIREN (sin) works well for natural images. Tanh and Softsign are smooth alternatives. None (identity) is useful for educational purposes — makes the MLP a purely linear model.</td></tr>
                     <tr><td>Quantization</td><td>MLP weight precision. QAT trains with simulated 8-bit quantization, yielding a much smaller GLSL export.</td></tr>
                     <tr><td>Emb Bits</td><td>Quantization depth for the embedding grid. 4-bit halves storage vs 8-bit.</td></tr>
                     <tr><td>Smooth Interp</td><td>Bicubic-like grid sampling via IQ's smooth-step trick. Improves quality at negligible cost.</td></tr>
@@ -377,7 +377,7 @@
                 <div class="help-p">Three panels update live during training:</div>
                 <table class="help-table">
                     <tr><td>Source</td><td>Input image. Click or drop a new image to replace it. Paint the ROI mask by dragging.</td></tr>
-                    <tr><td>Embeddings</td><td>All embedding channels shown as grayscale thumbnails. Click a thumbnail to mute/unmute that channel in the forward pass. Shift+click to solo one channel.</td></tr>
+                    <tr><td>Embeddings</td><td>All embedding channels shown as grayscale thumbnails. Click a thumbnail to flip all other channels in the forward pass, leaving the clicked one unchanged.</td></tr>
                     <tr><td>Layers</td><td>Inference flow diagram: embedding → L1 → L2 → L3 → output. Pre-activation values are shown per-neuron with per-layer min/max normalisation. Updates every few steps.</td></tr>
                     <tr><td>Output</td><td>Decoded result at full resolution. Use the zoom slider to upscale.</td></tr>
                 </table>
@@ -395,22 +395,22 @@
 
             <div class="help-section">
                 <div class="help-h">References</div>
-                <table class="help-table">
+                <table class="help-table help-table--dim">
                     <tr>
                         <td><a href="https://arxiv.org/abs/2103.03123" target="_blank" rel="noopener">COIN</a></td>
-                        <td style="color:var(--text-dim);">Dupont et al., 2021 — <em>COIN: COmpression with Implicit Neural representations</em></td>
+                        <td>Dupont et al., 2021 — <em>COIN: COmpression with Implicit Neural representations</em></td>
                     </tr>
                     <tr>
                         <td><a href="https://arxiv.org/abs/2201.05989" target="_blank" rel="noopener">Instant-NGP</a></td>
-                        <td style="color:var(--text-dim);">Müller et al., 2022 — <em>Instant Neural Graphics Primitives with a Multiresolution Hash Encoding</em></td>
+                        <td>Müller et al., 2022 — <em>Instant Neural Graphics Primitives with a Multiresolution Hash Encoding</em></td>
                     </tr>
                     <tr>
                         <td><a href="https://www.epfl.ch/labs/cvlab/projects/image-compression-using-implicit-neural-representations/" target="_blank" rel="noopener">EPFL CVLab</a></td>
-                        <td style="color:var(--text-dim);">EPFL CVLab — <em>Image Compression using Implicit Neural Representations</em></td>
+                        <td>EPFL CVLab — <em>Image Compression using Implicit Neural Representations</em></td>
                     </tr>
                     <tr>
                         <td><a href="https://r0k.us/graphics/kodak/" target="_blank" rel="noopener">Kodak set</a></td>
-                        <td style="color:var(--text-dim);">Kodak lossless true color image suite — predefined example images</td>
+                        <td>Kodak lossless true color image suite — predefined example images</td>
                     </tr>
                 </table>
             </div>

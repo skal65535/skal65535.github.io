@@ -21,6 +21,7 @@ const TOOLTIPS = {
     'mlp-ratio':            'Embedding-only Adam steps per MLP step.\nHigher = focus more on the grid.',
     'num-loops':            'Repeat each phase N times per super-cycle.\nratio=5, loops=3 → 15 EMB steps then 3 MLP steps.',
     'bwd-stride':           'Subsample every Nth pixel during backprop.\nHigher = faster steps, noisier gradients.',
+    'offset-sample-interval': 'Resample per-plane UV offsets every N steps.\n0 = fixed offsets. Lower = more jitter diversity, slightly noisier.',
     'shake-emb-btn':        'Add small noise to embeddings to escape local minima. Resets embedding Adam moments.',
     'shake-mlp-btn':        'Add small noise to MLP weights and biases to escape local minima. Resets MLP Adam moments.',
     'roi-brush':            'Brush radius for painting the ROI mask (pixels).',
@@ -28,7 +29,12 @@ const TOOLTIPS = {
     'roi-freeze':           'Freeze the mask — prevent it from decaying over time.',
     'roi-auto-btn':         'Auto-detect high-variance (high-detail) regions as ROI.',
     'roi-clear-btn':        'Clear the entire ROI mask.',
-    'snapshot-btn':         'Save a weight checkpoint in memory, or restore it.',
+    'snapshot-btn':         'Save current weights as an in-memory checkpoint.',
+    'recall-btn':           'Restore weights from the last in-memory snapshot.',
+    'example-select':       'Load a preset image + model.',
+    'engine':               'Training backend.\nGPU runs the full backward pass in WGSL; CPU is slower but works without WebGPU.',
+    'output-zoom':          'Upscale the output canvas for a closer look.\nRuns a full forward pass at the target resolution.',
+    'viz-interval':         'How often the Layers diagram refreshes during training (every N steps).',
 };
 
 export function initTooltips() {

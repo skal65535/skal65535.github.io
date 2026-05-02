@@ -9,7 +9,8 @@ export const DOM = {
     canvasRow:    document.querySelector('.canvas-row'),
     sourceCanvas: document.getElementById('source-canvas'),
     layersCanvas: document.getElementById('layers-canvas'),
-    sweepCanvas:  document.getElementById('sweep-canvas'),
+    sweepCanvas:       document.getElementById('sweep-canvas'),
+    sourceSweepCanvas: document.getElementById('source-sweep-canvas'),
     canvas:       document.getElementById('canvas'),
     lossCanvas:   document.getElementById('loss-canvas'),
     fileInput:    document.getElementById('file-input'),
@@ -222,11 +223,18 @@ export function updateEmbBitsOptions() {
 
 export function fitSidePanels(baseW, baseH) {
     const rowH = DOM.canvasRow.clientHeight;
+    const rowW = DOM.canvasRow.clientWidth;
     [DOM.sourcePanel, DOM.outputPanel].forEach(panel => {
         const hdrH = panel.querySelector('.panel-header').offsetHeight;
-        const w = Math.round((rowH - hdrH) * baseW / baseH);
-        panel.style.width = '';
-        panel.style.maxWidth = w + 'px';
+        const ftrH = panel.querySelector('.layers-legend').offsetHeight;
+        const wFromH = Math.round((rowH - hdrH - ftrH) * baseW / baseH);
+        const wFromW = Math.floor((rowW - 200 - 12) / 2); // keep ≥200px for center
+        const w = Math.max(0, Math.min(wFromH, wFromW, 512));
+        panel.style.width = w + 'px';
+        panel.style.height = '';
+        panel.style.maxWidth = '';
+        panel.style.maxHeight = '';
+        panel.querySelector('.canvas-wrap').style.aspectRatio = `${baseW} / ${baseH}`;
     });
 }
 

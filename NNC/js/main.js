@@ -12,7 +12,7 @@ import { Trainer } from './trainer.js';
 import { CpuTrainer } from './optimizer.js';
 import { DOM, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui_manager.js';
 import { init as initROI, startDecayLoop, stopDecayLoop, hasPainted } from './roi_controls.js';
-import { init as initFileHandler } from './file_handler.js';
+import { init as initFileHandler, getUrlExample } from './file_handler.js';
 import { SweepOverlay } from './sweep.js';
 
 // --- State ---
@@ -39,7 +39,7 @@ let hoverState     = null;
 let layerCols      = [];
 let inferRunning   = false;
 let inferPending   = false;
-const sweep        = new SweepOverlay(DOM.sweepCanvas);
+const sweep        = new SweepOverlay(DOM.sweepCanvas, DOM.sourceSweepCanvas);
 
 const isTraining = () => trainer?.active ?? false;
 const canInfer   = () => !!model && !!lastWeights && !isTraining();
@@ -60,6 +60,19 @@ function drawSourceImage() {
 DOM.outputZoomInput.addEventListener('input', () => {
     const scale = parseFloat(DOM.outputZoomInput.value);
     DOM.outputZoomVal.textContent = scale + '×';
+    const wrap = DOM.canvas.closest('.canvas-wrap');
+    const zoomed = scale > 1;
+    wrap.classList.toggle('zoomed', zoomed);
+    if (zoomed) {
+        const aspect = BASE_CANVAS_W / BASE_CANVAS_H;
+        const ww = wrap.clientWidth, wh = wrap.clientHeight;
+        const fitW = Math.min(ww, wh * aspect);
+        DOM.canvas.style.width  = Math.round(fitW * scale) + 'px';
+        DOM.canvas.style.height = Math.round(fitW * scale / aspect) + 'px';
+    } else {
+        DOM.canvas.style.width = '';
+        DOM.canvas.style.height = '';
+    }
     if (canInfer()) {
         const W = Math.round(BASE_CANVAS_W * scale);
         const H = Math.round(BASE_CANVAS_H * scale);
@@ -73,6 +86,31 @@ const VALID_EMB_CHANNELS = [4, 8, 16];
 const VALID_MLP_WIDTHS1  = [4, 8, 16, 32, 64];
 const VALID_MLP_WIDTHS2  = [8, 16, 32, 64];
 const VALID_EMB_BITS     = [4, 8];
+
+function buildAlphaCellMask(targetPixels, W, H, gridSize) {
+    const gs   = gridSize;
+    const mask = new Float32Array(gs * gs).fill(1);
+    const stepX = (W - 1) / (gs - 1);
+    const stepY = (H - 1) / (gs - 1);
+    for (let gy = 0; gy < gs; gy++) {
+        for (let gx = 0; gx < gs; gx++) {
+            const cx  = gx * stepX;
+            const cy  = gy * stepY;
+            const px0 = Math.max(0, Math.floor(cx - stepX));
+            const py0 = Math.max(0, Math.floor(cy - stepY));
+            const px1 = Math.min(W - 1, Math.ceil(cx + stepX));
+            const py1 = Math.min(H - 1, Math.ceil(cy + stepY));
+            let opaque = false;
+            outer: for (let py = py0; py <= py1; py++) {
+                for (let px = px0; px <= px1; px++) {
+                    if (targetPixels[(py * W + px) * 4 + 3] > 0) { opaque = true; break outer; }
+                }
+            }
+            if (!opaque) mask[gy * gs + gx] = 0;
+        }
+    }
+    return mask;
+}
 
 function isValidModelConfig({ gridSize, embeddingChannels, mlpWidth1, mlpWidth2, embBits = 8 }) {
     return VALID_GRID_SIZES.includes(gridSize)       &&
@@ -113,6 +151,8 @@ function loadImageOntoCanvas(img) {
     BASE_CANVAS_H = aspect >= 1 ? Math.round(MAX / aspect) : MAX;
     DOM.sourceCanvas.width  = BASE_CANVAS_W;
     DOM.sourceCanvas.height = BASE_CANVAS_H;
+    DOM.sourceSweepCanvas.width  = BASE_CANVAS_W;
+    DOM.sourceSweepCanvas.height = BASE_CANVAS_H;
     DOM.canvas.width  = BASE_CANVAS_W;
     DOM.canvas.height = BASE_CANVAS_H;
     DOM.canvas.style.width = '';
@@ -348,17 +388,12 @@ function clearTrainingUI() {
     lastInterData = { inter1: null, inter2: null };
 }
 
-function makeCpuTrainer() {
-    return new CpuTrainer({
-        config,
-        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
-        getHyperparams: () => ({
-            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
-            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
-            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
-            maxIter:     parseInt(DOM.maxIterInput.value),
-            vizInterval: parseInt(DOM.vizIntervalSelect.value),
-        }),
+function setStoppedStatus() {
+    setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+}
+
+function trainerCallbacks() {
+    return {
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
             if (inter1 !== null) lastInterData = { inter1, inter2 };
@@ -375,17 +410,37 @@ function makeCpuTrainer() {
             drawSourceImage();
         },
         onStop() {
-            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+            setStoppedStatus();
             if (roiMask.isActive()) startDecayLoop();
         },
+    };
+}
+
+function makeCpuTrainer() {
+    return new CpuTrainer({
+        config,
+        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
+        getHyperparams: () => ({
+            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
+            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
+            maxIter:     parseInt(DOM.maxIterInput.value),
+            vizInterval: parseInt(DOM.vizIntervalSelect.value),
+        }),
+        ...trainerCallbacks(),
     });
 }
 
 function makeTrainer() {
+    const targetPixels = get_target_pixels(loadedImage, DOM.canvas);
+    const alphaCellMask = config.hasAlpha
+        ? buildAlphaCellMask(targetPixels, DOM.canvas.width, DOM.canvas.height, config.gridSize)
+        : null;
     return new Trainer({
         webGpuContext, canvas: DOM.canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
         outputBuffers, readbackBuffers,
-        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
+        targetPixels,
+        alphaCellMask,
         roiMask,
         getHyperparams: () => ({
             stride:      parseInt(DOM.bwdStrideInput.value) || 1,
@@ -399,25 +454,7 @@ function makeTrainer() {
             vizInterval:          parseInt(DOM.vizIntervalSelect.value),
             offsetSampleInterval: parseInt(DOM.offsetSampleIntervalSelect.value),
         }),
-        onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
-            lastWeights = w;
-            if (inter1 !== null) lastInterData = { inter1, inter2 };
-            DOM.lossValueEl.textContent   = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
-            DOM.stepCounterEl.textContent = step.toLocaleString();
-            DOM.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
-            drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
-            ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
-                { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                  finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
-                  config, channelMask, ema: layerRangeEma, hoverState }));
-            sweep.setCols(layerCols); if (inter1 !== null) sweep.triggerStep();
-            drawLossCurve(DOM.lossCanvas, lossHistory);
-            drawSourceImage();
-        },
-        onStop() {
-            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
-            if (roiMask.isActive()) startDecayLoop();
-        },
+        ...trainerCallbacks(),
     });
 }
 
@@ -425,7 +462,7 @@ function makeTrainer() {
 DOM.startBtn.addEventListener('click', async () => {
     if (isTraining()) {
         trainer.stop();
-        setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+        setStoppedStatus();
         if (roiMask.isActive()) startDecayLoop();
         return;
     }
@@ -651,11 +688,7 @@ DOM.layersCanvas.addEventListener('click', (e) => {
     if (!embCh) return;
     const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), embCh - 1);
     const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
-    if (e.shiftKey) {
-        channelMask = (channelMask ^ allBits) | (1 << ch);
-    } else {
-        channelMask ^= (1 << ch);
-    }
+    channelMask ^= (allBits ^ (1 << ch));
     if (canInfer()) runInference();
     else redrawLayers();
 });
@@ -806,7 +839,7 @@ async function loadModelFile(file) {
         lastWeights = weightsViewFrom(tensors);
 
         await runInference();
-        setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+        setStoppedStatus();
         updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
         updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
     } catch (err) {
@@ -816,14 +849,18 @@ async function loadModelFile(file) {
 }
 
 
+function refreshStartLabel() {
+    updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+}
+
 initTooltips();
 initUI({
     onConfigChange: () => {
-        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+        refreshStartLabel();
         updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
     },
     onSelectChange: () => {
-        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+        refreshStartLabel();
         updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
         if (!isTraining()) {
             updateDirtyIndicators(lastConfig, currentModelConfig());
@@ -860,7 +897,7 @@ async function loadExample({ image, model: modelUrl }) {
             trainer?.destroy(); trainer = null; clearTrainingUI(); snapshotWeights = null;
             roiMask.clear();
             await resetToRandomModel();
-            setStatus('stopped', configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
+            setStoppedStatus();
             updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
         }
     } catch (err) { console.warn('Example load failed:', err); }
@@ -886,28 +923,38 @@ if (!navigator.gpu) DOM.engineSelect.value = 'cpu';
 // --- Startup: load default image then default model (or auto-start from URL params) ---
 const urlHasParams = applyUrlParams();
 if (urlHasParams) {
-    updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
+    refreshStartLabel();
     updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
 }
-const startupImg = new Image();
-startupImg.onload = async () => {
-    loadImageOntoCanvas(startupImg);
-    if (urlHasParams) {
-        DOM.startBtn.click();
-    } else {
+const urlExample = getUrlExample();
+if (urlExample) {
+    (async () => {
         try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
         catch (err) { console.error('WebGPU init failed:', err); return; }
-        // Try loading the saved model first; fall back to random-weights inference if absent.
-        let modelLoaded = false;
-        try {
-            const resp = await fetch('imgs/mona_lisa.safetensors');
-            if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
-        } catch (err) { console.warn('Auto-load failed:', err); }
-        if (!modelLoaded) {
-            try { await resetToRandomModel(); }
-            catch (err) { console.error('Initial inference failed:', err); }
-        }
+        await loadExample(urlExample);
         document.dispatchEvent(new Event('startup-complete'));
-    }
-};
-startupImg.src = 'imgs/mona_lisa.webp';
+    })();
+} else {
+    const startupImg = new Image();
+    startupImg.onload = async () => {
+        loadImageOntoCanvas(startupImg);
+        if (urlHasParams) {
+            DOM.startBtn.click();
+        } else {
+            try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
+            catch (err) { console.error('WebGPU init failed:', err); return; }
+            // Try loading the saved model first; fall back to random-weights inference if absent.
+            let modelLoaded = false;
+            try {
+                const resp = await fetch('imgs/mona_lisa.safetensors');
+                if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
+            } catch (err) { console.warn('Auto-load failed:', err); }
+            if (!modelLoaded) {
+                try { await resetToRandomModel(); }
+                catch (err) { console.error('Initial inference failed:', err); }
+            }
+            document.dispatchEvent(new Event('startup-complete'));
+        }
+    };
+    startupImg.src = 'imgs/mona_lisa.webp';
+}

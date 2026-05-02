@@ -8,7 +8,7 @@ const TOTAL_MS  = SWEEP_MS + FADE_MS;
 const DECAY_MS  = 10000; // training sweep fades to zero over this duration
 
 export class SweepOverlay {
-    constructor(canvas) {
+    constructor(canvas, srcCanvas = null) {
         this._canvas = canvas;
         this._ctx    = canvas.getContext('2d');
         this._cols   = [];
@@ -18,6 +18,8 @@ export class SweepOverlay {
         this._rafId  = null;
         this._lastTrigger = 0;
         this._decayStart  = 0; // 0 = not yet started
+        this._srcCanvas = srcCanvas;
+        this._srcCtx    = srcCanvas ? srcCanvas.getContext('2d') : null;
     }
 
     setCols(cols) { this._cols = cols; }
@@ -97,9 +99,27 @@ export class SweepOverlay {
             ctx.strokeRect(col.x + 0.5, col.y0 + 0.5, col.w - 1, col.h - 1);
         }
         ctx.shadowBlur = 0;
+
+        // Source canvas: activates first in fwd, last in bwd.
+        if (this._srcCtx) {
+            const sc = this._srcCanvas;
+            this._srcCtx.clearRect(0, 0, sc.width, sc.height);
+            const tActivate = isFwd ? 0 : SWEEP_MS;
+            const elapsed = t - tActivate;
+            if (elapsed > 0) {
+                const alpha = Math.max(0, 1 - elapsed / FADE_MS) * decay;
+                this._srcCtx.lineWidth = 3;
+                this._srcCtx.shadowBlur = 10 * decay;
+                this._srcCtx.shadowColor = `rgb(${r},${g},${b})`;
+                this._srcCtx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+                this._srcCtx.strokeRect(2, 2, sc.width - 4, sc.height - 4);
+                this._srcCtx.shadowBlur = 0;
+            }
+        }
     }
 
     _clear() {
         this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        if (this._srcCtx) this._srcCtx.clearRect(0, 0, this._srcCanvas.width, this._srcCanvas.height);
     }
 }

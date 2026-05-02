@@ -44,12 +44,12 @@ function fmtUintPackedArray(u32Array, perLine = 6) {
 function glslActivDecl(activation) {
     switch (activation) {
         case 'softsign': return `vec4 softsign(vec4 x) { return x / (1.0 + abs(x)); }`;
-        case 'hardtanh': return `vec4 hardtanh(vec4 x) { return clamp(x, -1.0, 1.0); }`;
+        case 'none': return '';
         default: return '';
     }
 }
 function glslActivName(activation) {
-    return { sin: 'sin', tanh: 'tanh', softsign: 'softsign', hardtanh: 'hardtanh' }[activation] || 'sin';
+    return { sin: 'sin', tanh: 'tanh', softsign: 'softsign', none: '' }[activation] ?? 'sin';
 }
 
 // All arrays (weights, biases, inputs, outputs) are vec4[].
