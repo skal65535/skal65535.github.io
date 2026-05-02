@@ -852,6 +852,13 @@ async function loadModelFile(file) {
     if (gpuAvailable) {
         try {
             if (!webGpuContext) webGpuContext = await initWebGPU();
+        } catch (err) {
+            console.error('WebGPU device init failed:', err);
+            disableGpu();
+            await runInferenceCpu();
+            return;
+        }
+        try {
             const { buffers } = createModel(webGpuContext, config);
             destroyModel(model);
             model = buffers;
@@ -861,7 +868,6 @@ async function loadModelFile(file) {
             await runInference();
         } catch (err) {
             console.error('Load model (GPU) failed:', err);
-            disableGpu();
             await runInferenceCpu();
         }
     } else {
@@ -919,14 +925,16 @@ async function loadExample({ image, model: modelUrl }) {
         if (!modelLoaded && gpuAvailable) {
             try {
                 if (!webGpuContext) webGpuContext = await initWebGPU();
+            } catch (err) { console.error('WebGPU device init failed:', err); disableGpu(); return; }
+            try {
                 trainer?.destroy(); trainer = null; clearTrainingUI(); snapshotWeights = null;
                 roiMask.clear();
                 await resetToRandomModel();
                 setStoppedStatus();
                 updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
-            } catch (err) { console.warn('Example GPU init failed:', err); disableGpu(); }
+            } catch (err) { console.warn('Example GPU init failed:', err); }
         }
-    } catch (err) { console.warn('Example load failed:', err); disableGpu(); }
+    } catch (err) { console.warn('Example load failed:', err); }
 }
 
 if (!gpuAvailable) disableGpu();

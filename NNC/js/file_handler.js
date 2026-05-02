@@ -26,7 +26,8 @@ export function init({ onImageFile, onModelFile, onExampleSelect, hasPainted }) 
         DOM.dropOverlay.classList.remove('hidden');
         DOM.dropOverlay.classList.add('dragover');
     });
-    DOM.sourcePanel.addEventListener('dragleave', () => {
+    DOM.sourcePanel.addEventListener('dragleave', (e) => {
+        if (DOM.sourcePanel.contains(e.relatedTarget)) return;
         DOM.dropOverlay.classList.remove('dragover');
         if (DOM.sourcePanel.classList.contains('has-image')) DOM.dropOverlay.classList.add('hidden');
     });
