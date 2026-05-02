@@ -40,7 +40,17 @@ export class Trainer {
         this._stepCount    = 0;
         this._lossHistory  = [];
         this._lastStepTime = 0;
+        this._gpuMsEma     = 0;
         this._lastInter    = { inter1: null, inter2: null };
+
+        if (this._ctx.hasTimestamps) {
+            const dev = this._ctx.device;
+            this._tsQuery    = dev.createQuerySet({ type: 'timestamp', count: 2 });
+            this._tsResolve  = dev.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+            this._tsReadback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        } else {
+            this._tsQuery = null;
+        }
 
         this._bwdPipelines     = null;
         this._bwdBindGroups    = null;
@@ -58,6 +68,7 @@ export class Trainer {
         this._stepCount    = 0;
         this._lossHistory  = [];
         this._lastStepTime = 0;
+        this._gpuMsEma     = 0;
         this._lastInter    = { inter1: null, inter2: null };
 
         const src = freshWeights !== null ? freshWeights.embeddings : this.lastWeights?.embeddings;
@@ -73,7 +84,7 @@ export class Trainer {
 
         this._initBackward();
         this.active = true;
-        this._rafId = requestAnimationFrame(() => this._train());
+        this._rafId = requestAnimationFrame(t => this._train(t));
     }
 
     stop() {
@@ -195,7 +206,7 @@ export class Trainer {
         device.queue.submit([ce.finish()]);
     }
 
-    async _train() {
+    async _train(rafT = 0) {
         if (!this.active) return;
 
         const { device } = this._ctx;
@@ -215,6 +226,88 @@ export class Trainer {
         const hp           = this._getHyperparams();
         const stride       = hp.stride;
         const sampledCount = Math.ceil(pixelCount / stride);
+        const stepsPerFrame = 64;
+
+        // Fast inner steps: GPU-only, no readback, GPU pack instead of CPU normalize+pack
+        for (let s = 0; s < stepsPerFrame - 1 && this.active; s++) {
+            this._adamT++;
+            const period2    = (hp.mlpRatio + 1) * hp.numLoops;
+            const phasePos2  = this._adamT % period2;
+            const activeMLP2 = phasePos2 >= hp.mlpRatio * hp.numLoops;
+            const embedLR2   = activeMLP2 ? 0 : hp.embedLr;
+            const mlpLR2     = activeMLP2 ? hp.mlpLr : 0;
+            const tCfg = {
+                embeddings:     { lr: embedLR2, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
+                layer1_weights: { lr: mlpLR2,   size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
+                layer1_biases:  { lr: mlpLR2,   size: mlpWidth1,             l2: 0, clamp: 0 },
+                layer2_weights: { lr: mlpLR2,   size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
+                layer2_biases:  { lr: mlpLR2,   size: mlpWidth2,             l2: 0, clamp: 0 },
+                layer3_weights: { lr: mlpLR2,   size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
+                layer3_biases:  { lr: mlpLR2,   size: outCh,                 l2: 0, clamp: 0 },
+            };
+
+            if (!hp.roiFreeze) this._roiMask.decay(performance.now());
+            if (this._roiMask.dirty) {
+                this._ctx.writeBuffer(bb.roiMask, this._roiMask.weights);
+                this._roiMask.dirty = false;
+            }
+            for (const [k, buf] of Object.entries(m.gradAtomic)) {
+                this._ctx.writeBuffer(buf, bb.gradZero[k]);
+            }
+            const { adamAB: aAB, adamF: aF, adamU: aU, uniAB: uAB, uniU32: uU32, uniF32: uF32 } = bb;
+            uU32[0] = cv.width; uU32[1] = cv.height;
+            uU32[2] = stride;   uU32[3] = sampledCount;
+            uF32[4] = hp.roiStrength;
+            this._ctx.writeBuffer(this._bwdUniformsBuf, uAB);
+            aF[1] = 0.9; aF[2] = 0.999; aF[3] = 1e-8; aF[6] = FP_SCALE;
+            aU[4] = this._adamT; aU[9] = sampledCount;
+            for (const [k, tc] of Object.entries(tCfg)) {
+                aF[0] = tc.lr; aU[5] = tc.size; aF[7] = tc.l2; aU[8] = tc.clamp;
+                this._ctx.writeBuffer(au[k], aAB);
+            }
+
+            uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
+            const ce2 = device.createCommandEncoder();
+            const fp2 = ce2.beginComputePass();
+            fp2.setPipeline(this._pipeline); fp2.setBindGroup(0, this._bindGroup);
+            fp2.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            fp2.end();
+
+            const bwdD2 = Math.ceil(pixelCount / 64);
+            const rp2 = (pipeline, bindGroup, dx, dy = 1) => {
+                const p = ce2.beginComputePass();
+                p.setPipeline(pipeline); p.setBindGroup(0, bindGroup);
+                p.dispatchWorkgroups(dx, dy); p.end();
+            };
+            rp2(pl.gradOutput, bg.gradOutput, bwdD2);
+            rp2(pl.gradL3,     bg.gradL3,     bwdD2);
+            rp2(pl.gradL2,     bg.gradL2,     bwdD2);
+            rp2(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+
+            const ap2 = ce2.beginComputePass();
+            for (const k of ModelTensors.KEYS) {
+                ap2.setPipeline(pl.adamStep);
+                ap2.setBindGroup(0, bg.adam[k]);
+                ap2.dispatchWorkgroups(Math.ceil(tCfg[k].size / 64));
+            }
+            ap2.end();
+
+            const pp2 = ce2.beginComputePass();
+            pp2.setPipeline(pl.packEmbeddings);
+            pp2.setBindGroup(0, bg.packEmbeddings);
+            pp2.dispatchWorkgroups(Math.ceil(gridSize * gridSize * embCh / 4 / 64));
+            pp2.end();
+
+            device.queue.submit([ce2.finish()]);
+
+            this._stepCount++;
+            if (hp.maxIter > 0 && this._stepCount >= hp.maxIter) {
+                this.active = false;
+                this._onStop();
+                return;
+            }
+        }
+
         this._adamT++;
 
         const period    = (hp.mlpRatio + 1) * hp.numLoops;
@@ -256,7 +349,9 @@ export class Trainer {
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
         const ce = device.createCommandEncoder();
 
-        const fwdPass = ce.beginComputePass();
+        const fwdPass = ce.beginComputePass(this._tsQuery ? {
+            timestampWrites: { querySet: this._tsQuery, beginningOfPassWriteIndex: 0 }
+        } : undefined);
         fwdPass.setPipeline(this._pipeline);
         fwdPass.setBindGroup(0, this._bindGroup);
         fwdPass.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
@@ -274,7 +369,9 @@ export class Trainer {
         runPass(pl.gradL2,     bg.gradL2,     bwdDispatch);
         runPass(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
 
-        const adamPass = ce.beginComputePass();
+        const adamPass = ce.beginComputePass(this._tsQuery ? {
+            timestampWrites: { querySet: this._tsQuery, endOfPassWriteIndex: 1 }
+        } : undefined);
         for (const k of ModelTensors.KEYS) {
             adamPass.setPipeline(pl.adamStep);
             adamPass.setBindGroup(0, bg.adam[k]);
@@ -282,7 +379,7 @@ export class Trainer {
         }
         adamPass.end();
 
-        const doViz = this._stepCount % hp.vizInterval === 0;
+        const doViz = (this._stepCount + 1) % hp.vizInterval === 0;
 
         ce.copyBufferToBuffer(ob.final,         0, rb.final,         0, ob.final.size);
         ce.copyBufferToBuffer(m.embeddings,     0, rb.embeddings,    0, m.embeddings.size);
@@ -293,6 +390,10 @@ export class Trainer {
         if (doViz) {
             ce.copyBufferToBuffer(ob.interLayer1, 0, rb.interLayer1, 0, rb.interLayer1.size);
             ce.copyBufferToBuffer(ob.interLayer2, 0, rb.interLayer2, 0, rb.interLayer2.size);
+        }
+        if (this._tsQuery) {
+            ce.resolveQuerySet(this._tsQuery, 0, 2, this._tsResolve, 0);
+            ce.copyBufferToBuffer(this._tsResolve, 0, this._tsReadback, 0, 16);
         }
         device.queue.submit([ce.finish()]);
 
@@ -308,6 +409,7 @@ export class Trainer {
             maps.push(rb.interLayer1.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer2.mapAsync(GPUMapMode.READ));
         }
+        if (this._tsQuery) maps.push(this._tsReadback.mapAsync(GPUMapMode.READ));
         await Promise.all(maps);
 
         const finalData = new Float32Array(rb.final.getMappedRange());
@@ -329,6 +431,15 @@ export class Trainer {
             inter2 = new Float32Array(rb.interLayer2.getMappedRange()).slice();
             rb.interLayer1.unmap(); rb.interLayer2.unmap();
             this._lastInter = { inter1, inter2 };
+        }
+
+        if (this._tsQuery) {
+            const tsData = new BigUint64Array(this._tsReadback.getMappedRange());
+            const gpuNs  = Number(tsData[1] - tsData[0]);
+            this._tsReadback.unmap();
+            if (gpuNs > 0) {
+                this._gpuMsEma = this._gpuMsEma > 0 ? 0.9 * this._gpuMsEma + 0.1 * gpuNs / 1e6 : gpuNs / 1e6;
+            }
         }
 
         // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
@@ -360,7 +471,7 @@ export class Trainer {
         this._lossHistory.push(loss);
 
         const now  = performance.now();
-        const rate = this._lastStepTime > 0 ? (1000 / (now - this._lastStepTime)).toFixed(1) : '—';
+        const rate = this._lastStepTime > 0 ? (stepsPerFrame * 1000 / (now - this._lastStepTime)).toFixed(1) : '—';
         this._lastStepTime = now;
 
         this._onStep({
@@ -379,7 +490,7 @@ export class Trainer {
         if (this.active && this._config.embOffsets?.some(v => v !== 0) && hp.offsetSampleInterval > 0 && this._stepCount % hp.offsetSampleInterval === 0) {
             await this._sampleOffsets();
         }
-        if (this.active) this._rafId = requestAnimationFrame(() => this._train());
+        if (this.active) this._rafId = requestAnimationFrame(t => this._train(t));
     }
 
     async _sampleOffsets() {

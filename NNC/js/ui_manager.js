@@ -33,8 +33,8 @@ export const DOM = {
     mlpLrVal:      document.getElementById('mlp-lr-val'),
     mlpRatioInput:  document.getElementById('mlp-ratio'),
     mlpRatioVal:    document.getElementById('mlp-ratio-val'),
-    numLoopsInput:  document.getElementById('num-loops'),
-    numLoopsVal:    document.getElementById('num-loops-val'),
+    numLoopsInput:       document.getElementById('num-loops'),
+    numLoopsVal:         document.getElementById('num-loops-val'),
     engineSelect:   document.getElementById('engine'),
     bwdStrideInput: document.getElementById('bwd-stride'),
     bwdStrideVal:   document.getElementById('bwd-stride-val'),
@@ -299,7 +299,7 @@ export function init(callbacks) {
     DOM.embedLrInput.addEventListener('input', () => syncSliderDisplay(DOM.embedLrInput, DOM.embedLrVal));
     DOM.mlpLrInput.addEventListener('input',   () => syncSliderDisplay(DOM.mlpLrInput, DOM.mlpLrVal));
     DOM.mlpRatioInput.addEventListener('input',  () => { DOM.mlpRatioVal.textContent  = DOM.mlpRatioInput.value; });
-    DOM.numLoopsInput.addEventListener('input',  () => { DOM.numLoopsVal.textContent  = DOM.numLoopsInput.value; });
+    DOM.numLoopsInput.addEventListener('input',       () => { DOM.numLoopsVal.textContent       = DOM.numLoopsInput.value; });
     DOM.bwdStrideInput.addEventListener('input', () => { DOM.bwdStrideVal.textContent = DOM.bwdStrideInput.value; });
     DOM.maxIterInput.addEventListener('input', () => {
         const v = parseInt(DOM.maxIterInput.value);

@@ -445,7 +445,7 @@ function makeTrainer() {
         getHyperparams: () => ({
             stride:      parseInt(DOM.bwdStrideInput.value) || 1,
             mlpRatio:    parseInt(DOM.mlpRatioInput.value)  || 1,
-            numLoops:    parseInt(DOM.numLoopsInput.value)  || 1,
+            numLoops:      parseInt(DOM.numLoopsInput.value)      || 1,
             embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
             mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
             roiStrength: parseFloat(DOM.roiStrengthInput.value),
@@ -537,7 +537,7 @@ async function serializeModel() {
         embedLr:    DOM.embedLrInput.value,
         mlpLr:      DOM.mlpLrInput.value,
         mlpRatio:   DOM.mlpRatioInput.value,
-        numLoops:   DOM.numLoopsInput.value,
+        numLoops:      DOM.numLoopsInput.value,
         bwdStride:  DOM.bwdStrideInput.value,
         outputZoom: DOM.outputZoomInput.value,
         noOffset:   DOM.noOffsetCheckbox.checked,
