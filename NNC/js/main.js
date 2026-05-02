@@ -9,11 +9,19 @@ import { drawOutputCanvas, drawFlowDiagram, drawLossCurve, FLOW_PAD, FLOW_EMB_W 
 import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
 import { initTooltips } from './tooltips.js';
 import { Trainer } from './trainer.js';
-import { CpuTrainer } from './optimizer.js';
+import { CpuTrainer, forward } from './optimizer.js';
 import { DOM, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui_manager.js';
 import { init as initROI, startDecayLoop, stopDecayLoop, hasPainted } from './roi_controls.js';
 import { init as initFileHandler, getUrlExample } from './file_handler.js';
 import { SweepOverlay } from './sweep.js';
+
+const gpuAvailable = !!navigator.gpu;
+
+function disableGpu() {
+    const opt = DOM.engineSelect.querySelector('option[value="gpu"]');
+    if (opt) opt.disabled = true;
+    if (DOM.engineSelect.value === 'gpu') DOM.engineSelect.value = 'cpu';
+}
 
 // --- State ---
 let BASE_CANVAS_W = DOM.canvas.width;
@@ -41,8 +49,11 @@ let inferRunning   = false;
 let inferPending   = false;
 const sweep        = new SweepOverlay(DOM.sweepCanvas, DOM.sourceSweepCanvas);
 
-const isTraining = () => trainer?.active ?? false;
-const canInfer   = () => !!model && !!lastWeights && !isTraining();
+const isTraining   = () => trainer?.active ?? false;
+const configReady  = () => !!config.mlpWidth1;
+const canInfer     = () => !!lastWeights && !isTraining();
+const hasCpuWeights = () => !!lastWeights?.layer1_biases;  // full weight tensors loaded (not partial GPU readback)
+const doInference  = () => model ? runInference() : (hasCpuWeights() ? runInferenceCpu() : null);
 
 // ROI mask state
 const roiMask = new ROIMask(1, 1);
@@ -360,17 +371,12 @@ function createBindGroup() {
     bindGroup = webGpuContext.device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0,  resource: { buffer: fwdUniformsBuf } },
-            { binding: 1,  resource: { buffer: model.embeddings_q } },
-            { binding: 2,  resource: { buffer: model.layer1.weights } },
-            { binding: 3,  resource: { buffer: model.layer1.biases  } },
-            { binding: 4,  resource: { buffer: model.layer2.weights } },
-            { binding: 5,  resource: { buffer: model.layer2.biases  } },
-            { binding: 6,  resource: { buffer: model.layer3.weights } },
-            { binding: 7,  resource: { buffer: model.layer3.biases  } },
-            { binding: 8,  resource: { buffer: outputBuffers.interLayer1 } },
-            { binding: 9,  resource: { buffer: outputBuffers.interLayer2 } },
-            { binding: 10, resource: { buffer: outputBuffers.final       } },
+            { binding: 0, resource: { buffer: fwdUniformsBuf } },
+            { binding: 1, resource: { buffer: model.embeddings_q } },
+            { binding: 2, resource: { buffer: model.mlp_weights } },
+            { binding: 3, resource: { buffer: outputBuffers.interLayer1 } },
+            { binding: 4, resource: { buffer: outputBuffers.interLayer2 } },
+            { binding: 5, resource: { buffer: outputBuffers.final       } },
         ],
     });
 }
@@ -507,10 +513,16 @@ async function readBackAllWeights() {
 
 function weightsViewFrom(rb) {
     return {
-        embeddings:    rb.embeddings,
-        layer1Weights: rb.layer1_weights,
-        layer2Weights: rb.layer2_weights,
-        layer3Weights: rb.layer3_weights,
+        embeddings:     rb.embeddings,
+        layer1_weights: rb.layer1_weights,
+        layer1_biases:  rb.layer1_biases,
+        layer2_weights: rb.layer2_weights,
+        layer2_biases:  rb.layer2_biases,
+        layer3_weights: rb.layer3_weights,
+        layer3_biases:  rb.layer3_biases,
+        layer1Weights:  rb.layer1_weights,
+        layer2Weights:  rb.layer2_weights,
+        layer3Weights:  rb.layer3_weights,
     };
 }
 
@@ -590,17 +602,12 @@ async function runZoomInference(W, H) {
     const bg = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0,  resource: { buffer: unifBuf } },
-            { binding: 1,  resource: { buffer: model.embeddings_q } },
-            { binding: 2,  resource: { buffer: model.layer1.weights } },
-            { binding: 3,  resource: { buffer: model.layer1.biases  } },
-            { binding: 4,  resource: { buffer: model.layer2.weights } },
-            { binding: 5,  resource: { buffer: model.layer2.biases  } },
-            { binding: 6,  resource: { buffer: model.layer3.weights } },
-            { binding: 7,  resource: { buffer: model.layer3.biases  } },
-            { binding: 8,  resource: { buffer: interL1 } },
-            { binding: 9,  resource: { buffer: interL2 } },
-            { binding: 10, resource: { buffer: outBuf  } },
+            { binding: 0, resource: { buffer: unifBuf } },
+            { binding: 1, resource: { buffer: model.embeddings_q } },
+            { binding: 2, resource: { buffer: model.mlp_weights } },
+            { binding: 3, resource: { buffer: interL1 } },
+            { binding: 4, resource: { buffer: interL2 } },
+            { binding: 5, resource: { buffer: outBuf  } },
         ],
     });
 
@@ -644,7 +651,7 @@ function layersCanvasCoords(e) {
 }
 
 function redrawLayers() {
-    if (!lastWeights || !config?.mlpWidth1) return;
+    if (!lastWeights || !configReady()) return;
     ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
         { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
           finalOutput: lastWeights.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
@@ -689,7 +696,7 @@ DOM.layersCanvas.addEventListener('click', (e) => {
     const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), embCh - 1);
     const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
     channelMask ^= (allBits ^ (1 << ch));
-    if (canInfer()) runInference();
+    if (canInfer()) doInference();
     else redrawLayers();
 });
 
@@ -745,6 +752,21 @@ async function runInference() {
         inferRunning = false;
         if (inferPending) { inferPending = false; runInference(); }
     }
+}
+
+async function runInferenceCpu() {
+    const { gridSize, embeddingChannels: embCh } = config;
+    const range  = computeEmbRange(lastWeights.embeddings, embCh, gridSize * gridSize);
+    const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, config.embBits);
+    const { final, interLayer1, interLayer2 } = forward(config, { ...lastWeights, embeddings_q: packed }, range);
+    drawOutputCanvas(DOM.canvas, final, config.hasAlpha);
+    lastInterData = { inter1: interLayer1, inter2: interLayer2 };
+    lastWeights.finalOutput = final;
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+        { weights: lastWeights, inter1: interLayer1, inter2: interLayer2,
+          finalOutput: final, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+          config, channelMask, ema: layerRangeEma, hoverState }));
+    sweep.setCols(layerCols);
 }
 
 async function loadAndResetModelFile(file) {
@@ -822,30 +844,32 @@ async function loadModelFile(file) {
         embOffsets:          savedConfig.embOffsets ?? new Float32Array(embCh / (32 / loadedEmbBits) * 2),
     };
 
-    try {
-        if (!webGpuContext) webGpuContext = await initWebGPU();
-        const { buffers } = createModel(webGpuContext, config);
-        destroyModel(model);
-        model = buffers;
+    lastWeights = weightsViewFrom(tensors);
+    lastConfig  = currentModelConfig();
+    updateDirtyIndicators(lastConfig, currentModelConfig());
+    channelMask = 0xFFFFFFFF;
 
-        webGpuContext.uploadModelWeights(model, tensors);
-
-        await createPipeline();
-        createBindGroup();
-        channelMask = 0xFFFFFFFF;
-        lastConfig  = currentModelConfig();
-        updateDirtyIndicators(lastConfig, currentModelConfig());
-
-        lastWeights = weightsViewFrom(tensors);
-
-        await runInference();
-        setStoppedStatus();
-        updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
-        updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
-    } catch (err) {
-        console.error('Load model failed:', err);
-        alert('Load model failed. Check console for errors.');
+    if (gpuAvailable) {
+        try {
+            if (!webGpuContext) webGpuContext = await initWebGPU();
+            const { buffers } = createModel(webGpuContext, config);
+            destroyModel(model);
+            model = buffers;
+            webGpuContext.uploadModelWeights(model, tensors);
+            await createPipeline();
+            createBindGroup();
+            await runInference();
+        } catch (err) {
+            console.error('Load model (GPU) failed:', err);
+            disableGpu();
+            await runInferenceCpu();
+        }
+    } else {
+        await runInferenceCpu();
     }
+    setStoppedStatus();
+    updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+    updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, false, !!snapshotWeights);
 }
 
 
@@ -866,7 +890,7 @@ initUI({
             updateDirtyIndicators(lastConfig, currentModelConfig());
             const cur = currentModelConfig();
             if (lastWeights && configCompatible(lastConfig, cur)) {
-                if (canInfer()) runInference(); else redrawLayers();
+                if (canInfer()) doInference(); else redrawLayers();
             } else if (webGpuContext && loadedImage) {
                 previewGeometry();
             } else {
@@ -887,24 +911,25 @@ async function loadExample({ image, model: modelUrl }) {
         img.src = image;
     });
     try {
-        if (!webGpuContext) webGpuContext = await initWebGPU();
         let modelLoaded = false;
         try {
             const resp = await fetch(modelUrl);
             if (resp.ok) { await loadAndResetModelFile(await resp.blob()); modelLoaded = true; }
         } catch (err) { console.warn('Example model fetch failed:', err); }
-        if (!modelLoaded) {
-            trainer?.destroy(); trainer = null; clearTrainingUI(); snapshotWeights = null;
-            roiMask.clear();
-            await resetToRandomModel();
-            setStoppedStatus();
-            updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+        if (!modelLoaded && gpuAvailable) {
+            try {
+                if (!webGpuContext) webGpuContext = await initWebGPU();
+                trainer?.destroy(); trainer = null; clearTrainingUI(); snapshotWeights = null;
+                roiMask.clear();
+                await resetToRandomModel();
+                setStoppedStatus();
+                updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+            } catch (err) { console.warn('Example GPU init failed:', err); disableGpu(); }
         }
-    } catch (err) { console.warn('Example load failed:', err); }
+    } catch (err) { console.warn('Example load failed:', err); disableGpu(); }
 }
 
-// Default engine: CPU on mobile / no WebGPU, GPU otherwise
-if (!navigator.gpu) DOM.engineSelect.value = 'cpu';
+if (!gpuAvailable) disableGpu();
 
 // --- Start tooltip: show once startup is complete ---
 (function() {
@@ -929,8 +954,6 @@ if (urlHasParams) {
 const urlExample = getUrlExample();
 if (urlExample) {
     (async () => {
-        try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
-        catch (err) { console.error('WebGPU init failed:', err); return; }
         await loadExample(urlExample);
         document.dispatchEvent(new Event('startup-complete'));
     })();
@@ -940,9 +963,20 @@ if (urlExample) {
         loadImageOntoCanvas(startupImg);
         if (urlHasParams) {
             DOM.startBtn.click();
+        } else if (!gpuAvailable) {
+            try {
+                const resp = await fetch('imgs/model.safetensors');
+                if (resp.ok) await loadAndResetModelFile(await resp.blob());
+            } catch (err) { console.warn('CPU startup load failed:', err); }
+            document.dispatchEvent(new Event('startup-complete'));
         } else {
             try { if (!webGpuContext) webGpuContext = await initWebGPU(); }
-            catch (err) { console.error('WebGPU init failed:', err); return; }
+            catch (err) {
+                console.error('WebGPU init failed:', err);
+                disableGpu();
+                document.dispatchEvent(new Event('startup-complete'));
+                return;
+            }
             // Try loading the saved model first; fall back to random-weights inference if absent.
             let modelLoaded = false;
             try {

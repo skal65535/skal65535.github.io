@@ -198,6 +198,16 @@ export class Trainer {
         device.queue.submit([ce.finish()]);
     }
 
+    _syncMlpWeights(ce, m) {
+        const { l1w, l1b, l2w, l2b, l3w, l3b } = m.mlpLayout;
+        ce.copyBufferToBuffer(m.layer1.weights, 0, m.mlp_weights, l1w * 4, m.layer1.weights.size);
+        ce.copyBufferToBuffer(m.layer1.biases,  0, m.mlp_weights, l1b * 4, m.layer1.biases.size);
+        ce.copyBufferToBuffer(m.layer2.weights, 0, m.mlp_weights, l2w * 4, m.layer2.weights.size);
+        ce.copyBufferToBuffer(m.layer2.biases,  0, m.mlp_weights, l2b * 4, m.layer2.biases.size);
+        ce.copyBufferToBuffer(m.layer3.weights, 0, m.mlp_weights, l3w * 4, m.layer3.weights.size);
+        ce.copyBufferToBuffer(m.layer3.biases,  0, m.mlp_weights, l3b * 4, m.layer3.biases.size);
+    }
+
     async _train(rafT = 0) {
         if (!this.active) return;
 
@@ -283,6 +293,7 @@ export class Trainer {
                 ap2.dispatchWorkgroups(Math.ceil(tCfg[k].size / 64));
             }
             ap2.end();
+            this._syncMlpWeights(ce2, m);
 
             const pp2 = ce2.beginComputePass();
             pp2.setPipeline(pl.packEmbeddings);
@@ -366,6 +377,7 @@ export class Trainer {
             adamPass.dispatchWorkgroups(Math.ceil(tensorCfg[k].size / 64));
         }
         adamPass.end();
+        this._syncMlpWeights(ce, m);
 
         const doViz = (this._stepCount + 1) % hp.vizInterval === 0;
 
@@ -425,6 +437,8 @@ export class Trainer {
         this._ctx.writeBuffer(m.embeddings,     embData);
         this._ctx.writeBuffer(m.layer1.weights, l1wData);
         this._ctx.writeBuffer(m.layer1.biases,  l1bData);
+        this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1w * 4, l1wData);
+        this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1b * 4, l1bData);
 
         // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
         const identityRange = new Float32Array(embCh * 2);

@@ -1,5 +1,6 @@
 // shader_builder.js
 // Generates the WGSL forward-pass compute shader for the embedding + MLP model.
+import { mlpWeightsLayout } from './model.js';
 function wgslActivFns(activation) {
     switch (activation) {
         case 'tanh':
@@ -23,6 +24,8 @@ export function buildShader(config) {
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;  // 4 for 8-bit, 8 for 4-bit
     const numU32 = embeddingChannels / channelsPerU32;
+
+    const { l1w: L1W_OFF, l1b: L1B_OFF, l2w: L2W_OFF, l2b: L2B_OFF, l3w: L3W_OFF, l3b: L3B_OFF } = mlpWeightsLayout(config);
 
     // keep numPlanes for 8-bit MLP/range indexing (always embCh/4)
     const numPlanes = embeddingChannels / 4;
@@ -65,23 +68,24 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
 fn dequant4(n: u32) -> f32 { return f32(select(i32(n), i32(n) - 16, n >= 8u)) / 7.0; }
 `;
 
-    // Generate mat-vec multiply with hardcoded sizes (inSize must be multiple of 4)
+    // Generate mat-vec multiply with hardcoded sizes (inSize must be multiple of 4).
+    // mat_base is an element offset into the global mlp_weights buffer.
     const makeDotLoop = inSize => quantization === 'qat8'
         ? `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
-            let base = i * ${inSize}u + j;
-            let w = vec4<f32>(quantize_dequantize_8bit((*mat)[base]), quantize_dequantize_8bit((*mat)[base+1u]), quantize_dequantize_8bit((*mat)[base+2u]), quantize_dequantize_8bit((*mat)[base+3u]));
+            let base = mat_base + i * ${inSize}u + j;
+            let w = vec4<f32>(quantize_dequantize_8bit(mlp_weights[base]), quantize_dequantize_8bit(mlp_weights[base+1u]), quantize_dequantize_8bit(mlp_weights[base+2u]), quantize_dequantize_8bit(mlp_weights[base+3u]));
             let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
             sum += dot(w, v);
         }`
         : `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
-            let base = i * ${inSize}u + j;
-            let w = vec4<f32>((*mat)[base], (*mat)[base+1u], (*mat)[base+2u], (*mat)[base+3u]);
+            let base = mat_base + i * ${inSize}u + j;
+            let w = vec4<f32>(mlp_weights[base], mlp_weights[base+1u], mlp_weights[base+2u], mlp_weights[base+3u]);
             let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
             sum += dot(w, v);
         }`;
 
     const matVecMulFn = (name, inSize, outSize) => `
-fn ${name}(mat: ptr<storage, array<f32>, read>, vec_in: array<f32, ${inSize}>) -> array<f32, ${outSize}> {
+fn ${name}(mat_base: u32, vec_in: array<f32, ${inSize}>) -> array<f32, ${outSize}> {
     var result: array<f32, ${outSize}>;
     for (var i: u32 = 0u; i < ${outSize}u; i = i + 1u) {
         var sum = 0.0;
@@ -116,17 +120,17 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform>      uniforms:     Uniforms;
 @group(0) @binding(1) var<storage, read> embeddings_q: array<u32>;
-@group(0) @binding(2) var<storage, read> layer1_weights: array<f32>;
-@group(0) @binding(3) var<storage, read> layer1_biases: array<f32>;
-@group(0) @binding(4) var<storage, read> layer2_weights: array<f32>;
-@group(0) @binding(5) var<storage, read> layer2_biases: array<f32>;
-@group(0) @binding(6) var<storage, read> layer3_weights: array<f32>;
-@group(0) @binding(7) var<storage, read> layer3_biases: array<f32>;
+@group(0) @binding(2) var<storage, read> mlp_weights:  array<f32>;
+@group(0) @binding(3) var<storage, read_write> out_inter_layer1: array<f32>;
+@group(0) @binding(4) var<storage, read_write> out_inter_layer2: array<f32>;
+@group(0) @binding(5) var<storage, read_write> out_final: array<f32>;
 
-// Output buffers for backpropagation
-@group(0) @binding(8)  var<storage, read_write> out_inter_layer1: array<f32>;
-@group(0) @binding(9)  var<storage, read_write> out_inter_layer2: array<f32>;
-@group(0) @binding(10) var<storage, read_write> out_final: array<f32>;
+const L1W_OFF: u32 = ${L1W_OFF}u;
+const L1B_OFF: u32 = ${L1B_OFF}u;
+const L2W_OFF: u32 = ${L2W_OFF}u;
+const L2B_OFF: u32 = ${L2B_OFF}u;
+const L3W_OFF: u32 = ${L3W_OFF}u;
+const L3B_OFF: u32 = ${L3B_OFF}u;
 
 
 @compute @workgroup_size(8, 8, 1)
@@ -190,25 +194,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pixel_index = y * uniforms.canvasWidth + x;
 
     // Layer 1: embeddingChannels -> mlpWidth1
-    var layer1_out = mat_vec_mul_l1(&layer1_weights, embedding_vector);
+    var layer1_out = mat_vec_mul_l1(L1W_OFF, embedding_vector);
     for (var i: u32 = 0u; i < ${mlpWidth1}u; i = i + 1u) {
-        layer1_out[i] = layer1_out[i] + layer1_biases[i];
+        layer1_out[i] = layer1_out[i] + mlp_weights[L1B_OFF + i];
         out_inter_layer1[pixel_index * ${mlpWidth1}u + i] = layer1_out[i]; // pre-activation
         layer1_out[i] = activ(layer1_out[i]);
     }
 
     // Layer 2: mlpWidth1 -> mlpWidth2
-    var layer2_out = mat_vec_mul_l2(&layer2_weights, layer1_out);
+    var layer2_out = mat_vec_mul_l2(L2W_OFF, layer1_out);
     for (var i: u32 = 0u; i < ${mlpWidth2}u; i = i + 1u) {
-        layer2_out[i] = layer2_out[i] + layer2_biases[i];
+        layer2_out[i] = layer2_out[i] + mlp_weights[L2B_OFF + i];
         out_inter_layer2[pixel_index * ${mlpWidth2}u + i] = layer2_out[i]; // pre-activation
         layer2_out[i] = activ(layer2_out[i]);
     }
 
     // Layer 3: mlpWidth2 -> ${outCh}
-    var layer3_out = mat_vec_mul_l3(&layer3_weights, layer2_out);
+    var layer3_out = mat_vec_mul_l3(L3W_OFF, layer2_out);
     for (var i: u32 = 0u; i < ${outCh}u; i = i + 1u) {
-        layer3_out[i] = layer3_out[i] + layer3_biases[i];
+        layer3_out[i] = layer3_out[i] + mlp_weights[L3B_OFF + i];
     }
 
     // Final color

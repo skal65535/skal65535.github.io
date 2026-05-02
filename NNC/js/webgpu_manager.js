@@ -10,12 +10,7 @@ export async function initWebGPU() {
         throw new Error("No appropriate GPUAdapter found.");
     }
 
-    const device = await adapter.requestDevice({
-        requiredFeatures: [],
-        requiredLimits: {
-            maxStorageBuffersPerShaderStage: Math.min(10, adapter.limits.maxStorageBuffersPerShaderStage)
-        }
-    });
+    const device = await adapter.requestDevice({ requiredFeatures: [] });
     if (!device) {
         throw new Error("No appropriate GPUDevice found.");
     }
@@ -64,6 +59,9 @@ export async function initWebGPU() {
         writeBuffer(buf, data) {
             device.queue.writeBuffer(buf, 0, data);
         },
+        writeBufferAt(buf, byteOffset, data) {
+            device.queue.writeBuffer(buf, byteOffset, data);
+        },
         clearBuffer(buf) {
             device.queue.writeBuffer(buf, 0, new Uint8Array(buf.size));
         },
@@ -76,6 +74,14 @@ export async function initWebGPU() {
             device.queue.writeBuffer(model.layer2.biases,  0, tensors.layer2_biases);
             device.queue.writeBuffer(model.layer3.weights, 0, tensors.layer3_weights);
             device.queue.writeBuffer(model.layer3.biases,  0, tensors.layer3_biases);
+            if (model.mlp_weights) {
+                const order = ['layer1_weights', 'layer1_biases', 'layer2_weights', 'layer2_biases', 'layer3_weights', 'layer3_biases'];
+                let off = 0;
+                for (const k of order) {
+                    device.queue.writeBuffer(model.mlp_weights, off * 4, tensors[k]);
+                    off += tensors[k].length;
+                }
+            }
         },
     };
 }
