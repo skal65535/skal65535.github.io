@@ -311,7 +311,16 @@ async function startTraining(fullReset) {
                 }
                 lastWeights = weightsViewFrom(prevCpuWeights);
             }
-            activeSession.rebuildBindGroup();
+            if (activeSession.shaderChanged(config)) {
+                activeSession.rebuildPipeline({
+                    smoothInterpolation: config.smoothInterpolation,
+                    activation:          config.activation,
+                    quantization:        config.quantization,
+                    embOffsets:          config.embOffsets,
+                });
+            } else {
+                activeSession.rebuildBindGroup();
+            }
             // If GPU -> GPU, we just reuse the existing buffers, startWeights remains null
         } else if (currentEngine === 'cpu') {
             if (previousEngine === 'gpu' && activeSession.model && webGpuContext) {
@@ -831,6 +840,12 @@ initUI({
     onConfigChange: () => {
         refreshStartLabel();
         updateSizeDisplay(BASE_CANVAS_W, BASE_CANVAS_H);
+    },
+    onShaderChange: () => {
+        if (isTraining() || !activeSession || activeSession.type !== 'gpu') return;
+        activeSession.rebuildPipeline({ smoothInterpolation: ui.smoothInterpolationCheckbox.checked });
+        config = { ...config, smoothInterpolation: ui.smoothInterpolationCheckbox.checked };
+        if (canInfer()) doInference();
     },
     onSelectChange: () => {
         updateGridDims();

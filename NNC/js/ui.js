@@ -453,6 +453,8 @@ export function init(callbacks) {
     });
     updateEmbBitsOptions();
 
+    elements.smoothInterpolationCheckbox.addEventListener('change', () => callbacks.onShaderChange?.());
+
     document.querySelectorAll('#sidebar .section-label').forEach(label => {
         label.addEventListener('click', () => {
             const section = label.closest('.ctrl-section');

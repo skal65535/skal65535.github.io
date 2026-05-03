@@ -73,6 +73,19 @@ export class GpuSession {
         });
     }
 
+    shaderChanged(newConfig) {
+        const c = this.config;
+        return c.smoothInterpolation !== newConfig.smoothInterpolation
+            || c.activation          !== newConfig.activation
+            || c.quantization        !== newConfig.quantization;
+    }
+
+    rebuildPipeline(updates) {
+        Object.assign(this.config, updates);
+        this._createPipeline();
+        this.rebuildBindGroup();
+    }
+
     destroy() {
         if (this.model) destroyModel(this.model);
         this.fwdUniformsBuf?.destroy();
