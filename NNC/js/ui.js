@@ -138,10 +138,10 @@ export function syncButtonStates(isTraining, hasModel, snapshotWeights) {
     const training      = isTraining;
     const shouldDisable = !hasModel || training;
     elements.resetBtn.disabled        = shouldDisable;
-    elements.shakeEmbBtn.disabled     = shouldDisable;
-    elements.shakeMlpBtn.disabled     = shouldDisable;
+    elements.shakeEmbBtn.disabled     = !hasModel;
+    elements.shakeMlpBtn.disabled     = !hasModel;
     elements.outputZoomInput.disabled = shouldDisable;
-    elements.snapshotBtn.disabled = !hasModel || training;
+    elements.snapshotBtn.disabled = !hasModel;
     elements.recallBtn.disabled   = !snapshotWeights;
     elements.loadBtn.disabled      = training;
     elements.exampleSelect.disabled = training;

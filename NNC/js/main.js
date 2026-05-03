@@ -576,6 +576,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 // --- Snapshot / Recall ---
 ui.snapshotBtn.addEventListener('click', async () => {
     if (!activeSession) { alert("Train or load a model first."); return; }
+    if (trainer) await trainer.waitForIdle();
     snapshotWeights = await serializeModel();
     syncButtonStates(isTraining(), !!activeSession, !!snapshotWeights);
 });
