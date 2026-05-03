@@ -84,7 +84,9 @@ export async function initWebGPU() {
             device.queue.writeBuffer(buf, byteOffset, data);
         },
         clearBuffer(buf) {
-            device.queue.writeBuffer(buf, 0, new Uint8Array(buf.size));
+            const ce = device.createCommandEncoder();
+            ce.clearBuffer(buf, 0, buf.size);
+            device.queue.submit([ce.finish()]);
         },
         uploadModelWeights(model, tensors) {
             device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);
@@ -95,12 +97,12 @@ export async function initWebGPU() {
             device.queue.writeBuffer(model.layer3.weights, 0, tensors.layer3_weights);
             device.queue.writeBuffer(model.layer3.biases,  0, tensors.layer3_biases);
             if (model.mlp_weights) {
-                const order = ['layer1_weights', 'layer1_biases', 'layer2_weights', 'layer2_biases', 'layer3_weights', 'layer3_biases'];
-                let off = 0;
-                for (const k of order) {
-                    device.queue.writeBuffer(model.mlp_weights, off * 4, tensors[k]);
-                    off += tensors[k].length;
-                }
+                const ly = model.mlpLayout;
+                for (const [data, off] of [
+                    [tensors.layer1_weights, ly.l1w], [tensors.layer1_biases,  ly.l1b],
+                    [tensors.layer2_weights, ly.l2w], [tensors.layer2_biases,  ly.l2b],
+                    [tensors.layer3_weights, ly.l3w], [tensors.layer3_biases,  ly.l3b],
+                ]) device.queue.writeBuffer(model.mlp_weights, off * 4, data);
             }
         },
     };

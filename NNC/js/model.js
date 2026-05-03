@@ -209,8 +209,11 @@ export function normalizeEmbAndAdjustL1(embData, l1Weights, l1Biases, embCh, mlp
     }
 }
 
+// 4 planes × 2 (min/max) × 4 channels = 32; matches shader struct `emb_range: array<vec4<f32>, 8>`
+const EMB_RANGE_F32_SIZE = 32;
+
 export function buildEmbRangeF32(range, embCh) {
-    const f32 = new Float32Array(32);
+    const f32 = new Float32Array(EMB_RANGE_F32_SIZE);
     for (let p = 0; p < 4; p++) {
         f32[p*8]=f32[p*8+1]=f32[p*8+2]=f32[p*8+3]=-1;
         f32[p*8+4]=f32[p*8+5]=f32[p*8+6]=f32[p*8+7]=1;

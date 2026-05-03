@@ -33,9 +33,9 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     if (!ema) ema = [{mn:null,mx:null}, {mn:null,mx:null}, {mn:null,mx:null}];
 
     const matDefs = [
-        { data: w.layer1Weights, rows: mlpWidth1, cols: embCh },
-        { data: w.layer2Weights, rows: mlpWidth2, cols: mlpWidth1 },
-        { data: w.layer3Weights, rows: outCh,      cols: mlpWidth2 },
+        { data: w.layer1_weights, rows: mlpWidth1, cols: embCh },
+        { data: w.layer2_weights, rows: mlpWidth2, cols: mlpWidth1 },
+        { data: w.layer3_weights, rows: outCh,      cols: mlpWidth2 },
     ];
     for (let i = 0; i < 3; i++) {
         let mn = Infinity, mx = -Infinity;
@@ -152,9 +152,9 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     const maxActCh = Math.max(mlpWidth1, mlpWidth2, outCh);
     const actCellH = Math.min(aspectCellH, BODY_H / maxActCh | 0);
 
-    const bbL1 = drawMatrix(w.layer1Weights, mlpWidth1, embCh,    xL1, matW_L1, ema[0]);
-    const bbL2 = drawMatrix(w.layer2Weights, mlpWidth2, mlpWidth1, xL2, matW_L2, ema[1]);
-    const bbL3 = drawMatrix(w.layer3Weights, outCh,      mlpWidth2, xL3, matW_L3, ema[2]);
+    const bbL1 = drawMatrix(w.layer1_weights, mlpWidth1, embCh,    xL1, matW_L1, ema[0]);
+    const bbL2 = drawMatrix(w.layer2_weights, mlpWidth2, mlpWidth1, xL2, matW_L2, ema[1]);
+    const bbL3 = drawMatrix(w.layer3_weights, outCh,      mlpWidth2, xL3, matW_L3, ema[2]);
 
     const bbAct1 = interLayer1
         ? drawChannelStack(mlpWidth1, xAct1, THUMB_W, (c, lx, ly, lw, lh) => {
@@ -208,15 +208,15 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         if      (hCol==='emb'  && w.embeddings)  fillZoom(gridSize, gridSize,
             (sx,sy) => w.embeddings[(sy*gridSize+sx)*embCh+hCh], [191,223,255]);
         else if (hCol==='l1')                     fillZoom(embCh, mlpWidth1,
-            (sx,sy) => w.layer1Weights[sy*embCh+sx], [191,223,255]);
+            (sx,sy) => w.layer1_weights[sy*embCh+sx], [191,223,255]);
         else if (hCol==='act1' && interLayer1)    fillZoom(imgW, imgH,
             (sx,sy) => interLayer1[(sy*imgW+sx)*mlpWidth1+hCh], null);
         else if (hCol==='l2')                     fillZoom(mlpWidth1, mlpWidth2,
-            (sx,sy) => w.layer2Weights[sy*mlpWidth1+sx], [191,223,255]);
+            (sx,sy) => w.layer2_weights[sy*mlpWidth1+sx], [191,223,255]);
         else if (hCol==='act2' && interLayer2)    fillZoom(imgW, imgH,
             (sx,sy) => interLayer2[(sy*imgW+sx)*mlpWidth2+hCh], null);
         else if (hCol==='l3')                     fillZoom(mlpWidth2, outCh,
-            (sx,sy) => w.layer3Weights[sy*mlpWidth2+sx], [191,223,255]);
+            (sx,sy) => w.layer3_weights[sy*mlpWidth2+sx], [191,223,255]);
         else if (hCol==='rgba' && finalOutput)    fillZoom(imgW, imgH,
             (sx,sy) => finalOutput[(sy*imgW+sx)*4+hCh],
             [[255,80,80],[80,220,80],[80,120,255],[180,180,180]][hCh]);

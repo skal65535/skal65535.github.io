@@ -536,9 +536,6 @@ function weightsViewFrom(rb) {
         layer2_biases:  rb.layer2_biases,
         layer3_weights: rb.layer3_weights,
         layer3_biases:  rb.layer3_biases,
-        layer1Weights:  rb.layer1_weights,
-        layer2Weights:  rb.layer2_weights,
-        layer3Weights:  rb.layer3_weights,
     };
 }
 
@@ -720,9 +717,7 @@ async function runInferenceCpu() {
 
 async function loadAndResetModelFile(file) {
     // Wait for any pending mapAsync on readback buffers to resolve before destroying them.
-    if (inferRunning) await new Promise(resolve => {
-        const id = setInterval(() => { if (!inferRunning) { clearInterval(id); resolve(); } }, 10);
-    });
+    while (inferRunning) await new Promise(r => setTimeout(r, 10));
     inferPending = false;
     trainer?.destroy();
     trainer = null;

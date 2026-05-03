@@ -71,57 +71,7 @@ const elements = {
 
 // --- Public Exports ---
 
-export const ui = elements; // Keep for now to avoid breaking sed-ed files
-
-export const canvas       = elements.canvas;
-export const sourceCanvas = elements.sourceCanvas;
-export const layersCanvas = elements.layersCanvas;
-export const lossCanvas   = elements.lossCanvas;
-export const sweepCanvas       = elements.sweepCanvas;
-export const sourceSweepCanvas = elements.sourceSweepCanvas;
-export const dropOverlay  = elements.dropOverlay;
-export const fileInput    = elements.fileInput;
-export const modelFileInput = elements.modelFileInput;
-export const startBtn     = elements.startBtn;
-export const saveBtn      = elements.saveBtn;
-export const loadBtn      = elements.loadBtn;
-export const resetBtn     = elements.resetBtn;
-export const shakeEmbBtn  = elements.shakeEmbBtn;
-export const shakeMlpBtn  = elements.shakeMlpBtn;
-export const snapshotBtn  = elements.snapshotBtn;
-export const recallBtn    = elements.recallBtn;
-export const exampleSelect = elements.exampleSelect;
-export const engineSelect  = elements.engineSelect;
-export const outputZoomInput = elements.outputZoomInput;
-export const gridSizeSelect = elements.gridSizeSelect;
-export const embeddingChannelsSelect = elements.embeddingChannelsSelect;
-export const mlpWidth1Select = elements.mlpWidth1Select;
-export const mlpWidth2Select = elements.mlpWidth2Select;
-export const quantizationSelect = elements.quantizationSelect;
-export const embBitsSelect = elements.embBitsSelect;
-export const activationSelect = elements.activationSelect;
-export const smoothInterpolationCheckbox = elements.smoothInterpolationCheckbox;
-export const noOffsetCheckbox = elements.noOffsetCheckbox;
-export const roiBrushInput = elements.roiBrushInput;
-export const roiBrushVal   = elements.roiBrushVal;
-export const roiStrengthInput = elements.roiStrengthInput;
-export const roiStrengthVal   = elements.roiStrengthVal;
-export const roiFreezeChk     = elements.roiFreezeChk;
-export const roiClearBtn      = elements.roiClearBtn;
-export const roiAutoBtn       = elements.roiAutoBtn;
-export const sourcePanel      = elements.sourcePanel;
-export const outputPanel      = elements.outputPanel;
-export const sourceResEl      = elements.sourceResEl;
-export const outputResEl      = elements.outputResEl;
-export const lossValueEl      = elements.lossValueEl;
-export const stepCounterEl    = elements.stepCounterEl;
-export const rateDisplayEl    = elements.rateDisplayEl;
-export const modelSizeEl      = elements.modelSizeEl;
-export const inputSizeEl      = elements.inputSizeEl;
-export const statusDotEl      = elements.statusDotEl;
-export const statusTextEl     = elements.statusTextEl;
-
-// ... existing functions from ui_manager.js refactored to use 'elements' ...
+export const ui = elements;
 
 export function drawPlaceholder(ctx_canvas) {
     const ctx = ctx_canvas.getContext('2d');

@@ -57,8 +57,8 @@ function glslActivName(activation) {
 // Computes rows/4 output vec4s, each from 4 consecutive rows of the matrix.
 // packedWeights=true: weights array is uint[] (int8×4), unpacked via unpack8().
 function matMul(rows, cols, inVec, outVec, weights, biases, activation, packedWeights = false) {
-    console.assert(rows % 4 === 0 && cols % 4 === 0,
-        `matMul: rows=${rows} and cols=${cols} must be multiples of 4`);
+    if (rows % 4 !== 0 || cols % 4 !== 0)
+        throw new Error(`matMul: rows=${rows} and cols=${cols} must be multiples of 4`);
     const nc = cols / 4;
     let s = '';
     for (let g = 0; g < rows / 4; g++) {
@@ -138,6 +138,8 @@ function genBufferGLSL(p, gridSize, u32Data) {
     return `\
 // === Buffer ${label} — embedding plane ${p} (channels ${p*4}–${p*4+3}) ===
 // Paste into Buffer ${label} tab. Set iChannel${p} = Buffer ${label} in Image tab.
+precision highp float;
+precision highp int;
 
 const uint embed${p}[${N}] = uint[${N}](
 ${fmtUintArray(u32Data)}
@@ -149,6 +151,13 @@ export function export_to_glsl(config, weights) {
     const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const numPlanes = embeddingChannels / 4;
+
+    if (numPlanes > 4)
+        throw new Error(`Cannot export to GLSL: ${numPlanes} embedding planes require iChannel0–iChannel${numPlanes-1}, but ShaderToy supports at most 4 iChannels. Reduce embeddingChannels to ≤16.`);
+
+    const embMax = weights.embeddings.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    if (embMax > 1.01)
+        console.warn(`export_to_glsl: embeddings range ±${embMax.toFixed(2)} (expected ≤1). CPU-trained models are not normalized — exported GLSL will have saturated channels. Re-train on GPU for best results.`);
 
     const offsets = config.embOffsets
         ? (() => {
@@ -244,7 +253,11 @@ ${fmtVec4Array(b4, qw)}
     const activDecl = glslActivDecl(activation);
     const activName = glslActivName(activation);
 
+    const embBitsNote = (config.embBits || 8) === 4
+        ? `// Note: model was trained with 4-bit embeddings; buffers re-encoded as 8-bit (int8×4) for ShaderToy.\n` : '';
+
     const mainShader = `// === Image tab === (requires Common tab for embed_texture${packWeights ? ', unpack8' : ''})
+${embBitsNote}
 precision highp float;
 uniform vec2 iResolution;
 ${textureDecls}

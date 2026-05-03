@@ -63,6 +63,8 @@ export async function loadModelSafetensors(file) {
 
     const meta = header.__metadata__ || {};
     // Backward compat: old files have mlpWidth; new files have mlpWidth1 + mlpWidth2
+    if (meta.mlpWidth && !meta.mlpWidth1)
+        console.warn(`Loading legacy single-width model: mlpWidth1=mlpWidth2=${meta.mlpWidth}`);
     const mlpW1 = parseInt(meta.mlpWidth1 ?? meta.mlpWidth);
     const mlpW2 = parseInt(meta.mlpWidth2 ?? meta.mlpWidth);
     const config = {

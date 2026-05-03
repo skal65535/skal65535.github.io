@@ -239,39 +239,51 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
     const grad_l1_biases  = new Float32Array(weights.layer1_biases.length);
     const grad_embeddings = new Float32Array(weights.embeddings.length);
 
+    const embBits  = config.embBits || 8;
+    const chPerGrp = 32 / embBits;
+    const numU32   = embeddingChannels / chPerGrp;
+    const embOffsets = config.embOffsets;
     const invBW = 1 / (config.width  - 1);
     const invBH = 1 / (config.height - 1);
     for (let p = 0; p < pixelCount; p += stride) {
-        const px = (p % config.width) * invBW;
-        const py = (p / config.width | 0)  * invBH;
-        const sx = px * (gridSize - 1), sy = py * (gridSize - 1);
-        const x0 = sx | 0, y0 = sy | 0;
-        const x1 = Math.min(x0 + 1, gridSize - 1), y1 = Math.min(y0 + 1, gridSize - 1);
-        let tx = sx - x0, ty = sy - y0;
-        if (config.smoothInterpolation) { tx = tx*tx*(3-2*tx); ty = ty*ty*(3-2*ty); }
-        const w00 = (1-tx)*(1-ty), w10 = tx*(1-ty), w01 = (1-tx)*ty, w11 = tx*ty;
-        const idx00 = (y0*gridSize+x0)*embeddingChannels;
-        const idx10 = (y0*gridSize+x1)*embeddingChannels;
-        const idx01 = (y1*gridSize+x0)*embeddingChannels;
-        const idx11 = (y1*gridSize+x1)*embeddingChannels;
-
-        const interp = new Float32Array(embeddingChannels);
-        for (let j = 0; j < embeddingChannels; j++) {
-            interp[j] = w00*weights.embeddings[idx00+j] + w10*weights.embeddings[idx10+j]
-                      + w01*weights.embeddings[idx01+j] + w11*weights.embeddings[idx11+j];
-        }
+        const puvx = (p % config.width) * invBW;
+        const puvy = (p / config.width | 0) * invBH;
 
         for (let i = 0; i < mlpWidth1; i++) {
-            const g = grad_inter1_input[p * mlpWidth1 + i];
-            for (let j = 0; j < embeddingChannels; j++) {
-                grad_l1_weights[i * embeddingChannels + j] += g * interp[j];
-                const eg = g * weights.layer1_weights[i * embeddingChannels + j];
-                grad_embeddings[idx00+j] += w00 * eg;
-                grad_embeddings[idx10+j] += w10 * eg;
-                grad_embeddings[idx01+j] += w01 * eg;
-                grad_embeddings[idx11+j] += w11 * eg;
+            grad_l1_biases[i] += grad_inter1_input[p * mlpWidth1 + i];
+        }
+
+        for (let grp = 0; grp < numU32; grp++) {
+            const ox = embOffsets ? embOffsets[grp * 2]     : 0;
+            const oy = embOffsets ? embOffsets[grp * 2 + 1] : 0;
+            const u  = Math.max(0, Math.min(1, puvx + ox));
+            const v  = Math.max(0, Math.min(1, puvy + oy));
+            const sx = u * (gridSize - 1), sy = v * (gridSize - 1);
+            const x0 = sx | 0, y0 = sy | 0;
+            const x1 = Math.min(x0 + 1, gridSize - 1), y1 = Math.min(y0 + 1, gridSize - 1);
+            let tx = sx - x0, ty = sy - y0;
+            if (config.smoothInterpolation) { tx = tx*tx*(3-2*tx); ty = ty*ty*(3-2*ty); }
+            const w00 = (1-tx)*(1-ty), w10 = tx*(1-ty), w01 = (1-tx)*ty, w11 = tx*ty;
+            const idx00 = (y0*gridSize+x0)*embeddingChannels;
+            const idx10 = (y0*gridSize+x1)*embeddingChannels;
+            const idx01 = (y1*gridSize+x0)*embeddingChannels;
+            const idx11 = (y1*gridSize+x1)*embeddingChannels;
+
+            for (let b = 0; b < chPerGrp; b++) {
+                const j = grp * chPerGrp + b;
+                const emb_j = w00*weights.embeddings[idx00+j] + w10*weights.embeddings[idx10+j]
+                            + w01*weights.embeddings[idx01+j] + w11*weights.embeddings[idx11+j];
+                let ge = 0;
+                for (let i = 0; i < mlpWidth1; i++) {
+                    const g = grad_inter1_input[p * mlpWidth1 + i];
+                    grad_l1_weights[i * embeddingChannels + j] += g * emb_j;
+                    ge += g * weights.layer1_weights[i * embeddingChannels + j];
+                }
+                grad_embeddings[idx00+j] += w00 * ge;
+                grad_embeddings[idx10+j] += w10 * ge;
+                grad_embeddings[idx01+j] += w01 * ge;
+                grad_embeddings[idx11+j] += w11 * ge;
             }
-            grad_l1_biases[i] += g;
         }
     }
 
@@ -405,11 +417,11 @@ export class CpuTrainer {
         this._lastTime = now;
 
         this.lastWeights = {
-            embeddings:    this._w.embeddings,
-            layer1Weights: this._w.layer1_weights,
-            layer2Weights: this._w.layer2_weights,
-            layer3Weights: this._w.layer3_weights,
-            finalOutput:   outputs.final,
+            embeddings:     this._w.embeddings,
+            layer1_weights: this._w.layer1_weights,
+            layer2_weights: this._w.layer2_weights,
+            layer3_weights: this._w.layer3_weights,
+            finalOutput:    outputs.final,
         };
 
         const doViz = (this._stepCount % (hp.vizInterval || 10) === 0);

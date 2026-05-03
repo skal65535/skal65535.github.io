@@ -45,6 +45,7 @@ export class Trainer {
         this._targetGpuBuf     = null;
         this._bwdUniformsBuf   = null;
         this._adamUniformsBufs = null;
+        this._offsetRbBuf      = null;
     }
 
     // freshWeights: non-null = full reset (adamT=0); null = continue from lastWeights
@@ -79,6 +80,7 @@ export class Trainer {
         this.stop();
         this._targetGpuBuf?.destroy();
         this._bwdUniformsBuf?.destroy();
+        this._offsetRbBuf?.destroy();
         for (const v of Object.values(this._bwdBufs)) { if (v?.destroy) v.destroy(); }
         if (this._adamUniformsBufs) {
             for (const k of ModelTensors.KEYS) this._adamUniformsBufs[k]?.destroy();
@@ -190,6 +192,9 @@ export class Trainer {
             packEmbeddings: makeBG(pl.packEmbeddings, [m.embeddings, m.embeddings_q, m.embeddings_range]),
         };
 
+        this._offsetRbBuf?.destroy();
+        this._offsetRbBuf = ctx.readbackBuffer(cv.width * cv.height * 4 * 4, 'rb/offsets');
+
         // Pack initial f32 embeddings → u32 before first forward pass
         const ce = device.createCommandEncoder();
         const p  = ce.beginComputePass();
@@ -265,7 +270,6 @@ export class Trainer {
             this._ctx.writeBuffer(this._bwdUniformsBuf, uAB);
             aF[1] = 0.9; aF[2] = 0.999; aF[3] = 1e-8; aF[6] = FP_SCALE;
             aU[4] = this._adamT; aU[9] = sampledCount;
-            const au = this._adamUniformsBufs;
             for (const [k, tc] of Object.entries(tCfg)) {
                 aF[0] = tc.lr; aU[5] = tc.size; aF[7] = tc.l2; aU[8] = tc.clamp;
                 this._ctx.writeBuffer(au[k], aAB);
@@ -421,7 +425,7 @@ export class Trainer {
         let inter1 = null, inter2 = null;
         if (doViz) {
             const finalData = new Float32Array(rb.final.getMappedRange());
-            loss = calculate_loss(finalData, this._target);
+            loss = calculate_loss(finalData, this._target, outCh);
             finalSlice = finalData.slice();
             l2wData = new Float32Array(rb.layer2Weights.getMappedRange()).slice();
             l3wData = new Float32Array(rb.layer3Weights.getMappedRange()).slice();
@@ -455,11 +459,11 @@ export class Trainer {
         uploadEmbRange(null, embCh, this._fwdUniforms, device);
 
         this.lastWeights = {
-            embeddings:    embData,
-            layer1Weights: l1wData,
-            layer2Weights: doViz ? l2wData : this.lastWeights?.layer2Weights ?? null,
-            layer3Weights: doViz ? l3wData : this.lastWeights?.layer3Weights ?? null,
-            finalOutput:   doViz ? finalSlice : this._lastFinalSlice,
+            embeddings:     embData,
+            layer1_weights: l1wData,
+            layer2_weights: doViz ? l2wData : this.lastWeights?.layer2_weights ?? null,
+            layer3_weights: doViz ? l3wData : this.lastWeights?.layer3_weights ?? null,
+            finalOutput:    doViz ? finalSlice : this._lastFinalSlice,
         };
         this._stepCount++;
         this._lossHistory.push(loss);
@@ -501,9 +505,10 @@ export class Trainer {
     async _sampleOffsets() {
         const { device } = this._ctx;
         const { gridSize, embeddingChannels: embCh, embBits } = this._config;
+        const outCh = this._config.hasAlpha ? 4 : 3;
         const cv = this._canvas;
         const pixelCount = cv.width * cv.height;
-        const rb = this._ctx.readbackBuffer(pixelCount * 4 * 4);
+        const rb = this._offsetRbBuf;
 
         const evalOffsets = async (offsets) => {
             uploadEmbOffsets(offsets, this._fwdUniforms, device);
@@ -516,7 +521,7 @@ export class Trainer {
             ce.copyBufferToBuffer(this._outBufs.final, 0, rb, 0, pixelCount * 4 * 4);
             device.queue.submit([ce.finish()]);
             await rb.mapAsync(GPUMapMode.READ);
-            const loss = calculate_loss(new Float32Array(rb.getMappedRange()), this._target);
+            const loss = calculate_loss(new Float32Array(rb.getMappedRange()), this._target, outCh);
             rb.unmap();
             return loss;
         };
@@ -531,8 +536,6 @@ export class Trainer {
             const loss = await evalOffsets(candidate);
             if (loss < bestLoss) { bestLoss = loss; bestOffsets = candidate; }
         }
-
-        rb.destroy();
 
         // Upload winner to both uniform (fwd) and storage (bwd gradL1)
         if (bestOffsets !== current) {
