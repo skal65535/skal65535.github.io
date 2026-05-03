@@ -1,5 +1,6 @@
 // ui.js
 // Centralized UI management, DOM access, and tooltips.
+import { computeHashLevels } from './hash_encoding.js';
 
 export const GRID_SIZES = [256, 400, 625, 1024, 1600, 2500, 4000, 6400, 8100, 10000];
 
@@ -69,6 +70,14 @@ const elements = {
 
     vizIntervalSelect:          document.getElementById('viz-interval'),
     offsetSampleIntervalSelect: document.getElementById('offset-sample-interval'),
+
+    ngpCheckbox:        document.getElementById('ngp-checkbox'),
+    ngpLevelsInput:     document.getElementById('ngp-levels'),
+    ngpLevelsVal:       document.getElementById('ngp-levels-val'),
+    ngpHashLogSizeInput: document.getElementById('ngp-hash-log-size'),
+    ngpHashLogSizeVal:   document.getElementById('ngp-hash-log-size-val'),
+    ngpFeaturesInput:   document.getElementById('ngp-features'),
+    ngpFeaturesVal:     document.getElementById('ngp-features-val'),
 };
 
 // --- Public Exports ---
@@ -91,16 +100,28 @@ export function drawPlaceholder(ctx_canvas) {
 }
 
 function computeModelSize() {
-    const numPts = GRID_SIZES[parseInt(elements.gridSizeSelect.value)];
-    const embCh = parseInt(elements.embeddingChannelsSelect.value);
     const mlpW1 = parseInt(elements.mlpWidth1Select.value);
     const mlpW2 = parseInt(elements.mlpWidth2Select.value);
-    const emb   = numPts * embCh;
     const outCh = 3;
-    const mlp   = embCh*mlpW1 + mlpW1 + mlpW1*mlpW2 + mlpW2 + mlpW2*outCh + outCh;
     const mlpBpp = elements.quantizationSelect.value === 'none' ? 4 : 1;
-    const embBpp = parseInt(elements.embBitsSelect.value) / 8;
-    return emb * embBpp + mlp * mlpBpp;
+    let embBytes, mlpInputCh;
+    if (elements.ngpCheckbox?.checked) {
+        const L = parseInt(elements.ngpLevelsInput?.value || '8');
+        const T = 1 << parseInt(elements.ngpHashLogSizeInput?.value || '9');
+        const F = parseInt(elements.ngpFeaturesInput?.value || '2');
+        const numPts  = GRID_SIZES[parseInt(elements.gridSizeSelect.value)];
+        const gApprox = Math.round(Math.sqrt(numPts));
+        const { totalEntries } = computeHashLevels(L, T, 4, gApprox * 2);
+        embBytes = totalEntries * F * 4;
+        mlpInputCh = L * F;
+    } else {
+        const numPts = GRID_SIZES[parseInt(elements.gridSizeSelect.value)];
+        const embCh = parseInt(elements.embeddingChannelsSelect.value);
+        embBytes = numPts * embCh * (parseInt(elements.embBitsSelect.value) / 8);
+        mlpInputCh = embCh;
+    }
+    const mlp = mlpInputCh*mlpW1 + mlpW1 + mlpW1*mlpW2 + mlpW2 + mlpW2*outCh + outCh;
+    return embBytes + mlp * mlpBpp;
 }
 
 export function updateSizeDisplay(baseCanvasW, baseCanvasH) {
@@ -124,7 +145,11 @@ function syncActivationButtons() {
     });
 }
 
-const STRUCTURAL_CONTROLS = [elements.gridSizeSelect, elements.embeddingChannelsSelect, elements.mlpWidth1Select, elements.mlpWidth2Select];
+const STRUCTURAL_CONTROLS = [
+    elements.gridSizeSelect, elements.embeddingChannelsSelect,
+    elements.mlpWidth1Select, elements.mlpWidth2Select, elements.embBitsSelect,
+    elements.ngpCheckbox, elements.ngpLevelsInput, elements.ngpHashLogSizeInput, elements.ngpFeaturesInput,
+].filter(Boolean);
 export function updateDirtyIndicators(lastConfig, currentModelConfig) {
     if (!lastConfig) { STRUCTURAL_CONTROLS.forEach(el => el.removeAttribute('data-dirty')); return; }
     const cur = currentModelConfig;
@@ -132,6 +157,11 @@ export function updateDirtyIndicators(lastConfig, currentModelConfig) {
     elements.embeddingChannelsSelect.toggleAttribute('data-dirty', lastConfig.embeddingChannels   !== cur.embeddingChannels);
     elements.mlpWidth1Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth1           !== cur.mlpWidth1);
     elements.mlpWidth2Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth2           !== cur.mlpWidth2);
+    elements.embBitsSelect.toggleAttribute('data-dirty',           lastConfig.embBits             !== cur.embBits);
+    elements.ngpCheckbox?.toggleAttribute('data-dirty',            !!lastConfig.useHashEncoding   !== !!cur.useHashEncoding);
+    elements.ngpLevelsInput?.toggleAttribute('data-dirty',         lastConfig.ngpNumLevels        !== cur.ngpNumLevels);
+    elements.ngpHashLogSizeInput?.toggleAttribute('data-dirty',    lastConfig.ngpHashTableSize    !== cur.ngpHashTableSize);
+    elements.ngpFeaturesInput?.toggleAttribute('data-dirty',       lastConfig.ngpFeaturesPerLevel !== cur.ngpFeaturesPerLevel);
 }
 
 export function syncButtonStates(isTraining, hasModel, snapshotWeights) {
@@ -454,6 +484,21 @@ export function init(callbacks) {
     updateEmbBitsOptions();
 
     elements.smoothInterpolationCheckbox.addEventListener('change', () => callbacks.onShaderChange?.());
+
+    if (elements.ngpCheckbox) {
+        const syncNgpVisibility = () => {
+            const show = elements.ngpCheckbox.checked;
+            ['ngp-levels-row', 'ngp-hash-row', 'ngp-features-row'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = show ? '' : 'none';
+            });
+        };
+        syncNgpVisibility();
+        elements.ngpCheckbox.addEventListener('change', () => { syncNgpVisibility(); callbacks.onSelectChange?.(); });
+        elements.ngpLevelsInput?.addEventListener('input', () => { elements.ngpLevelsVal.textContent = elements.ngpLevelsInput.value; callbacks.onSelectChange(); });
+        elements.ngpHashLogSizeInput?.addEventListener('input', () => { elements.ngpHashLogSizeVal.textContent = elements.ngpHashLogSizeInput.value; callbacks.onSelectChange(); });
+        elements.ngpFeaturesInput?.addEventListener('input', () => { elements.ngpFeaturesVal.textContent = elements.ngpFeaturesInput.value; callbacks.onSelectChange(); });
+    }
 
     document.querySelectorAll('#sidebar .section-label').forEach(label => {
         label.addEventListener('click', () => {

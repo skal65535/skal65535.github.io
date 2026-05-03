@@ -1,8 +1,10 @@
 // trainer.js
 // GPU Trainer class: runs forward pass, backward pass, and Adam update each step.
-import { buildBackwardShaders, FP_SCALE } from './webgpu.js';
+import { buildBackwardShaders, buildNgpGradL1Shader, FP_SCALE } from './webgpu.js';
 import { calculate_loss } from './loss.js';
 import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets, ModelTensors, buildFwdUniforms } from './model.js';
+
+const NGP_MLP_KEYS = ['layer1_weights', 'layer1_biases', 'layer2_weights', 'layer2_biases', 'layer3_weights', 'layer3_biases'];
 
 
 
@@ -14,7 +16,7 @@ export class Trainer {
     // onStop: () => void
     constructor({ webGpuContext, canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
                   outputBuffers, readbackBuffers, targetPixels, alphaCellMask, roiMask,
-                  getHyperparams, onStep, onStop }) {
+                  hashEnc, getHyperparams, onStep, onStop }) {
         this._ctx          = webGpuContext;
         this._canvas       = canvas;
         this._config       = config;
@@ -27,6 +29,7 @@ export class Trainer {
         this._target       = targetPixels;
         this._alphaCellMask = alphaCellMask;
         this._roiMask      = roiMask;
+        this._hashEnc      = hashEnc ?? null;
         this._getHyperparams = getHyperparams;
         this._onStep       = onStep;
         this._onStop       = onStop;
@@ -53,15 +56,16 @@ export class Trainer {
     start(freshWeights) {
         const { device } = this._ctx;
         const { gW, gH, embeddingChannels: embCh } = this._config;
+        const useNGP = this._config.useHashEncoding;
 
         this._resetStats();
 
         const src = freshWeights !== null ? freshWeights.embeddings : this.lastWeights?.embeddings;
         if (freshWeights !== null) {
             this._adamT = 0;
-            this.lastWeights = { embeddings: new Float32Array(freshWeights.embeddings) };
+            this.lastWeights = { embeddings: freshWeights.embeddings ? new Float32Array(freshWeights.embeddings) : null };
         }
-        if (src) {
+        if (src && !useNGP) {
             const range = computeEmbRange(src, embCh, gW * gH);
             this._ctx.writeBuffer(this._model.embeddings_range, range);
             uploadEmbRange(range, embCh, this._fwdUniforms, device);
@@ -106,6 +110,9 @@ export class Trainer {
     _initBackward() {
         const { device } = this._ctx;
         const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = this._config;
+        const inputCh = this._config.mlpInputWidth ?? embCh;
+        const useNGP  = this._config.useHashEncoding;
+        const enc     = useNGP ? this._hashEnc : null;
         const cv  = this._canvas;
         const m   = this._model;
         const ob  = this._outBufs;
@@ -130,6 +137,7 @@ export class Trainer {
             adamStep:       makePL(shaders.adamStep),
             packEmbeddings: makePL(shaders.packEmbeddings),
         };
+        if (enc) this._bwdPipelines.gradL1Ngp = makePL(shaders.gradL1Ngp);
         const pl = this._bwdPipelines;
         const bb = this._bwdBufs;
 
@@ -192,6 +200,13 @@ export class Trainer {
             },
             packEmbeddings: makeBG(pl.packEmbeddings, [m.embeddings, m.embeddings_q, m.embeddings_range]),
         };
+        if (enc) {
+            this._bwdBindGroups.gradL1Ngp = makeBG(pl.gradL1Ngp, [
+                bu, bb.gradInter1Preact, ob.interLayer1,
+                m.layer1.weights, enc.featuresOut,
+                m.gradAtomic.layer1_weights, m.gradAtomic.layer1_biases, enc.gradFeaturesOut,
+            ]);
+        }
 
         this._offsetRbBuf?.destroy();
         this._offsetRbBuf = ctx.readbackBuffer(cv.width * cv.height * 4 * 4, 'rb/offsets');
@@ -208,13 +223,13 @@ export class Trainer {
         const embSize = gW * gH * embCh;
         const outCh = this._config.hasAlpha ? 4 : 3;
         this._tensorCfgs = {
-            embeddings:     { lr: 0, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
-            layer1_weights: { lr: 0, size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
-            layer1_biases:  { lr: 0, size: mlpWidth1,             l2: 0, clamp: 0 },
-            layer2_weights: { lr: 0, size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
-            layer2_biases:  { lr: 0, size: mlpWidth2,             l2: 0, clamp: 0 },
-            layer3_weights: { lr: 0, size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
-            layer3_biases:  { lr: 0, size: outCh,                 l2: 0, clamp: 0 },
+            embeddings:     { lr: 0, size: embSize,                   l2: useNGP ? 0 : 0.002/embSize, clamp: useNGP ? 0 : 1 },
+            layer1_weights: { lr: 0, size: mlpWidth1 * inputCh,       l2: 0, clamp: 0 },
+            layer1_biases:  { lr: 0, size: mlpWidth1,                 l2: 0, clamp: 0 },
+            layer2_weights: { lr: 0, size: mlpWidth2 * mlpWidth1,     l2: 0, clamp: 0 },
+            layer2_biases:  { lr: 0, size: mlpWidth2,                 l2: 0, clamp: 0 },
+            layer3_weights: { lr: 0, size: outCh * mlpWidth2,         l2: 0, clamp: 0 },
+            layer3_biases:  { lr: 0, size: outCh,                     l2: 0, clamp: 0 },
         };
     }
 
@@ -233,15 +248,18 @@ export class Trainer {
         const period    = (hp.mlpRatio + 1) * hp.numLoops;
         const activeMLP = (this._adamT % period) >= hp.mlpRatio * hp.numLoops;
         const mlpLR     = activeMLP ? hp.mlpLr : 0;
+        const useNGP = this._config.useHashEncoding;
+        const enc    = useNGP ? this._hashEnc : null;
 
         const tCfg = this._tensorCfgs;
-        tCfg.embeddings.lr     = activeMLP ? 0 : hp.embedLr;
+        tCfg.embeddings.lr     = useNGP ? 0 : (activeMLP ? 0 : hp.embedLr);
         tCfg.layer1_weights.lr = mlpLR;
         tCfg.layer1_biases.lr  = mlpLR;
         tCfg.layer2_weights.lr = mlpLR;
         tCfg.layer2_biases.lr  = mlpLR;
         tCfg.layer3_weights.lr = mlpLR;
         tCfg.layer3_biases.lr  = mlpLR;
+        if (enc) enc.prepareAdamStep(activeMLP ? 0 : hp.embedLr, this._adamT, sampledCount);
 
         const { adamAB: aAB, adamF: aF, adamU: aU, uniAB: uAB, uniU32: uU32, uniF32: uF32 } = this._bwdBufs;
         uU32[0] = this._canvas.width; uU32[1] = this._canvas.height;
@@ -272,6 +290,8 @@ export class Trainer {
 
         const { device } = this._ctx;
         const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits } = this._config;
+        const useNGP = this._config.useHashEncoding;
+        const enc    = useNGP ? this._hashEnc : null;
         const outCh = this._config.hasAlpha ? 4 : 3;
         const cv  = this._canvas;
         const m   = this._model;
@@ -288,6 +308,7 @@ export class Trainer {
         const stride       = hp.stride;
         const sampledCount = Math.ceil(pixelCount / stride);
         const stepsPerFrame = this._stepsPerFrame;
+        const adamKeys = useNGP ? NGP_MLP_KEYS : ModelTensors.KEYS;
 
         // Fast inner steps: GPU-only, no readback, GPU pack instead of CPU normalize+pack
         for (let s = 0; s < stepsPerFrame - 1 && this.active; s++) {
@@ -303,6 +324,14 @@ export class Trainer {
 
             const ce2 = device.createCommandEncoder();
             for (const buf of Object.values(m.gradAtomic)) ce2.clearBuffer(buf, 0, buf.size);
+            if (enc) ce2.clearBuffer(enc.gradHash, 0, enc.gradHash.size);
+
+            if (enc) {
+                const hp2 = ce2.beginComputePass();
+                enc.dispatchForward(hp2);
+                hp2.end();
+            }
+
             const fp2 = ce2.beginComputePass();
             fp2.setPipeline(this._pipeline); fp2.setBindGroup(0, this._bindGroup);
             fp2.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
@@ -317,22 +346,32 @@ export class Trainer {
             runPass2(pl.gradOutput, bg.gradOutput, bwdD2);
             runPass2(pl.gradL3,     bg.gradL3,     bwdD2);
             runPass2(pl.gradL2,     bg.gradL2,     bwdD2);
-            runPass2(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            if (enc) {
+                runPass2(pl.gradL1Ngp, bg.gradL1Ngp, Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+                const hbp2 = ce2.beginComputePass();
+                enc.dispatchBackward(hbp2);
+                hbp2.end();
+            } else {
+                runPass2(pl.gradL1, bg.gradL1, Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            }
 
             const ap2 = ce2.beginComputePass();
-            for (const k of ModelTensors.KEYS) {
+            for (const k of adamKeys) {
                 ap2.setPipeline(pl.adamStep);
                 ap2.setBindGroup(0, bg.adam[k]);
                 ap2.dispatchWorkgroups(Math.ceil(this._tensorCfgs[k].size / 64));
             }
+            if (enc) enc.dispatchAdam(ap2);
             ap2.end();
             this._syncMlpWeights(ce2, m);
 
-            const pp2 = ce2.beginComputePass();
-            pp2.setPipeline(pl.packEmbeddings);
-            pp2.setBindGroup(0, bg.packEmbeddings);
-            pp2.dispatchWorkgroups(Math.ceil(gW * gH * embCh / 4 / 64));
-            pp2.end();
+            if (!useNGP) {
+                const pp2 = ce2.beginComputePass();
+                pp2.setPipeline(pl.packEmbeddings);
+                pp2.setBindGroup(0, bg.packEmbeddings);
+                pp2.dispatchWorkgroups(Math.ceil(gW * gH * embCh / 4 / 64));
+                pp2.end();
+            }
 
             device.queue.submit([ce2.finish()]);
 
@@ -357,6 +396,13 @@ export class Trainer {
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
         const ce = device.createCommandEncoder();
         for (const buf of Object.values(m.gradAtomic)) ce.clearBuffer(buf, 0, buf.size);
+        if (enc) ce.clearBuffer(enc.gradHash, 0, enc.gradHash.size);
+
+        if (enc) {
+            const hfp = ce.beginComputePass();
+            enc.dispatchForward(hfp);
+            hfp.end();
+        }
 
         const fwdPass = ce.beginComputePass();
         fwdPass.setPipeline(this._pipeline);
@@ -374,20 +420,28 @@ export class Trainer {
         runPass(pl.gradOutput, bg.gradOutput, bwdDispatch);
         runPass(pl.gradL3,     bg.gradL3,     bwdDispatch);
         runPass(pl.gradL2,     bg.gradL2,     bwdDispatch);
-        runPass(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+        if (enc) {
+            runPass(pl.gradL1Ngp, bg.gradL1Ngp, Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            const hbp = ce.beginComputePass();
+            enc.dispatchBackward(hbp);
+            hbp.end();
+        } else {
+            runPass(pl.gradL1, bg.gradL1, Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+        }
 
         const adamPass = ce.beginComputePass();
-        for (const k of ModelTensors.KEYS) {
+        for (const k of adamKeys) {
             adamPass.setPipeline(pl.adamStep);
             adamPass.setBindGroup(0, bg.adam[k]);
             adamPass.dispatchWorkgroups(Math.ceil(this._tensorCfgs[k].size / 64));
         }
+        if (enc) enc.dispatchAdam(adamPass);
         adamPass.end();
         this._syncMlpWeights(ce, m);
 
         const doViz = this._stepCount % hp.vizInterval === 0;
 
-        ce.copyBufferToBuffer(m.embeddings,     0, rb.embeddings,    0, m.embeddings.size);
+        if (!useNGP) ce.copyBufferToBuffer(m.embeddings, 0, rb.embeddings, 0, m.embeddings.size);
         ce.copyBufferToBuffer(m.layer1.weights, 0, rb.layer1Weights, 0, m.layer1.weights.size);
         ce.copyBufferToBuffer(m.layer1.biases,  0, rb.layer1Biases,  0, m.layer1.biases.size);
         if (doViz) {
@@ -396,31 +450,39 @@ export class Trainer {
             ce.copyBufferToBuffer(m.layer3.weights, 0, rb.layer3Weights, 0, m.layer3.weights.size);
             ce.copyBufferToBuffer(ob.interLayer1, 0, rb.interLayer1, 0, rb.interLayer1.size);
             ce.copyBufferToBuffer(ob.interLayer2, 0, rb.interLayer2, 0, rb.interLayer2.size);
+            if (enc && rb.featuresOut)
+                ce.copyBufferToBuffer(enc.featuresOut, 0, rb.featuresOut, 0, rb.featuresOut.size);
         }
         device.queue.submit([ce.finish()]);
 
         const maps = [
-            rb.embeddings.mapAsync(GPUMapMode.READ),
             rb.layer1Weights.mapAsync(GPUMapMode.READ),
             rb.layer1Biases.mapAsync(GPUMapMode.READ),
         ];
+        if (!useNGP) maps.push(rb.embeddings.mapAsync(GPUMapMode.READ));
         if (doViz) {
             maps.push(rb.final.mapAsync(GPUMapMode.READ));
             maps.push(rb.layer2Weights.mapAsync(GPUMapMode.READ));
             maps.push(rb.layer3Weights.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer1.mapAsync(GPUMapMode.READ));
             maps.push(rb.interLayer2.mapAsync(GPUMapMode.READ));
+            if (enc && rb.featuresOut) maps.push(rb.featuresOut.mapAsync(GPUMapMode.READ));
         }
         await Promise.all(maps);
 
-        const embData = new Float32Array(rb.embeddings.getMappedRange()).slice();
         const l1wData = new Float32Array(rb.layer1Weights.getMappedRange()).slice();
         const l1bData = new Float32Array(rb.layer1Biases.getMappedRange()).slice();
-        rb.embeddings.unmap(); rb.layer1Weights.unmap(); rb.layer1Biases.unmap();
+        rb.layer1Weights.unmap(); rb.layer1Biases.unmap();
+
+        let embData = null;
+        if (!useNGP) {
+            embData = new Float32Array(rb.embeddings.getMappedRange()).slice();
+            rb.embeddings.unmap();
+        }
 
         let loss = this._lastLoss, finalSlice = null;
         let l2wData = null, l3wData = null;
-        let inter1 = null, inter2 = null;
+        let inter1 = null, inter2 = null, hashFeatures = null;
         if (doViz) {
             const finalData = new Float32Array(rb.final.getMappedRange());
             loss = calculate_loss(finalData, this._target, outCh);
@@ -431,30 +493,35 @@ export class Trainer {
             inter2  = new Float32Array(rb.interLayer2.getMappedRange()).slice();
             rb.final.unmap(); rb.layer2Weights.unmap(); rb.layer3Weights.unmap();
             rb.interLayer1.unmap(); rb.interLayer2.unmap();
+            if (enc && rb.featuresOut) {
+                hashFeatures = new Float32Array(rb.featuresOut.getMappedRange()).slice();
+                rb.featuresOut.unmap();
+            }
             this._lastLoss       = loss;
             this._lastFinalSlice = finalSlice;
         }
 
-        // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
-        normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth1);
-        if (this._alphaCellMask) {
-            for (let cell = 0; cell < this._alphaCellMask.length; cell++) {
-                if (this._alphaCellMask[cell] === 0) embData.fill(0, cell * embCh, (cell + 1) * embCh);
+        if (!useNGP) {
+            // Normalize embeddings to [-1,1] per channel; absorb scale+center into L1
+            normalizeEmbAndAdjustL1(embData, l1wData, l1bData, embCh, mlpWidth1);
+            if (this._alphaCellMask) {
+                for (let cell = 0; cell < this._alphaCellMask.length; cell++) {
+                    if (this._alphaCellMask[cell] === 0) embData.fill(0, cell * embCh, (cell + 1) * embCh);
+                }
             }
-        }
-        this._ctx.writeBuffer(m.embeddings,     embData);
-        this._ctx.writeBuffer(m.layer1.weights, l1wData);
-        this._ctx.writeBuffer(m.layer1.biases,  l1bData);
-        this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1w * 4, l1wData);
-        this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1b * 4, l1bData);
+            this._ctx.writeBuffer(m.embeddings,     embData);
+            this._ctx.writeBuffer(m.layer1.weights, l1wData);
+            this._ctx.writeBuffer(m.layer1.biases,  l1bData);
+            this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1w * 4, l1wData);
+            this._ctx.writeBufferAt(m.mlp_weights, m.mlpLayout.l1b * 4, l1bData);
 
-        // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
-        const identityRange = new Float32Array(embCh * 2);
-        for (let c = 0; c < embCh; c++) { identityRange[c*2] = -1; identityRange[c*2+1] = 1; }
-        this._ctx.writeBuffer(m.embeddings_range, identityRange);
-        this._ctx.writeBuffer(m.embeddings_q, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
-        // Guard against stale range from restart
-        uploadEmbRange(null, embCh, this._fwdUniforms, device);
+            // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
+            const identityRange = new Float32Array(embCh * 2);
+            for (let c = 0; c < embCh; c++) { identityRange[c*2] = -1; identityRange[c*2+1] = 1; }
+            this._ctx.writeBuffer(m.embeddings_range, identityRange);
+            this._ctx.writeBuffer(m.embeddings_q, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
+            uploadEmbRange(null, embCh, this._fwdUniforms, device);
+        }
 
         this.lastWeights = {
             embeddings:     embData,
@@ -485,7 +552,7 @@ export class Trainer {
         this._onStep({
             loss, step: this._stepCount, rate,
             lastWeights: this.lastWeights,
-            inter1, inter2,
+            inter1, inter2, hashFeatures,
             lossHistory: this._lossHistory,
         });
 
@@ -544,18 +611,27 @@ export class Trainer {
     }
 }
 
-export async function runInferencePass({ webGpuContext, config, model, pipeline, bindGroup, fwdUniformsBuf, outputBuffers, readbackBuffers, channelMask, canvasWidth, canvasHeight, lastWeights }) {
+export async function runInferencePass({ webGpuContext, config, model, pipeline, bindGroup, fwdUniformsBuf, outputBuffers, readbackBuffers, channelMask, canvasWidth, canvasHeight, lastWeights, hashEnc }) {
     const { device } = webGpuContext;
-    const { gW, gH, embeddingChannels: embCh, embBits, embOffsets } = config;
-
-    const range = computeEmbRange(lastWeights.embeddings, embCh, gW * gH);
-    webGpuContext.writeBuffer(model.embeddings_range, range);
-    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
-    const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, embBits);
-    webGpuContext.writeBuffer(model.embeddings_q, packed);
+    const enc    = config.useHashEncoding ? hashEnc : null;
+    const rbFeat = enc ? readbackBuffers.featuresOut : null;
 
     uploadChannelMask(channelMask, fwdUniformsBuf, device);
     const ce = device.createCommandEncoder({ label: 'inference' });
+
+    if (enc) {
+        const hp = ce.beginComputePass({ label: 'hash-fwd' });
+        enc.dispatchForward(hp);
+        hp.end();
+    } else {
+        const { gW, gH, embeddingChannels: embCh, embBits } = config;
+        const range = computeEmbRange(lastWeights.embeddings, embCh, gW * gH);
+        webGpuContext.writeBuffer(model.embeddings_range, range);
+        uploadEmbRange(range, embCh, fwdUniformsBuf, device);
+        const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, embBits);
+        webGpuContext.writeBuffer(model.embeddings_q, packed);
+    }
+
     const fwdPass = ce.beginComputePass({ label: 'fwd' });
     fwdPass.setPipeline(pipeline);
     fwdPass.setBindGroup(0, bindGroup);
@@ -564,21 +640,30 @@ export async function runInferencePass({ webGpuContext, config, model, pipeline,
     ce.copyBufferToBuffer(outputBuffers.final,       0, readbackBuffers.final,       0, outputBuffers.final.size);
     ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
     ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
+    if (rbFeat) ce.copyBufferToBuffer(enc.featuresOut, 0, rbFeat, 0, rbFeat.size);
     device.queue.submit([ce.finish()]);
 
-    await Promise.all([
+    const maps = [
         readbackBuffers.final.mapAsync(GPUMapMode.READ),
         readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
         readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
-    ]);
+    ];
+    if (rbFeat) maps.push(rbFeat.mapAsync(GPUMapMode.READ));
+    await Promise.all(maps);
+
     const final  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
     const inter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
     const inter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
     readbackBuffers.final.unmap();
     readbackBuffers.interLayer1.unmap();
     readbackBuffers.interLayer2.unmap();
+    let hashFeatures = null;
+    if (rbFeat) {
+        hashFeatures = new Float32Array(rbFeat.getMappedRange()).slice();
+        rbFeat.unmap();
+    }
 
-    return { final, inter1, inter2 };
+    return { final, inter1, inter2, hashFeatures };
 }
 
 export async function runZoomInferencePass({ webGpuContext, config, model, pipeline, lastWeights, channelMask, W, H }) {

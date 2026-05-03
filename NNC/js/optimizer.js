@@ -1,6 +1,73 @@
 // optimizer.js
 // CPU-side Adam optimizer + forward/backward passes (mobile/fallback path).
 import { cpuPackEmbeddings, computeEmbRange } from './model.js';
+import { hashLevelsFromConfig } from './hash_encoding.js';
+
+// --- NGP hash helpers ---
+function hash2d(x, y, T) { return ((x ^ Math.imul(y, 2654435761)) >>> 0) % T; }
+
+function ngpHashForward(config, hashTables, levelT, levelOffset) {
+    const { width, height, ngpNumLevels: L, ngpFeaturesPerLevel: F, gW, gH } = config;
+    const LF = L * F, minRes = 4, maxRes = Math.max(gW||16, gH||16) * 2;
+    const Lm1 = Math.max(L - 1, 1);
+    const features = new Float32Array(width * height * LF);
+    const invW = 1 / (width - 1), invH = 1 / (height - 1);
+    for (let py = 0; py < height; py++) {
+        for (let px = 0; px < width; px++) {
+            const p = py * width + px;
+            const uvx = px * invW, uvy = py * invH;
+            for (let l = 0; l < L; l++) {
+                const r = Math.max((minRes * Math.pow(maxRes / minRes, l / Lm1)) | 0, 2);
+                const sx = uvx * (r - 1), sy = uvy * (r - 1);
+                const x0 = sx | 0, y0 = sy | 0;
+                const x1 = Math.min(x0 + 1, r - 1), y1 = Math.min(y0 + 1, r - 1);
+                const tx = sx - x0, ty = sy - y0;
+                const w00 = (1-tx)*(1-ty), w10 = tx*(1-ty), w01 = (1-tx)*ty, w11 = tx*ty;
+                const tl = levelT[l];
+                const h00 = hash2d(x0,y0,tl), h10 = hash2d(x1,y0,tl);
+                const h01 = hash2d(x0,y1,tl), h11 = hash2d(x1,y1,tl);
+                const base = levelOffset[l] * F;
+                for (let f = 0; f < F; f++) {
+                    features[p*LF + l*F+f] = w00*hashTables[base+h00*F+f] + w10*hashTables[base+h10*F+f]
+                                           + w01*hashTables[base+h01*F+f] + w11*hashTables[base+h11*F+f];
+                }
+            }
+        }
+    }
+    return features;
+}
+
+function ngpHashBackward(config, gradFeatures, levelT, levelOffset, stride = 1) {
+    const { width, height, ngpNumLevels: L, ngpFeaturesPerLevel: F, gW, gH } = config;
+    const LF = L * F, minRes = 4, maxRes = Math.max(gW||16, gH||16) * 2;
+    const Lm1 = Math.max(L - 1, 1);
+    const totalParams = (levelOffset[L - 1] + levelT[L - 1]) * F;
+    const gradHash = new Float32Array(totalParams);
+    const invW = 1 / (width - 1), invH = 1 / (height - 1);
+    const pixelCount = width * height;
+    for (let p = 0; p < pixelCount; p += stride) {
+        const py = (p / width) | 0, px = p % width;
+        const uvx = px * invW, uvy = py * invH;
+        for (let l = 0; l < L; l++) {
+            const r = Math.max((minRes * Math.pow(maxRes / minRes, l / Lm1)) | 0, 2);
+            const sx = uvx * (r - 1), sy = uvy * (r - 1);
+            const x0 = sx | 0, y0 = sy | 0;
+            const x1 = Math.min(x0 + 1, r - 1), y1 = Math.min(y0 + 1, r - 1);
+            const tx = sx - x0, ty = sy - y0;
+            const w00 = (1-tx)*(1-ty), w10 = tx*(1-ty), w01 = (1-tx)*ty, w11 = tx*ty;
+            const tl = levelT[l];
+            const h00 = hash2d(x0,y0,tl), h10 = hash2d(x1,y0,tl);
+            const h01 = hash2d(x0,y1,tl), h11 = hash2d(x1,y1,tl);
+            const base = levelOffset[l] * F;
+            for (let f = 0; f < F; f++) {
+                const g = gradFeatures[p*LF + l*F+f];
+                gradHash[base+h00*F+f] += g*w00; gradHash[base+h10*F+f] += g*w10;
+                gradHash[base+h01*F+f] += g*w01; gradHash[base+h11*F+f] += g*w11;
+            }
+        }
+    }
+    return gradHash;
+}
 
 // --- Activation helpers ---
 function makeActiv(name) {
@@ -36,6 +103,8 @@ export function forward(config, weights, range) {
     const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2,
             quantization, smoothInterpolation, activation = 'sin',
             embBits = 8, hasAlpha = false, embOffsets, width, height } = config;
+    const useHashEncoding = config.useHashEncoding || false;
+    const inputDim = useHashEncoding ? config.ngpNumLevels * config.ngpFeaturesPerLevel : embeddingChannels;
     const outCh    = hasAlpha ? 4 : 3;
     const numU32   = embeddingChannels / (32 / embBits);
     const pixelCount = width * height;
@@ -45,7 +114,7 @@ export function forward(config, weights, range) {
     const final       = new Float32Array(pixelCount * 4);
     const interLayer1 = new Float32Array(pixelCount * mlpWidth1);
     const interLayer2 = new Float32Array(pixelCount * mlpWidth2);
-    const emb_q       = weights.embeddings_q;  // Uint32Array
+    const emb_q       = weights.embeddings_q;  // Uint32Array (non-NGP only)
     const invW = 1 / (width  - 1);
     const invH = 1 / (height - 1);
 
@@ -55,9 +124,14 @@ export function forward(config, weights, range) {
             const uvx  = px * invW;
             const uvy  = py * invH;
 
-            // --- Sample & dequantize embedding ---
-            const emb = new Float32Array(embeddingChannels);
+            // --- Sample embedding / hash features ---
+            let emb;
+            if (useHashEncoding) {
+                emb = weights.features.subarray(pidx * inputDim, pidx * inputDim + inputDim);
+            } else {
 
+            const embArr = new Float32Array(embeddingChannels);
+            emb = embArr;
             if (embBits === 8) {
                 for (let grp = 0; grp < numU32; grp++) {
                     const ox = embOffsets ? embOffsets[grp * 2]     : 0;
@@ -114,13 +188,14 @@ export function forward(config, weights, range) {
                     }
                 }
             }
+            } // end non-NGP else
 
-            // --- Layer 1: embeddingChannels → mlpWidth1 ---
+            // --- Layer 1: inputDim → mlpWidth1 ---
             const l1 = new Float32Array(mlpWidth1);
             for (let i = 0; i < mlpWidth1; i++) {
                 let sum = weights.layer1_biases[i];
-                const row = i * embeddingChannels;
-                for (let j = 0; j < embeddingChannels; j++) {
+                const row = i * inputDim;
+                for (let j = 0; j < inputDim; j++) {
                     const w = useQat ? qat8(weights.layer1_weights[row + j]) : weights.layer1_weights[row + j];
                     sum += w * emb[j];
                 }
@@ -233,11 +308,38 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
         grad_inter1_input[i] = grad_inter1_output[i] * activ_prime(outputs.interLayer1[i]);
     }
 
-    // 6. Layer 1 backward + embedding gradient
+    // 6. Layer 1 backward
+    const useHashEncoding = config.useHashEncoding || false;
+    const inputDim = useHashEncoding
+        ? config.ngpNumLevels * config.ngpFeaturesPerLevel : embeddingChannels;
     const grad_l1_weights = new Float32Array(weights.layer1_weights.length);
     const grad_l1_biases  = new Float32Array(weights.layer1_biases.length);
-    const grad_embeddings = new Float32Array(weights.embeddings.length);
 
+    if (useHashEncoding) {
+        const grad_features = new Float32Array(pixelCount * inputDim);
+        for (let p = 0; p < pixelCount; p += stride) {
+            for (let i = 0; i < mlpWidth1; i++)
+                grad_l1_biases[i] += grad_inter1_input[p * mlpWidth1 + i];
+            for (let j = 0; j < inputDim; j++) {
+                const feat_j = weights.features[p * inputDim + j];
+                let gf = 0;
+                for (let i = 0; i < mlpWidth1; i++) {
+                    const g = grad_inter1_input[p * mlpWidth1 + i];
+                    grad_l1_weights[i * inputDim + j] += g * feat_j;
+                    gf += g * weights.layer1_weights[i * inputDim + j];
+                }
+                grad_features[p * inputDim + j] = gf;
+            }
+        }
+        return {
+            layer1_weights: grad_l1_weights, layer1_biases: grad_l1_biases,
+            layer2_weights: grad_l2_weights, layer2_biases: grad_l2_biases,
+            layer3_weights: grad_l3_weights, layer3_biases: grad_l3_biases,
+            grad_hashFeatures: grad_features,
+        };
+    }
+
+    const grad_embeddings = new Float32Array(weights.embeddings.length);
     const embBits  = config.embBits || 8;
     const chPerGrp = 32 / embBits;
     const numU32   = embeddingChannels / chPerGrp;
@@ -344,6 +446,10 @@ export class AdamOptimizer {
     }
 }
 
+const WEIGHT_KEYS = ['embeddings', 'hashTables',
+    'layer1_weights', 'layer1_biases', 'layer2_weights', 'layer2_biases',
+    'layer3_weights', 'layer3_biases'];
+
 export class CpuTrainer {
     constructor({ config, targetPixels, getHyperparams, onStep, onStop }) {
         this._config         = config;
@@ -364,10 +470,16 @@ export class CpuTrainer {
 
     // freshWeights non-null → full reset; null → resume from current state
     start(freshWeights) {
+        const useNGP = this._config.useHashEncoding;
+        if (useNGP && !this._hashLevelT) {
+            const { levelT, levelOffset } = hashLevelsFromConfig(this._config);
+            this._hashLevelT      = levelT;
+            this._hashLevelOffset = levelOffset;
+        }
         if (freshWeights) {
             this._w = {};
-            for (const k of Object.keys(freshWeights))
-                this._w[k] = new Float32Array(freshWeights[k]);
+            for (const k of WEIGHT_KEYS)
+                if (freshWeights[k] != null) this._w[k] = new Float32Array(freshWeights[k]);
             this._stepCount   = 0;
             this._lossHistory = [];
             this._adam        = null;
@@ -387,13 +499,21 @@ export class CpuTrainer {
         if (!this.active) return;
         const hp  = this._getHyperparams();
         const cfg = this._config;
+        const useNGP = cfg.useHashEncoding;
         const embCh = cfg.embeddingChannels, embBits = cfg.embBits || 8;
+        const stride = hp.stride || 1;
 
-        this._adam.learningRateMap = { embeddings: hp.embedLr, default: hp.mlpLr };
+        this._adam.learningRateMap = { embeddings: hp.embedLr, hashTables: hp.embedLr, default: hp.mlpLr };
 
-        const range        = computeEmbRange(this._w.embeddings, embCh, cfg.gW * cfg.gH);
-        const embeddings_q = cpuPackEmbeddings(this._w.embeddings, embCh, range, embBits);
-        const outputs      = forward(cfg, { ...this._w, embeddings_q }, range);
+        let outputs, features = null;
+        if (useNGP) {
+            features = ngpHashForward(cfg, this._w.hashTables, this._hashLevelT, this._hashLevelOffset);
+            outputs  = forward(cfg, { ...this._w, features }, null);
+        } else {
+            const range        = computeEmbRange(this._w.embeddings, embCh, cfg.gW * cfg.gH);
+            const embeddings_q = cpuPackEmbeddings(this._w.embeddings, embCh, range, embBits);
+            outputs            = forward(cfg, { ...this._w, embeddings_q }, range);
+        }
 
         // Luminance-weighted MSE loss
         const outCh = cfg.hasAlpha ? 4 : 3;
@@ -407,7 +527,14 @@ export class CpuTrainer {
             }
         loss /= n;
 
-        const grads = backward(cfg, null, outputs, this._target, this._w, hp.stride || 1);
+        let grads;
+        if (useNGP) {
+            grads = backward(cfg, null, outputs, this._target, { ...this._w, features }, stride);
+            grads.hashTables = ngpHashBackward(cfg, grads.grad_hashFeatures, this._hashLevelT, this._hashLevelOffset, stride);
+            delete grads.grad_hashFeatures;
+        } else {
+            grads = backward(cfg, null, outputs, this._target, this._w, stride);
+        }
         this._adam.step(grads);
 
         this._stepCount++;
@@ -417,10 +544,14 @@ export class CpuTrainer {
         this._lastTime = now;
 
         this.lastWeights = {
-            embeddings:     this._w.embeddings,
+            embeddings:     useNGP ? null : this._w.embeddings,
+            hashTables:     useNGP ? this._w.hashTables : null,
             layer1_weights: this._w.layer1_weights,
+            layer1_biases:  this._w.layer1_biases,
             layer2_weights: this._w.layer2_weights,
+            layer2_biases:  this._w.layer2_biases,
             layer3_weights: this._w.layer3_weights,
+            layer3_biases:  this._w.layer3_biases,
             finalOutput:    outputs.final,
         };
 
@@ -430,6 +561,7 @@ export class CpuTrainer {
             lastWeights: this.lastWeights,
             inter1: doViz ? outputs.interLayer1 : null,
             inter2: doViz ? outputs.interLayer2 : null,
+            hashFeatures: useNGP && doViz ? features : null,
             lossHistory: this._lossHistory,
         });
 

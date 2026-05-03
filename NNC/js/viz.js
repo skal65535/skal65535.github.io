@@ -1,7 +1,11 @@
 // viz.js
 // Canvas rendering helpers for output image, embedding thumbnails, and loss curve.
+import { hashLevelsFromConfig } from './hash_encoding.js';
 export const MAX_LOSS_HISTORY = 400;
 export const FLOW_PAD = 4, FLOW_EMB_W = 48;
+const TINT_ON     = [191, 223, 255];
+const TINT_OFF    = [200,  40,  40];
+const TINT_HASHED = [255, 200,  80];
 
 
 export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
@@ -21,10 +25,11 @@ export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
 // interLayer1/2: Float32Array [imgW*imgH*mlpWidth] or null (shown as placeholder)
 // finalOutput: Float32Array [imgW*imgH*4] or null
 // Returns updated ema (pass null to reset).
-export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null }) {
+export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: interLayer2, hashFeatures, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null }) {
     const w = weights;
     if (!w || !config.mlpWidth1) return ema;
     const { mlpWidth1, mlpWidth2, embeddingChannels: embCh, gW, gH } = config;
+    const inputCh = config.mlpInputWidth ?? embCh;
     const outCh = config.hasAlpha ? 4 : 3;
     const ctx = canvas.getContext('2d');
     const cw = canvas.width, ch = canvas.height;
@@ -33,7 +38,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     if (!ema) ema = [{mn:null,mx:null}, {mn:null,mx:null}, {mn:null,mx:null}];
 
     const matDefs = [
-        { data: w.layer1_weights, rows: mlpWidth1, cols: embCh },
+        { data: w.layer1_weights, rows: mlpWidth1, cols: inputCh },
         { data: w.layer2_weights, rows: mlpWidth2, cols: mlpWidth1 },
         { data: w.layer3_weights, rows: outCh,      cols: mlpWidth2 },
     ];
@@ -50,7 +55,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
 
     // Matrices use 72% of non-thumb space; zoom inset overlays the empty lower-right corner
     const spaceForMatsAndGaps = cw - 2*PAD - 4*THUMB_W;
-    const totalMatCols = embCh + mlpWidth1 + mlpWidth2;
+    const totalMatCols = inputCh + mlpWidth1 + mlpWidth2;
     const cell = Math.max(1, Math.min(
         Math.floor(spaceForMatsAndGaps * 0.72 / totalMatCols),
         Math.floor(BODY_H / Math.max(mlpWidth1, mlpWidth2))
@@ -58,7 +63,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     const totalMatWidth = totalMatCols * cell;
     const GAP = Math.max(6, Math.floor((spaceForMatsAndGaps - totalMatWidth) / 6));
 
-    const matW_L1 = embCh * cell, matW_L2 = mlpWidth1 * cell, matW_L3 = mlpWidth2 * cell;
+    const matW_L1 = inputCh * cell, matW_L2 = mlpWidth1 * cell, matW_L3 = mlpWidth2 * cell;
 
     const xEmb  = PAD;
     const xL1   = xEmb  + THUMB_W + GAP;
@@ -137,23 +142,41 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         return { y0: PAD, h: BODY_H };
     }
 
-    const embTints = Array.from({length: embCh}, (_, c) =>
-        ((channelMask >>> c) & 1) ? [191, 223, 255] : [200, 40, 40]);
-
-    const embCellH = gW > 0 ? Math.round(THUMB_W * gH / gW) : (BODY_H / embCh | 0);
-    const bbEmb = w.embeddings
-        ? drawChannelStack(embCh, xEmb, THUMB_W, (c, lx, ly, lw, lh) => {
-            const gx = Math.min(lx*gW/lw|0, gW-1);
-            const gy = Math.min(ly*gH/lh|0, gH-1);
-            return w.embeddings[(gy*gW+gx)*embCh+c];
-          }, embTints, embCellH)
-        : drawPlaceholder(xEmb, THUMB_W);
+    const embTints = Array.from({length: embCh}, (_, c) => ((channelMask >>> c) & 1) ? TINT_ON : TINT_OFF);
 
     const aspectCellH = imgW > 0 ? Math.round(THUMB_W * imgH / imgW) : BODY_H;
     const maxActCh = Math.max(mlpWidth1, mlpWidth2, outCh);
     const actCellH = Math.min(aspectCellH, BODY_H / maxActCh | 0);
 
-    const bbL1 = drawMatrix(w.layer1_weights, mlpWidth1, embCh,    xL1, matW_L1, ema[0]);
+    const embCellH = gW > 0 ? Math.round(THUMB_W * gH / gW) : (BODY_H / embCh | 0);
+    const LF = config.mlpInputWidth ?? embCh;
+    const ngpL = config.ngpNumLevels ?? 1;
+    const ngpF = LF / ngpL;
+    const ngpCellH = BODY_H / ngpL | 0;
+    const embSlots = config.useHashEncoding ? ngpL : embCh;
+    const { levelT, } = config.useHashEncoding ? hashLevelsFromConfig(config) : { levelT: [] };
+    const T = config.ngpHashTableSize ?? 0;
+    const ngpTints = Array.from({length: ngpL}, (_, l) => {
+        if (!(channelMask & (((1 << ngpF) - 1) << (l * ngpF)))) return TINT_OFF;
+        return (levelT[l] >= T) ? TINT_HASHED : TINT_ON;
+    });
+    const ngpAvg = hashFeatures
+        ? (sx, sy, l) => { const b=(sy*imgW+sx)*LF+l*ngpF; let v=0; for (let f=0;f<ngpF;f++) v+=hashFeatures[b+f]; return v/ngpF; }
+        : null;
+    const bbEmb = (config.useHashEncoding && ngpAvg)
+        ? drawChannelStack(ngpL, xEmb, THUMB_W, (l, lx, ly, lw, lh) => {
+            const sx = Math.min(lx*imgW/lw|0, imgW-1), sy = Math.min(ly*imgH/lh|0, imgH-1);
+            return ngpAvg(sx, sy, l);
+          }, ngpTints, ngpCellH)
+        : (w.embeddings
+            ? drawChannelStack(embCh, xEmb, THUMB_W, (c, lx, ly, lw, lh) => {
+                const gx = Math.min(lx*gW/lw|0, gW-1);
+                const gy = Math.min(ly*gH/lh|0, gH-1);
+                return w.embeddings[(gy*gW+gx)*embCh+c];
+              }, embTints, embCellH)
+            : drawPlaceholder(xEmb, THUMB_W));
+
+    const bbL1 = drawMatrix(w.layer1_weights, mlpWidth1, inputCh,  xL1, matW_L1, ema[0]);
     const bbL2 = drawMatrix(w.layer2_weights, mlpWidth2, mlpWidth1, xL2, matW_L2, ema[1]);
     const bbL3 = drawMatrix(w.layer3_weights, outCh,      mlpWidth2, xL3, matW_L3, ema[2]);
 
@@ -206,10 +229,11 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
                 }
             zoomBounds = { xZ, yZ, rox, roy, rW, rH };
         };
-        if      (hCol==='emb'  && w.embeddings)  fillZoom(gW, gH,
-            (sx,sy) => w.embeddings[(sy*gW+sx)*embCh+hCh], [191,223,255]);
-        else if (hCol==='l1')                     fillZoom(embCh, mlpWidth1,
-            (sx,sy) => w.layer1_weights[sy*embCh+sx], [191,223,255]);
+        if      (hCol==='emb') {
+            if      (ngpAvg)       fillZoom(imgW, imgH, (sx,sy) => ngpAvg(sx, sy, hCh), TINT_ON);
+            else if (w.embeddings) fillZoom(gW,   gH,   (sx,sy) => w.embeddings[(sy*gW+sx)*embCh+hCh], TINT_ON);
+        } else if (hCol==='l1')                     fillZoom(inputCh, mlpWidth1,
+            (sx,sy) => w.layer1_weights[sy*inputCh+sx], [191,223,255]);
         else if (hCol==='act1' && interLayer1)    fillZoom(imgW, imgH,
             (sx,sy) => interLayer1[(sy*imgW+sx)*mlpWidth1+hCh], null);
         else if (hCol==='l2')                     fillZoom(mlpWidth1, mlpWidth2,
@@ -226,10 +250,11 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     ctx.putImageData(imgData, 0, 0);
 
     // Theme-aware colors for labels and highlights
-    const labelDefault = isLight ? 'rgba(30,50,80,0.95)' : 'rgba(191,223,255,0.95)';
+    const labelDefault = isLight ? 'rgba(30,50,80,0.95)'    : 'rgba(191,223,255,0.95)';
     const labelBg      = isLight ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.6)';
-    const labelBlue    = isLight ? 'rgba(42,112,192,0.95)' : 'rgba(100,160,255,0.9)';
-    const highlightBox = isLight ? 'rgba(42,112,192,0.85)' : 'rgba(191,223,255,0.85)';
+    const labelBlue    = isLight ? 'rgba(42,112,192,0.95)'  : 'rgba(100,160,255,0.9)';
+    const labelHashed  = isLight ? 'rgba(160,100,0,0.95)'   : 'rgba(255,200,80,0.95)';
+    const highlightBox = isLight ? 'rgba(42,112,192,0.85)'  : 'rgba(191,223,255,0.85)';
 
     // Draws text with a background pill; cx/cy is the text anchor point.
     function drawLabel(text, cx, cy, font = '10px monospace', align = 'center', color = labelDefault) {
@@ -253,7 +278,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         };
         const hilightMat = (bb, x0, w0) => ctx.strokeRect(x0 + 0.5, bb.y0 + 0.5, w0 - 1, bb.h - 1);
         switch (hCol) {
-            case 'emb':  hilightStack(bbEmb,  embCh,    xEmb,  THUMB_W); break;
+            case 'emb':  hilightStack(bbEmb, embSlots, xEmb, THUMB_W); break;
             case 'l1':   hilightMat  (bbL1,             xL1,   matW_L1); break;
             case 'act1': hilightStack(bbAct1, mlpWidth1, xAct1, THUMB_W); break;
             case 'l2':   hilightMat  (bbL2,              xL2,   matW_L2); break;
@@ -286,7 +311,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     }
     ctx.strokeStyle = isLight ? 'rgba(40,60,100,0.65)' : 'rgba(255,210,0,0.75)';
     ctx.lineWidth = 0.8;
-    fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,   embCh);
+    fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,   inputCh);
     fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth1);
     fanLines(xAct1 + THUMB_W,     bbAct1, xL2,            bbL2,   mlpWidth1);
     fanLines(xL2  + matW_L2,      bbL2,   xAct2,          bbAct2, mlpWidth2);
@@ -294,18 +319,28 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     fanLines(xL3  + matW_L3,      bbL3,   xRGBA,          bbRGBA, outCh);
 
     // Labels at top for non-matrix columns
+    const embLabel = config.useHashEncoding ? 'NGP' : 'Emb';
     for (const [lbl, lx, lw] of [
-        ['Emb', xEmb, THUMB_W], ['Act1', xAct1, THUMB_W], ['Act2', xAct2, THUMB_W],
+        [embLabel, xEmb, THUMB_W], ['Act1', xAct1, THUMB_W], ['Act2', xAct2, THUMB_W],
     ]) drawLabel(lbl, lx + lw/2, PAD + 10);
+    if (config.useHashEncoding && !hashFeatures) {
+        const L = config.ngpNumLevels || 8, T = config.ngpHashTableSize || 16384, F = config.ngpFeaturesPerLevel || 2;
+        const cy = (ch >> 1);
+        drawLabel(`L=${L}`, xEmb + THUMB_W/2, cy - 10, '9px monospace');
+        drawLabel(`T=${T}`, xEmb + THUMB_W/2, cy + 2,  '9px monospace');
+        drawLabel(`F=${F}`, xEmb + THUMB_W/2, cy + 14, '9px monospace');
+    }
     drawLabel(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
 
     // Learnt / inferred legend — stacked above RGBA column
     drawLabel('■ learnt',   xRGBA + THUMB_W/2, PAD + 10, '9px monospace', 'center', labelBlue);
     drawLabel('■ inferred', xRGBA + THUMB_W/2, PAD + 22, '9px monospace', 'center', labelDefault);
+    if (config.useHashEncoding)
+        drawLabel('■ hashed',   xRGBA + THUMB_W/2, PAD + 34, '9px monospace', 'center', labelHashed);
 
     // Labels just above each weight matrix: name + channel count, in blue
     for (const [name, ch, lx, lw, my0] of [
-        ['Layer 1', `${embCh}→${mlpWidth1}`,     xL1, matW_L1, bbL1.y0],
+        ['Layer 1', `${inputCh}→${mlpWidth1}`,    xL1, matW_L1, bbL1.y0],
         ['Layer 2', `${mlpWidth1}→${mlpWidth2}`,  xL2, matW_L2, bbL2.y0],
         ['Layer 3', `${mlpWidth2}→${outCh}`,      xL3, matW_L3, bbL3.y0],
     ]) {
@@ -316,7 +351,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     return {
         ema,
         cols: [
-            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  h:bbEmb.h,  slotH:bbEmb.h/embCh,     nCh:embCh    },
+            { name:'emb',  x:xEmb,  w:THUMB_W, y0:bbEmb.y0,  h:bbEmb.h,  slotH:bbEmb.h/embSlots, nCh:embSlots },
             { name:'l1',   x:xL1,   w:matW_L1, y0:bbL1.y0,   h:bbL1.h,   slotH:null,               nCh:mlpWidth1 },
             { name:'act1', x:xAct1, w:THUMB_W, y0:bbAct1.y0, h:bbAct1.h, slotH:bbAct1.h/mlpWidth1, nCh:mlpWidth1 },
             { name:'l2',   x:xL2,   w:matW_L2, y0:bbL2.y0,   h:bbL2.h,   slotH:null,               nCh:mlpWidth2 },

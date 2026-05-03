@@ -1,5 +1,6 @@
 // model.js
 // Creates and manages GPU weight, Adam moment, and grad accumulation buffers.
+import { hashLevelsFromConfig } from './hash_encoding.js';
 
 export const UNIFORM_OFFSET_RANGE = 32;
 export const UNIFORM_OFFSET_OFFSETS = 160;
@@ -20,9 +21,10 @@ export function computeGridDims(numPts, w, h) {
 // f32 element offsets for each sub-tensor in the flat mlp_weights buffer.
 // Order: [L1W | L1B | L2W | L2B | L3W | L3B]
 export function mlpWeightsLayout(config) {
-    const { embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
+    const inputCh = config.mlpInputWidth ?? config.embeddingChannels;
+    const { mlpWidth1, mlpWidth2 } = config;
     const outCh = config.hasAlpha ? 4 : 3;
-    const l1w = 0, l1b = l1w + embCh * mlpWidth1,
+    const l1w = 0, l1b = l1w + inputCh * mlpWidth1,
           l2w = l1b + mlpWidth1, l2b = l2w + mlpWidth1 * mlpWidth2,
           l3w = l2b + mlpWidth2, l3b = l3w + mlpWidth2 * outCh;
     return { l1w, l1b, l2w, l2b, l3w, l3b };
@@ -30,10 +32,11 @@ export function mlpWeightsLayout(config) {
 
 export function computeTensorSizes(config) {
     const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
+    const inputCh = config.mlpInputWidth ?? embCh;
     const outCh = config.hasAlpha ? 4 : 3;
     return {
         embeddings:     gW * gH * embCh,
-        layer1_weights: embCh * mlpWidth1,
+        layer1_weights: inputCh * mlpWidth1,
         layer1_biases:  mlpWidth1,
         layer2_weights: mlpWidth1 * mlpWidth2,
         layer2_biases:  mlpWidth2,
@@ -57,13 +60,14 @@ export class ModelTensors {
 export function createModel(ctx, config) {
     const sizes = computeTensorSizes(config);
     const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2 } = config;
+    const inputCh = config.mlpInputWidth ?? embeddingChannels;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;
 
     const embeddingData = new Float32Array(sizes.embeddings).map(() => Math.random() * 2 - 1);
 
     // SIREN init: first layer 1/fan_in, hidden sqrt(6/fan_in)
-    const layer1Weights = new Float32Array(sizes.layer1_weights).map(() => (Math.random() * 2 - 1) / embeddingChannels);
+    const layer1Weights = new Float32Array(sizes.layer1_weights).map(() => (Math.random() * 2 - 1) / inputCh);
     const layer1Biases = new Float32Array(sizes.layer1_biases).fill(0);
 
     const s2 = Math.sqrt(6 / mlpWidth1);
@@ -115,16 +119,24 @@ export function createModel(ctx, config) {
 export function initCpuWeights(config) {
     const sizes = computeTensorSizes(config);
     const { embeddingChannels, mlpWidth1, mlpWidth2 } = config;
+    const inputCh = config.mlpInputWidth ?? embeddingChannels;
     const s2 = Math.sqrt(6 / mlpWidth1), s3 = Math.sqrt(6 / mlpWidth2);
-    return {
-        embeddings:     new Float32Array(sizes.embeddings).map(() => Math.random() * 2 - 1),
-        layer1_weights: new Float32Array(sizes.layer1_weights).map(() => (Math.random() * 2 - 1) / embeddingChannels),
+    const w = {
+        layer1_weights: new Float32Array(sizes.layer1_weights).map(() => (Math.random() * 2 - 1) / inputCh),
         layer1_biases:  new Float32Array(sizes.layer1_biases),
         layer2_weights: new Float32Array(sizes.layer2_weights).map(() => (Math.random() * 2 - 1) * s2),
         layer2_biases:  new Float32Array(sizes.layer2_biases),
         layer3_weights: new Float32Array(sizes.layer3_weights).map(() => (Math.random() * 2 - 1) * s3),
         layer3_biases:  new Float32Array(sizes.layer3_biases),
     };
+    if (config.useHashEncoding) {
+        const F = config.ngpFeaturesPerLevel;
+        const { totalEntries } = hashLevelsFromConfig(config);
+        w.hashTables = new Float32Array(totalEntries * F).map(() => Math.random() * 2 - 1);
+    } else {
+        w.embeddings = new Float32Array(sizes.embeddings).map(() => Math.random() * 2 - 1);
+    }
+    return w;
 }
 
 export function destroyModel(m) {

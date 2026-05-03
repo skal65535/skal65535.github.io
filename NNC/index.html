@@ -188,6 +188,24 @@
                         <span class="ctrl-label">No Offset</span>
                     </label>
                 </div>
+                <div class="ctrl-row">
+                    <label class="ctrl-check">
+                        <input type="checkbox" id="ngp-checkbox">
+                        <span class="ctrl-label">Hash Encoding (NGP)</span>
+                    </label>
+                </div>
+                <div class="slider-row" id="ngp-levels-row" style="display:none">
+                    <div class="slider-header">Levels <span id="ngp-levels-val">8</span></div>
+                    <input type="range" id="ngp-levels" min="4" max="16" step="1" value="8">
+                </div>
+                <div class="slider-row" id="ngp-hash-row" style="display:none">
+                    <div class="slider-header">Log₂ Hash Size <span id="ngp-hash-log-size-val">9</span></div>
+                    <input type="range" id="ngp-hash-log-size" min="7" max="14" step="1" value="9">
+                </div>
+                <div class="slider-row" id="ngp-features-row" style="display:none">
+                    <div class="slider-header">Features/Level <span id="ngp-features-val">2</span></div>
+                    <input type="range" id="ngp-features" min="1" max="4" step="1" value="2">
+                </div>
                 </div><!-- #model-controls -->
             </div>
 

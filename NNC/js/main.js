@@ -137,12 +137,13 @@ function isValidModelConfig({ gW, gH, embeddingChannels, mlpWidth1, mlpWidth2, e
 }
 
 function configCompatible(a, b) {
-    return a && b &&
-        a.gW === b.gW &&
-        a.gH === b.gH &&
-        a.embeddingChannels === b.embeddingChannels &&
-        a.mlpWidth1 === b.mlpWidth1 &&
-        a.mlpWidth2 === b.mlpWidth2;
+    if (!a || !b) return false;
+    return a.useHashEncoding === b.useHashEncoding
+        && a.mlpWidth1 === b.mlpWidth1 && a.mlpWidth2 === b.mlpWidth2
+        && a.gW === b.gW && a.gH === b.gH
+        && (a.useHashEncoding
+            ? a.ngpNumLevels === b.ngpNumLevels && a.ngpHashTableSize === b.ngpHashTableSize && a.ngpFeaturesPerLevel === b.ngpFeaturesPerLevel
+            : a.embeddingChannels === b.embeddingChannels && a.embBits === b.embBits);
 }
 
 function updateGridDims() {
@@ -156,13 +157,24 @@ function currentModelConfig() {
     const mlpWidth1 = parseInt(ui.mlpWidth1Select.value);
     const mlpWidth2 = parseInt(ui.mlpWidth2Select.value);
     const embeddingChannels = parseInt(ui.embeddingChannelsSelect.value);
-    return {
+    const useNGP = ui.ngpCheckbox?.checked || false;
+    const base = {
         gW: gridW, gH: gridH,
         embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
         mlpWidth1:         Math.ceil(mlpWidth1 / 4) * 4,
         mlpWidth2:         Math.ceil(mlpWidth2 / 4) * 4,
         embBits:           parseInt(ui.embBitsSelect.value),
+        useHashEncoding:   useNGP,
     };
+    if (useNGP) {
+        base.ngpNumLevels        = parseInt(ui.ngpLevelsInput?.value || '8');
+        base.ngpHashTableSize    = 1 << parseInt(ui.ngpHashLogSizeInput?.value || '9');
+        base.ngpFeaturesPerLevel = parseInt(ui.ngpFeaturesInput?.value || '2');
+        base.mlpInputWidth       = base.ngpNumLevels * base.ngpFeaturesPerLevel;
+    } else {
+        base.mlpInputWidth = base.embeddingChannels;
+    }
+    return base;
 }
 
 window.addEventListener('resize', () => { if (loadedImage) fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H); });
@@ -171,6 +183,7 @@ window.addEventListener('theme-changed', () => {
     if (lastWeights) {
         ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
             { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+              hashFeatures: lastInterData.hashFeatures,
               finalOutput: lastWeights.finalOutput || null, imgW: ui.canvas.width, imgH: ui.canvas.height,
               config, channelMask, ema: layerRangeEma, hoverState }));
         sweep.setCols(layerCols);
@@ -303,8 +316,9 @@ async function startTraining(fullReset) {
             const m = activeSession.model;
             webGpuContext.writeBuffer(m.emb_offsets, config.embOffsets);
             if (previousEngine === 'cpu' && prevCpuWeights) {
-                // Switching CPU -> GPU
                 webGpuContext.uploadModelWeights(m, prevCpuWeights);
+                if (prevCpuWeights.hashTables && activeSession.hashEnc)
+                    webGpuContext.writeBuffer(activeSession.hashEnc.hashTables, prevCpuWeights.hashTables);
                 for (const k of ModelTensors.KEYS) {
                     webGpuContext.clearBuffer(m.adamM[k]);
                     webGpuContext.clearBuffer(m.adamV[k]);
@@ -368,7 +382,8 @@ function resetCanvasToBase() {
 }
 
 function buildConfigFromUI() {
-    return {
+    const useNGP = ui.ngpCheckbox?.checked || false;
+    const cfg = {
         gW: gridW, gH: gridH,
         embeddingChannels:   parseInt(ui.embeddingChannelsSelect.value),
         mlpWidth1:           parseInt(ui.mlpWidth1Select.value),
@@ -380,7 +395,17 @@ function buildConfigFromUI() {
         hasAlpha:            imageHasAlpha,
         width:  BASE_CANVAS_W,
         height: BASE_CANVAS_H,
+        useHashEncoding: useNGP,
     };
+    if (useNGP) {
+        cfg.ngpNumLevels        = parseInt(ui.ngpLevelsInput?.value || '8');
+        cfg.ngpHashTableSize    = 1 << parseInt(ui.ngpHashLogSizeInput?.value || '9');
+        cfg.ngpFeaturesPerLevel = parseInt(ui.ngpFeaturesInput?.value || '2');
+        cfg.mlpInputWidth = cfg.ngpNumLevels * cfg.ngpFeaturesPerLevel;
+    } else {
+        cfg.mlpInputWidth = cfg.embeddingChannels;
+    }
+    return cfg;
 }
 
 
@@ -396,7 +421,7 @@ function clearTrainingUI() {
     channelMask   = 0xFFFFFFFF;
     layerCols     = [];
     hoverState    = null;
-    lastInterData = { inter1: null, inter2: null };
+    lastInterData = { inter1: null, inter2: null, hashFeatures: null };
 }
 
 function setStoppedStatus() {
@@ -405,9 +430,9 @@ function setStoppedStatus() {
 
 function trainerCallbacks() {
     return {
-        onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
+        onStep({ loss, step, rate, lastWeights: w, inter1, inter2, hashFeatures, lossHistory }) {
             lastWeights = w;
-            if (inter1 !== null) lastInterData = { inter1, inter2 };
+            if (inter1 !== null) lastInterData = { inter1, inter2, hashFeatures: hashFeatures ?? null };
             ui.stepCounterEl.textContent = step.toLocaleString();
             ui.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
             if (w.finalOutput !== null) {
@@ -415,6 +440,7 @@ function trainerCallbacks() {
                 drawOutputCanvas(ui.canvas, w.finalOutput, config.hasAlpha);
                 ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
                     { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+                      hashFeatures: lastInterData.hashFeatures,
                       finalOutput: w.finalOutput, imgW: ui.canvas.width, imgH: ui.canvas.height,
                       config, channelMask, ema: layerRangeEma, hoverState }));
                 sweep.setCols(layerCols);
@@ -455,6 +481,7 @@ function makeTrainer() {
         model: activeSession.model, pipeline: activeSession.pipeline, bindGroup: activeSession.bindGroup,
         fwdUniformsBuf: activeSession.fwdUniformsBuf, outputBuffers: activeSession.outputBuffers,
         readbackBuffers: activeSession.readbackBuffers,
+        hashEnc: activeSession.hashEnc ?? null,
         targetPixels,
         alphaCellMask,
         roiMask,
@@ -510,7 +537,6 @@ async function readBackAllWeights() {
     const sizes = computeTensorSizes(config);
     const m = activeSession.model;
     const tensors = {
-        embeddings:     { buf: m.embeddings,     size: sizes.embeddings },
         layer1_weights: { buf: m.layer1.weights, size: sizes.layer1_weights },
         layer1_biases:  { buf: m.layer1.biases,  size: sizes.layer1_biases },
         layer2_weights: { buf: m.layer2.weights, size: sizes.layer2_weights },
@@ -518,6 +544,12 @@ async function readBackAllWeights() {
         layer3_weights: { buf: m.layer3.weights, size: sizes.layer3_weights },
         layer3_biases:  { buf: m.layer3.biases,  size: sizes.layer3_biases },
     };
+    const hashEnc = activeSession.hashEnc;
+    if (hashEnc) {
+        tensors.hashTables = { buf: hashEnc.hashTables, size: hashEnc.totalParams };
+    } else {
+        tensors.embeddings = { buf: m.embeddings, size: sizes.embeddings };
+    }
     return webGpuContext.readBackBuffers(tensors);
 }
 
@@ -624,6 +656,7 @@ function redrawLayers() {
     if (!lastWeights || !configReady()) return;
     ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
         { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+          hashFeatures: lastInterData.hashFeatures,
           finalOutput: lastWeights.finalOutput, imgW: ui.canvas.width, imgH: ui.canvas.height,
           config, channelMask, ema: layerRangeEma, hoverState }));
 }
@@ -661,12 +694,16 @@ ui.layersCanvas.addEventListener('click', (e) => {
     if (!embCol?.slotH) return;
     const { cx, cy } = layersCanvasCoords(e);
     if (cx < embCol.x || cx >= embCol.x + embCol.w) return;
-    const embCh = config?.embeddingChannels ?? 0;
-    if (!embCh) return;
-    const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), embCh - 1);
-    const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
-    if (!(channelMask & (1 << ch))) channelMask = 0xFFFFFFFF;
-    else channelMask ^= (allBits ^ (1 << ch));
+    if (!config) return;
+    const numSlots = config.useHashEncoding ? (config.ngpNumLevels ?? 0) : (config.embeddingChannels ?? 0);
+    if (!numSlots) return;
+    const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), numSlots - 1);
+    const ngpF = config.useHashEncoding ? (config.ngpFeaturesPerLevel ?? 1) : 1;
+    const totalBits = numSlots * ngpF;
+    const allBits = totalBits < 32 ? (1 << totalBits) - 1 : 0xFFFFFFFF;
+    const chBits = ((1 << ngpF) - 1) << (ch * ngpF);
+    if (!(channelMask & chBits)) channelMask = 0xFFFFFFFF;
+    else channelMask ^= (allBits ^ chBits);
     if (canInfer()) doInference();
     else redrawLayers();
 });
@@ -677,22 +714,24 @@ async function runInference() {
 
     activeInferencePromise = (async () => {
         try {
-            const { final: inferFinal, inter1: inferInter1, inter2: inferInter2 } = await runInferencePass({
+            const { final: inferFinal, inter1: inferInter1, inter2: inferInter2, hashFeatures: inferHashFeatures } = await runInferencePass({
                 webGpuContext, config,
                 model: activeSession.model, pipeline: activeSession.pipeline, bindGroup: activeSession.bindGroup,
                 fwdUniformsBuf: activeSession.fwdUniformsBuf, outputBuffers: activeSession.outputBuffers,
                 readbackBuffers: activeSession.readbackBuffers, channelMask,
-                canvasWidth: ui.canvas.width, canvasHeight: ui.canvas.height, lastWeights
+                canvasWidth: ui.canvas.width, canvasHeight: ui.canvas.height, lastWeights,
+                hashEnc: activeSession.hashEnc ?? null,
             });
 
             sweep.setCols(layerCols); sweep.triggerFwd();
 
             drawOutputCanvas(ui.canvas, inferFinal, config.hasAlpha);
 
-            lastInterData = { inter1: inferInter1, inter2: inferInter2 };
+            lastInterData = { inter1: inferInter1, inter2: inferInter2, hashFeatures: inferHashFeatures ?? null };
             lastWeights.finalOutput = inferFinal;
             ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
                 { weights: lastWeights, inter1: inferInter1, inter2: inferInter2,
+                  hashFeatures: inferHashFeatures,
                   finalOutput: inferFinal, imgW: ui.canvas.width, imgH: ui.canvas.height,
                   config, channelMask, ema: layerRangeEma, hoverState }));
             sweep.setCols(layerCols);
@@ -710,7 +749,7 @@ async function runInferenceCpu() {
     const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, config.embBits);
     const { final, interLayer1, interLayer2 } = forward(config, { ...lastWeights, embeddings_q: packed }, range);
     drawOutputCanvas(ui.canvas, final, config.hasAlpha);
-    lastInterData = { inter1: interLayer1, inter2: interLayer2 };
+    lastInterData = { inter1: interLayer1, inter2: interLayer2, hashFeatures: null };
     lastWeights.finalOutput = final;
     ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
         { weights: lastWeights, inter1: interLayer1, inter2: interLayer2,
@@ -858,7 +897,7 @@ initUI({
             if (lastWeights && configCompatible(lastConfig, cur)) {
                 if (canInfer()) doInference(); else redrawLayers();
             } else if (webGpuContext && loadedImage) {
-                previewGeometry();
+                previewGeometry().catch(e => console.error('previewGeometry:', e));
             } else {
                 drawPlaceholder(ui.layersCanvas);
                 layerRangeEma = null;

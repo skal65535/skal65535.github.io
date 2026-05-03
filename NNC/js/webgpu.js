@@ -89,7 +89,7 @@ export async function initWebGPU() {
             device.queue.submit([ce.finish()]);
         },
         uploadModelWeights(model, tensors) {
-            device.queue.writeBuffer(model.embeddings,     0, tensors.embeddings);
+            if (tensors.embeddings) device.queue.writeBuffer(model.embeddings, 0, tensors.embeddings);
             device.queue.writeBuffer(model.layer1.weights, 0, tensors.layer1_weights);
             device.queue.writeBuffer(model.layer1.biases,  0, tensors.layer1_biases);
             device.queue.writeBuffer(model.layer2.weights, 0, tensors.layer2_weights);
@@ -132,7 +132,7 @@ export function buildBackwardShaders(config) {
     const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
     const outCh = config.hasAlpha ? 4 : 3;
-    return {
+    const shaders = {
         gradOutput:      gradOutputShader(outCh),
         gradL3:          gradL3Shader(mlpWidth2, activation, outCh),
         gradL2:          gradL2Shader(mlpWidth1, mlpWidth2, activation),
@@ -140,6 +140,8 @@ export function buildBackwardShaders(config) {
         adamStep:        adamStepShader(),
         packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
+    if (config.useHashEncoding) shaders.gradL1Ngp = buildNgpGradL1Shader(config);
+    return shaders;
 }
 
 function gradOutputShader(outCh) {
@@ -415,8 +417,156 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 }
 
+// NGP forward shader: reads pre-computed features_out instead of embedding grid
+function buildNgpForwardShader(config) {
+    const { mlpWidth1, mlpWidth2, quantization, activation = 'sin' } = config;
+    const LF   = config.mlpInputWidth;
+    const outCh = config.hasAlpha ? 4 : 3;
+    const { l1w: L1W_OFF, l1b: L1B_OFF, l2w: L2W_OFF, l2b: L2B_OFF, l3w: L3W_OFF, l3b: L3B_OFF } = mlpWeightsLayout(config);
+
+    const makeDotLoop = inSize => quantization === 'qat8'
+        ? `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
+            let base = mat_base + i * ${inSize}u + j;
+            let w = vec4<f32>(quantize_dequantize_8bit(mlp_weights[base]), quantize_dequantize_8bit(mlp_weights[base+1u]), quantize_dequantize_8bit(mlp_weights[base+2u]), quantize_dequantize_8bit(mlp_weights[base+3u]));
+            let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
+            sum += dot(w, v);
+        }`
+        : `        for (var j: u32 = 0u; j < ${inSize}u; j = j + 4u) {
+            let base = mat_base + i * ${inSize}u + j;
+            let w = vec4<f32>(mlp_weights[base], mlp_weights[base+1u], mlp_weights[base+2u], mlp_weights[base+3u]);
+            let v = vec4<f32>(vec_in[j], vec_in[j+1u], vec_in[j+2u], vec_in[j+3u]);
+            sum += dot(w, v);
+        }`;
+
+    const matVecMulFn = (name, inSize, outSize) => `
+fn ${name}(mat_base: u32, vec_in: array<f32, ${inSize}>) -> array<f32, ${outSize}> {
+    var result: array<f32, ${outSize}>;
+    for (var i: u32 = 0u; i < ${outSize}u; i = i + 1u) {
+        var sum = 0.0;
+${makeDotLoop(inSize)}
+        result[i] = sum;
+    }
+    return result;
+}`;
+
+    return `
+fn quantize_dequantize_8bit(val: f32) -> f32 {
+    return round(clamp(val, -1.0, 1.0) * 127.0) / 127.0;
+}
+${matVecMulFn('mat_vec_mul_l1', LF,        mlpWidth1)}
+${matVecMulFn('mat_vec_mul_l2', mlpWidth1, mlpWidth2)}
+${matVecMulFn('mat_vec_mul_l3', mlpWidth2, outCh)}
+${wgslActivFns(activation)}
+
+struct Uniforms {
+    gW: u32, embeddingChannels: u32, mlpWidth1: u32, canvasWidth: u32,
+    canvasHeight: u32, channelMask: u32, mlpWidth2: u32, gH: u32,
+    emb_range: array<vec4<f32>, 8>, emb_offsets: array<vec4<f32>, 4>,
+};
+@group(0) @binding(0) var<uniform>            uniforms:    Uniforms;
+@group(0) @binding(1) var<storage, read>      features_out: array<f32>;
+@group(0) @binding(2) var<storage, read>      mlp_weights:  array<f32>;
+@group(0) @binding(3) var<storage, read_write> out_inter_layer1: array<f32>;
+@group(0) @binding(4) var<storage, read_write> out_inter_layer2: array<f32>;
+@group(0) @binding(5) var<storage, read_write> out_final:        array<f32>;
+
+const L1W_OFF: u32 = ${L1W_OFF}u;
+const L1B_OFF: u32 = ${L1B_OFF}u;
+const L2W_OFF: u32 = ${L2W_OFF}u;
+const L2B_OFF: u32 = ${L2B_OFF}u;
+const L3W_OFF: u32 = ${L3W_OFF}u;
+const L3B_OFF: u32 = ${L3B_OFF}u;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let x = global_id.x; let y = global_id.y;
+    if (x >= uniforms.canvasWidth || y >= uniforms.canvasHeight) { return; }
+    let pixel_index = y * uniforms.canvasWidth + x;
+    var embedding_vector: array<f32, ${LF}>;
+    for (var i = 0u; i < ${LF}u; i++) {
+        embedding_vector[i] = features_out[pixel_index * ${LF}u + i];
+    }
+    var layer1_out = mat_vec_mul_l1(L1W_OFF, embedding_vector);
+    for (var i: u32 = 0u; i < ${mlpWidth1}u; i = i + 1u) {
+        layer1_out[i] = layer1_out[i] + mlp_weights[L1B_OFF + i];
+        out_inter_layer1[pixel_index * ${mlpWidth1}u + i] = layer1_out[i];
+        layer1_out[i] = activ(layer1_out[i]);
+    }
+    var layer2_out = mat_vec_mul_l2(L2W_OFF, layer1_out);
+    for (var i: u32 = 0u; i < ${mlpWidth2}u; i = i + 1u) {
+        layer2_out[i] = layer2_out[i] + mlp_weights[L2B_OFF + i];
+        out_inter_layer2[pixel_index * ${mlpWidth2}u + i] = layer2_out[i];
+        layer2_out[i] = activ(layer2_out[i]);
+    }
+    var layer3_out = mat_vec_mul_l3(L3W_OFF, layer2_out);
+    for (var i: u32 = 0u; i < ${outCh}u; i = i + 1u) { layer3_out[i] = layer3_out[i] + mlp_weights[L3B_OFF + i]; }
+    out_final[pixel_index * 4 + 0] = clamp(layer3_out[0], 0.0, 1.0);
+    out_final[pixel_index * 4 + 1] = clamp(layer3_out[1], 0.0, 1.0);
+    out_final[pixel_index * 4 + 2] = clamp(layer3_out[2], 0.0, 1.0);
+    out_final[pixel_index * 4 + 3] = ${outCh === 4 ? 'clamp(layer3_out[3], 0.0, 1.0)' : '1.0'};
+}
+`;
+}
+
+// NGP gradL1: reads features_out, writes grad_features_out (f32, no atomic)
+export function buildNgpGradL1Shader(config) {
+    const { mlpWidth1, activation = 'sin' } = config;
+    const LF = config.mlpInputWidth;
+    return `${BWD_UNIFORMS}
+${wgslActivFns(activation)}
+@group(0) @binding(1) var<storage, read>       grad_inter1_preact: array<f32>;
+@group(0) @binding(2) var<storage, read>       inter_layer1:       array<f32>;
+@group(0) @binding(3) var<storage, read>       layer1_weights:     array<f32>;
+@group(0) @binding(4) var<storage, read>       features_out:       array<f32>;
+@group(0) @binding(5) var<storage, read_write> grad_l1_weights:    array<atomic<i32>>;
+@group(0) @binding(6) var<storage, read_write> grad_l1_biases:     array<atomic<i32>>;
+@group(0) @binding(7) var<storage, read_write> grad_features_out:  array<f32>;
+
+const MW:  u32 = ${mlpWidth1}u;
+const LF_: u32 = ${LF}u;
+const FPS: f32 = ${FP_SCALE}.0;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let px_x = gid.x; let px_y = gid.y;
+    if (px_x >= uni.width || px_y >= uni.height) { return; }
+    let p = px_y * uni.width + px_x;
+    if (uni.stride > 1u && p % uni.stride != 0u) {
+        for (var j = 0u; j < LF_; j++) { grad_features_out[p*LF_+j] = 0.0; }
+        return;
+    }
+    var g: array<f32, ${mlpWidth1}>;
+    for (var i = 0u; i < MW; i++) {
+        g[i] = grad_inter1_preact[p*MW+i] * activ_prime(inter_layer1[p*MW+i]);
+        atomicAdd(&grad_l1_biases[i], i32(g[i] * FPS));
+    }
+    var gv: array<vec4<f32>, ${mlpWidth1 >> 2}>;
+    for (var k = 0u; k < ${mlpWidth1 >> 2}u; k++) {
+        let bk = k * 4u;
+        gv[k] = vec4<f32>(g[bk], g[bk+1u], g[bk+2u], g[bk+3u]);
+    }
+    for (var j = 0u; j < LF_; j++) {
+        let fv = features_out[p*LF_+j];
+        for (var i = 0u; i < MW; i++) {
+            atomicAdd(&grad_l1_weights[i*LF_+j], i32(g[i] * fv * FPS));
+        }
+        var gf = 0.0;
+        for (var k = 0u; k < ${mlpWidth1 >> 2}u; k++) {
+            let bk = k * 4u;
+            let col = vec4<f32>(layer1_weights[bk*LF_+j], layer1_weights[(bk+1u)*LF_+j],
+                                layer1_weights[(bk+2u)*LF_+j], layer1_weights[(bk+3u)*LF_+j]);
+            gf += dot(gv[k], col);
+        }
+        grad_features_out[p*LF_+j] = gf;
+    }
+}
+`;
+}
+
 // Re-implementing buildForwardShader to be exactly like the original but using wgslActivFns
 export function buildShader(config) {
+    if (config.useHashEncoding) return buildNgpForwardShader(config);
+
     const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2, quantization, smoothInterpolation, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const embBits = config.embBits || 8;

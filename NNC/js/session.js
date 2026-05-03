@@ -1,5 +1,6 @@
 import { createModel, destroyModel, initCpuWeights, buildFwdUniforms } from './model.js';
 import { buildShader } from './webgpu.js';
+import { createHashEncoding } from './hash_encoding.js';
 
 export class GpuSession {
     constructor(webGpuContext, config, canvasWidth, canvasHeight) {
@@ -15,10 +16,15 @@ export class GpuSession {
         this.fwdUniformsBuf = null;
         this.outputBuffers = {};
         this.readbackBuffers = {};
+        this.hashEnc = null;
 
         const { buffers, weights } = createModel(webGpuContext, config);
         this.model = buffers;
         this.initialWeights = weights;
+
+        if (config.useHashEncoding) {
+            this.hashEnc = createHashEncoding(webGpuContext, canvasWidth, canvasHeight, config);
+        }
 
         this._createPipeline();
         this.rebuildBindGroup();
@@ -38,6 +44,7 @@ export class GpuSession {
         for (const b of Object.values(this.readbackBuffers)) b?.destroy();
 
         const { mlpWidth1, mlpWidth2, gW, gH, embeddingChannels, embOffsets } = this.config;
+        const inputCh = this.config.mlpInputWidth ?? embeddingChannels;
         this.fwdUniformsBuf = this.ctx.uniformBuffer(224, 'fwdUniforms');
         this.ctx.writeBuffer(this.fwdUniformsBuf,
             buildFwdUniforms(gW, gH, embeddingChannels, mlpWidth1, mlpWidth2, this.canvasWidth, this.canvasHeight, null, embOffsets));
@@ -51,20 +58,24 @@ export class GpuSession {
         this.outputBuffers.interLayer2 = this.ctx.outputBuffer(pixelCount * stride2, 'out/inter2');
         this.outputBuffers.final       = this.ctx.outputBuffer(pixelCount * 4 * 4,   'out/final');
 
-        this.readbackBuffers.final         = this.ctx.readbackBuffer(pixelCount * 4 * 4,                  'rb/final');
-        this.readbackBuffers.embeddings    = this.ctx.readbackBuffer(embSize * 4,                          'rb/emb');
-        this.readbackBuffers.layer1Weights = this.ctx.readbackBuffer(mlpWidth1 * embeddingChannels * 4,    'rb/L1w');
-        this.readbackBuffers.layer1Biases  = this.ctx.readbackBuffer(stride1,                              'rb/L1b');
-        this.readbackBuffers.layer2Weights = this.ctx.readbackBuffer(mlpWidth2 * stride1,                  'rb/L2w');
-        this.readbackBuffers.layer3Weights = this.ctx.readbackBuffer((this.config.hasAlpha ? 4 : 3) * stride2,  'rb/L3w');
-        this.readbackBuffers.interLayer1   = this.ctx.readbackBuffer(pixelCount * stride1,                 'rb/inter1');
-        this.readbackBuffers.interLayer2   = this.ctx.readbackBuffer(pixelCount * stride2,                 'rb/inter2');
+        this.readbackBuffers.final         = this.ctx.readbackBuffer(pixelCount * 4 * 4,       'rb/final');
+        this.readbackBuffers.embeddings    = this.ctx.readbackBuffer(embSize * 4,               'rb/emb');
+        this.readbackBuffers.layer1Weights = this.ctx.readbackBuffer(mlpWidth1 * inputCh * 4,  'rb/L1w');
+        this.readbackBuffers.layer1Biases  = this.ctx.readbackBuffer(stride1,                   'rb/L1b');
+        this.readbackBuffers.layer2Weights = this.ctx.readbackBuffer(mlpWidth2 * stride1,       'rb/L2w');
+        this.readbackBuffers.layer3Weights = this.ctx.readbackBuffer((this.config.hasAlpha ? 4 : 3) * stride2, 'rb/L3w');
+        this.readbackBuffers.interLayer1   = this.ctx.readbackBuffer(pixelCount * stride1,      'rb/inter1');
+        this.readbackBuffers.interLayer2   = this.ctx.readbackBuffer(pixelCount * stride2,      'rb/inter2');
+        if (this.hashEnc) {
+            this.readbackBuffers.featuresOut = this.ctx.readbackBuffer(pixelCount * this.hashEnc.LF * 4, 'rb/featuresOut');
+        }
 
+        const embBuf = this.hashEnc ? this.hashEnc.featuresOut : this.model.embeddings_q;
         this.bindGroup = this.ctx.device.createBindGroup({
             layout: this.pipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.fwdUniformsBuf } },
-                { binding: 1, resource: { buffer: this.model.embeddings_q } },
+                { binding: 1, resource: { buffer: embBuf } },
                 { binding: 2, resource: { buffer: this.model.mlp_weights } },
                 { binding: 3, resource: { buffer: this.outputBuffers.interLayer1 } },
                 { binding: 4, resource: { buffer: this.outputBuffers.interLayer2 } },
@@ -77,7 +88,8 @@ export class GpuSession {
         const c = this.config;
         return c.smoothInterpolation !== newConfig.smoothInterpolation
             || c.activation          !== newConfig.activation
-            || c.quantization        !== newConfig.quantization;
+            || c.quantization        !== newConfig.quantization
+            || c.useHashEncoding     !== newConfig.useHashEncoding;
     }
 
     rebuildPipeline(updates) {
@@ -88,6 +100,7 @@ export class GpuSession {
 
     destroy() {
         if (this.model) destroyModel(this.model);
+        this.hashEnc?.destroy();
         this.fwdUniformsBuf?.destroy();
         for (const b of Object.values(this.outputBuffers)) b?.destroy();
         for (const b of Object.values(this.readbackBuffers)) b?.destroy();
@@ -96,6 +109,7 @@ export class GpuSession {
         this.pipeline = null;
         this.bindGroup = null;
         this.fwdUniformsBuf = null;
+        this.hashEnc = null;
     }
 }
 
