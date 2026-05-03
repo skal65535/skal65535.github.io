@@ -79,13 +79,19 @@ export class SweepOverlay {
 
         const n   = cols.length;
         const isFwd = this._phase === 'fwd';
-        const [r, g, b] = isFwd ? [0, 210, 255] : [255, 150, 0];
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        let r, g, b;
+        if (isFwd) {
+            [r, g, b] = isLight ? [42, 112, 192] : [0, 210, 255];
+        } else {
+            [r, g, b] = isLight ? [192, 120, 0] : [255, 150, 0];
+        }
         const decay = this._decayStart > 0
             ? Math.max(0, 1 - (performance.now() - this._decayStart) / DECAY_MS)
             : 1;
 
         ctx.lineWidth = 2;
-        ctx.shadowBlur = 8 * decay;
+        ctx.shadowBlur = (isLight ? 4 : 8) * decay;
         ctx.shadowColor = `rgb(${r},${g},${b})`;
 
         for (let i = 0; i < n; i++) {
@@ -109,7 +115,7 @@ export class SweepOverlay {
             if (elapsed > 0) {
                 const alpha = Math.max(0, 1 - elapsed / FADE_MS) * decay;
                 this._srcCtx.lineWidth = 3;
-                this._srcCtx.shadowBlur = 10 * decay;
+                this._srcCtx.shadowBlur = (isLight ? 5 : 10) * decay;
                 this._srcCtx.shadowColor = `rgb(${r},${g},${b})`;
                 this._srcCtx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
                 this._srcCtx.strokeRect(2, 2, sc.width - 4, sc.height - 4);

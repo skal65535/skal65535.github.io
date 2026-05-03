@@ -1,4 +1,4 @@
-import { DOM } from './ui_manager.js';
+import { ui } from './ui.js?v=2';
 
 const EXAMPLES = [
     { label: 'Mona Lisa', image: 'imgs/mona_lisa.webp',   model: 'imgs/mona_lisa.safetensors' },
@@ -13,41 +13,41 @@ export function getUrlExample() {
 }
 
 export function init({ onImageFile, onModelFile, onExampleSelect, hasPainted }) {
-    DOM.dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); DOM.fileInput.click(); });
-    DOM.sourcePanel.addEventListener('click', (e) => {
-        if (e.target !== DOM.fileInput && !(e.target === DOM.sourceCanvas && hasPainted())) DOM.fileInput.click();
+    ui.dropOverlay.addEventListener('click', (e) => { e.stopPropagation(); ui.fileInput.click(); });
+    ui.sourcePanel.addEventListener('click', (e) => {
+        if (e.target !== ui.fileInput && !(e.target === ui.sourceCanvas && hasPainted())) ui.fileInput.click();
     });
-    DOM.fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) { onImageFile(e.target.files[0]); DOM.fileInput.value = ''; }
+    ui.fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) { onImageFile(e.target.files[0]); ui.fileInput.value = ''; }
     });
 
-    DOM.sourcePanel.addEventListener('dragover', (e) => {
+    ui.sourcePanel.addEventListener('dragover', (e) => {
         e.preventDefault();
-        DOM.dropOverlay.classList.remove('hidden');
-        DOM.dropOverlay.classList.add('dragover');
+        ui.dropOverlay.classList.remove('hidden');
+        ui.dropOverlay.classList.add('dragover');
     });
-    DOM.sourcePanel.addEventListener('dragleave', (e) => {
-        if (DOM.sourcePanel.contains(e.relatedTarget)) return;
-        DOM.dropOverlay.classList.remove('dragover');
-        if (DOM.sourcePanel.classList.contains('has-image')) DOM.dropOverlay.classList.add('hidden');
+    ui.sourcePanel.addEventListener('dragleave', (e) => {
+        if (ui.sourcePanel.contains(e.relatedTarget)) return;
+        ui.dropOverlay.classList.remove('dragover');
+        if (ui.sourcePanel.classList.contains('has-image')) ui.dropOverlay.classList.add('hidden');
     });
-    DOM.sourcePanel.addEventListener('drop', (e) => {
+    ui.sourcePanel.addEventListener('drop', (e) => {
         e.preventDefault();
-        DOM.dropOverlay.classList.remove('dragover');
+        ui.dropOverlay.classList.remove('dragover');
         if (e.dataTransfer.files.length > 0) onImageFile(e.dataTransfer.files[0]);
     });
 
-    DOM.exampleSelect.addEventListener('change', async () => {
-        const idx = parseInt(DOM.exampleSelect.value, 10);
-        DOM.exampleSelect.value = '';
+    ui.exampleSelect.addEventListener('change', async () => {
+        const idx = parseInt(ui.exampleSelect.value, 10);
+        ui.exampleSelect.value = '';
         if (!isNaN(idx) && EXAMPLES[idx]) await onExampleSelect(EXAMPLES[idx]);
     });
 
-    DOM.loadBtn.addEventListener('click', () => DOM.modelFileInput.click());
-    DOM.modelFileInput.addEventListener('change', async (e) => {
+    ui.loadBtn.addEventListener('click', () => ui.modelFileInput.click());
+    ui.modelFileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        DOM.modelFileInput.value = '';
+        ui.modelFileInput.value = '';
         await onModelFile(file);
     });
 

@@ -88,8 +88,9 @@
   })();
 </script>
     <header>
-        <div class="app-logo" id="app-title">Compression using Implicit Neural Representation</div>
+        <div class="app-logo" id="app-title">Compression with Implicit Representation</div>
         <div class="app-divider"></div>
+        <button id="theme-btn">☾</button>
         <button id="help-btn">?</button>
         <div class="app-divider"></div>
         <div class="header-btns header-actions">
@@ -98,7 +99,7 @@
         <div class="app-divider"></div>
         <aside id="sidebar">
             <div class="ctrl-section collapsed" id="model-section">
-                <div class="section-label">Model</div>
+                <div class="section-label" id="model-label">Model</div>
                 <div id="model-controls">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
@@ -191,7 +192,7 @@
             </div>
 
             <div class="ctrl-section collapsed">
-                <div class="section-label">Training</div>
+                <div class="section-label" id="training-label">Training</div>
                 <div class="section-body">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Engine</div>
@@ -264,7 +265,7 @@
             </div>
 
             <div class="ctrl-section collapsed">
-                <div class="section-label">ROI Mask</div>
+                <div class="section-label" id="roi-label">ROI Mask</div>
                 <div class="section-body">
                 <div class="slider-row">
                     <div class="slider-header">
@@ -295,8 +296,6 @@
 
         </aside>
         <div class="header-spacer"></div>
-        <button id="theme-btn" title="Toggle light/dark mode">☾</button>
-        <div class="app-divider"></div>
         <div class="header-btns">
             <select id="example-select">
                 <option value="" disabled selected>Examples</option>
@@ -320,6 +319,7 @@
             document.documentElement.setAttribute('data-theme', next);
             btn.textContent = next === 'light' ? '☀' : '☾';
             localStorage.setItem('theme', next);
+            window.dispatchEvent(new CustomEvent('theme-changed', { detail: { theme: next } }));
         });
     })();
     </script>
@@ -525,6 +525,6 @@
 
 <div id="start-tooltip">↑ click to train</div>
 <input type="file" id="model-file-input" accept=".safetensors">
-    <script type="module" src="js/main.js"></script>
+    <script type="module" src="js/main.js?v=2"></script>
 </body>
 </html>

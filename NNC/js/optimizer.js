@@ -1,6 +1,6 @@
 // optimizer.js
 // CPU-side Adam optimizer + forward/backward passes (mobile/fallback path).
-import { cpuPackEmbeddings, computeEmbRange } from './emb_utils.js';
+import { cpuPackEmbeddings, computeEmbRange } from './model.js';
 
 // --- Activation helpers ---
 function makeActiv(name) {

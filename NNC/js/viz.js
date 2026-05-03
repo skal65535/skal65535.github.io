@@ -129,7 +129,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     }
 
     function drawPlaceholder(x0, w0) {
-        const ph = (isLight ? bgR - 20 : bgR + 30) | 0;
+        const ph = (isLight ? bgV - 20 : bgV + 30) | 0;
         for (let py = PAD; py < PAD+BODY_H; py++)
             for (let qx = x0; qx < x0+w0; qx++) {
                 const idx=(py*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=ph; px[idx+3]=255;
@@ -224,13 +224,19 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
 
     ctx.putImageData(imgData, 0, 0);
 
-    // Draws text with a dark background pill; cx/cy is the text anchor point.
-    function drawLabel(text, cx, cy, font = '10px monospace', align = 'center', color = 'rgba(191,223,255,0.95)') {
+    // Theme-aware colors for labels and highlights
+    const labelDefault = isLight ? 'rgba(30,50,80,0.95)' : 'rgba(191,223,255,0.95)';
+    const labelBg      = isLight ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.6)';
+    const labelBlue    = isLight ? 'rgba(42,112,192,0.95)' : 'rgba(100,160,255,0.9)';
+    const highlightBox = isLight ? 'rgba(42,112,192,0.85)' : 'rgba(191,223,255,0.85)';
+
+    // Draws text with a background pill; cx/cy is the text anchor point.
+    function drawLabel(text, cx, cy, font = '10px monospace', align = 'center', color = labelDefault) {
         ctx.font = font;
         ctx.textAlign = align;
         const tw = ctx.measureText(text).width;
         const ox = align === 'center' ? tw / 2 : align === 'right' ? tw : 0;
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillStyle = labelBg;
         ctx.fillRect(cx - ox - 2, cy - 9, tw + 4, 12);
         ctx.fillStyle = color;
         ctx.fillText(text, cx, cy);
@@ -238,7 +244,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
 
     if (hoverState) {
         const hCol = hoverState.col, hCh = hoverState.ch;
-        ctx.strokeStyle = 'rgba(191,223,255,0.85)';
+        ctx.strokeStyle = highlightBox;
         ctx.lineWidth = 1.5;
         const hilightStack = (bb, nCh, x0, w0) => {
             const slotH = bb.h / nCh;
@@ -259,7 +265,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
             const zoomLabel = ({ emb:`emb ch ${hCh}`, l1:'Layer 1', act1:`act1 ch ${hCh}`,
                 l2:'Layer 2', act2:`act2 ch ${hCh}`, l3:'Layer 3',
                 rgba:['R','G','B','α'].slice(0,outCh)[hCh] })[hCol] ?? '';
-            ctx.strokeStyle = 'rgba(191,223,255,0.7)';
+            ctx.strokeStyle = isLight ? 'rgba(42,112,192,0.7)' : 'rgba(191,223,255,0.7)';
             ctx.lineWidth = 1;
             ctx.strokeRect(xZ + rox - 0.5, yZ + roy - 0.5, rW + 1, rH + 1);
             drawLabel(zoomLabel, xZ + rox + 4, yZ + roy + 10, '9px monospace', 'left');
@@ -293,14 +299,13 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     drawLabel(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
 
     // Labels just above each weight matrix: name + channel count, in blue
-    const BLUE = 'rgba(100,160,255,0.9)';
     for (const [name, ch, lx, lw, my0] of [
         ['Layer 1', `${embCh}→${mlpWidth1}`,     xL1, matW_L1, bbL1.y0],
         ['Layer 2', `${mlpWidth1}→${mlpWidth2}`,  xL2, matW_L2, bbL2.y0],
         ['Layer 3', `${mlpWidth2}→${outCh}`,      xL3, matW_L3, bbL3.y0],
     ]) {
-        drawLabel(name, lx + lw/2, my0 - 28, '10px monospace', 'center', BLUE);
-        drawLabel(ch,   lx + lw/2, my0 - 16, '13px monospace', 'center', BLUE);
+        drawLabel(name, lx + lw/2, my0 - 28, '10px monospace', 'center', labelBlue);
+        drawLabel(ch,   lx + lw/2, my0 - 16, '13px monospace', 'center', labelBlue);
     }
 
     return {
@@ -330,7 +335,11 @@ export function drawLossCurve(canvas, lossHistory) {
     const range = maxL - minL || maxL || 1;
     const pad   = 5, n = hist.length;
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    const accentColor = isLight ? '#c07800' : '#f5a624';
+    const accentRgb   = isLight ? '192,120,0' : '245,166,36';
+
+    ctx.strokeStyle = isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.04)';
     ctx.lineWidth   = 1;
     for (let i = 0; i <= 3; i++) {
         const y = pad + (i / 3) * (h - pad * 2);
@@ -341,8 +350,8 @@ export function drawLossCurve(canvas, lossHistory) {
     const toY = v => h - pad - ((v - minL) / range) * (h - pad * 2);
 
     const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgba(245,166,36,0.14)');
-    grad.addColorStop(1, 'rgba(245,166,36,0)');
+    grad.addColorStop(0, `rgba(${accentRgb},0.15)`);
+    grad.addColorStop(1, `rgba(${accentRgb},0)`);
     ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.moveTo(toX(0), h);
@@ -351,9 +360,9 @@ export function drawLossCurve(canvas, lossHistory) {
     ctx.closePath();
     ctx.fill();
 
-    ctx.strokeStyle = '#f5a624';
+    ctx.strokeStyle = accentColor;
     ctx.lineWidth   = 1.5;
-    ctx.shadowColor = 'rgba(245,166,36,0.55)';
+    ctx.shadowColor = `rgba(${accentRgb},${isLight ? 0.35 : 0.55})`;
     ctx.shadowBlur  = 5;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {

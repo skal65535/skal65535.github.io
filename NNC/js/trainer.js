@@ -1,9 +1,8 @@
 // trainer.js
 // GPU Trainer class: runs forward pass, backward pass, and Adam update each step.
-import { buildBackwardShaders, FP_SCALE } from './backward_builder.js';
+import { buildBackwardShaders, FP_SCALE } from './webgpu.js';
 import { calculate_loss } from './loss.js';
-import { ModelTensors } from './model.js';
-import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
+import { computeEmbRange, normalizeEmbAndAdjustL1, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets, ModelTensors, buildFwdUniforms } from './model.js';
 
 
 
@@ -33,6 +32,7 @@ export class Trainer {
         this._onStop       = onStop;
 
         this.active        = false;
+        this.type          = 'gpu';
         this.lastWeights   = null;
 
         this._rafId  = null;
@@ -265,12 +265,14 @@ export class Trainer {
             this._ctx.writeBuffer(this._bwdUniformsBuf, uAB);
             aF[1] = 0.9; aF[2] = 0.999; aF[3] = 1e-8; aF[6] = FP_SCALE;
             aU[4] = this._adamT; aU[9] = sampledCount;
+            const au = this._adamUniformsBufs;
             for (const [k, tc] of Object.entries(tCfg)) {
                 aF[0] = tc.lr; aU[5] = tc.size; aF[7] = tc.l2; aU[8] = tc.clamp;
                 this._ctx.writeBuffer(au[k], aAB);
             }
 
             uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
+            
             const ce2 = device.createCommandEncoder();
             const fp2 = ce2.beginComputePass();
             fp2.setPipeline(this._pipeline); fp2.setBindGroup(0, this._bindGroup);
@@ -278,15 +280,15 @@ export class Trainer {
             fp2.end();
 
             const bwdD2 = Math.ceil(pixelCount / 64);
-            const rp2 = (pipeline, bindGroup, dx, dy = 1) => {
+            const runPass2 = (pipeline, bindGroup, dx, dy = 1) => {
                 const p = ce2.beginComputePass();
                 p.setPipeline(pipeline); p.setBindGroup(0, bindGroup);
                 p.dispatchWorkgroups(dx, dy); p.end();
             };
-            rp2(pl.gradOutput, bg.gradOutput, bwdD2);
-            rp2(pl.gradL3,     bg.gradL3,     bwdD2);
-            rp2(pl.gradL2,     bg.gradL2,     bwdD2);
-            rp2(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
+            runPass2(pl.gradOutput, bg.gradOutput, bwdD2);
+            runPass2(pl.gradL3,     bg.gradL3,     bwdD2);
+            runPass2(pl.gradL2,     bg.gradL2,     bwdD2);
+            runPass2(pl.gradL1,     bg.gradL1,     Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
 
             const ap2 = ce2.beginComputePass();
             for (const k of ModelTensors.KEYS) {
@@ -447,6 +449,7 @@ export class Trainer {
         // CPU pack with fixed [-1,1] range → upload to embeddings_q for next forward pass
         const identityRange = new Float32Array(embCh * 2);
         for (let c = 0; c < embCh; c++) { identityRange[c*2] = -1; identityRange[c*2+1] = 1; }
+        this._ctx.writeBuffer(m.embeddings_range, identityRange);
         this._ctx.writeBuffer(m.embeddings_q, cpuPackEmbeddings(embData, embCh, identityRange, embBits));
         // Guard against stale range from restart
         uploadEmbRange(null, embCh, this._fwdUniforms, device);
@@ -500,6 +503,7 @@ export class Trainer {
         const { gridSize, embeddingChannels: embCh, embBits } = this._config;
         const cv = this._canvas;
         const pixelCount = cv.width * cv.height;
+        const rb = this._ctx.readbackBuffer(pixelCount * 4 * 4);
 
         const evalOffsets = async (offsets) => {
             uploadEmbOffsets(offsets, this._fwdUniforms, device);
@@ -509,12 +513,11 @@ export class Trainer {
             p.setBindGroup(0, this._bindGroup);
             p.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
             p.end();
-            const rb = this._ctx.readbackBuffer(pixelCount * 4 * 4);
             ce.copyBufferToBuffer(this._outBufs.final, 0, rb, 0, pixelCount * 4 * 4);
             device.queue.submit([ce.finish()]);
             await rb.mapAsync(GPUMapMode.READ);
             const loss = calculate_loss(new Float32Array(rb.getMappedRange()), this._target);
-            rb.unmap(); rb.destroy();
+            rb.unmap();
             return loss;
         };
 
@@ -529,6 +532,8 @@ export class Trainer {
             if (loss < bestLoss) { bestLoss = loss; bestOffsets = candidate; }
         }
 
+        rb.destroy();
+
         // Upload winner to both uniform (fwd) and storage (bwd gradL1)
         if (bestOffsets !== current) {
             this._config.embOffsets = bestOffsets;
@@ -536,4 +541,89 @@ export class Trainer {
         uploadEmbOffsets(bestOffsets, this._fwdUniforms, device);
         this._ctx.writeBuffer(this._model.emb_offsets, bestOffsets);
     }
+}
+
+export async function runInferencePass({ webGpuContext, config, model, pipeline, bindGroup, fwdUniformsBuf, outputBuffers, readbackBuffers, channelMask, canvasWidth, canvasHeight, lastWeights }) {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, embBits, embOffsets } = config;
+
+    const range = computeEmbRange(lastWeights.embeddings, embCh, gridSize * gridSize);
+    webGpuContext.writeBuffer(model.embeddings_range, range);
+    uploadEmbRange(range, embCh, fwdUniformsBuf, device);
+    const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, embBits);
+    webGpuContext.writeBuffer(model.embeddings_q, packed);
+
+    uploadChannelMask(channelMask, fwdUniformsBuf, device);
+    const ce = device.createCommandEncoder({ label: 'inference' });
+    const fwdPass = ce.beginComputePass({ label: 'fwd' });
+    fwdPass.setPipeline(pipeline);
+    fwdPass.setBindGroup(0, bindGroup);
+    fwdPass.dispatchWorkgroups(Math.ceil(canvasWidth / 8), Math.ceil(canvasHeight / 8));
+    fwdPass.end();
+    ce.copyBufferToBuffer(outputBuffers.final,       0, readbackBuffers.final,       0, outputBuffers.final.size);
+    ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
+    ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
+    device.queue.submit([ce.finish()]);
+
+    await Promise.all([
+        readbackBuffers.final.mapAsync(GPUMapMode.READ),
+        readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
+        readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
+    ]);
+    const final  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
+    const inter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
+    const inter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
+    readbackBuffers.final.unmap();
+    readbackBuffers.interLayer1.unmap();
+    readbackBuffers.interLayer2.unmap();
+
+    return { final, inter1, inter2 };
+}
+
+export async function runZoomInferencePass({ webGpuContext, config, model, pipeline, lastWeights, channelMask, W, H }) {
+    const { device } = webGpuContext;
+    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits, embOffsets } = config;
+    const pixelCount = W * H;
+
+    const embF32 = lastWeights.embeddings;
+    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
+    webGpuContext.writeBuffer(model.embeddings_range, range);
+    const packed = cpuPackEmbeddings(embF32, embCh, range, embBits);
+    webGpuContext.writeBuffer(model.embeddings_q, packed);
+
+    const unifBuf = webGpuContext.uniformBuffer(224);
+    webGpuContext.writeBuffer(unifBuf, buildFwdUniforms(gridSize, embCh, mlpWidth1, mlpWidth2, W, H, range, embOffsets));
+    uploadChannelMask(channelMask, unifBuf, device);
+    const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
+    const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth1 * 4);
+    const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth2 * 4);
+    const rbBuf   = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
+
+    const bg = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: unifBuf } },
+            { binding: 1, resource: { buffer: model.embeddings_q } },
+            { binding: 2, resource: { buffer: model.mlp_weights } },
+            { binding: 3, resource: { buffer: interL1 } },
+            { binding: 4, resource: { buffer: interL2 } },
+            { binding: 5, resource: { buffer: outBuf  } },
+        ],
+    });
+
+    const ce = device.createCommandEncoder({ label: 'zoom-inference' });
+    const fwdPass = ce.beginComputePass({ label: 'fwd' });
+    fwdPass.setPipeline(pipeline);
+    fwdPass.setBindGroup(0, bg);
+    fwdPass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
+    fwdPass.end();
+    ce.copyBufferToBuffer(outBuf, 0, rbBuf, 0, outBuf.size);
+    device.queue.submit([ce.finish()]);
+
+    await rbBuf.mapAsync(GPUMapMode.READ);
+    const final = new Float32Array(rbBuf.getMappedRange()).slice();
+    rbBuf.unmap();
+
+    unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
+    return { final };
 }

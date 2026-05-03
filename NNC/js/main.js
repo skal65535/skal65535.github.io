@@ -1,31 +1,28 @@
-import { initWebGPU } from './webgpu_manager.js';
-import { ModelTensors, createModel, destroyModel, initCpuWeights, shakeEmbeddings, shakeMlp } from './model.js';
-import { buildShader } from './shader_builder.js';
+import { initWebGPU, buildShader, buildBackwardShaders } from './webgpu.js';
+import { ModelTensors, createModel, destroyModel, initCpuWeights, shakeEmbeddings, shakeMlp, computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets, computeTensorSizes } from './model.js';
 import { get_target_pixels } from './loss.js';
 import { export_to_glsl } from './shader_exporter.js';
 import { saveModelSafetensors, loadModelSafetensors } from './model_io.js';
 import { ROIMask } from './roi_mask.js';
 import { drawOutputCanvas, drawFlowDiagram, drawLossCurve, FLOW_PAD, FLOW_EMB_W } from './viz.js';
-import { computeEmbRange, buildFwdUniforms, uploadEmbRange, uploadEmbOffsets, uploadChannelMask, cpuPackEmbeddings, generateEmbOffsets } from './emb_utils.js';
-import { initTooltips } from './tooltips.js';
-import { Trainer } from './trainer.js';
-import { CpuTrainer, forward } from './optimizer.js';
-import { DOM, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui_manager.js';
+import { ui, init as initUI, drawPlaceholder, updateSizeDisplay, updateDirtyIndicators, syncButtonStates, updateStartLabel, setStatus, restoreUISettings, syncSliderDisplay, sliderToLR, updateEmbBitsOptions, fitSidePanels, applyUrlParams } from './ui.js?v=2';
 import { init as initROI, startDecayLoop, stopDecayLoop, hasPainted } from './roi_controls.js';
 import { init as initFileHandler, getUrlExample } from './file_handler.js';
 import { SweepOverlay } from './sweep.js';
+import { Trainer, runInferencePass, runZoomInferencePass } from './trainer.js';
+import { CpuTrainer, forward } from './optimizer.js';
 
 const gpuAvailable = !!navigator.gpu;
 
 function disableGpu() {
-    const opt = DOM.engineSelect.querySelector('option[value="gpu"]');
+    const opt = ui.engineSelect.querySelector('option[value="gpu"]');
     if (opt) opt.disabled = true;
-    if (DOM.engineSelect.value === 'gpu') DOM.engineSelect.value = 'cpu';
+    if (ui.engineSelect.value === 'gpu') ui.engineSelect.value = 'cpu';
 }
 
 // --- State ---
-let BASE_CANVAS_W = DOM.canvas.width;
-let BASE_CANVAS_H = DOM.canvas.height;
+let BASE_CANVAS_W = ui.canvas.width;
+let BASE_CANVAS_H = ui.canvas.height;
 let config = {};
 let imageHasAlpha = false;  // set from image pixels in loadImageOntoCanvas
 let loadedImage   = null;
@@ -47,7 +44,7 @@ let hoverState     = null;
 let layerCols      = [];
 let inferRunning   = false;
 let inferPending   = false;
-const sweep        = new SweepOverlay(DOM.sweepCanvas, DOM.sourceSweepCanvas);
+const sweep        = new SweepOverlay(ui.sweepCanvas, ui.sourceSweepCanvas);
 
 const isTraining   = () => trainer?.active ?? false;
 const configReady  = () => !!config.mlpWidth1;
@@ -61,33 +58,33 @@ const roiMask = new ROIMask(1, 1);
 // --- Source canvas ---
 function drawSourceImage() {
     if (!loadedImage) return;
-    const ctx = DOM.sourceCanvas.getContext('2d', { willReadFrequently: true });
-    ctx.clearRect(0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
-    ctx.drawImage(loadedImage, 0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
+    const ctx = ui.sourceCanvas.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, ui.sourceCanvas.width, ui.sourceCanvas.height);
+    ctx.drawImage(loadedImage, 0, 0, ui.sourceCanvas.width, ui.sourceCanvas.height);
     roiMask.drawOverlay(ctx);
-    DOM.dropOverlay.classList.add('hidden');
+    ui.dropOverlay.classList.add('hidden');
 }
 
-DOM.outputZoomInput.addEventListener('input', () => {
-    const scale = parseFloat(DOM.outputZoomInput.value);
-    DOM.outputZoomVal.textContent = scale + '×';
-    const wrap = DOM.canvas.closest('.canvas-wrap');
+ui.outputZoomInput.addEventListener('input', () => {
+    const scale = parseFloat(ui.outputZoomInput.value);
+    ui.outputZoomVal.textContent = scale + '×';
+    const wrap = ui.canvas.closest('.canvas-wrap');
     const zoomed = scale > 1;
     wrap.classList.toggle('zoomed', zoomed);
     if (zoomed) {
         const aspect = BASE_CANVAS_W / BASE_CANVAS_H;
         const ww = wrap.clientWidth, wh = wrap.clientHeight;
         const fitW = Math.min(ww, wh * aspect);
-        DOM.canvas.style.width  = Math.round(fitW * scale) + 'px';
-        DOM.canvas.style.height = Math.round(fitW * scale / aspect) + 'px';
+        ui.canvas.style.width  = Math.round(fitW * scale) + 'px';
+        ui.canvas.style.height = Math.round(fitW * scale / aspect) + 'px';
     } else {
-        DOM.canvas.style.width = '';
-        DOM.canvas.style.height = '';
+        ui.canvas.style.width = '';
+        ui.canvas.style.height = '';
     }
     if (canInfer()) {
         const W = Math.round(BASE_CANVAS_W * scale);
         const H = Math.round(BASE_CANVAS_H * scale);
-        DOM.outputResEl.textContent = `${W}×${H}`;
+        ui.outputResEl.textContent = `${W}×${H}`;
         runZoomInference(W, H);
     }
 });
@@ -140,19 +137,36 @@ function configCompatible(a, b) {
 }
 
 function currentModelConfig() {
-    const mlpWidth1 = parseInt(DOM.mlpWidth1Select.value);
-    const mlpWidth2 = parseInt(DOM.mlpWidth2Select.value);
-    const embeddingChannels = parseInt(DOM.embeddingChannelsSelect.value);
+    const mlpWidth1 = parseInt(ui.mlpWidth1Select.value);
+    const mlpWidth2 = parseInt(ui.mlpWidth2Select.value);
+    const embeddingChannels = parseInt(ui.embeddingChannelsSelect.value);
     return {
-        gridSize:          parseInt(DOM.gridSizeSelect.value),
+        gridSize:          parseInt(ui.gridSizeSelect.value),
         embeddingChannels: Math.ceil(embeddingChannels / 4) * 4,
         mlpWidth1:         Math.ceil(mlpWidth1 / 4) * 4,
         mlpWidth2:         Math.ceil(mlpWidth2 / 4) * 4,
-        embBits:           parseInt(DOM.embBitsSelect.value),
+        embBits:           parseInt(ui.embBitsSelect.value),
     };
 }
 
 window.addEventListener('resize', () => { if (loadedImage) fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H); });
+
+window.addEventListener('theme-changed', () => {
+    if (lastWeights) {
+        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
+            { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
+              finalOutput: lastWeights.finalOutput || null, imgW: ui.canvas.width, imgH: ui.canvas.height,
+              config, channelMask, ema: layerRangeEma, hoverState }));
+        sweep.setCols(layerCols);
+        sweep.triggerFwd(); // Force a redraw of the sweep to apply the new theme
+    }
+    if (trainer && trainer._lossHistory) {
+        drawLossCurve(ui.lossCanvas, trainer._lossHistory);
+    } else if (model && trainer === null) {
+         // During inference-only, loss might be drawn elsewhere or is empty. 
+         // Assuming if there's no trainer, we don't have an active loss curve to redraw.
+    }
+});
 
 function loadImageOntoCanvas(img) {
     loadedImage = img;
@@ -160,23 +174,23 @@ function loadImageOntoCanvas(img) {
     const aspect = img.naturalWidth / img.naturalHeight;
     BASE_CANVAS_W = aspect >= 1 ? MAX : Math.round(MAX * aspect);
     BASE_CANVAS_H = aspect >= 1 ? Math.round(MAX / aspect) : MAX;
-    DOM.sourceCanvas.width  = BASE_CANVAS_W;
-    DOM.sourceCanvas.height = BASE_CANVAS_H;
-    DOM.sourceSweepCanvas.width  = BASE_CANVAS_W;
-    DOM.sourceSweepCanvas.height = BASE_CANVAS_H;
-    DOM.canvas.width  = BASE_CANVAS_W;
-    DOM.canvas.height = BASE_CANVAS_H;
-    DOM.canvas.style.width = '';
-    DOM.canvas.style.height = '';
-    DOM.canvas.style.maxWidth = '';
-    DOM.canvas.style.maxHeight = '';
+    ui.sourceCanvas.width  = BASE_CANVAS_W;
+    ui.sourceCanvas.height = BASE_CANVAS_H;
+    ui.sourceSweepCanvas.width  = BASE_CANVAS_W;
+    ui.sourceSweepCanvas.height = BASE_CANVAS_H;
+    ui.canvas.width  = BASE_CANVAS_W;
+    ui.canvas.height = BASE_CANVAS_H;
+    ui.canvas.style.width = '';
+    ui.canvas.style.height = '';
+    ui.canvas.style.maxWidth = '';
+    ui.canvas.style.maxHeight = '';
     roiMask.resize(BASE_CANVAS_W, BASE_CANVAS_H);
-    DOM.sourcePanel.classList.add('has-image');
-    DOM.sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
-    DOM.outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    ui.sourcePanel.classList.add('has-image');
+    ui.sourceResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
+    ui.outputResEl.textContent = `${BASE_CANVAS_W}×${BASE_CANVAS_H}`;
     drawSourceImage();
     {
-        const ctx = DOM.sourceCanvas.getContext('2d');
+        const ctx = ui.sourceCanvas.getContext('2d');
         const px = ctx.getImageData(0, 0, BASE_CANVAS_W, BASE_CANVAS_H).data;
         let hasAlpha = false;
         for (let i = 3; i < px.length; i += 4) { if (px[i] < 255) { hasAlpha = true; break; } }
@@ -185,14 +199,14 @@ function loadImageOntoCanvas(img) {
     }
     const outCh = config.hasAlpha ? 4 : 3;
     const bytes = BASE_CANVAS_W * BASE_CANVAS_H * outCh;
-    DOM.inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
+    ui.inputSizeEl.textContent = bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B';
     requestAnimationFrame(() => fitSidePanels(BASE_CANVAS_W, BASE_CANVAS_H));
 }
 
 async function resetToRandomModel() {
     destroyModel(model);
     config = buildConfigFromUI();
-    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+    config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, ui.noOffsetCheckbox.checked);
     const { buffers, weights } = createModel(webGpuContext, config);
     model = buffers;
     await createPipeline();
@@ -214,7 +228,7 @@ async function previewGeometry() {
 }
 
 async function startTraining(fullReset) {
-    const useCpu = DOM.engineSelect.value === 'cpu';
+    const useCpu = ui.engineSelect.value === 'cpu';
     const configChanged = !configCompatible(lastConfig, currentModelConfig());
 
     const canTransferCpu = trainer?.type === 'cpu' && !fullReset && !configChanged;
@@ -229,7 +243,7 @@ async function startTraining(fullReset) {
 
     if (useCpu) {
         if (!trainer) {
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, ui.noOffsetCheckbox.checked);
             lastConfig = currentModelConfig();
             updateDirtyIndicators(lastConfig, currentModelConfig());
             clearTrainingUI();
@@ -242,7 +256,7 @@ async function startTraining(fullReset) {
             sweep.resetDecay(); trainer.start(cpuStartWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
-                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, ui.noOffsetCheckbox.checked);
             clearTrainingUI();
             setStatus('training', configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
             sweep.resetDecay(); trainer.start(null);
@@ -253,7 +267,7 @@ async function startTraining(fullReset) {
     try {
         if (!webGpuContext) webGpuContext = await initWebGPU();
         if (fullReset || configChanged || !model) {
-            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+            config.embOffsets = generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, ui.noOffsetCheckbox.checked);
             const { buffers, weights: freshWeights } = createModel(webGpuContext, config);
             destroyModel(model);
             model = buffers;
@@ -269,7 +283,7 @@ async function startTraining(fullReset) {
             sweep.resetDecay(); trainer.start(freshWeights);
         } else {
             config.embOffsets = (config.embBits === prevEmbBits) ? prevOffsets
-                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, DOM.noOffsetCheckbox.checked);
+                : generateEmbOffsets(config.embeddingChannels, config.embBits, config.gridSize, ui.noOffsetCheckbox.checked);
             webGpuContext.writeBuffer(model.emb_offsets, config.embOffsets);
             if (prevCpuWeights) {
                 webGpuContext.uploadModelWeights(model, prevCpuWeights);
@@ -308,23 +322,23 @@ async function handleFile(file) {
 }
 
 function resetCanvasToBase() {
-    DOM.canvas.width  = BASE_CANVAS_W;
-    DOM.canvas.height = BASE_CANVAS_H;
-    DOM.canvas.style.width = '';
-    DOM.canvas.style.height = '';
-    DOM.canvas.parentElement.style.overflow = 'hidden';
+    ui.canvas.width  = BASE_CANVAS_W;
+    ui.canvas.height = BASE_CANVAS_H;
+    ui.canvas.style.width = '';
+    ui.canvas.style.height = '';
+    ui.canvas.parentElement.style.overflow = 'hidden';
 }
 
 function buildConfigFromUI() {
     return {
-        gridSize:            parseInt(DOM.gridSizeSelect.value),
-        embeddingChannels:   parseInt(DOM.embeddingChannelsSelect.value),
-        mlpWidth1:           parseInt(DOM.mlpWidth1Select.value),
-        mlpWidth2:           parseInt(DOM.mlpWidth2Select.value),
-        quantization:        DOM.quantizationSelect.value,
-        embBits:             parseInt(DOM.embBitsSelect.value),
-        activation:          DOM.activationSelect.value,
-        smoothInterpolation: DOM.smoothInterpolationCheckbox.checked,
+        gridSize:            parseInt(ui.gridSizeSelect.value),
+        embeddingChannels:   parseInt(ui.embeddingChannelsSelect.value),
+        mlpWidth1:           parseInt(ui.mlpWidth1Select.value),
+        mlpWidth2:           parseInt(ui.mlpWidth2Select.value),
+        quantization:        ui.quantizationSelect.value,
+        embBits:             parseInt(ui.embBitsSelect.value),
+        activation:          ui.activationSelect.value,
+        smoothInterpolation: ui.smoothInterpolationCheckbox.checked,
         hasAlpha:            imageHasAlpha,
         width:  BASE_CANVAS_W,
         height: BASE_CANVAS_H,
@@ -348,9 +362,9 @@ function createBindGroup() {
     const { mlpWidth1, mlpWidth2, gridSize, embeddingChannels } = config;
     fwdUniformsBuf = webGpuContext.uniformBuffer(224, 'fwdUniforms');
     webGpuContext.writeBuffer(fwdUniformsBuf,
-        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth1, mlpWidth2, DOM.canvas.width, DOM.canvas.height, null, config.embOffsets));
+        buildFwdUniforms(gridSize, embeddingChannels, mlpWidth1, mlpWidth2, ui.canvas.width, ui.canvas.height, null, config.embOffsets));
 
-    const pixelCount = DOM.canvas.width * DOM.canvas.height;
+    const pixelCount = ui.canvas.width * ui.canvas.height;
     const embSize    = gridSize * gridSize * embeddingChannels;
     const stride1    = mlpWidth1 * 4; // bytes per pixel in interLayer1
     const stride2    = mlpWidth2 * 4; // bytes per pixel in interLayer2
@@ -383,11 +397,11 @@ function createBindGroup() {
 
 function clearTrainingUI() {
     stopDecayLoop();
-    DOM.lossCanvas.getContext('2d').clearRect(0, 0, DOM.lossCanvas.width, DOM.lossCanvas.height);
-    DOM.canvas.getContext('2d').clearRect(0, 0, DOM.canvas.width, DOM.canvas.height);
-    DOM.lossValueEl.textContent   = '—';
-    DOM.stepCounterEl.textContent = '0';
-    DOM.rateDisplayEl.textContent = '—';
+    ui.lossCanvas.getContext('2d').clearRect(0, 0, ui.lossCanvas.width, ui.lossCanvas.height);
+    ui.canvas.getContext('2d').clearRect(0, 0, ui.canvas.width, ui.canvas.height);
+    ui.lossValueEl.textContent   = '—';
+    ui.stepCounterEl.textContent = '0';
+    ui.rateDisplayEl.textContent = '—';
     layerRangeEma = null;
     layerCols     = [];
     hoverState    = null;
@@ -403,17 +417,17 @@ function trainerCallbacks() {
         onStep({ loss, step, rate, lastWeights: w, inter1, inter2, lossHistory }) {
             lastWeights = w;
             if (inter1 !== null) lastInterData = { inter1, inter2 };
-            DOM.stepCounterEl.textContent = step.toLocaleString();
-            DOM.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
+            ui.stepCounterEl.textContent = step.toLocaleString();
+            ui.rateDisplayEl.textContent = rate === '—' ? rate : rate + ' it/s';
             if (w.finalOutput !== null) {
-                DOM.lossValueEl.textContent = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
-                drawOutputCanvas(DOM.canvas, w.finalOutput, config.hasAlpha);
-                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+                ui.lossValueEl.textContent = loss < 1e-4 ? loss.toExponential(3) : loss.toFixed(6);
+                drawOutputCanvas(ui.canvas, w.finalOutput, config.hasAlpha);
+                ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
                     { weights: w, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-                      finalOutput: w.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+                      finalOutput: w.finalOutput, imgW: ui.canvas.width, imgH: ui.canvas.height,
                       config, channelMask, ema: layerRangeEma, hoverState }));
                 sweep.setCols(layerCols);
-                drawLossCurve(DOM.lossCanvas, lossHistory);
+                drawLossCurve(ui.lossCanvas, lossHistory);
                 drawSourceImage();
             }
             if (inter1 !== null) sweep.triggerStep();
@@ -428,47 +442,47 @@ function trainerCallbacks() {
 function makeCpuTrainer() {
     return new CpuTrainer({
         config,
-        targetPixels: get_target_pixels(loadedImage, DOM.canvas),
+        targetPixels: get_target_pixels(loadedImage, ui.canvas),
         getHyperparams: () => ({
-            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
-            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
-            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
-            maxIter:     parseInt(DOM.maxIterInput.value),
-            vizInterval: parseInt(DOM.vizIntervalSelect.value),
+            stride:      parseInt(ui.bwdStrideInput.value) || 1,
+            embedLr:     sliderToLR(parseInt(ui.embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(ui.mlpLrInput.value)),
+            maxIter:     parseInt(ui.maxIterInput.value),
+            vizInterval: parseInt(ui.vizIntervalSelect.value),
         }),
         ...trainerCallbacks(),
     });
 }
 
 function makeTrainer() {
-    const targetPixels = get_target_pixels(loadedImage, DOM.canvas);
+    const targetPixels = get_target_pixels(loadedImage, ui.canvas);
     const alphaCellMask = config.hasAlpha
-        ? buildAlphaCellMask(targetPixels, DOM.canvas.width, DOM.canvas.height, config.gridSize)
+        ? buildAlphaCellMask(targetPixels, ui.canvas.width, ui.canvas.height, config.gridSize)
         : null;
     return new Trainer({
-        webGpuContext, canvas: DOM.canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
+        webGpuContext, canvas: ui.canvas, config, model, pipeline, bindGroup, fwdUniformsBuf,
         outputBuffers, readbackBuffers,
         targetPixels,
         alphaCellMask,
         roiMask,
         getHyperparams: () => ({
-            stride:      parseInt(DOM.bwdStrideInput.value) || 1,
-            mlpRatio:    parseInt(DOM.mlpRatioInput.value)  || 1,
-            numLoops:      parseInt(DOM.numLoopsInput.value)      || 1,
-            embedLr:     sliderToLR(parseInt(DOM.embedLrInput.value)),
-            mlpLr:       sliderToLR(parseInt(DOM.mlpLrInput.value)),
-            roiStrength: parseFloat(DOM.roiStrengthInput.value),
-            roiFreeze:   DOM.roiFreezeChk.checked,
-            maxIter:     parseInt(DOM.maxIterInput.value),
-            vizInterval:          parseInt(DOM.vizIntervalSelect.value),
-            offsetSampleInterval: parseInt(DOM.offsetSampleIntervalSelect.value),
+            stride:      parseInt(ui.bwdStrideInput.value) || 1,
+            mlpRatio:    parseInt(ui.mlpRatioInput.value)  || 1,
+            numLoops:      parseInt(ui.numLoopsInput.value)      || 1,
+            embedLr:     sliderToLR(parseInt(ui.embedLrInput.value)),
+            mlpLr:       sliderToLR(parseInt(ui.mlpLrInput.value)),
+            roiStrength: parseFloat(ui.roiStrengthInput.value),
+            roiFreeze:   ui.roiFreezeChk.checked,
+            maxIter:     parseInt(ui.maxIterInput.value),
+            vizInterval:          parseInt(ui.vizIntervalSelect.value),
+            offsetSampleInterval: parseInt(ui.offsetSampleIntervalSelect.value),
         }),
         ...trainerCallbacks(),
     });
 }
 
 // --- Start / Stop / Reset buttons ---
-DOM.startBtn.addEventListener('click', async () => {
+ui.startBtn.addEventListener('click', async () => {
     if (isTraining()) {
         trainer.stop();
         setStoppedStatus();
@@ -482,34 +496,33 @@ DOM.startBtn.addEventListener('click', async () => {
     await startTraining(false);
 });
 
-DOM.resetBtn.addEventListener('click', async () => {
+ui.resetBtn.addEventListener('click', async () => {
     if (!loadedImage) return;
     await startTraining(true);
 });
 
 // --- Shake: add small noise to escape local minima ---
-DOM.shakeEmbBtn.addEventListener('click', () => {
+ui.shakeEmbBtn.addEventListener('click', () => {
     if (!lastWeights) return;
     shakeEmbeddings(webGpuContext, model, lastWeights.embeddings);
 });
 
-DOM.shakeMlpBtn.addEventListener('click', async () => {
+ui.shakeMlpBtn.addEventListener('click', async () => {
     if (!model) return;
     shakeMlp(webGpuContext, model, await readBackAllWeights());
 });
 
 // --- Weight readback (for export) ---
 async function readBackAllWeights() {
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
-    const outCh = config.hasAlpha ? 4 : 3;
+    const sizes = computeTensorSizes(config);
     const tensors = {
-        embeddings:     { buf: model.embeddings,     size: gridSize * gridSize * embCh },
-        layer1_weights: { buf: model.layer1.weights, size: mlpWidth1 * embCh },
-        layer1_biases:  { buf: model.layer1.biases,  size: mlpWidth1 },
-        layer2_weights: { buf: model.layer2.weights, size: mlpWidth2 * mlpWidth1 },
-        layer2_biases:  { buf: model.layer2.biases,  size: mlpWidth2 },
-        layer3_weights: { buf: model.layer3.weights, size: outCh * mlpWidth2 },
-        layer3_biases:  { buf: model.layer3.biases,  size: outCh },
+        embeddings:     { buf: model.embeddings,     size: sizes.embeddings },
+        layer1_weights: { buf: model.layer1.weights, size: sizes.layer1_weights },
+        layer1_biases:  { buf: model.layer1.biases,  size: sizes.layer1_biases },
+        layer2_weights: { buf: model.layer2.weights, size: sizes.layer2_weights },
+        layer2_biases:  { buf: model.layer2.biases,  size: sizes.layer2_biases },
+        layer3_weights: { buf: model.layer3.weights, size: sizes.layer3_weights },
+        layer3_biases:  { buf: model.layer3.biases,  size: sizes.layer3_biases },
     };
     return webGpuContext.readBackBuffers(tensors);
 }
@@ -548,14 +561,14 @@ async function serializeModel() {
     const weights = await readBackAllWeights();
     const saveConfig = {
         ...config,
-        maxIter:    DOM.maxIterInput.value,
-        embedLr:    DOM.embedLrInput.value,
-        mlpLr:      DOM.mlpLrInput.value,
-        mlpRatio:   DOM.mlpRatioInput.value,
-        numLoops:      DOM.numLoopsInput.value,
-        bwdStride:  DOM.bwdStrideInput.value,
-        outputZoom: DOM.outputZoomInput.value,
-        noOffset:   DOM.noOffsetCheckbox.checked,
+        maxIter:    ui.maxIterInput.value,
+        embedLr:    ui.embedLrInput.value,
+        mlpLr:      ui.mlpLrInput.value,
+        mlpRatio:   ui.mlpRatioInput.value,
+        numLoops:      ui.numLoopsInput.value,
+        bwdStride:  ui.bwdStrideInput.value,
+        outputZoom: ui.outputZoomInput.value,
+        noOffset:   ui.noOffsetCheckbox.checked,
     };
     return saveModelSafetensors(saveConfig, weights);
 }
@@ -570,73 +583,32 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 });
 
 // --- Snapshot / Recall ---
-DOM.snapshotBtn.addEventListener('click', async () => {
+ui.snapshotBtn.addEventListener('click', async () => {
     if (!model) { alert("Train or load a model first."); return; }
     snapshotWeights = await serializeModel();
     syncButtonStates(isTraining(), !!model, !!snapshotWeights);
 });
 
-DOM.recallBtn.addEventListener('click', async () => {
+ui.recallBtn.addEventListener('click', async () => {
     if (!snapshotWeights) return;
     await loadModelFile(new Blob([snapshotWeights], { type: 'application/octet-stream' }));
 });
 
 // --- Zoom inference: forward pass at arbitrary resolution using temp buffers ---
 async function runZoomInference(W, H) {
-    const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
-    const embSize    = gridSize * gridSize * embCh;
-    const pixelCount = W * H;
-
-    const embF32 = lastWeights.embeddings;
-    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
-    webGpuContext.writeBuffer(model.embeddings_range, range);
-    const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
-    webGpuContext.writeBuffer(model.embeddings_q, packed);
-
-    const unifBuf = webGpuContext.uniformBuffer(224);
-    webGpuContext.writeBuffer(unifBuf, buildFwdUniforms(gridSize, embCh, mlpWidth1, mlpWidth2, W, H, range, config.embOffsets));
-    uploadChannelMask(channelMask, unifBuf, device);
-    const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
-    const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth1 * 4);
-    const interL2 = webGpuContext.storageBuffer(pixelCount * mlpWidth2 * 4);
-    const rbBuf   = webGpuContext.readbackBuffer(pixelCount * 4 * 4);
-
-    const bg = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: unifBuf } },
-            { binding: 1, resource: { buffer: model.embeddings_q } },
-            { binding: 2, resource: { buffer: model.mlp_weights } },
-            { binding: 3, resource: { buffer: interL1 } },
-            { binding: 4, resource: { buffer: interL2 } },
-            { binding: 5, resource: { buffer: outBuf  } },
-        ],
+    const { final } = await runZoomInferencePass({
+        webGpuContext, config, model, pipeline, lastWeights, channelMask, W, H
     });
-
-    const ce = device.createCommandEncoder({ label: 'zoom-inference' });
-    const fwdPass = ce.beginComputePass({ label: 'fwd' });
-    fwdPass.setPipeline(pipeline);
-    fwdPass.setBindGroup(0, bg);
-    fwdPass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
-    fwdPass.end();
-    ce.copyBufferToBuffer(outBuf, 0, rbBuf, 0, outBuf.size);
-    device.queue.submit([ce.finish()]);
-
-    await rbBuf.mapAsync(GPUMapMode.READ);
-    DOM.canvas.width  = W;
-    DOM.canvas.height = H;
-    drawOutputCanvas(DOM.canvas, new Float32Array(rbBuf.getMappedRange()), config.hasAlpha);
-    rbBuf.unmap();
-
-    unifBuf.destroy(); outBuf.destroy(); interL1.destroy(); interL2.destroy(); rbBuf.destroy();
+    ui.canvas.width  = W;
+    ui.canvas.height = H;
+    drawOutputCanvas(ui.canvas, final, config.hasAlpha);
 }
 
 // --- Channel mask: click / shift+click on the Emb column in the Layers canvas ---
 // Map a mouse event to canvas pixel coords, accounting for object-fit:contain letterboxing.
 function layersCanvasCoords(e) {
-    const rect = DOM.layersCanvas.getBoundingClientRect();
-    const cw = DOM.layersCanvas.width, ch = DOM.layersCanvas.height;
+    const rect = ui.layersCanvas.getBoundingClientRect();
+    const cw = ui.layersCanvas.width, ch = ui.layersCanvas.height;
     const canvasAspect = cw / ch;
     const rectAspect = rect.width / rect.height;
     let contentW, contentH, ox, oy;
@@ -655,13 +627,13 @@ function layersCanvasCoords(e) {
 
 function redrawLayers() {
     if (!lastWeights || !configReady()) return;
-    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
         { weights: lastWeights, inter1: lastInterData.inter1, inter2: lastInterData.inter2,
-          finalOutput: lastWeights.finalOutput, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+          finalOutput: lastWeights.finalOutput, imgW: ui.canvas.width, imgH: ui.canvas.height,
           config, channelMask, ema: layerRangeEma, hoverState }));
 }
 
-DOM.layersCanvas.addEventListener('mousemove', (e) => {
+ui.layersCanvas.addEventListener('mousemove', (e) => {
     const { cx, cy } = layersCanvasCoords(e);
     let newState = null;
     for (const col of layerCols) {
@@ -675,20 +647,20 @@ DOM.layersCanvas.addEventListener('mousemove', (e) => {
             break;
         }
     }
-    DOM.layersCanvas.style.cursor = newState?.col === 'emb' && !isTraining() ? 'pointer' : 'default';
+    ui.layersCanvas.style.cursor = newState?.col === 'emb' && !isTraining() ? 'pointer' : 'default';
     if (newState?.col === hoverState?.col && newState?.ch === hoverState?.ch) return;
     hoverState = newState;
     redrawLayers();
 });
 
-DOM.layersCanvas.addEventListener('mouseleave', () => {
-    DOM.layersCanvas.style.cursor = 'default';
+ui.layersCanvas.addEventListener('mouseleave', () => {
+    ui.layersCanvas.style.cursor = 'default';
     if (hoverState === null) return;
     hoverState = null;
     redrawLayers();
 });
 
-DOM.layersCanvas.addEventListener('click', (e) => {
+ui.layersCanvas.addEventListener('click', (e) => {
     if (isTraining()) return;
     const embCol = layerCols.find(c => c.name === 'emb');
     if (!embCol?.slotH) return;
@@ -708,47 +680,20 @@ async function runInference() {
     if (inferRunning) { inferPending = true; return; }
     inferRunning = true;
     try {
-        const { device } = webGpuContext;
-        const { gridSize, embeddingChannels: embCh } = config;
+        const { final: inferFinal, inter1: inferInter1, inter2: inferInter2 } = await runInferencePass({
+            webGpuContext, config, model, pipeline, bindGroup, fwdUniformsBuf, outputBuffers, readbackBuffers, channelMask,
+            canvasWidth: ui.canvas.width, canvasHeight: ui.canvas.height, lastWeights
+        });
 
-        const embF32 = lastWeights.embeddings;
-        const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
-        webGpuContext.writeBuffer(model.embeddings_range, range);
-        uploadEmbRange(range, embCh, fwdUniformsBuf, device);
-        const packed = cpuPackEmbeddings(embF32, embCh, range, config.embBits);
-        webGpuContext.writeBuffer(model.embeddings_q, packed);
-
-        uploadChannelMask(channelMask, fwdUniformsBuf, device);
-        const ce = device.createCommandEncoder({ label: 'inference' });
-        const fwdPass = ce.beginComputePass({ label: 'fwd' });
-        fwdPass.setPipeline(pipeline);
-        fwdPass.setBindGroup(0, bindGroup);
-        fwdPass.dispatchWorkgroups(Math.ceil(DOM.canvas.width / 8), Math.ceil(DOM.canvas.height / 8));
-        fwdPass.end();
-        ce.copyBufferToBuffer(outputBuffers.final,       0, readbackBuffers.final,       0, outputBuffers.final.size);
-        ce.copyBufferToBuffer(outputBuffers.interLayer1, 0, readbackBuffers.interLayer1, 0, readbackBuffers.interLayer1.size);
-        ce.copyBufferToBuffer(outputBuffers.interLayer2, 0, readbackBuffers.interLayer2, 0, readbackBuffers.interLayer2.size);
-        device.queue.submit([ce.finish()]);
         sweep.setCols(layerCols); sweep.triggerFwd();
 
-        await Promise.all([
-            readbackBuffers.final.mapAsync(GPUMapMode.READ),
-            readbackBuffers.interLayer1.mapAsync(GPUMapMode.READ),
-            readbackBuffers.interLayer2.mapAsync(GPUMapMode.READ),
-        ]);
-        const inferFinal  = new Float32Array(readbackBuffers.final.getMappedRange()).slice();
-        const inferInter1 = new Float32Array(readbackBuffers.interLayer1.getMappedRange()).slice();
-        const inferInter2 = new Float32Array(readbackBuffers.interLayer2.getMappedRange()).slice();
-        drawOutputCanvas(DOM.canvas, inferFinal, config.hasAlpha);
-        readbackBuffers.final.unmap();
-        readbackBuffers.interLayer1.unmap();
-        readbackBuffers.interLayer2.unmap();
+        drawOutputCanvas(ui.canvas, inferFinal, config.hasAlpha);
 
         lastInterData = { inter1: inferInter1, inter2: inferInter2 };
         lastWeights.finalOutput = inferFinal;
-        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+        ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
             { weights: lastWeights, inter1: inferInter1, inter2: inferInter2,
-              finalOutput: inferFinal, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+              finalOutput: inferFinal, imgW: ui.canvas.width, imgH: ui.canvas.height,
               config, channelMask, ema: layerRangeEma, hoverState }));
         sweep.setCols(layerCols);
     } finally {
@@ -762,12 +707,12 @@ async function runInferenceCpu() {
     const range  = computeEmbRange(lastWeights.embeddings, embCh, gridSize * gridSize);
     const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, config.embBits);
     const { final, interLayer1, interLayer2 } = forward(config, { ...lastWeights, embeddings_q: packed }, range);
-    drawOutputCanvas(DOM.canvas, final, config.hasAlpha);
+    drawOutputCanvas(ui.canvas, final, config.hasAlpha);
     lastInterData = { inter1: interLayer1, inter2: interLayer2 };
     lastWeights.finalOutput = final;
-    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(DOM.layersCanvas,
+    ({ ema: layerRangeEma, cols: layerCols } = drawFlowDiagram(ui.layersCanvas,
         { weights: lastWeights, inter1: interLayer1, inter2: interLayer2,
-          finalOutput: final, imgW: DOM.canvas.width, imgH: DOM.canvas.height,
+          finalOutput: final, imgW: ui.canvas.width, imgH: ui.canvas.height,
           config, channelMask, ema: layerRangeEma, hoverState }));
     sweep.setCols(layerCols);
 }
@@ -797,15 +742,15 @@ async function loadModelFile(file) {
         return;
     }
 
-    DOM.gridSizeSelect.value          = String(savedConfig.gridSize);
-    DOM.embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
-    DOM.mlpWidth1Select.value         = String(savedConfig.mlpWidth1);
-    DOM.mlpWidth2Select.value         = String(savedConfig.mlpWidth2);
+    ui.gridSizeSelect.value          = String(savedConfig.gridSize);
+    ui.embeddingChannelsSelect.value = String(savedConfig.embeddingChannels);
+    ui.mlpWidth1Select.value         = String(savedConfig.mlpWidth1);
+    ui.mlpWidth2Select.value         = String(savedConfig.mlpWidth2);
 
     restoreUISettings({ savedConfig, uiSettings });
 
     const loadedEmbBits = savedConfig.embBits || 8;
-    DOM.embBitsSelect.value = String(loadedEmbBits);
+    ui.embBitsSelect.value = String(loadedEmbBits);
 
     const outCh = tensors.layer3_biases.length;  // 3 or 4
     imageHasAlpha = outCh === 4;
@@ -837,13 +782,13 @@ async function loadModelFile(file) {
         embeddingChannels:   embCh,
         mlpWidth1:           mlpWidth1,
         mlpWidth2:           mlpWidth2,
-        quantization:        DOM.quantizationSelect.value,
+        quantization:        ui.quantizationSelect.value,
         embBits:             loadedEmbBits,
-        activation:          DOM.activationSelect.value,
-        smoothInterpolation: DOM.smoothInterpolationCheckbox.checked,
+        activation:          ui.activationSelect.value,
+        smoothInterpolation: ui.smoothInterpolationCheckbox.checked,
         hasAlpha:            outCh === 4,
-        width:  DOM.canvas.width,
-        height: DOM.canvas.height,
+        width:  ui.canvas.width,
+        height: ui.canvas.height,
         embOffsets:          savedConfig.embOffsets ?? new Float32Array(embCh / (32 / loadedEmbBits) * 2),
     };
 
@@ -886,7 +831,6 @@ function refreshStartLabel() {
     updateStartLabel(configCompatible(lastConfig, currentModelConfig()), !!model, isTraining(), !!snapshotWeights);
 }
 
-initTooltips();
 initUI({
     onConfigChange: () => {
         refreshStartLabel();
@@ -903,7 +847,7 @@ initUI({
             } else if (webGpuContext && loadedImage) {
                 previewGeometry();
             } else {
-                drawPlaceholder(DOM.layersCanvas);
+                drawPlaceholder(ui.layersCanvas);
                 layerRangeEma = null;
                 lastInterData = { inter1: null, inter2: null };
             }
@@ -947,13 +891,13 @@ if (!gpuAvailable) disableGpu();
     const tip = document.getElementById('start-tooltip');
     const dismiss = () => tip.remove();
     document.addEventListener('startup-complete', () => {
-        const r = DOM.startBtn.getBoundingClientRect();
+        const r = ui.startBtn.getBoundingClientRect();
         tip.style.left = (r.left + r.width / 2) + 'px';
         tip.style.top = (r.bottom + 10) + 'px';
         tip.classList.add('visible');
         tip.addEventListener('animationend', dismiss, { once: true });
     }, { once: true });
-    DOM.startBtn.addEventListener('click', dismiss, { once: true });
+    ui.startBtn.addEventListener('click', dismiss, { once: true });
 })();
 
 // --- Startup: load default image then default model (or auto-start from URL params) ---
@@ -973,7 +917,7 @@ if (urlExample) {
     startupImg.onload = async () => {
         loadImageOntoCanvas(startupImg);
         if (urlHasParams) {
-            DOM.startBtn.click();
+            ui.startBtn.click();
         } else if (!gpuAvailable) {
             try {
                 const resp = await fetch('imgs/model.safetensors');

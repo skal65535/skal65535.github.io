@@ -925,10 +925,15 @@ input[type="range"]::-moz-range-thumb {
     }
 
     .canvas-panel {
-        width: 100%;
-        max-width: none !important;
+        max-width: 100% !important; /* Ensure it never overflows horizontally */
         min-height: 0;
-        height: min(56vw, 360px);
+        height: auto;
+    }
+
+    .canvas-wrap {
+        width: 100%;
+        height: auto;
+        flex: none;
     }
 
     /* hide embeddings+layers panel */
