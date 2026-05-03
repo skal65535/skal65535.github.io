@@ -162,10 +162,6 @@ export class Trainer {
         bb.uniAB  = new ArrayBuffer(5 * 4);
         bb.uniU32 = new Uint32Array(bb.uniAB);
         bb.uniF32 = new Float32Array(bb.uniAB);
-        bb.gradZero = {};
-        for (const [k, buf] of Object.entries(m.gradAtomic)) {
-            bb.gradZero[k] = new Int32Array(buf.size / 4);
-        }
 
         const bu = this._bwdUniformsBuf;
         const tgt = this._targetGpuBuf;
@@ -301,15 +297,12 @@ export class Trainer {
                 this._ctx.writeBuffer(bb.roiMask, this._roiMask.weights);
                 this._roiMask.dirty = false;
             }
-            for (const [k, buf] of Object.entries(m.gradAtomic)) {
-                this._ctx.writeBuffer(buf, bb.gradZero[k]);
-            }
-
             this._writeUniforms(hp, sampledCount);
 
             uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
 
             const ce2 = device.createCommandEncoder();
+            for (const buf of Object.values(m.gradAtomic)) ce2.clearBuffer(buf, 0, buf.size);
             const fp2 = ce2.beginComputePass();
             fp2.setPipeline(this._pipeline); fp2.setBindGroup(0, this._bindGroup);
             fp2.dispatchWorkgroups(Math.ceil(cv.width / 8), Math.ceil(cv.height / 8));
@@ -359,14 +352,11 @@ export class Trainer {
             this._roiMask.dirty = false;
         }
 
-        for (const [k, buf] of Object.entries(m.gradAtomic)) {
-            this._ctx.writeBuffer(buf, bb.gradZero[k]);
-        }
-
         this._writeUniforms(hp, sampledCount);
 
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
         const ce = device.createCommandEncoder();
+        for (const buf of Object.values(m.gradAtomic)) ce.clearBuffer(buf, 0, buf.size);
 
         const fwdPass = ce.beginComputePass();
         fwdPass.setPipeline(this._pipeline);
