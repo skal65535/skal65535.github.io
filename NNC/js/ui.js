@@ -1,6 +1,8 @@
 // ui.js
 // Centralized UI management, DOM access, and tooltips.
 
+export const GRID_SIZES = [256, 400, 625, 1024, 1600, 2500, 4000, 6400, 8100, 10000];
+
 const elements = {
     sourcePanel:  document.getElementById('source-panel'),
     outputPanel:  document.getElementById('output-panel'),
@@ -15,6 +17,7 @@ const elements = {
     dropOverlay:  document.getElementById('drop-overlay'),
 
     gridSizeSelect:            document.getElementById('grid-size'),
+    gridSizeLabelEl:           document.getElementById('grid-size-label'),
     embeddingChannelsSelect:   document.getElementById('embedding-channels'),
     mlpWidth1Select:           document.getElementById('mlp-width1'),
     mlpWidth2Select:           document.getElementById('mlp-width2'),
@@ -54,7 +57,6 @@ const elements = {
     modelSizeEl:   document.getElementById('model-size'),
     inputSizeEl:   document.getElementById('input-size'),
     statusDotEl:   document.getElementById('status-dot'),
-    statusTextEl:  document.getElementById('status-text'),
     sourceResEl:   document.getElementById('source-res'),
     outputResEl:   document.getElementById('output-res'),
     roiBrushInput:    document.getElementById('roi-brush'),
@@ -89,11 +91,11 @@ export function drawPlaceholder(ctx_canvas) {
 }
 
 function computeModelSize() {
-    const gs   = parseInt(elements.gridSizeSelect.value);
+    const numPts = GRID_SIZES[parseInt(elements.gridSizeSelect.value)];
     const embCh = parseInt(elements.embeddingChannelsSelect.value);
     const mlpW1 = parseInt(elements.mlpWidth1Select.value);
     const mlpW2 = parseInt(elements.mlpWidth2Select.value);
-    const emb   = gs * gs * embCh;
+    const emb   = numPts * embCh;
     const outCh = 3;
     const mlp   = embCh*mlpW1 + mlpW1 + mlpW1*mlpW2 + mlpW2 + mlpW2*outCh + outCh;
     const mlpBpp = elements.quantizationSelect.value === 'none' ? 4 : 1;
@@ -126,7 +128,7 @@ const STRUCTURAL_CONTROLS = [elements.gridSizeSelect, elements.embeddingChannels
 export function updateDirtyIndicators(lastConfig, currentModelConfig) {
     if (!lastConfig) { STRUCTURAL_CONTROLS.forEach(el => el.removeAttribute('data-dirty')); return; }
     const cur = currentModelConfig;
-    elements.gridSizeSelect.toggleAttribute('data-dirty',          lastConfig.gridSize            !== cur.gridSize);
+    elements.gridSizeSelect.toggleAttribute('data-dirty',          lastConfig.gW !== cur.gW || lastConfig.gH !== cur.gH);
     elements.embeddingChannelsSelect.toggleAttribute('data-dirty', lastConfig.embeddingChannels   !== cur.embeddingChannels);
     elements.mlpWidth1Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth1           !== cur.mlpWidth1);
     elements.mlpWidth2Select.toggleAttribute('data-dirty',         lastConfig.mlpWidth2           !== cur.mlpWidth2);
@@ -156,9 +158,7 @@ export function updateStartLabel(isCompatible, hasModel, isTraining, snapshotWei
 }
 
 export function setStatus(s, isCompatible, hasModel, isTraining, snapshotWeights) {
-    const labels = { idle: 'IDLE', training: 'TRAINING', stopped: 'STOPPED' };
-    elements.statusTextEl.textContent = labels[s] || s;
-    elements.statusDotEl.className    = 'status-dot ' + s;
+    elements.statusDotEl.className = 'status-dot ' + s;
     const modelControls = document.getElementById('model-controls');
     if (s === 'training') {
         elements.startBtn.textContent = '■ Stop';
@@ -263,7 +263,13 @@ export function applyUrlParams() {
         if (val !== null && allowed.includes(n)) { el.value = String(n); hasParams = true; }
     };
 
-    setSelect(elements.gridSizeSelect,          params.get('grid'), [16, 32, 64]);
+    const gridParam = parseInt(params.get('grid'));
+    if (!isNaN(gridParam)) {
+        const idx = GRID_SIZES.reduce((best, v, i) =>
+            Math.abs(v - gridParam) < Math.abs(GRID_SIZES[best] - gridParam) ? i : best, 0);
+        elements.gridSizeSelect.value = String(idx);
+        hasParams = true;
+    }
     setSelect(elements.embeddingChannelsSelect, params.get('EMB'),  [4, 8, 16]);
     setSelect(elements.mlpWidth1Select,         params.get('MLP1'), [4, 8, 16, 32, 64]);
     setSelect(elements.mlpWidth2Select,         params.get('MLP2'), [4, 8, 16, 32, 64]);
@@ -320,7 +326,7 @@ const TOOLTIPS = {
     'load-btn':             'Load a .safetensors model file.',
     'save-btn':             'Download model weights as .safetensors.',
     'export-btn':           'Export trained model as a GLSL fragment shader.',
-    'grid-size':            'Spatial resolution of the feature grid (N×N).\nLarger = finer detail, bigger model.',
+    'grid-size':            'Approximate number of embedding grid points.\nGrid is sized to match image aspect ratio (gW×gH ≈ N pts).\nLarger = finer detail, bigger model.',
     'embedding-channels':   'Feature channels per grid cell.\nMore = richer representation.',
     'mlp-width1':           'Output width of Layer 1 (embCh → W1).\nLarger = more capacity, slower training.',
     'mlp-width2':           'Output width of Layer 2 (W1 → W2).\nLarger = more capacity, slower training.',
@@ -349,6 +355,8 @@ const TOOLTIPS = {
     'engine':               'Training backend.\nGPU runs the full backward pass in WGSL; CPU is slower but works without WebGPU.',
     'output-zoom':          'Upscale the output canvas for a closer look.\nRuns a full forward pass at the target resolution.',
     'viz-interval':         'How often the Layers diagram refreshes during training (every N steps).',
+    'source-header':        'Click or drop an image to load it.\nDrag on the image to paint a training mask (ROI).',
+    'layers-header':        'Flow diagram of the network.\nClick an embedding channel to isolate it; click again to restore all.',
 };
 
 function initTooltips() {
@@ -432,7 +440,11 @@ export function init(callbacks) {
     });
     syncActivationButtons();
 
-    [elements.gridSizeSelect, elements.embeddingChannelsSelect, elements.mlpWidth1Select, elements.mlpWidth2Select,
+    elements.gridSizeSelect.addEventListener('input', () => {
+        updateEmbBitsOptions();
+        callbacks.onSelectChange();
+    });
+    [elements.embeddingChannelsSelect, elements.mlpWidth1Select, elements.mlpWidth2Select,
      elements.quantizationSelect, elements.embBitsSelect, elements.activationSelect].forEach(sel => {
         sel.addEventListener('change', () => {
             updateEmbBitsOptions();

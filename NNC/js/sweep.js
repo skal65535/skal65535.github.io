@@ -20,9 +20,12 @@ export class SweepOverlay {
         this._decayStart  = 0; // 0 = not yet started
         this._srcCanvas = srcCanvas;
         this._srcCtx    = srcCanvas ? srcCanvas.getContext('2d') : null;
+        this._gW = 0;
+        this._gH = 0;
     }
 
     setCols(cols) { this._cols = cols; }
+    setGrid(gW, gH) { this._gW = gW; this._gH = gH; }
 
     // Call when a new training session starts to reset the decay timer.
     resetDecay() { this._decayStart = 0; this._lastTrigger = 0; }
@@ -120,6 +123,24 @@ export class SweepOverlay {
                 this._srcCtx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
                 this._srcCtx.strokeRect(2, 2, sc.width - 4, sc.height - 4);
                 this._srcCtx.shadowBlur = 0;
+
+                if (this._gW > 1 && this._gH > 1) {
+                    const gW = this._gW, gH = this._gH;
+                    const cellW = sc.width  / (gW - 1);
+                    const cellH = sc.height / (gH - 1);
+                    const cr = Math.max(1.5, Math.min(4, Math.min(cellW, cellH) * 0.22));
+                    this._srcCtx.fillStyle = `rgba(${r},${g},${b},${(alpha * 0.35).toFixed(3)})`;
+                    this._srcCtx.beginPath();
+                    for (let iy = 0; iy < gH; iy++) {
+                        for (let ix = 0; ix < gW; ix++) {
+                            const cx = ix * cellW;
+                            const cy = iy * cellH;
+                            this._srcCtx.moveTo(cx + cr, cy);
+                            this._srcCtx.arc(cx, cy, cr, 0, Math.PI * 2);
+                        }
+                    }
+                    this._srcCtx.fill();
+                }
             }
         }
     }

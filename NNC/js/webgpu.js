@@ -129,14 +129,14 @@ struct BwdUniforms {
 `;
 
 export function buildBackwardShaders(config) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, smoothInterpolation, activation = 'sin' } = config;
+    const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2, smoothInterpolation, activation = 'sin' } = config;
     const embBits = config.embBits || 8;
     const outCh = config.hasAlpha ? 4 : 3;
     return {
         gradOutput:      gradOutputShader(outCh),
         gradL3:          gradL3Shader(mlpWidth2, activation, outCh),
         gradL2:          gradL2Shader(mlpWidth1, mlpWidth2, activation),
-        gradL1:          gradL1Shader(gridSize, embCh, mlpWidth1, smoothInterpolation, embBits, activation),
+        gradL1:          gradL1Shader(gW, gH, embCh, mlpWidth1, smoothInterpolation, embBits, activation),
         adamStep:        adamStepShader(),
         packEmbeddings:  packEmbeddingsShader(embCh, embBits),
     };
@@ -250,7 +250,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 }
 
-function gradL1Shader(gridSize, embCh, mlpWidth1, smoothInterp, embBits, activation) {
+function gradL1Shader(gW, gH, embCh, mlpWidth1, smoothInterp, embBits, activation) {
     const channelsPerU32 = 32 / (embBits || 8);
     const numU32 = embCh / channelsPerU32;
     const smoothCode = smoothInterp ? `
@@ -270,7 +270,8 @@ ${wgslActivFns(activation)}
 
 const MW:  u32 = ${mlpWidth1}u;
 const EC:  u32 = ${embCh}u;
-const GS:  u32 = ${gridSize}u;
+const GW:  u32 = ${gW}u;
+const GH:  u32 = ${gH}u;
 const NU:  u32 = ${numU32}u;
 const CPG: u32 = ${channelsPerU32}u;
 const FPS: f32 = ${FP_SCALE}.0;
@@ -296,18 +297,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var grp = 0u; grp < NU; grp++) {
         let ox = emb_offsets[grp * 2u];
         let oy = emb_offsets[grp * 2u + 1u];
-        let sx = clamp(uvx + ox, 0.0, 1.0) * f32(GS - 1u);
-        let sy = clamp(uvy + oy, 0.0, 1.0) * f32(GS - 1u);
+        let sx = clamp(uvx + ox, 0.0, 1.0) * f32(GW - 1u);
+        let sy = clamp(uvy + oy, 0.0, 1.0) * f32(GH - 1u);
         let x0 = u32(sx); let y0 = u32(sy);
-        let x1 = min(x0 + 1u, GS - 1u);
-        let y1 = min(y0 + 1u, GS - 1u);
+        let x1 = min(x0 + 1u, GW - 1u);
+        let y1 = min(y0 + 1u, GH - 1u);
         var tx = sx - f32(x0);
         var ty = sy - f32(y0);
         ${smoothCode}
         let w00 = (1.0-tx)*(1.0-ty); let w10 = tx*(1.0-ty);
         let w01 = (1.0-tx)*ty; let w11 = tx*ty;
-        let idx00 = (y0*GS+x0)*EC; let idx10 = (y0*GS+x1)*EC;
-        let idx01 = (y1*GS+x0)*EC; let idx11 = (y1*GS+x1)*EC;
+        let idx00 = (y0*GW+x0)*EC; let idx10 = (y0*GW+x1)*EC;
+        let idx01 = (y1*GW+x0)*EC; let idx11 = (y1*GW+x1)*EC;
         for (var b = 0u; b < CPG; b++) {
             let j = grp * CPG + b;
             let interp_j = w00*embeddings[idx00+j] + w10*embeddings[idx10+j] + w01*embeddings[idx01+j] + w11*embeddings[idx11+j];
@@ -416,7 +417,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Re-implementing buildForwardShader to be exactly like the original but using wgslActivFns
 export function buildShader(config) {
-    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2, quantization, smoothInterpolation, activation = 'sin' } = config;
+    const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2, quantization, smoothInterpolation, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;
@@ -431,19 +432,19 @@ fn sample_embedding_plane(uv: vec2<f32>, plane: u32) -> vec4<f32> {
     let ox = select(off.x, off.z, (plane & 1u) == 1u);
     let oy = select(off.y, off.w, (plane & 1u) == 1u);
     let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
-    let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
+    let scaled = uvo * vec2<f32>(f32(uniforms.gW - 1u), f32(uniforms.gH - 1u));
     let c      = floor(scaled);
     let x0 = u32(c.x); let y0 = u32(c.y);
-    let x1 = min(x0 + 1u, uniforms.gridSize - 1u);
-    let y1 = min(y0 + 1u, uniforms.gridSize - 1u);
+    let x1 = min(x0 + 1u, uniforms.gW - 1u);
+    let y1 = min(y0 + 1u, uniforms.gH - 1u);
     var tx = scaled.x - c.x;
     var ty = scaled.y - c.y;
     ${smoothCode}
-    let gs = uniforms.gridSize;
-    let c00 = unpack4x8snorm(embeddings_q[(y0*gs+x0)*${numU32}u+plane]);
-    let c10 = unpack4x8snorm(embeddings_q[(y0*gs+x1)*${numU32}u+plane]);
-    let c01 = unpack4x8snorm(embeddings_q[(y1*gs+x0)*${numU32}u+plane]);
-    let c11 = unpack4x8snorm(embeddings_q[(y1*gs+x1)*${numU32}u+plane]);
+    let gw = uniforms.gW;
+    let c00 = unpack4x8snorm(embeddings_q[(y0*gw+x0)*${numU32}u+plane]);
+    let c10 = unpack4x8snorm(embeddings_q[(y0*gw+x1)*${numU32}u+plane]);
+    let c01 = unpack4x8snorm(embeddings_q[(y1*gw+x0)*${numU32}u+plane]);
+    let c11 = unpack4x8snorm(embeddings_q[(y1*gw+x1)*${numU32}u+plane]);
     let interp = mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
     let mn = uniforms.emb_range[plane * 2u];
     let mx = uniforms.emb_range[plane * 2u + 1u];
@@ -489,12 +490,12 @@ ${matVecMulFn('mat_vec_mul_l3', mlpWidth2,         outCh)}
 ${wgslActivFns(activation)}
 
 struct Uniforms {
-    gridSize:          u32,
+    gW:                u32,
     embeddingChannels: u32,
     mlpWidth1:         u32,
     canvasWidth:       u32,
     canvasHeight:      u32,
-    channelMask: u32, mlpWidth2: u32, _p2: u32,
+    channelMask: u32, mlpWidth2: u32, gH: u32,
     emb_range:   array<vec4<f32>, 8>,
     emb_offsets: array<vec4<f32>, 4>,
 };
@@ -532,18 +533,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let ox = select(off.x, off.z, (grp & 1u) == 1u);
         let oy = select(off.y, off.w, (grp & 1u) == 1u);
         let uvo = clamp(uv + vec2<f32>(ox, oy), vec2<f32>(0.0), vec2<f32>(1.0));
-        let scaled = uvo * vec2<f32>(f32(uniforms.gridSize - 1u));
+        let scaled = uvo * vec2<f32>(f32(uniforms.gW - 1u), f32(uniforms.gH - 1u));
         let c = floor(scaled);
         let x0 = u32(c.x); let y0 = u32(c.y);
-        let x1 = min(x0+1u, uniforms.gridSize-1u);
-        let y1 = min(y0+1u, uniforms.gridSize-1u);
+        let x1 = min(x0+1u, uniforms.gW-1u);
+        let y1 = min(y0+1u, uniforms.gH-1u);
         var tx = scaled.x - c.x; var ty = scaled.y - c.y;
         ${smoothCode}
-        let gs = uniforms.gridSize;
-        let q00 = embeddings_q[(y0*gs+x0)*${numU32}u+grp];
-        let q10 = embeddings_q[(y0*gs+x1)*${numU32}u+grp];
-        let q01 = embeddings_q[(y1*gs+x0)*${numU32}u+grp];
-        let q11 = embeddings_q[(y1*gs+x1)*${numU32}u+grp];
+        let gw = uniforms.gW;
+        let q00 = embeddings_q[(y0*gw+x0)*${numU32}u+grp];
+        let q10 = embeddings_q[(y0*gw+x1)*${numU32}u+grp];
+        let q01 = embeddings_q[(y1*gw+x0)*${numU32}u+grp];
+        let q11 = embeddings_q[(y1*gw+x1)*${numU32}u+grp];
         for (var b = 0u; b < 8u; b++) {
             let ch = grp * 8u + b; let plane = ch / 4u; let comp = ch % 4u;
             let mn = uniforms.emb_range[plane * 2u][comp];

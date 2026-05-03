@@ -106,12 +106,13 @@ function fmtUintArray(u32Array, perLine = 8) {
 }
 
 // Common tab GLSL — shared constant and macro for all embedding buffers.
-function genCommonGLSL(gridSize) {
+function genCommonGLSL(gW, gH) {
     return `\
 // === Common tab ===
 // Paste into the Common tab in Shadertoy (shared by Image + all Buffer tabs).
 
-const int embed_texture = ${gridSize};
+const int embed_w = ${gW};
+const int embed_h = ${gH};
 
 vec4 unpack8(uint u) {   // no unpackSnorm4x8 !!
     ivec4 s = ivec4((uvec4(u) >> uvec4(0u,8u,16u,24u)) & uvec4(255u));
@@ -122,17 +123,17 @@ vec4 unpack8(uint u) {   // no unpackSnorm4x8 !!
 #define EMB_BUFFER_MAINIMAGE(quant_arr)                                \\
 void mainImage(out vec4 fragColor, in vec2 fragCoord) {                \\
     ivec2 gxy = ivec2(fragCoord);                                      \\
-    if (gxy.x >= embed_texture || gxy.y >= embed_texture) { discard; } \\
-    int idx = gxy.x + gxy.y * embed_texture;                           \\
+    if (gxy.x >= embed_w || gxy.y >= embed_h) { discard; }            \\
+    int idx = gxy.x + gxy.y * embed_w;                                \\
     uint val = quant_arr[idx];                                         \\
     fragColor = unpack8(val);                                          \\
 }`;
 }
 
 // Generate Buffer GLSL for one embedding plane.
-// Buffer is gridSize×gridSize pixels — each pixel stores one raw grid value.
+// Buffer is gW×gH pixels — each pixel stores one raw grid value.
 // GPU sampler bilinear handles interpolation; main shader rescales UV.
-function genBufferGLSL(p, gridSize, u32Data) {
+function genBufferGLSL(p, gW, gH, u32Data) {
     const label = String.fromCharCode(65 + p); // 'A', 'B', ...
     const N = u32Data.length;
     return `\
@@ -148,7 +149,7 @@ EMB_BUFFER_MAINIMAGE(embed${p})`;
 }
 
 export function export_to_glsl(config, weights) {
-    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
+    const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2, smoothInterpolation, quantization, width, height, activation = 'sin' } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const numPlanes = embeddingChannels / 4;
 
@@ -176,14 +177,14 @@ export function export_to_glsl(config, weights) {
         `uniform sampler2D iChannel${p}; // embedding plane ${p}: channels ${p*4}–${p*4+3}`
     ).join('\n');
 
-    // Rescale uv [0,1] to the gridSize×gridSize region with align-corners=true.
+    // Rescale uv [0,1] to the gW×gH region with align-corners=true.
     // When smoothInterpolation is on, use manual 4-tap texelFetch + smoothstep to
     // match training; otherwise let the GPU sampler handle plain bilinear.
     const sampleFn = smoothInterpolation
         ? `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
-    vec2 scaled = uv * float(embed_texture - 1);
+    vec2 scaled = uv * vec2(float(embed_w - 1), float(embed_h - 1));
     ivec2 c0 = ivec2(floor(scaled));
-    ivec2 c1 = min(c0 + ivec2(1), ivec2(embed_texture - 1));
+    ivec2 c1 = min(c0 + ivec2(1), ivec2(embed_w - 1, embed_h - 1));
     vec2 t = scaled - vec2(c0);
     t = t * t * (3.0 - 2.0 * t);
     vec4 v00 = texelFetch(smp, c0,                0);
@@ -193,7 +194,7 @@ export function export_to_glsl(config, weights) {
     return mix(mix(v00, v10, t.x), mix(v01, v11, t.x), t.y);
 }`
         : `\nvec4 sample_plane(sampler2D smp, vec2 uv) {
-    vec2 bufUV = (uv * float(embed_texture - 1) + 0.5) / iResolution.xy;
+    vec2 bufUV = (uv * vec2(float(embed_w - 1), float(embed_h - 1)) + 0.5) / vec2(float(embed_w), float(embed_h));
     return texture(smp, bufUV);
 }`;
 
@@ -292,13 +293,13 @@ ${matMul(4, mlpWidth2, 'l2_out', 'l3_out', 'l3_w', 'l3_b', '', packWeights)}
 `;
 
     // Generate commented-out buffer code for each embedding plane.
-    const gridCount = gridSize * gridSize;
+    const gridCount = gW * gH;
     const buffers = Array.from({length: numPlanes}, (_, p) => {
         const u32 = packEmbPlane(weights.embeddings, p, gridCount, embeddingChannels);
-        return genBufferGLSL(p, gridSize, u32);
+        return genBufferGLSL(p, gW, gH, u32);
     });
 
-    const commonSection = `/*\n${genCommonGLSL(gridSize)}\n*/`;
+    const commonSection = `/*\n${genCommonGLSL(gW, gH)}\n*/`;
     const bufferSection = buffers.map(code => `/*\n${code}\n*/`).join('\n\n');
 
     return `${mainShader}\n// ============================================================\n// Shadertoy buffer code — paste each block into its tab\n// ============================================================\n\n${commonSection}\n\n${bufferSection}\n`;

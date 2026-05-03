@@ -80,7 +80,10 @@
       gone = true;
       if (e) e.stopPropagation();
       splash.classList.add('dismissing');
-      splash.addEventListener('transitionend', () => { splash.style.display = 'none'; }, { once: true });
+      splash.addEventListener('transitionend', () => {
+        splash.style.display = 'none';
+        document.dispatchEvent(new Event('splash-dismissed'));
+      }, { once: true });
     }
     splash.addEventListener('click', dismiss);
     document.addEventListener('keydown', dismiss, { once: true });
@@ -103,11 +106,8 @@
                 <div id="model-controls">
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Grid</div>
-                    <select id="grid-size">
-                        <option value="16">16 × 16</option>
-                        <option value="32">32 × 32</option>
-                        <option value="64" selected>64 × 64</option>
-                    </select>
+                    <input type="range" id="grid-size" min="0" max="9" step="1" value="2" style="flex:1;min-width:0;">
+                    <span id="grid-size-label" style="white-space:nowrap;font-size:var(--fs-xs);color:var(--accent);font-family:monospace;margin-left:6px;">…</span>
                 </div>
                 <div class="ctrl-row">
                     <div class="ctrl-label">Embedding Channels</div>
@@ -329,7 +329,7 @@
             <div class="mobile-notice">Some features are reduced on mobile</div>
             <div class="canvas-row">
                 <div class="canvas-panel" id="source-panel">
-                    <div class="panel-header">
+                    <div class="panel-header" id="source-header">
                         <span class="panel-title">Source <span id="source-res" class="panel-hint"></span></span>
                     </div>
                     <div class="canvas-wrap">
@@ -343,15 +343,13 @@
                     <div class="layers-legend">
                         <span class="layers-legend-item">Input Size</span>
                         <span class="layers-legend-item layers-legend-val" id="input-size">—</span>
-                        <span class="layers-legend-item panel-hint" style="margin-left:auto">click or drop · draw mask</span>
                     </div>
                     <input type="file" id="file-input" accept="image/*">
                 </div>
 
                 <div class="canvas-panel">
-                    <div class="panel-header">
-                        <span class="panel-title">Layers</span>
-                        <span class="panel-hint">click emb · shift+click to solo</span>
+                    <div class="panel-header" id="layers-header">
+                        <span class="panel-title">Layers <span class="status-dot idle" id="status-dot"></span></span>
                         <label class="panel-hint layers-viz-label">update every
                             <select id="viz-interval" class="viz-interval-sel">
                                 <option value="1">1</option>
@@ -370,10 +368,7 @@
                         </div>
                     </div>
                     <div class="layers-legend">
-                        <span class="layers-legend-item"><span class="layers-legend-swatch blue"></span>learnt</span>
-                        <span class="layers-legend-item"><span class="layers-legend-swatch gray"></span>inferred</span>
-                        <span class="layers-legend-status"><span class="status-dot idle" id="status-dot"></span><span id="status-text" class="stat-label">IDLE</span></span>
-                        <span class="layers-legend-item stat-inline"><span class="stat-label">Loss</span> <span class="stat-value" id="loss-value">—</span></span>
+<span class="layers-legend-item stat-inline"><span class="stat-label">Loss</span> <span class="stat-value" id="loss-value">—</span></span>
                         <span class="layers-legend-item stat-inline"><span class="stat-label">Step</span> <span class="stat-value" id="step-counter">0</span></span>
                         <span class="layers-legend-item stat-inline"><span class="stat-label">Rate</span> <span class="stat-value" id="rate-display">—</span></span>
                     </div>

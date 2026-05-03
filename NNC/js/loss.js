@@ -18,7 +18,7 @@ export function get_target_pixels(image, canvas) {
     ctx.canvas.height = canvas.height;
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
+
     const float32Array = new Float32Array(imageData.data.length);
     for (let i = 0; i < imageData.data.length; i++) {
         float32Array[i] = imageData.data[i] / 255.0;

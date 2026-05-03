@@ -35,7 +35,8 @@ export class Trainer {
         this.type          = 'gpu';
         this.lastWeights   = null;
 
-        this._rafId  = null;
+        this._rafId      = null;
+        this._stepRunning = false;
         this._adamT  = 0;
         this._resetStats();
 
@@ -51,7 +52,7 @@ export class Trainer {
     // freshWeights: non-null = full reset (adamT=0); null = continue from lastWeights
     start(freshWeights) {
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh } = this._config;
+        const { gW, gH, embeddingChannels: embCh } = this._config;
 
         this._resetStats();
 
@@ -61,7 +62,7 @@ export class Trainer {
             this.lastWeights = { embeddings: new Float32Array(freshWeights.embeddings) };
         }
         if (src) {
-            const range = computeEmbRange(src, embCh, gridSize * gridSize);
+            const range = computeEmbRange(src, embCh, gW * gH);
             this._ctx.writeBuffer(this._model.embeddings_range, range);
             uploadEmbRange(range, embCh, this._fwdUniforms, device);
         }
@@ -74,6 +75,10 @@ export class Trainer {
     stop() {
         this.active = false;
         if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+    }
+
+    async waitForIdle() {
+        while (this._stepRunning) await new Promise(r => setTimeout(r, 4));
     }
 
     destroy() {
@@ -100,7 +105,7 @@ export class Trainer {
 
     _initBackward() {
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = this._config;
+        const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = this._config;
         const cv  = this._canvas;
         const m   = this._model;
         const ob  = this._outBufs;
@@ -200,9 +205,21 @@ export class Trainer {
         const p  = ce.beginComputePass();
         p.setPipeline(pl.packEmbeddings);
         p.setBindGroup(0, this._bwdBindGroups.packEmbeddings);
-        p.dispatchWorkgroups(Math.ceil(gridSize * gridSize * embCh / 4 / 64));
+        p.dispatchWorkgroups(Math.ceil(gW * gH * embCh / 4 / 64));
         p.end();
         device.queue.submit([ce.finish()]);
+
+        const embSize = gW * gH * embCh;
+        const outCh = this._config.hasAlpha ? 4 : 3;
+        this._tensorCfgs = {
+            embeddings:     { lr: 0, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
+            layer1_weights: { lr: 0, size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
+            layer1_biases:  { lr: 0, size: mlpWidth1,             l2: 0, clamp: 0 },
+            layer2_weights: { lr: 0, size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
+            layer2_biases:  { lr: 0, size: mlpWidth2,             l2: 0, clamp: 0 },
+            layer3_weights: { lr: 0, size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
+            layer3_biases:  { lr: 0, size: outCh,                 l2: 0, clamp: 0 },
+        };
     }
 
     _syncMlpWeights(ce, m) {
@@ -215,11 +232,50 @@ export class Trainer {
         ce.copyBufferToBuffer(m.layer3.biases,  0, m.mlp_weights, l3b * 4, m.layer3.biases.size);
     }
 
+
+    _writeUniforms(hp, sampledCount) {
+        const period    = (hp.mlpRatio + 1) * hp.numLoops;
+        const activeMLP = (this._adamT % period) >= hp.mlpRatio * hp.numLoops;
+        const mlpLR     = activeMLP ? hp.mlpLr : 0;
+
+        const tCfg = this._tensorCfgs;
+        tCfg.embeddings.lr     = activeMLP ? 0 : hp.embedLr;
+        tCfg.layer1_weights.lr = mlpLR;
+        tCfg.layer1_biases.lr  = mlpLR;
+        tCfg.layer2_weights.lr = mlpLR;
+        tCfg.layer2_biases.lr  = mlpLR;
+        tCfg.layer3_weights.lr = mlpLR;
+        tCfg.layer3_biases.lr  = mlpLR;
+
+        const { adamAB: aAB, adamF: aF, adamU: aU, uniAB: uAB, uniU32: uU32, uniF32: uF32 } = this._bwdBufs;
+        uU32[0] = this._canvas.width; uU32[1] = this._canvas.height;
+        uU32[2] = hp.stride;   uU32[3] = sampledCount;
+        uF32[4] = hp.roiStrength;
+        this._ctx.writeBuffer(this._bwdUniformsBuf, uAB);
+
+        aF[1] = 0.9; aF[2] = 0.999; aF[3] = 1e-8; aF[6] = FP_SCALE;
+        aU[4] = this._adamT; aU[9] = sampledCount;
+        for (const [k, tc] of Object.entries(tCfg)) {
+            aF[0] = tc.lr; aU[5] = tc.size; aF[7] = tc.l2; aU[8] = tc.clamp;
+            this._ctx.writeBuffer(this._adamUniformsBufs[k], aAB);
+        }
+    }
+
     async _train(rafT = 0) {
+        if (!this.active) return;
+        this._stepRunning = true;
+        try {
+            await this._doTrain(rafT);
+        } finally {
+            this._stepRunning = false;
+        }
+    }
+
+    async _doTrain(rafT = 0) {
         if (!this.active) return;
 
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits } = this._config;
+        const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits } = this._config;
         const outCh = this._config.hasAlpha ? 4 : 3;
         const cv  = this._canvas;
         const m   = this._model;
@@ -230,7 +286,7 @@ export class Trainer {
         const bg  = this._bwdBindGroups;
         const au  = this._adamUniformsBufs;
         const pixelCount = cv.width * cv.height;
-        const embSize    = gridSize * gridSize * embCh;
+        const embSize    = gW * gH * embCh;
 
         const hp           = this._getHyperparams();
         const stride       = hp.stride;
@@ -240,21 +296,6 @@ export class Trainer {
         // Fast inner steps: GPU-only, no readback, GPU pack instead of CPU normalize+pack
         for (let s = 0; s < stepsPerFrame - 1 && this.active; s++) {
             this._adamT++;
-            const period2    = (hp.mlpRatio + 1) * hp.numLoops;
-            const phasePos2  = this._adamT % period2;
-            const activeMLP2 = phasePos2 >= hp.mlpRatio * hp.numLoops;
-            const embedLR2   = activeMLP2 ? 0 : hp.embedLr;
-            const mlpLR2     = activeMLP2 ? hp.mlpLr : 0;
-            const tCfg = {
-                embeddings:     { lr: embedLR2, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
-                layer1_weights: { lr: mlpLR2,   size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
-                layer1_biases:  { lr: mlpLR2,   size: mlpWidth1,             l2: 0, clamp: 0 },
-                layer2_weights: { lr: mlpLR2,   size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
-                layer2_biases:  { lr: mlpLR2,   size: mlpWidth2,             l2: 0, clamp: 0 },
-                layer3_weights: { lr: mlpLR2,   size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
-                layer3_biases:  { lr: mlpLR2,   size: outCh,                 l2: 0, clamp: 0 },
-            };
-
             if (!hp.roiFreeze) this._roiMask.decay(performance.now());
             if (this._roiMask.dirty) {
                 this._ctx.writeBuffer(bb.roiMask, this._roiMask.weights);
@@ -263,20 +304,11 @@ export class Trainer {
             for (const [k, buf] of Object.entries(m.gradAtomic)) {
                 this._ctx.writeBuffer(buf, bb.gradZero[k]);
             }
-            const { adamAB: aAB, adamF: aF, adamU: aU, uniAB: uAB, uniU32: uU32, uniF32: uF32 } = bb;
-            uU32[0] = cv.width; uU32[1] = cv.height;
-            uU32[2] = stride;   uU32[3] = sampledCount;
-            uF32[4] = hp.roiStrength;
-            this._ctx.writeBuffer(this._bwdUniformsBuf, uAB);
-            aF[1] = 0.9; aF[2] = 0.999; aF[3] = 1e-8; aF[6] = FP_SCALE;
-            aU[4] = this._adamT; aU[9] = sampledCount;
-            for (const [k, tc] of Object.entries(tCfg)) {
-                aF[0] = tc.lr; aU[5] = tc.size; aF[7] = tc.l2; aU[8] = tc.clamp;
-                this._ctx.writeBuffer(au[k], aAB);
-            }
+
+            this._writeUniforms(hp, sampledCount);
 
             uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
-            
+
             const ce2 = device.createCommandEncoder();
             const fp2 = ce2.beginComputePass();
             fp2.setPipeline(this._pipeline); fp2.setBindGroup(0, this._bindGroup);
@@ -298,7 +330,7 @@ export class Trainer {
             for (const k of ModelTensors.KEYS) {
                 ap2.setPipeline(pl.adamStep);
                 ap2.setBindGroup(0, bg.adam[k]);
-                ap2.dispatchWorkgroups(Math.ceil(tCfg[k].size / 64));
+                ap2.dispatchWorkgroups(Math.ceil(this._tensorCfgs[k].size / 64));
             }
             ap2.end();
             this._syncMlpWeights(ce2, m);
@@ -306,7 +338,7 @@ export class Trainer {
             const pp2 = ce2.beginComputePass();
             pp2.setPipeline(pl.packEmbeddings);
             pp2.setBindGroup(0, bg.packEmbeddings);
-            pp2.dispatchWorkgroups(Math.ceil(gridSize * gridSize * embCh / 4 / 64));
+            pp2.dispatchWorkgroups(Math.ceil(gW * gH * embCh / 4 / 64));
             pp2.end();
 
             device.queue.submit([ce2.finish()]);
@@ -321,21 +353,6 @@ export class Trainer {
 
         this._adamT++;
 
-        const period    = (hp.mlpRatio + 1) * hp.numLoops;
-        const phasePos  = this._adamT % period;
-        const activeMLP = phasePos >= hp.mlpRatio * hp.numLoops;
-        const embedLR   = activeMLP ? 0 : hp.embedLr;
-        const mlpLR     = activeMLP ? hp.mlpLr : 0;
-        const tensorCfg = {
-            embeddings:     { lr: embedLR, size: embSize,               l2: 0.002 / embSize, clamp: 1 },
-            layer1_weights: { lr: mlpLR,   size: mlpWidth1 * embCh,     l2: 0, clamp: 0 },
-            layer1_biases:  { lr: mlpLR,   size: mlpWidth1,             l2: 0, clamp: 0 },
-            layer2_weights: { lr: mlpLR,   size: mlpWidth2 * mlpWidth1, l2: 0, clamp: 0 },
-            layer2_biases:  { lr: mlpLR,   size: mlpWidth2,             l2: 0, clamp: 0 },
-            layer3_weights: { lr: mlpLR,   size: outCh * mlpWidth2,     l2: 0, clamp: 0 },
-            layer3_biases:  { lr: mlpLR,   size: outCh,                 l2: 0, clamp: 0 },
-        };
-
         if (!hp.roiFreeze) this._roiMask.decay(performance.now());
         if (this._roiMask.dirty) {
             this._ctx.writeBuffer(bb.roiMask, this._roiMask.weights);
@@ -345,17 +362,8 @@ export class Trainer {
         for (const [k, buf] of Object.entries(m.gradAtomic)) {
             this._ctx.writeBuffer(buf, bb.gradZero[k]);
         }
-        const { adamAB, adamF, adamU, uniAB, uniU32, uniF32 } = bb;
-        uniU32[0] = cv.width; uniU32[1] = cv.height;
-        uniU32[2] = stride;   uniU32[3] = sampledCount;
-        uniF32[4] = hp.roiStrength;
-        this._ctx.writeBuffer(this._bwdUniformsBuf, uniAB);
-        adamF[1] = 0.9; adamF[2] = 0.999; adamF[3] = 1e-8; adamF[6] = FP_SCALE;
-        adamU[4] = this._adamT; adamU[9] = sampledCount;
-        for (const [k, tc] of Object.entries(tensorCfg)) {
-            adamF[0] = tc.lr; adamU[5] = tc.size; adamF[7] = tc.l2; adamU[8] = tc.clamp;
-            this._ctx.writeBuffer(au[k], adamAB);
-        }
+
+        this._writeUniforms(hp, sampledCount);
 
         uploadChannelMask(0xFFFFFFFF, this._fwdUniforms, device);
         const ce = device.createCommandEncoder();
@@ -382,12 +390,12 @@ export class Trainer {
         for (const k of ModelTensors.KEYS) {
             adamPass.setPipeline(pl.adamStep);
             adamPass.setBindGroup(0, bg.adam[k]);
-            adamPass.dispatchWorkgroups(Math.ceil(tensorCfg[k].size / 64));
+            adamPass.dispatchWorkgroups(Math.ceil(this._tensorCfgs[k].size / 64));
         }
         adamPass.end();
         this._syncMlpWeights(ce, m);
 
-        const doViz = (this._stepCount + 1) % hp.vizInterval === 0;
+        const doViz = this._stepCount % hp.vizInterval === 0;
 
         ce.copyBufferToBuffer(m.embeddings,     0, rb.embeddings,    0, m.embeddings.size);
         ce.copyBufferToBuffer(m.layer1.weights, 0, rb.layer1Weights, 0, m.layer1.weights.size);
@@ -504,7 +512,7 @@ export class Trainer {
 
     async _sampleOffsets() {
         const { device } = this._ctx;
-        const { gridSize, embeddingChannels: embCh, embBits } = this._config;
+        const { gW, gH, embeddingChannels: embCh, embBits } = this._config;
         const outCh = this._config.hasAlpha ? 4 : 3;
         const cv = this._canvas;
         const pixelCount = cv.width * cv.height;
@@ -532,7 +540,7 @@ export class Trainer {
         let bestLoss    = await evalOffsets(current);
 
         for (let i = 0; i < numCandidates; i++) {
-            const candidate = generateEmbOffsets(embCh, embBits, gridSize, false);
+            const candidate = generateEmbOffsets(embCh, embBits, gW, gH, false);
             const loss = await evalOffsets(candidate);
             if (loss < bestLoss) { bestLoss = loss; bestOffsets = candidate; }
         }
@@ -548,9 +556,9 @@ export class Trainer {
 
 export async function runInferencePass({ webGpuContext, config, model, pipeline, bindGroup, fwdUniformsBuf, outputBuffers, readbackBuffers, channelMask, canvasWidth, canvasHeight, lastWeights }) {
     const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, embBits, embOffsets } = config;
+    const { gW, gH, embeddingChannels: embCh, embBits, embOffsets } = config;
 
-    const range = computeEmbRange(lastWeights.embeddings, embCh, gridSize * gridSize);
+    const range = computeEmbRange(lastWeights.embeddings, embCh, gW * gH);
     webGpuContext.writeBuffer(model.embeddings_range, range);
     uploadEmbRange(range, embCh, fwdUniformsBuf, device);
     const packed = cpuPackEmbeddings(lastWeights.embeddings, embCh, range, embBits);
@@ -585,17 +593,17 @@ export async function runInferencePass({ webGpuContext, config, model, pipeline,
 
 export async function runZoomInferencePass({ webGpuContext, config, model, pipeline, lastWeights, channelMask, W, H }) {
     const { device } = webGpuContext;
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits, embOffsets } = config;
+    const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2, embBits, embOffsets } = config;
     const pixelCount = W * H;
 
     const embF32 = lastWeights.embeddings;
-    const range  = computeEmbRange(embF32, embCh, gridSize * gridSize);
+    const range  = computeEmbRange(embF32, embCh, gW * gH);
     webGpuContext.writeBuffer(model.embeddings_range, range);
     const packed = cpuPackEmbeddings(embF32, embCh, range, embBits);
     webGpuContext.writeBuffer(model.embeddings_q, packed);
 
     const unifBuf = webGpuContext.uniformBuffer(224);
-    webGpuContext.writeBuffer(unifBuf, buildFwdUniforms(gridSize, embCh, mlpWidth1, mlpWidth2, W, H, range, embOffsets));
+    webGpuContext.writeBuffer(unifBuf, buildFwdUniforms(gW, gH, embCh, mlpWidth1, mlpWidth2, W, H, range, embOffsets));
     uploadChannelMask(channelMask, unifBuf, device);
     const outBuf  = webGpuContext.outputBuffer(pixelCount * 4 * 4);
     const interL1 = webGpuContext.storageBuffer(pixelCount * mlpWidth1 * 4);

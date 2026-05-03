@@ -24,7 +24,7 @@ export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
 export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: interLayer2, finalOutput, imgW, imgH, config, channelMask, ema, hoverState = null }) {
     const w = weights;
     if (!w || !config.mlpWidth1) return ema;
-    const { mlpWidth1, mlpWidth2, embeddingChannels: embCh, gridSize } = config;
+    const { mlpWidth1, mlpWidth2, embeddingChannels: embCh, gW, gH } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     const ctx = canvas.getContext('2d');
     const cw = canvas.width, ch = canvas.height;
@@ -140,12 +140,13 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     const embTints = Array.from({length: embCh}, (_, c) =>
         ((channelMask >>> c) & 1) ? [191, 223, 255] : [200, 40, 40]);
 
+    const embCellH = gW > 0 ? Math.round(THUMB_W * gH / gW) : (BODY_H / embCh | 0);
     const bbEmb = w.embeddings
         ? drawChannelStack(embCh, xEmb, THUMB_W, (c, lx, ly, lw, lh) => {
-            const gx = Math.min(lx*gridSize/lw|0, gridSize-1);
-            const gy = Math.min(ly*gridSize/lh|0, gridSize-1);
-            return w.embeddings[(gy*gridSize+gx)*embCh+c];
-          }, embTints)
+            const gx = Math.min(lx*gW/lw|0, gW-1);
+            const gy = Math.min(ly*gH/lh|0, gH-1);
+            return w.embeddings[(gy*gW+gx)*embCh+c];
+          }, embTints, embCellH)
         : drawPlaceholder(xEmb, THUMB_W);
 
     const aspectCellH = imgW > 0 ? Math.round(THUMB_W * imgH / imgW) : BODY_H;
@@ -205,8 +206,8 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
                 }
             zoomBounds = { xZ, yZ, rox, roy, rW, rH };
         };
-        if      (hCol==='emb'  && w.embeddings)  fillZoom(gridSize, gridSize,
-            (sx,sy) => w.embeddings[(sy*gridSize+sx)*embCh+hCh], [191,223,255]);
+        if      (hCol==='emb'  && w.embeddings)  fillZoom(gW, gH,
+            (sx,sy) => w.embeddings[(sy*gW+sx)*embCh+hCh], [191,223,255]);
         else if (hCol==='l1')                     fillZoom(embCh, mlpWidth1,
             (sx,sy) => w.layer1_weights[sy*embCh+sx], [191,223,255]);
         else if (hCol==='act1' && interLayer1)    fillZoom(imgW, imgH,
@@ -297,6 +298,10 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         ['Emb', xEmb, THUMB_W], ['Act1', xAct1, THUMB_W], ['Act2', xAct2, THUMB_W],
     ]) drawLabel(lbl, lx + lw/2, PAD + 10);
     drawLabel(config.hasAlpha ? 'RGBA' : 'RGB', xRGBA + THUMB_W/2, bbRGBA.y0 - 16);
+
+    // Learnt / inferred legend — stacked above RGBA column
+    drawLabel('■ learnt',   xRGBA + THUMB_W/2, PAD + 10, '9px monospace', 'center', labelBlue);
+    drawLabel('■ inferred', xRGBA + THUMB_W/2, PAD + 22, '9px monospace', 'center', labelDefault);
 
     // Labels just above each weight matrix: name + channel count, in blue
     for (const [name, ch, lx, lw, my0] of [

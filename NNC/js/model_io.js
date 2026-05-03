@@ -6,10 +6,10 @@ const TENSOR_ORDER = [
 ];
 
 function tensorShapes(config) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
+    const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     return {
-        embeddings:     [gridSize * gridSize, embCh],
+        embeddings:     [gW * gH, embCh],
         layer1_weights: [mlpWidth1, embCh],
         layer1_biases:  [mlpWidth1],
         layer2_weights: [mlpWidth2, mlpWidth1],
@@ -20,12 +20,12 @@ function tensorShapes(config) {
 }
 
 export function saveModelSafetensors(config, tensors) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
+    const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
     const shapes = tensorShapes(config);
 
-    const meta = { gridSize: String(gridSize), embeddingChannels: String(embCh), mlpWidth1: String(mlpWidth1), mlpWidth2: String(mlpWidth2) };
+    const meta = { gW: String(gW), gH: String(gH), embeddingChannels: String(embCh), mlpWidth1: String(mlpWidth1), mlpWidth2: String(mlpWidth2) };
     for (const [k, v] of Object.entries(config)) {
-        if (!['gridSize', 'embeddingChannels', 'mlpWidth1', 'mlpWidth2', 'width', 'height', 'embOffsets'].includes(k))
+        if (!['gW', 'gH', 'embeddingChannels', 'mlpWidth1', 'mlpWidth2', 'width', 'height', 'embOffsets'].includes(k))
             meta[k] = String(v);
     }
     if (config.embOffsets) meta.emb_offsets = JSON.stringify(Array.from(config.embOffsets));
@@ -67,15 +67,24 @@ export async function loadModelSafetensors(file) {
         console.warn(`Loading legacy single-width model: mlpWidth1=mlpWidth2=${meta.mlpWidth}`);
     const mlpW1 = parseInt(meta.mlpWidth1 ?? meta.mlpWidth);
     const mlpW2 = parseInt(meta.mlpWidth2 ?? meta.mlpWidth);
+    // Backward compat: old files have gridSize (square); new files have gW + gH
+    let gW, gH;
+    if (meta.gW && meta.gH) {
+        gW = parseInt(meta.gW);
+        gH = parseInt(meta.gH);
+    } else {
+        const gs = parseInt(meta.gridSize);
+        gW = gs; gH = gs;
+    }
     const config = {
-        gridSize:          parseInt(meta.gridSize),
+        gW, gH,
         embeddingChannels: parseInt(meta.embeddingChannels),
         mlpWidth1:         mlpW1,
         mlpWidth2:         mlpW2,
         embBits:           meta.embBits ? parseInt(meta.embBits) : 8,
         embOffsets:        meta.emb_offsets ? new Float32Array(JSON.parse(meta.emb_offsets)) : null,
     };
-    if ([config.gridSize, config.embeddingChannels, config.mlpWidth1, config.mlpWidth2].some(isNaN))
+    if ([config.gW, config.gH, config.embeddingChannels, config.mlpWidth1, config.mlpWidth2].some(isNaN))
         throw new Error('Missing or invalid config metadata');
 
     const dataStart = 8 + headerLen;
@@ -86,7 +95,7 @@ export async function loadModelSafetensors(file) {
         tensors[k] = new Float32Array(ab.slice(dataStart + start, dataStart + end));
     }
 
-    const MODEL_KEYS = new Set(['gridSize', 'embeddingChannels', 'mlpWidth', 'mlpWidth1', 'mlpWidth2', 'embBits', 'emb_offsets']);
+    const MODEL_KEYS = new Set(['gW', 'gH', 'gridSize', 'embeddingChannels', 'mlpWidth', 'mlpWidth1', 'mlpWidth2', 'embBits', 'emb_offsets']);
     const uiSettings = Object.fromEntries(Object.entries(meta).filter(([k]) => !MODEL_KEYS.has(k)));
 
     return { config, tensors, uiSettings };

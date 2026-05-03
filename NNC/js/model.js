@@ -5,6 +5,18 @@ export const UNIFORM_OFFSET_RANGE = 32;
 export const UNIFORM_OFFSET_OFFSETS = 160;
 export const UNIFORM_OFFSET_MASK = 20;
 
+export function computeGridDims(numPts, w, h) {
+    if (!w || !h || w <= 0 || h <= 0) {
+        const s = Math.max(2, Math.round(Math.sqrt(numPts)));
+        return { gW: s, gH: s };
+    }
+    const f = Math.sqrt(w * h / numPts);
+    return {
+        gW: Math.max(2, Math.round(w / f)),
+        gH: Math.max(2, Math.round(h / f)),
+    };
+}
+
 // f32 element offsets for each sub-tensor in the flat mlp_weights buffer.
 // Order: [L1W | L1B | L2W | L2B | L3W | L3B]
 export function mlpWeightsLayout(config) {
@@ -17,10 +29,10 @@ export function mlpWeightsLayout(config) {
 }
 
 export function computeTensorSizes(config) {
-    const { gridSize, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
+    const { gW, gH, embeddingChannels: embCh, mlpWidth1, mlpWidth2 } = config;
     const outCh = config.hasAlpha ? 4 : 3;
     return {
-        embeddings:     gridSize * gridSize * embCh,
+        embeddings:     gW * gH * embCh,
         layer1_weights: embCh * mlpWidth1,
         layer1_biases:  mlpWidth1,
         layer2_weights: mlpWidth1 * mlpWidth2,
@@ -44,7 +56,7 @@ export class ModelTensors {
 
 export function createModel(ctx, config) {
     const sizes = computeTensorSizes(config);
-    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2 } = config;
+    const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2 } = config;
     const embBits = config.embBits || 8;
     const channelsPerU32 = 32 / embBits;
 
@@ -163,11 +175,11 @@ export function shakeMlp(ctx, model, rb) {
 
 // --- Merged from emb_utils.js ---
 
-export function generateEmbOffsets(embCh, embBits, gridSize, noOffset) {
+export function generateEmbOffsets(embCh, embBits, gW, gH, noOffset) {
     const numU32 = embCh / (32 / embBits);
     if (noOffset) return new Float32Array(numU32 * 2);
-    const scale = 1.0 / gridSize;
-    return new Float32Array(numU32 * 2).map(() => (Math.random() - 0.5) * scale);
+    return Float32Array.from({ length: numU32 * 2 }, (_, i) =>
+        (Math.random() - 0.5) * (i % 2 === 0 ? 1.0 / gW : 1.0 / gH));
 }
 
 export function computeEmbRange(embData, embCh, gridCount) {
@@ -231,10 +243,10 @@ export function buildEmbRangeF32(range, embCh) {
     return f32;
 }
 
-export function buildFwdUniforms(gSize, embCh, mlpW1, mlpW2, w, h, range, offsets) {
+export function buildFwdUniforms(gW, gH, embCh, mlpW1, mlpW2, w, h, range, offsets) {
     const ab  = new ArrayBuffer(224);
     const u32 = new Uint32Array(ab);
-    u32[0] = gSize; u32[1] = embCh; u32[2] = mlpW1; u32[3] = w; u32[4] = h; u32[6] = mlpW2;
+    u32[0] = gW; u32[1] = embCh; u32[2] = mlpW1; u32[3] = w; u32[4] = h; u32[6] = mlpW2; u32[7] = gH;
     new Float32Array(ab, UNIFORM_OFFSET_RANGE).set(buildEmbRangeF32(range, embCh));
     if (offsets) new Float32Array(ab, UNIFORM_OFFSET_OFFSETS).set(offsets.slice(0, 16));
     return ab;

@@ -33,7 +33,7 @@ function dequant4(n) { return (n >= 8 ? n - 16 : n) / 7.0; }
 // --- Forward pass ---
 // range: Float32Array from computeEmbRange — [min_ch0, max_ch0, min_ch1, max_ch1, ...]
 export function forward(config, weights, range) {
-    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2,
+    const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2,
             quantization, smoothInterpolation, activation = 'sin',
             embBits = 8, hasAlpha = false, embOffsets, width, height } = config;
     const outCh    = hasAlpha ? 4 : 3;
@@ -41,7 +41,6 @@ export function forward(config, weights, range) {
     const pixelCount = width * height;
     const { f: activ } = makeActiv(activation);
     const useQat   = quantization === 'qat8';
-    const gs       = gridSize;
 
     const final       = new Float32Array(pixelCount * 4);
     const interLayer1 = new Float32Array(pixelCount * mlpWidth1);
@@ -65,16 +64,16 @@ export function forward(config, weights, range) {
                     const oy = embOffsets ? embOffsets[grp * 2 + 1] : 0;
                     const u  = Math.max(0, Math.min(1, uvx + ox));
                     const v  = Math.max(0, Math.min(1, uvy + oy));
-                    const sx = u * (gs - 1), sy = v * (gs - 1);
+                    const sx = u * (gW - 1), sy = v * (gH - 1);
                     const x0 = sx | 0, y0 = sy | 0;
-                    const x1 = Math.min(x0 + 1, gs - 1), y1 = Math.min(y0 + 1, gs - 1);
+                    const x1 = Math.min(x0 + 1, gW - 1), y1 = Math.min(y0 + 1, gH - 1);
                     let tx = sx - x0, ty = sy - y0;
                     if (smoothInterpolation) { tx = tx*tx*(3-2*tx); ty = ty*ty*(3-2*ty); }
 
-                    const c00 = unpack4x8snorm(emb_q[(y0*gs+x0)*numU32+grp]);
-                    const c10 = unpack4x8snorm(emb_q[(y0*gs+x1)*numU32+grp]);
-                    const c01 = unpack4x8snorm(emb_q[(y1*gs+x0)*numU32+grp]);
-                    const c11 = unpack4x8snorm(emb_q[(y1*gs+x1)*numU32+grp]);
+                    const c00 = unpack4x8snorm(emb_q[(y0*gW+x0)*numU32+grp]);
+                    const c10 = unpack4x8snorm(emb_q[(y0*gW+x1)*numU32+grp]);
+                    const c01 = unpack4x8snorm(emb_q[(y1*gW+x0)*numU32+grp]);
+                    const c11 = unpack4x8snorm(emb_q[(y1*gW+x1)*numU32+grp]);
 
                     for (let b = 0; b < 4; b++) {
                         const ch     = grp * 4 + b;
@@ -91,16 +90,16 @@ export function forward(config, weights, range) {
                     const oy = embOffsets ? embOffsets[grp * 2 + 1] : 0;
                     const u  = Math.max(0, Math.min(1, uvx + ox));
                     const v  = Math.max(0, Math.min(1, uvy + oy));
-                    const sx = u * (gs - 1), sy = v * (gs - 1);
+                    const sx = u * (gW - 1), sy = v * (gH - 1);
                     const x0 = sx | 0, y0 = sy | 0;
-                    const x1 = Math.min(x0 + 1, gs - 1), y1 = Math.min(y0 + 1, gs - 1);
+                    const x1 = Math.min(x0 + 1, gW - 1), y1 = Math.min(y0 + 1, gH - 1);
                     let tx = sx - x0, ty = sy - y0;
                     if (smoothInterpolation) { tx = tx*tx*(3-2*tx); ty = ty*ty*(3-2*ty); }
 
-                    const q00 = emb_q[(y0*gs+x0)*numU32+grp];
-                    const q10 = emb_q[(y0*gs+x1)*numU32+grp];
-                    const q01 = emb_q[(y1*gs+x0)*numU32+grp];
-                    const q11 = emb_q[(y1*gs+x1)*numU32+grp];
+                    const q00 = emb_q[(y0*gW+x0)*numU32+grp];
+                    const q10 = emb_q[(y0*gW+x1)*numU32+grp];
+                    const q01 = emb_q[(y1*gW+x0)*numU32+grp];
+                    const q11 = emb_q[(y1*gW+x1)*numU32+grp];
 
                     for (let b = 0; b < 8; b++) {
                         const ch    = grp * 8 + b;
@@ -160,7 +159,7 @@ export function forward(config, weights, range) {
 
 // --- Backward pass ---
 export function backward(config, model, outputs, targetImage, weights, stride = 1) {
-    const { gridSize, embeddingChannels, mlpWidth1, mlpWidth2,
+    const { gW, gH, embeddingChannels, mlpWidth1, mlpWidth2,
             activation = 'sin' } = config;
     const { f: activ_f, df: activ_prime } = makeActiv(activation);
     const pixelCount   = outputs.final.length / 4;
@@ -258,16 +257,16 @@ export function backward(config, model, outputs, targetImage, weights, stride = 
             const oy = embOffsets ? embOffsets[grp * 2 + 1] : 0;
             const u  = Math.max(0, Math.min(1, puvx + ox));
             const v  = Math.max(0, Math.min(1, puvy + oy));
-            const sx = u * (gridSize - 1), sy = v * (gridSize - 1);
+            const sx = u * (gW - 1), sy = v * (gH - 1);
             const x0 = sx | 0, y0 = sy | 0;
-            const x1 = Math.min(x0 + 1, gridSize - 1), y1 = Math.min(y0 + 1, gridSize - 1);
+            const x1 = Math.min(x0 + 1, gW - 1), y1 = Math.min(y0 + 1, gH - 1);
             let tx = sx - x0, ty = sy - y0;
             if (config.smoothInterpolation) { tx = tx*tx*(3-2*tx); ty = ty*ty*(3-2*ty); }
             const w00 = (1-tx)*(1-ty), w10 = tx*(1-ty), w01 = (1-tx)*ty, w11 = tx*ty;
-            const idx00 = (y0*gridSize+x0)*embeddingChannels;
-            const idx10 = (y0*gridSize+x1)*embeddingChannels;
-            const idx01 = (y1*gridSize+x0)*embeddingChannels;
-            const idx11 = (y1*gridSize+x1)*embeddingChannels;
+            const idx00 = (y0*gW+x0)*embeddingChannels;
+            const idx10 = (y0*gW+x1)*embeddingChannels;
+            const idx01 = (y1*gW+x0)*embeddingChannels;
+            const idx11 = (y1*gW+x1)*embeddingChannels;
 
             for (let b = 0; b < chPerGrp; b++) {
                 const j = grp * chPerGrp + b;
@@ -380,6 +379,7 @@ export class CpuTrainer {
     }
 
     stop()       { this.active = false; cancelAnimationFrame(this._rafId); this._rafId = null; this._onStop(); }
+    async waitForIdle() {}
     destroy()    { this.active = false; cancelAnimationFrame(this._rafId); this._rafId = null; }
     getWeights() { return this._w; }
 
@@ -387,11 +387,11 @@ export class CpuTrainer {
         if (!this.active) return;
         const hp  = this._getHyperparams();
         const cfg = this._config;
-        const embCh = cfg.embeddingChannels, embBits = cfg.embBits || 8, gs = cfg.gridSize;
+        const embCh = cfg.embeddingChannels, embBits = cfg.embBits || 8;
 
         this._adam.learningRateMap = { embeddings: hp.embedLr, default: hp.mlpLr };
 
-        const range        = computeEmbRange(this._w.embeddings, embCh, gs * gs);
+        const range        = computeEmbRange(this._w.embeddings, embCh, cfg.gW * cfg.gH);
         const embeddings_q = cpuPackEmbeddings(this._w.embeddings, embCh, range, embBits);
         const outputs      = forward(cfg, { ...this._w, embeddings_q }, range);
 
