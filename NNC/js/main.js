@@ -719,6 +719,11 @@ async function runInferenceCpu() {
 }
 
 async function loadAndResetModelFile(file) {
+    // Wait for any pending mapAsync on readback buffers to resolve before destroying them.
+    if (inferRunning) await new Promise(resolve => {
+        const id = setInterval(() => { if (!inferRunning) { clearInterval(id); resolve(); } }, 10);
+    });
+    inferPending = false;
     trainer?.destroy();
     trainer = null;
     clearTrainingUI();
