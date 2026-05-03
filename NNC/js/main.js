@@ -670,7 +670,8 @@ ui.layersCanvas.addEventListener('click', (e) => {
     if (!embCh) return;
     const ch = Math.min(Math.max(0, ((cy - embCol.y0) / embCol.slotH) | 0), embCh - 1);
     const allBits = embCh < 32 ? (1 << embCh) - 1 : 0xFFFFFFFF;
-    channelMask ^= (allBits ^ (1 << ch));
+    if (!(channelMask & (1 << ch))) channelMask = 0xFFFFFFFF;
+    else channelMask ^= (allBits ^ (1 << ch));
     if (canInfer()) doInference();
     else redrawLayers();
 });

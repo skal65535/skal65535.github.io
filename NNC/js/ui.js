@@ -412,13 +412,14 @@ function initTooltips() {
     function show(text, el) {
         clearTimeout(hideTimer);
         clearTimeout(showTimer);
+        box.style.display = 'none';
         showTimer = setTimeout(() => {
             box.textContent = text;
             box.style.visibility = 'hidden';
             box.style.display    = 'block';
             position(el);
             box.style.visibility = 'visible';
-        }, 800);
+        }, 1000);
     }
 
     function position(el) {
@@ -517,6 +518,8 @@ export function init(callbacks) {
     });
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape') { helpOverlay.classList.add('hidden'); return; }
+    }, true);
+    document.addEventListener('keydown', e => {
         if (e.key === ' ' && e.target === document.body) {
             e.preventDefault();
             elements.startBtn.click();

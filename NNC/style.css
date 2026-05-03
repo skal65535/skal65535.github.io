@@ -187,7 +187,7 @@ select[data-dirty] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--ac
 }
 .ctrl-section > .section-body,
 .ctrl-section > #model-controls { background: var(--surface-3); }
-#model-controls[inert] { opacity: 0.35; transition: opacity 0.2s; }
+#model-controls[inert] { opacity: 0.6; transition: opacity 0.2s; }
 #model-controls { transition: opacity 0.2s; }
 .section-label::before {
     content: '';
