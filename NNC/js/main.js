@@ -61,7 +61,7 @@ const roiMask = new ROIMask(1, 1);
 // --- Source canvas ---
 function drawSourceImage() {
     if (!loadedImage) return;
-    const ctx = DOM.sourceCanvas.getContext('2d');
+    const ctx = DOM.sourceCanvas.getContext('2d', { willReadFrequently: true });
     ctx.clearRect(0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
     ctx.drawImage(loadedImage, 0, 0, DOM.sourceCanvas.width, DOM.sourceCanvas.height);
     roiMask.drawOverlay(ctx);

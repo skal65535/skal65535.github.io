@@ -73,10 +73,13 @@ export const DOM = {
 
 export function drawPlaceholder(ctx_canvas) {
     const ctx = ctx_canvas.getContext('2d');
+    const style = getComputedStyle(document.documentElement);
+    const bg  = style.getPropertyValue('--canvas-bg').trim() || '#1a1a2a';
+    const fg  = style.getPropertyValue('--text-dim').trim()  || '#555';
     ctx.clearRect(0, 0, ctx_canvas.width, ctx_canvas.height);
-    ctx.fillStyle = '#1a1a2a';
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, ctx_canvas.width, ctx_canvas.height);
-    ctx.fillStyle = '#555';
+    ctx.fillStyle = fg;
     ctx.font = `${Math.max(12, Math.min(18, ctx_canvas.width / 14))}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

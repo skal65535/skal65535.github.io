@@ -3,6 +3,7 @@
 export const MAX_LOSS_HISTORY = 400;
 export const FLOW_PAD = 4, FLOW_EMB_W = 48;
 
+
 export function drawOutputCanvas(canvas, outputData, hasAlpha = true) {
     const ctx = canvas.getContext('2d');
     const imageData = ctx.createImageData(canvas.width, canvas.height);
@@ -68,9 +69,11 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     const xRGBA = xL3   + matW_L3 + GAP;
     const xZoom = cw - PAD - ZOOM_SIZE;
 
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
     const imgData = ctx.createImageData(cw, ch);
     const px = imgData.data;
-    for (let i = 0; i < px.length; i += 4) { px[i]=px[i+1]=px[i+2]=22; px[i+3]=255; }
+    const bgV = isLight ? 220 : 0;
+    for (let i = 0; i < px.length; i += 4) { px[i]=bgV; px[i+1]=bgV; px[i+2]=bgV; px[i+3]=255; }
 
     // Square-pixel weight matrix, vertically centered; returns {y0, h} for fan lines
     function drawMatrix(matData, rows, cols, x0, matW, e) {
@@ -126,9 +129,10 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
     }
 
     function drawPlaceholder(x0, w0) {
+        const ph = (isLight ? bgR - 20 : bgR + 30) | 0;
         for (let py = PAD; py < PAD+BODY_H; py++)
             for (let qx = x0; qx < x0+w0; qx++) {
-                const idx=(py*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=30; px[idx+3]=255;
+                const idx=(py*cw+qx)*4; px[idx]=px[idx+1]=px[idx+2]=ph; px[idx+3]=255;
             }
         return { y0: PAD, h: BODY_H };
     }
@@ -273,7 +277,7 @@ export function drawFlowDiagram(canvas, { weights, inter1: interLayer1, inter2: 
         }
         ctx.stroke();
     }
-    ctx.strokeStyle = 'rgba(255,210,0,0.75)';
+    ctx.strokeStyle = isLight ? 'rgba(40,60,100,0.65)' : 'rgba(255,210,0,0.75)';
     ctx.lineWidth = 0.8;
     fanLines(xEmb + THUMB_W,      bbEmb,  xL1,            bbL1,   embCh);
     fanLines(xL1  + matW_L1,      bbL1,   xAct1,          bbAct1, mlpWidth1);

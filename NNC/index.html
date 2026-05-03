@@ -9,6 +9,14 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@400;500;600;700&family=Caveat:wght@500;700&family=Nunito:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/png" href="favicon.png">
+    <script>
+    (function() {
+        const t = localStorage.getItem('theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+        else if (window.matchMedia('(prefers-color-scheme: light)').matches)
+            document.documentElement.setAttribute('data-theme', 'light');
+    })();
+    </script>
 </head>
 <body>
 <div id="splash" tabindex="0">
@@ -287,6 +295,8 @@
 
         </aside>
         <div class="header-spacer"></div>
+        <button id="theme-btn" title="Toggle light/dark mode">☾</button>
+        <div class="app-divider"></div>
         <div class="header-btns">
             <select id="example-select">
                 <option value="" disabled selected>Examples</option>
@@ -300,10 +310,23 @@
             <button class="btn btn-accent" id="export-btn">↓ GLSL</button>
         </div>
     </header>
+    <script>
+    (function() {
+        const btn = document.getElementById('theme-btn');
+        const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+        btn.textContent = cur === 'light' ? '☀' : '☾';
+        btn.addEventListener('click', () => {
+            const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', next);
+            btn.textContent = next === 'light' ? '☀' : '☾';
+            localStorage.setItem('theme', next);
+        });
+    })();
+    </script>
 
     <div id="app">
         <main id="workspace">
-            <div class="mobile-notice">Training requires desktop — load/save still work</div>
+            <div class="mobile-notice">Some features are reduced on mobile</div>
             <div class="canvas-row">
                 <div class="canvas-panel" id="source-panel">
                     <div class="panel-header">
