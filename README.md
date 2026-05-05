@@ -4,6 +4,13 @@ My day-job is -amongst other things- to write open-sourced code (like [webp](htt
 [sjpeg](https://github.com/webmproject/sjpeg)). But! I also like to write
 open-sourced code for fun :) Here are some side-projects demo pages:
 
+## [Instant-NGP](https://skal65535.github.io/NNC/index.html) in-browser training
+
+   ![Instant-NGP](https://skal65535.github.io/NNC/NNC.thumb.webp)
+
+   Neural-Net Compression: on online Adam trainer for embeddings and MLP, to
+   compress images by learning both its representation and reconstruction.
+
 ## [Gaussian splats](https://skal65535.github.io/splats/index.html) (aka 3DGS)
 
    ![3DGS](https://skal65535.github.io/splats/splats.thumb.webp)
