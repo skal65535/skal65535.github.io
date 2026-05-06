@@ -101,7 +101,12 @@
   </form>
   <div id="gui-container">
     <canvas id="side-canvas" style='display: none;'></canvas>
-    <center><canvas id="main-canvas"></canvas></center>
+    <center>
+      <div id="canvas-wrapper" style="position: relative;">
+        <canvas id="main-canvas"></canvas>
+        <canvas id="voronoi-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
+      </div>
+    </center>
 
   </div>
 </div>
@@ -213,7 +218,7 @@ const params = {  // Global parameters
     params.iter = null;
     Render(true);
   },
-  redo: () => { Render(false); },
+  redo: () => { ShowProgress(); },
   go:   () => { Render(true); },
 }
 
@@ -351,6 +356,15 @@ function Init() {
   canvas.height = image.height = H;
   const gui = document.querySelector("#gui");
   gui.style.top = (-H + 10) + 'px';
+
+  // --- New overlay canvas logic ---
+  const wrapper = document.querySelector("#canvas-wrapper");
+  const voronoiCanvas = document.querySelector("#voronoi-canvas");
+  wrapper.style.width = W + 'px';
+  wrapper.style.height = H + 'px';
+  voronoiCanvas.width = W;
+  voronoiCanvas.height = H;
+  // --- End new logic ---
 
   params.gl = null;
   if (params.use_webgl) {
@@ -527,7 +541,7 @@ function ShowProgress() {
   if (!params.iter) return;
   const progress = params.iter.progress;
   const canvas = document.querySelector("#main-canvas");
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return;  // Can't draw progress bar if we have a WebGL context.
 
   const off = 340;
@@ -547,6 +561,7 @@ function ShowProgress() {
 ////////////////////////////////////////////////////////////////////////////////
 
 function DrawVoronoi(canvas) {
+  if (params.points.length === 0) return;
   const W = canvas.width, H = canvas.height;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const data = ctx.getImageData(0, 0, W, H);
@@ -619,16 +634,31 @@ function DrawCircle(ctx, x, y, radius) {
 }
 
 function DrawStippling() {
-  const canvas = document.querySelector("#main-canvas");
+  const mainCanvas = document.querySelector("#main-canvas");
+  const voronoiCanvas = document.querySelector("#voronoi-canvas");
+
+  // Sync canvas sizes
+  if (voronoiCanvas.width !== mainCanvas.width) voronoiCanvas.width = mainCanvas.width;
+  if (voronoiCanvas.height !== mainCanvas.height) voronoiCanvas.height = mainCanvas.height;
+  
+  const voronoiCtx = voronoiCanvas.getContext("2d", { willReadFrequently: true });
+  voronoiCtx.clearRect(0, 0, voronoiCanvas.width, voronoiCanvas.height);
+
+  // Main stipple rendering
   if (params.use_webgl && params.gl) {
-    DrawStipplingWebGL(canvas);
-  } else {
-    DrawStippling2D(canvas);
-  }
-  if (params.show_voronoi && (!params.use_webgl || !params.gl)) {
-    DrawVoronoi(canvas);
-  } else if (params.show_target && (!params.use_webgl || !params.gl)) {
-    DrawTarget();
+    DrawStipplingWebGL(mainCanvas);
+    // Overlay rendering
+    if (params.show_voronoi && params.iter && params.iter.done) {
+      DrawVoronoi(voronoiCanvas); // Use the single fast function on the overlay canvas
+    }
+  } else { // 2D mode
+    DrawStippling2D(mainCanvas);
+    // Integrated rendering (all on main canvas)
+    if (params.show_voronoi && params.iter && params.iter.done) {
+      DrawVoronoi(mainCanvas);
+    } else if (params.show_target) {
+      DrawTarget();
+    }
   }
 }
 
