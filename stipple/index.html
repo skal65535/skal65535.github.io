@@ -152,6 +152,27 @@ void main() {
 }
 </script>
 
+<script id="vertex-shader-points" type="x-shader/x-vertex">
+attribute vec2 vtx;
+uniform float u_radius;
+void main() {
+  vec2 pos = vtx * 2. - 1.;
+  pos.y *= -1.;
+  gl_Position = vec4(pos, 0., 1.);
+  gl_PointSize = u_radius * 2.0;
+}
+</script>
+<script id="fragment-shader-points" type="x-shader/x-fragment">
+precision mediump float;
+uniform vec4 u_color;
+void main() {
+  if (length(gl_PointCoord - vec2(0.5)) > 0.5) {
+    discard;
+  }
+  gl_FragColor = u_color;
+}
+</script>
+
 <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
@@ -173,6 +194,7 @@ const params = {  // Global parameters
   radius: 1.5,
   use_edges: true,
   invert: false,
+  use_webgl: true,
   show_voronoi: false,
   show_target: false,
   image: null,
@@ -183,6 +205,9 @@ const params = {  // Global parameters
   grays: null,
   work_width: 512,
   work_height: 512,
+  gl: null,
+  points_program: null,
+  points_buffer: null,
 
   reset: () => {
     params.iter = null;
@@ -260,6 +285,8 @@ function SetupUI() {
             .listen().onChange(params.redo);
   params.gui.add(params, 'invert').name('Video Invert')
             .listen().onChange(params.redo);
+  params.gui.add(params, 'use_webgl').name('Use WebGL render')
+            .listen().onChange(params.go);
   params.gui.add(params, 'show_voronoi').name('Show Voronoi')
             .listen().onChange(params.redo);
   params.gui.add(params, 'reset').name('Reset');
@@ -303,7 +330,12 @@ function ResetTimer() {
 function Init() {
   ResetTimer();
   const image = params.image;
-  const canvas = document.querySelector("#main-canvas");
+  let canvas = document.querySelector("#main-canvas");
+  // We need to replace the canvas element to be able to switch from WebGL to 2D
+  const new_canvas = canvas.cloneNode(true);
+  canvas.parentNode.replaceChild(new_canvas, canvas);
+  canvas = new_canvas;
+
   const Wo = 1024, Ho = 750;
   let W = image.width, H = image.height;
   if (W > Wo || H > Ho) {
@@ -319,6 +351,18 @@ function Init() {
   canvas.height = image.height = H;
   const gui = document.querySelector("#gui");
   gui.style.top = (-H + 10) + 'px';
+
+  params.gl = null;
+  if (params.use_webgl) {
+    params.gl = canvas.getContext("webgl");
+    if (!params.gl) {
+      console.log("WebGL not supported, falling back to 2D canvas.");
+      params.use_webgl = false;
+    } else {
+      params.points_program = CreateShaders(params.gl, 'vertex-shader-points', 'fragment-shader-points');
+      params.points_buffer = params.gl.createBuffer();
+    }
+  }
 
   RenderTarget(image);  // populates params.grays
 
@@ -484,6 +528,8 @@ function ShowProgress() {
   const progress = params.iter.progress;
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d");
+  if (!ctx) return;  // Can't draw progress bar if we have a WebGL context.
+
   const off = 340;
   const width = (canvas.width - off) * 90 / 100;
   const len = Math.floor(progress * width);
@@ -518,15 +564,39 @@ function DrawVoronoi(canvas) {
   ctx.putImageData(data, 0, 0);
 }
 
-function DrawCircle(ctx, x, y, radius) {
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.closePath();
-  ctx.fill();
+function DrawStipplingWebGL(canvas) {
+  const gl = params.gl;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  const c = params.invert ? 0. : 1.;
+  gl.clearColor(c, c, c, 1.);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  if (params.points.length == 0) return;
+
+  gl.useProgram(params.points_program);
+
+  const points_data = new Float32Array(params.points.length * 2);
+  for (let i = 0; i < params.points.length; ++i) {
+    points_data[2 * i + 0] = params.points[i].x;
+    points_data[2 * i + 1] = params.points[i].y;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, params.points_buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, points_data, gl.STATIC_DRAW);
+
+  const vtxLocation = gl.getAttribLocation(params.points_program, "vtx");
+  gl.enableVertexAttribArray(vtxLocation);
+  gl.vertexAttribPointer(vtxLocation, 2, gl.FLOAT, false, 0, 0);
+
+  const kRadius = gl.getUniformLocation(params.points_program, "u_radius");
+  const kColor = gl.getUniformLocation(params.points_program, "u_color");
+  const C = params.invert ? 1. : 0.;
+  gl.uniform1f(kRadius, params.radius);
+  gl.uniform4f(kColor, C, C, C, 1.);
+
+  gl.drawArrays(gl.POINTS, 0, params.points.length);
 }
 
-function DrawStippling() {
-  const canvas = document.querySelector("#main-canvas");
+function DrawStippling2D(canvas) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) {
     console.log("ERROR! 2d-context is not available.");
@@ -539,8 +609,27 @@ function DrawStippling() {
   for (const pt of params.points) {
     DrawCircle(ctx, pt.x * canvas.width, pt.y * canvas.height, radius);
   }
-  if (params.show_voronoi) DrawVoronoi(canvas);
-  else if (params.show_target) DrawTarget();
+}
+
+function DrawCircle(ctx, x, y, radius) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function DrawStippling() {
+  const canvas = document.querySelector("#main-canvas");
+  if (params.use_webgl && params.gl) {
+    DrawStipplingWebGL(canvas);
+  } else {
+    DrawStippling2D(canvas);
+  }
+  if (params.show_voronoi && (!params.use_webgl || !params.gl)) {
+    DrawVoronoi(canvas);
+  } else if (params.show_target && (!params.use_webgl || !params.gl)) {
+    DrawTarget();
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
