@@ -64,56 +64,144 @@ class Cell {
 
 // Grid-accelerated Voronoi. For N points in [0,1]^2, uses a gs x gs spatial
 // grid so each pixel needs O(k) checks (k~1-9 cells) instead of O(sqrt(N)).
-// grays: {W, H} dimensions of the output map.
+// Packs points into Float32Arrays and uses a CSR-flattened grid to keep the
+// inner loop free of object property loads and iterator allocations.
 export function computeVoronoi(W, H, points) {
   const N = points.length;
   const out = new Uint32Array(W * H);
   if (!N) return out;
 
   const gs = Math.max(1, Math.ceil(Math.sqrt(N / 4)));
-  const inv_gs = 1 / gs;
-  const grid = new Array(gs * gs).fill(null).map(() => []);
+  const inv_gs2 = 1 / (gs * gs);
+  const G = gs * gs;
+
+  // Pack point coords (object loads are expensive in the hot loop).
+  const xs = new Float32Array(N), ys = new Float32Array(N);
+  for (let i = 0; i < N; i++) { xs[i] = points[i].x; ys[i] = points[i].y; }
+
+  // Build CSR grid: counts[c..c+1] bracket bucket c in gridIdx.
+  const counts = new Int32Array(G + 1);
+  const cellOf = new Int32Array(N);
   for (let i = 0; i < N; i++) {
-    const gx = Math.max(0, Math.min((points[i].x * gs) | 0, gs - 1));
-    const gy = Math.max(0, Math.min((points[i].y * gs) | 0, gs - 1));
-    grid[gx + gy * gs].push(i);
+    let gx = (xs[i] * gs) | 0; if (gx < 0) gx = 0; else if (gx >= gs) gx = gs - 1;
+    let gy = (ys[i] * gs) | 0; if (gy < 0) gy = 0; else if (gy >= gs) gy = gs - 1;
+    const c = gx + gy * gs;
+    cellOf[i] = c;
+    counts[c + 1]++;
+  }
+  for (let i = 1; i <= G; i++) counts[i] += counts[i - 1];
+  const gridIdx = new Int32Array(N);
+  const cursor = new Int32Array(G);
+  for (let i = 0; i < N; i++) {
+    const c = cellOf[i];
+    gridIdx[counts[c] + cursor[c]++] = i;
   }
 
+  const inv_W = 1 / W, inv_H = 1 / H;
+
   for (let y = 0; y < H; y++) {
-    const Y = y / H;
-    const gy0 = Math.min((Y * gs) | 0, gs - 1);
+    const Y = y * inv_H;
+    let gy0 = (Y * gs) | 0; if (gy0 >= gs) gy0 = gs - 1;
+    const rowOff = y * W;
     for (let x = 0; x < W; x++) {
-      const X = x / W;
-      const gx0 = Math.min((X * gs) | 0, gs - 1);
+      const X = x * inv_W;
+      let gx0 = (X * gs) | 0; if (gx0 >= gs) gx0 = gs - 1;
       let best = 0, best_d2 = Infinity;
 
-      for (let r = 0; r <= gs; r++) {
-        // cells at Chebyshev ring r>=2 are at Euclidean dist >= (r-1)/gs
-        if (r >= 2 && (r-1)*(r-1)*inv_gs*inv_gs >= best_d2) break;
-        for (let dy = -r; dy <= r; dy++) {
-          for (let dx = -r; dx <= r; dx++) {
-            if (r > 0 && Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
-            const nx = gx0 + dx, ny = gy0 + dy;
-            if (nx < 0 || nx >= gs || ny < 0 || ny >= gs) continue;
-            for (const i of grid[nx + ny * gs]) {
-              const ddx = X - points[i].x, ddy = Y - points[i].y;
+      // r=0: home cell.
+      {
+        const home = gx0 + gy0 * gs;
+        const lo = counts[home], hi = counts[home + 1];
+        for (let k = lo; k < hi; k++) {
+          const i = gridIdx[k];
+          const ddx = X - xs[i], ddy = Y - ys[i];
+          const d2 = ddx*ddx + ddy*ddy;
+          if (d2 < best_d2) { best_d2 = d2; best = i; }
+        }
+      }
+
+      // Expanding Chebyshev rings; iterate perimeter only (no Math.abs).
+      for (let r = 1; r <= gs; r++) {
+        if (r >= 2 && (r - 1) * (r - 1) * inv_gs2 >= best_d2) break;
+        const ny_t = gy0 - r, ny_b = gy0 + r;
+        const nx_l = gx0 - r, nx_r = gx0 + r;
+        const cx_lo = nx_l < 0 ? 0 : nx_l;
+        const cx_hi = nx_r >= gs ? gs - 1 : nx_r;
+
+        // Top + bottom rows.
+        if (ny_t >= 0) {
+          const base = ny_t * gs;
+          const lo = counts[base + cx_lo], hi = counts[base + cx_hi + 1];
+          for (let k = lo; k < hi; k++) {
+            const i = gridIdx[k];
+            const ddx = X - xs[i], ddy = Y - ys[i];
+            const d2 = ddx*ddx + ddy*ddy;
+            if (d2 < best_d2) { best_d2 = d2; best = i; }
+          }
+        }
+        if (ny_b < gs) {
+          const base = ny_b * gs;
+          const lo = counts[base + cx_lo], hi = counts[base + cx_hi + 1];
+          for (let k = lo; k < hi; k++) {
+            const i = gridIdx[k];
+            const ddx = X - xs[i], ddy = Y - ys[i];
+            const d2 = ddx*ddx + ddy*ddy;
+            if (d2 < best_d2) { best_d2 = d2; best = i; }
+          }
+        }
+        // Left + right columns (excluding corners already covered above).
+        const cy_lo = (ny_t + 1) < 0 ? 0 : ny_t + 1;
+        const cy_hi = (ny_b - 1) >= gs ? gs - 1 : ny_b - 1;
+        if (nx_l >= 0) {
+          for (let ny = cy_lo; ny <= cy_hi; ny++) {
+            const cell = nx_l + ny * gs;
+            const lo = counts[cell], hi = counts[cell + 1];
+            for (let k = lo; k < hi; k++) {
+              const i = gridIdx[k];
+              const ddx = X - xs[i], ddy = Y - ys[i];
+              const d2 = ddx*ddx + ddy*ddy;
+              if (d2 < best_d2) { best_d2 = d2; best = i; }
+            }
+          }
+        }
+        if (nx_r < gs) {
+          for (let ny = cy_lo; ny <= cy_hi; ny++) {
+            const cell = nx_r + ny * gs;
+            const lo = counts[cell], hi = counts[cell + 1];
+            for (let k = lo; k < hi; k++) {
+              const i = gridIdx[k];
+              const ddx = X - xs[i], ddy = Y - ys[i];
               const d2 = ddx*ddx + ddy*ddy;
               if (d2 < best_d2) { best_d2 = d2; best = i; }
             }
           }
         }
       }
-      out[x + y * W] = best;
+      out[x + rowOff] = best;
     }
   }
   return out;
+}
+
+// Walk every pixel and accumulate it into the cell that owns it.
+// full=false → addRho only (used during Lloyd step).
+// full=true  → add (full second-moments, used at split/merge time).
+function accumulate(cells, out, pixels, W, H, full) {
+  for (let y = 0, idx = 0; y < H; y++) {
+    const Y = y / H;
+    for (let x = 0; x < W; x++, idx++) {
+      const c = cells[out[idx]], xf = x/W, r = pixels[idx];
+      if (full) c.add(xf, Y, r);
+      else      c.addRho(xf, Y, r);
+    }
+  }
 }
 
 // grays: { W, H, pixels: Uint8ClampedArray, average: number (sum of all pixel values) }
 export class StipplingIterator {
   _grays; _params; _points; _ops; _max_ops; _rand;
 
-  constructor(grays, params) {
+  constructor(grays, params, existing_points = null) {
     this._grays = grays;
     this._params = params;
     this._max_ops = params.num_iters * params.num_Lloyd_iters;
@@ -127,8 +215,12 @@ export class StipplingIterator {
       return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
 
-    const n = params.num_points >> 1;
-    this._points = Array.from({length: n}, () => new Point(this._rand(), this._rand()));
+    if (existing_points) {
+      this._points = existing_points.map(p => new Point(p.x, p.y, p.c));
+    } else {
+      const n = params.num_points >> 1;
+      this._points = Array.from({length: n}, () => new Point(this._rand(), this._rand()));
+    }
   }
 
   get points()   { return this._points; }
@@ -144,12 +236,7 @@ export class StipplingIterator {
     const out = computeVoronoi(W, H, this._points);
     const cells = Array.from({length: N}, () => new Cell());
 
-    for (let y = 0, idx = 0; y < H; y++) {
-      const Y = y / H;
-      for (let x = 0; x < W; x++, idx++) {
-        cells[out[idx]].addRho(x/W, Y, pixels[idx]);
-      }
-    }
+    accumulate(cells, out, pixels, W, H, /*full=*/false);
     let d2 = 0, cnt = 0;
     for (let n = 0; n < N; n++) {
       const c = cells[n];
@@ -180,14 +267,10 @@ export class StipplingIterator {
     const eps_W = 1/W, eps_H = 1/H;
 
     for (const c of cells) c.reset();
-    for (let y = 0, idx = 0; y < H; y++) {
-      const Y = y / H;
-      for (let x = 0; x < W; x++, idx++) {
-        cells[out[idx]].add(x/W, Y, g.pixels[idx]);
-      }
-    }
+    accumulate(cells, out, g.pixels, W, H, /*full=*/true);
     const prev = cells.length;
     const new_pts = [];
+    const inUnit = v => v >= 0 && v <= 1;
     for (const c of cells) {
       if (!c.average()) continue;
       const rho = Math.round(c.r_acc);
@@ -198,10 +281,9 @@ export class StipplingIterator {
         const d = c.mainDirection();
         const x1 = xf - d.dx, y1 = yf - d.dy;
         const x2 = xf + d.dx, y2 = yf + d.dy;
-        const inBounds = (val) => val >= 0 && val <= 1;
 
         if ((Math.abs(d.dx) > eps_W || Math.abs(d.dy) > eps_H) &&
-            inBounds(x1) && inBounds(y1) && inBounds(x2) && inBounds(y2)) {
+            inUnit(x1) && inUnit(y1) && inUnit(x2) && inUnit(y2)) {
           new_pts.push(new Point(x1, y1, color));
           new_pts.push(new Point(x2, y2, color));
           continue;

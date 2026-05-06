@@ -65,7 +65,7 @@
 <div id="drop-area">
   <form class="my-form">
     <input type="file" id="FileElmt" style='display:none;'
-           multiple accept="image/*" onchange="HandleFile(this.files[0])">
+           accept="image/*,video/*" onchange="HandleSource(this.files[0])">
   </form>
   <div height='100px'>
     <h2><center>Weighted Linde-Buzo-Gray Stippling Demo</center></h2>
@@ -79,14 +79,14 @@
     Then a large number of cells is spawns and evolved (removal, split, ...) until the maximum number
     of points is reached or the confidence is good enough.
     <br/>
-    Drag and drop image on the canvas below.
+    Drag and drop image or video on the canvas below.
     </font>
   </div>
   <label class='button' for="FileElmt"
          style='top:30px; left:30px;'>select source</label>
   <button class='button' style='top:30px; left:30px;'
-          onmousedown="params.show_target=true; Render(false);"
-          onmouseup="params.show_target=false; Render(false);">show target</button>
+          onmousedown="params.show_target=true; redisplay();"
+          onmouseup="params.show_target=false; redisplay();">show target</button>
   <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
     <button class='button' style='top:30px; left:30px' download='img.webp'
             onmouseup="const result = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
@@ -102,10 +102,7 @@
   <div id="gui-container">
     <canvas id="side-canvas" style='display: none;'></canvas>
     <center>
-      <div id="canvas-wrapper" style="position: relative;">
         <canvas id="main-canvas"></canvas>
-        <canvas id="voronoi-canvas" style="position: absolute; top: 0; left: 0; pointer-events: none;"></canvas>
-      </div>
     </center>
 
   </div>
@@ -178,491 +175,518 @@ void main() {
 }
 </script>
 
+<script id="fragment-shader-voronoi" type="x-shader/x-fragment">
+precision mediump float;
+uniform sampler2D u_points;
+uniform vec2 u_canvas_size;
+uniform int u_num_points;
+uniform float u_texture_width;
+uniform float u_texture_height;
+uniform float u_scale;
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_canvas_size;
+  float min_dist = 1e9;
+  vec4 final_color = vec4(0,0,0,1);
+
+  for (int i = 0; i < 500001; ++i) {
+    if (i >= u_num_points) break;
+    float col = mod(float(i), u_texture_width);
+    float row = floor(float(i) / u_texture_width);
+    vec2 point_uv = vec2((col + 0.5) / u_texture_width, (row + 0.5) / u_texture_height);
+    vec4 point_data = texture2D(u_points, point_uv);
+    vec2 point_coord = point_data.xy;
+    float dist = distance(uv, point_coord);
+    if (dist < min_dist) {
+      min_dist = dist;
+      float c = point_data.z * u_scale;
+      final_color = vec4(c, c, c, 1.0);
+    }
+  }
+  gl_FragColor = final_color;
+}
+</script>
+
+<script id="vertex-shader-voronoi" type="x-shader/x-vertex">
+attribute vec2 vtx;
+void main() {
+  gl_Position = vec4(vtx, 0.0, 1.0);
+}
+</script>
+
 <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script type="module">
 "use strict";
 
-import { Point, StipplingIterator, computeVoronoi } from './stipple.js';
+import { StipplingIterator, computeVoronoi } from './stipple.js';
 
-////////////////////////////////////////////////////////////////////////////////
-// The interesting stuff
-
-const params = {  // Global parameters
-  num_points: 80000,
-  num_iters: 10,
+// ── Settings (UI-controlled only, never mutated by algorithm) ─────────────────
+const params = {
+  num_points:      80000,
+  num_iters:       10,
   num_Lloyd_iters: 4,
-  rho: 0.,
-  alpha: 0.01,
-  strength: 2.6,
-  radius: 1.5,
-  use_edges: true,
-  invert: false,
-  use_webgl: true,
-  show_voronoi: false,
-  show_target: false,
-  image: null,
-  gui: null,
-  iter: null,     // StipplingIterator
-  tid: -1,        // timer id
-  points: [],
-  grays: null,
-  work_width: 512,
-  work_height: 512,
-  gl: null,
-  points_program: null,
-  points_buffer: null,
+  rho:             0.,
+  alpha:           0.01,
+  strength:        2.6,
+  use_edges:       true,
+  radius:          1.5,
+  invert:          false,
+  use_webgl:       true,
+  show_voronoi:    false,
+  show_target:     false,
+  adapt_iters:     3,
+};
 
-  reset: () => {
-    params.iter = null;
-    Render(true);
-  },
-  redo: () => { ShowProgress(); },
-  go:   () => { Render(true); },
+// ── Module-level mutable state ────────────────────────────────────────────────
+let source       = null;   // Image | HTMLVideoElement
+let state        = null;   // { grays, iter, points }
+let videoPlaying = false;
+let tickSched    = false;
+
+// WebGL resources (main canvas)
+let gl = null, pointsProg = null, pointsBuf = null, voronoiProg = null;
+
+// GL caches (invalidated on context change)
+let _rt    = null;   // grabFrame  – side canvas context
+let _tgt   = null;   // showTarget – main canvas context
+let _voro  = null;   // voronoi    – main canvas context
+let _frame = null;   // grabFrame  – persistent 2D canvas for reliable frame capture
+
+const WORK_W = 512, WORK_H = 512;
+
+// ── HTML-exposed API ──────────────────────────────────────────────────────────
+window.params        = params;
+window.HandleSource  = HandleSource;
+window.redisplay     = () => { if (state) display(state); };
+
+// ── State ─────────────────────────────────────────────────────────────────────
+function buildState(grays, prev = null) {
+  const iter = new StipplingIterator(grays, {
+    num_points:      params.num_points,
+    num_iters:       prev ? params.adapt_iters : params.num_iters,
+    num_Lloyd_iters: params.num_Lloyd_iters,
+    rho:             params.rho,
+    seed:            91651088029,
+  }, prev?.points);
+  return { grays, iter, points: prev?.points ?? [] };
 }
 
-// expose for HTML event handlers
-window.params = params;
-window.Render = Render;
-window.HandleFile = HandleFile;
-
-////////////////////////////////////////////////////////////////////////////////
-// Drag'n'Drop
-
-function PreventDefaults (e) {
-  e.preventDefault();
-  e.stopPropagation();
+// ── Tick loop ─────────────────────────────────────────────────────────────────
+function schedule() {
+  if (!tickSched) { tickSched = true; requestAnimationFrame(tick); }
 }
-function HandleDrop(e) {
-  HandleFile(e.dataTransfer.files[0]);
-}
-function HandleFile(file) {
-  const reader = new FileReader();
-  try { reader.readAsDataURL(file); } catch {
-    alert("could not read the data blob.\nNot a readable image file.");
+
+function tick() {
+  tickSched = false;
+  if (!source) return;
+
+  if (!state) state = buildState(grabFrame(source));
+
+  if (!state.iter.done) {
+    state.iter.step();
+    state.points = state.iter.points;
+    display(state);
+    schedule();
     return;
   }
-  reader.onloadend = function() {
-    params.image = new Image();
-    params.image.onload = function() { Render(true); };
-    params.image.src = reader.result;
-  }
-}
-function SetupDragAndDrop() {
-  const dropArea = document.getElementById('drop-area');
-  function highlight(e) { dropArea.classList.add('highlight'); }
-  function unhighlight(e) { dropArea.classList.remove('highlight'); }
 
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, PreventDefaults, false); }
-  );
-  ['dragenter', 'dragover'].forEach(
-    name => { dropArea.addEventListener(name, highlight, false); }
-  );
-  ['dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, unhighlight, false); }
-  );
-  dropArea.addEventListener('drop', HandleDrop, false)
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function SetupUI() {
-  const elmt = document.getElementById('gui-container');
-  params.gui = new lil.GUI({ width: 250, container: elmt, });
-  params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'num_points', 500, 500000, 10).name('Max Points')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'rho', -1., 1, .01).name('Density cut-off')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'use_edges').name('Edge detection')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'alpha', 0.0, 0.2, .01).name('mix edges/source')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'strength', 1.0, 16., .01).name('Edges strength')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'num_iters', 2, 50, 1).name('Iterations')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'num_Lloyd_iters', 1, 10, 1).name('Lloyd Iterations')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'radius', 0.2, 3., .01).name('Points radius')
-            .listen().onChange(params.redo);
-  params.gui.add(params, 'invert').name('Video Invert')
-            .listen().onChange(params.redo);
-  params.gui.add(params, 'use_webgl').name('Use WebGL render')
-            .listen().onChange(params.go);
-  params.gui.add(params, 'show_voronoi').name('Show Voronoi')
-            .listen().onChange(params.redo);
-  params.gui.add(params, 'reset').name('Reset');
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-class Gray {
-  W = 0;
-  H = 0;
-  pixels = null;
-  average = 0.;
-
-  constructor(canvas) {
-    this.W = canvas.width;
-    this.H = canvas.height;
-    this.pixels = new Uint8ClampedArray(this.W * this.H);
-    this.average = 0.;
+  display(state);
+  if (videoPlaying) {
+    state = buildState(grabFrame(source), state);
+    schedule();
   }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Main calls
-
-function main() {
-  SetupDragAndDrop();
-  SetupUI();
-
-  params.image = new Image();
-  params.image.src = "./book.webp";
-  params.image.onload = function() { Render(true); };
+// ── Source loading ────────────────────────────────────────────────────────────
+function setSource(src) {
+  source = src;
+  state  = null;
+  setupCanvas(src);
+  display(null);
+  schedule();
 }
 
-function ResetTimer() {
-  if (params.tid >= 0) {
-    clearInterval(params.tid);
-    params.tid = -1;
+function HandleSource(file) {
+  if (source instanceof HTMLVideoElement) source.pause();
+  videoPlaying = false;
+  _updatePlayCtrl();
+  state = null; source = null;
+  // Replace canvas immediately so old points vanish before the new source loads.
+  const _old = document.querySelector('#main-canvas');
+  _old.parentNode.replaceChild(_old.cloneNode(false), _old);
+  gl = null; _tgt = null; _voro = null;
+
+  if (file.type.startsWith('video/')) {
+    const video = document.createElement('video');
+    video.src   = URL.createObjectURL(file);
+    video.muted = true;
+    video.loop  = true;
+    if ('requestVideoFrameCallback' in video) {
+      video.requestVideoFrameCallback(() => setSource(video));
+    } else {
+      video.addEventListener('loadeddata', () => setSource(video), { once: true });
+    }
+  } else {
+    const reader = new FileReader();
+    try { reader.readAsDataURL(file); }
+    catch { alert('Could not read the file.'); return; }
+    reader.onloadend = () => {
+      const img = new Image();
+      img.onload = () => setSource(img);
+      img.src = reader.result;
+    };
   }
 }
 
-function Init() {
-  ResetTimer();
-  const image = params.image;
-  let canvas = document.querySelector("#main-canvas");
-  // We need to replace the canvas element to be able to switch from WebGL to 2D
-  const new_canvas = canvas.cloneNode(true);
-  canvas.parentNode.replaceChild(new_canvas, canvas);
-  canvas = new_canvas;
+function toggleVideo() {
+  if (!(source instanceof HTMLVideoElement)) return;
+  videoPlaying = !videoPlaying;
+  _updatePlayCtrl();
+  if (videoPlaying) { source.play(); schedule(); }
+  else              source.pause();
+}
+
+let _playCtrl = null;
+function _updatePlayCtrl() {
+  if (_playCtrl) _playCtrl.name(videoPlaying ? 'Pause' : 'Play');
+}
+
+// ── Canvas / WebGL setup ──────────────────────────────────────────────────────
+function setupCanvas(src) {
+  let canvas = document.querySelector('#main-canvas');
+  const nc   = canvas.cloneNode(true);
+  canvas.parentNode.replaceChild(nc, canvas);
+  canvas = nc;
 
   const Wo = 1024, Ho = 750;
-  let W = image.width, H = image.height;
+  let W = src.videoWidth ?? src.width;
+  let H = src.videoHeight ?? src.height;
   if (W > Wo || H > Ho) {
-    if (W * Ho > Wo * H) {
-      H = Math.floor(H * Wo / W);
-      W = Wo;
-    } else {
-      W = Math.floor(W * Ho / H);
-      H = Ho;
-    }
+    if (W * Ho > Wo * H) { H = Math.floor(H * Wo / W); W = Wo; }
+    else                  { W = Math.floor(W * Ho / H); H = Ho; }
   }
-  canvas.width = image.width = W;
-  canvas.height = image.height = H;
-  const gui = document.querySelector("#gui");
-  gui.style.top = (-H + 10) + 'px';
+  canvas.width = W; canvas.height = H;
+  if (src instanceof HTMLImageElement) { src.width = W; src.height = H; }
+  document.querySelector('#gui').style.top = `${-H + 10}px`;
 
-  // --- New overlay canvas logic ---
-  const wrapper = document.querySelector("#canvas-wrapper");
-  const voronoiCanvas = document.querySelector("#voronoi-canvas");
-  wrapper.style.width = W + 'px';
-  wrapper.style.height = H + 'px';
-  voronoiCanvas.width = W;
-  voronoiCanvas.height = H;
-  // --- End new logic ---
-
-  params.gl = null;
+  gl = null; _tgt = null; _voro = null;
   if (params.use_webgl) {
-    params.gl = canvas.getContext("webgl");
-    if (!params.gl) {
-      console.log("WebGL not supported, falling back to 2D canvas.");
-      params.use_webgl = false;
-    } else {
-      params.points_program = CreateShaders(params.gl, 'vertex-shader-points', 'fragment-shader-points');
-      params.points_buffer = params.gl.createBuffer();
+    gl = canvas.getContext('webgl');
+    if (!gl) { params.use_webgl = false; console.log('WebGL unavailable.'); }
+    else {
+      gl.getExtension('OES_texture_float');
+      pointsProg  = CreateShaders(gl, 'vertex-shader-points',  'fragment-shader-points');
+      pointsBuf   = gl.createBuffer();
+      voronoiProg = CreateShaders(gl, 'vertex-shader-voronoi', 'fragment-shader-voronoi');
     }
   }
-
-  RenderTarget(image);  // populates params.grays
-
-  params.iter = new StipplingIterator(params.grays, {
-    num_points:     params.num_points,
-    num_iters:      params.num_iters,
-    num_Lloyd_iters: params.num_Lloyd_iters,
-    rho:            params.rho,
-    seed:           91651088029,
-  });
-  params.points = params.iter.points;
-  console.log("=== RESET " + params.points.length + " POINTS ===");
 }
 
-function Render(is_dirty) {
-  if (is_dirty) Init();
-  if (params.iter && !params.iter.done) {
-    params.points = params.iter.points;
-    ShowProgress();
-    params.iter.step();
-    if (params.tid < 0) {
-      params.tid = setInterval(() => { Render(false); }, 0);
-    }
+// ── Frame extraction: source → grays (via side-canvas WebGL pipeline) ─────────
+function grabFrame(src) {
+  const side = document.querySelector('#side-canvas');
+  if (side.width !== WORK_W)  side.width  = WORK_W;
+  if (side.height !== WORK_H) side.height = WORK_H;
+  const sgl = side.getContext('webgl', { preserveDrawingBuffer: true });
+  if (!sgl) return null;
+
+  if (!_rt || _rt.gl !== sgl) {
+    _rt = {
+      gl:         sgl,
+      prog_edge:  CreateShaders(sgl, 'vertex-shader-base', 'fragment-shader-edge'),
+      prog_basic: CreateShaders(sgl, 'vertex-shader-base', 'fragment-shader-basic'),
+      buf:        sgl.createBuffer(),
+      tex:        sgl.createTexture(),
+    };
+    setupTex(sgl, _rt.tex, 'LINEAR', 'NEAREST');
+  }
+
+  // Capture via 2D canvas: reliable for off-DOM video elements where
+  // texImage2D(videoElement) can silently keep stale texture data.
+  if (!_frame) { _frame = document.createElement('canvas'); _frame.width = WORK_W; _frame.height = WORK_H; }
+  const fctx = _frame.getContext('2d');
+  fctx.clearRect(0, 0, WORK_W, WORK_H);   // clear first so stale content never leaks through
+  fctx.drawImage(src, 0, 0, WORK_W, WORK_H);
+
+  const prog = params.use_edges ? _rt.prog_edge : _rt.prog_basic;
+  sgl.viewport(0, 0, WORK_W, WORK_H);
+  sgl.clearColor(0, 0, 0, 0);
+  sgl.clear(sgl.COLOR_BUFFER_BIT);
+  sgl.useProgram(prog);
+
+  uploadQuad(sgl, prog, _rt.buf, WORK_W, WORK_H);
+
+  sgl.bindTexture(sgl.TEXTURE_2D, _rt.tex);
+  sgl.texImage2D(sgl.TEXTURE_2D, 0, sgl.RGBA, sgl.RGBA, sgl.UNSIGNED_BYTE, _frame);
+
+  sgl.uniform4f(sgl.getUniformLocation(prog, 'u_view'), 2/WORK_W, -2/WORK_H, 1, -1);
+  sgl.uniform2f(sgl.getUniformLocation(prog, 'iSize'),  1/WORK_W, 1/WORK_H);
+  sgl.uniform2f(sgl.getUniformLocation(prog, 'Params'), params.alpha, params.strength);
+  sgl.drawArrays(sgl.TRIANGLES, 0, 6);
+
+  return extractGray(side);
+}
+
+// ── Display ───────────────────────────────────────────────────────────────────
+function display(s) {
+  const canvas = document.querySelector('#main-canvas');
+  const points = s ? s.points : [];
+
+  if (params.show_target && s) {
+    if (params.use_webgl && gl) drawTargetGL(canvas);
+    else                        drawTarget2D(canvas, s.grays);
     return;
   }
-  ResetTimer();
-  params.points = params.iter ? params.iter.points : [];
-  DrawStippling();
+
+  if (params.use_webgl && gl) {
+    drawPointsGL(canvas, points);
+    if (params.show_voronoi && s && s.iter.done) drawVoronoiGL(canvas, points);
+  } else {
+    drawPoints2D(canvas, points);
+    if (params.show_voronoi && s && s.iter.done) drawVoronoi2D(canvas, points);
+  }
+
+  if (s && !s.iter.done) drawProgressBar(canvas, s.iter.progress);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Main WebGL calls
+function drawProgressBar(canvas, progress) {
+  const ctx = ctx2D(canvas);
+  if (!ctx) return;
+  const off = 340, w = (canvas.width - off) * 0.9;
+  const len = Math.floor(progress * w);
+  ctx.fillStyle = '#ccf';
+  ctx.fillRect(off, 30, len, 16);
+  ctx.strokeStyle = '#99e'; ctx.lineWidth = 2;
+  ctx.strokeRect(off, 30, len, 16);
+  ctx.fillStyle = '#33d'; ctx.font = '12px serif';
+  ctx.fillText(Math.floor(progress * 100) + '%', off, 42);
+}
 
-function CreateShader(gl, type, src_id) {
-  const shader = gl.createShader(type);
-  const src = document.getElementById(src_id).text;
-  gl.shaderSource(shader, src);
-  gl.compileShader(shader);
-  const compiled = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
-  if (!compiled) {
-    const error = gl.getShaderInfoLog(shader);
-    console.log('*** Shader Compile Error \'' + src_id + '\':' + error + '\n');
-    gl.deleteShader(shader);
-    return null;
+// ── Rendering ─────────────────────────────────────────────────────────────────
+function CreateShader(g, type, src_id) {
+  const shader = g.createShader(type);
+  g.shaderSource(shader, document.getElementById(src_id).text);
+  g.compileShader(shader);
+  if (!g.getShaderParameter(shader, g.COMPILE_STATUS)) {
+    console.log('Shader error ' + src_id + ': ' + g.getShaderInfoLog(shader));
+    g.deleteShader(shader); return null;
   }
   return shader;
 }
 
-function CreateShaders(gl, v_shader_id, f_shader_id) {
-  const f_shader = CreateShader(gl, gl.FRAGMENT_SHADER, f_shader_id);
-  const v_shader = CreateShader(gl, gl.VERTEX_SHADER, v_shader_id);
-  const shader_program = gl.createProgram();
-  gl.attachShader(shader_program, f_shader);
-  gl.attachShader(shader_program, v_shader);
-  gl.linkProgram(shader_program);
-  gl.useProgram(shader_program);
-  return shader_program;
+function CreateShaders(g, vid, fid) {
+  const prog = g.createProgram();
+  g.attachShader(prog, CreateShader(g, g.VERTEX_SHADER,   vid));
+  g.attachShader(prog, CreateShader(g, g.FRAGMENT_SHADER, fid));
+  g.linkProgram(prog); g.useProgram(prog);
+  return prog;
 }
 
-// Construct (with WebGL) the edge-detected target and generate
-// the params.grays[] levels.
-function RenderTarget(image) {
-  const canvas = document.querySelector("#side-canvas");
-  const W = image.width, H = image.height;
-  const Wo = canvas.width = params.work_width;
-  const Ho = canvas.height = params.work_height;
-  const gl = canvas.getContext("webgl");
-  if (!gl) return;
+// Set wrap=CLAMP_TO_EDGE + min/mag filters on the currently bound texture.
+function setupTex(g, tex, min, mag = min) {
+  g.bindTexture(g.TEXTURE_2D, tex);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S,     g.CLAMP_TO_EDGE);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T,     g.CLAMP_TO_EDGE);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g[min]);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g[mag]);
+}
 
-  gl.viewport(0, 0, Wo, Ho);
-  gl.clearColor(0, 0, 0, 0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
+// Upload a {x,y, u,v} rect quad covering [0,W]x[0,H] and bind to attr 'vtx' (vec4).
+function uploadQuad(g, prog, buf, W, H) {
+  g.bindBuffer(g.ARRAY_BUFFER, buf);
+  g.bufferData(g.ARRAY_BUFFER, new Float32Array([
+    0,0, 0,0,  W,0, 1,0,  0,H, 0,1,
+    0,H, 0,1,  W,0, 1,0,  W,H, 1,1,
+  ]), g.DYNAMIC_DRAW);
+  setAttrib(g, prog, 'vtx', 4);
+}
 
-  const program = CreateShaders(gl, "vertex-shader-base",
-    params.use_edges ? "fragment-shader-edge" : "fragment-shader-basic");
+function setAttrib(g, prog, name, size) {
+  const loc = g.getAttribLocation(prog, name);
+  g.enableVertexAttribArray(loc);
+  g.vertexAttribPointer(loc, size, g.FLOAT, false, 0, 0);
+}
 
-  const vtxBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([  // x,y, u,v
-     0, 0, 0., 0.,
-     W, 0, 1., 0.,
-     0, H, 0., 1.,
-     0, H, 0., 1.,
-     W, 0, 1., 0.,
-     W, H, 1., 1.
-  ]), gl.STATIC_DRAW);
-  const vtxLocation = gl.getAttribLocation(program, "vtx");
-  gl.enableVertexAttribArray(vtxLocation);
-  gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
-  gl.vertexAttribPointer(vtxLocation, 4, gl.FLOAT, false, 0, 0);
+const ctx2D = canvas => canvas.getContext('2d', { willReadFrequently: true });
 
-  const texture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+function drawPointsGL(canvas, points) {
+  const bg = params.invert ? 0 : 1;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(bg, bg, bg, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!points.length) return;
 
-  const kView   = gl.getUniformLocation(program, "u_view");
-  const iSize   = gl.getUniformLocation(program, "iSize");
-  const kParams = gl.getUniformLocation(program, "Params");
-  gl.uniform4f(kView, 2. / W, -2. / H, 1., -1.);
-  gl.uniform2f(iSize, 1. / W, 1. / H);
-  gl.uniform2f(kParams, params.alpha, params.strength);
+  gl.useProgram(pointsProg);
+  const data = new Float32Array(points.length * 2);
+  for (let i = 0; i < points.length; i++) { data[2*i] = points[i].x; data[2*i+1] = points[i].y; }
+  gl.bindBuffer(gl.ARRAY_BUFFER, pointsBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  setAttrib(gl, pointsProg, 'vtx', 2);
+  const C = params.invert ? 1 : 0;
+  gl.uniform1f(gl.getUniformLocation(pointsProg, 'u_radius'), params.radius);
+  gl.uniform4f(gl.getUniformLocation(pointsProg, 'u_color'), C, C, C, 1);
+  gl.drawArrays(gl.POINTS, 0, points.length);
+}
 
+function drawTargetGL(canvas) {
+  if (!_tgt || _tgt.gl !== gl) {
+    _tgt = { gl, prog: CreateShaders(gl, 'vertex-shader-base', 'fragment-shader-basic'),
+             buf: gl.createBuffer(), tex: gl.createTexture() };
+    setupTex(gl, _tgt.tex, 'LINEAR');
+  }
+  const { prog, buf, tex } = _tgt;
+  const W = canvas.width, H = canvas.height;
+  gl.viewport(0, 0, W, H); gl.useProgram(prog);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE,
+                document.querySelector('#side-canvas'));
+  uploadQuad(gl, prog, buf, W, H);
+  gl.uniform4f(gl.getUniformLocation(prog, 'u_view'), 2/W, -2/H, 1, -1);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-  params.grays = ExtractGray(canvas);
 }
 
-function DrawTarget() {
-  RenderTarget(params.image);
-  const grays = params.grays;
-  const canvas = document.querySelector("#main-canvas");
-  const W = Math.min(canvas.width, grays.W);
-  const H = Math.min(canvas.height, grays.H);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+function drawVoronoiGL(canvas, points) {
+  const N = points.length;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(voronoiProg);
+
+  if (!_voro || _voro.gl !== gl) {
+    _voro = { gl, tex: gl.createTexture(), buf: gl.createBuffer() };
+    gl.bindBuffer(gl.ARRAY_BUFFER, _voro.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  }
+
+  const max_tex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const tw = Math.min(max_tex, Math.ceil(Math.sqrt(N)));
+  const th = Math.min(max_tex, Math.ceil(N / tw));
+  setupTex(gl, _voro.tex, 'NEAREST');
+  const data = new Float32Array(tw * th * 4);
+  for (let i = 0; i < N; i++) {
+    data[4*i]   = points[i].x;
+    data[4*i+1] = 1 - points[i].y;
+    data[4*i+2] = points[i].c / 255;
+    data[4*i+3] = 1;
+  }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.FLOAT, data);
+
+  gl.uniform1i(gl.getUniformLocation(voronoiProg, 'u_points'), 0);
+  gl.uniform2f(gl.getUniformLocation(voronoiProg, 'u_canvas_size'), canvas.width, canvas.height);
+  gl.uniform1i(gl.getUniformLocation(voronoiProg, 'u_num_points'), N);
+  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_texture_width'), tw);
+  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_texture_height'), th);
+  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_scale'), params.use_edges ? 8 : 1);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, _voro.buf);
+  setAttrib(gl, voronoiProg, 'vtx', 2);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function drawPoints2D(canvas, points) {
+  const ctx = ctx2D(canvas);
+  ctx.fillStyle = params.invert ? 'black' : 'white';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const radius = Math.min(params.radius, canvas.width / 100);
+  ctx.fillStyle = params.invert ? 'white' : 'black';
+  for (const pt of points) {
+    ctx.beginPath();
+    ctx.arc(pt.x * canvas.width, pt.y * canvas.height, radius, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+}
+
+function drawTarget2D(canvas, grays) {
+  if (!grays) return;
+  const ctx = ctx2D(canvas);
+  const W = Math.min(canvas.width, grays.W), H = Math.min(canvas.height, grays.H);
   const data = ctx.getImageData(0, 0, W, H);
-  const pixels = data.data;
-  for (let y = 0; y < H; ++y) {
-    for (let x = 0; x < W; ++x) {
-      const idx = (x + y * W) * 4;
-      const c = grays.pixels[x + y * grays.W];
-      pixels[idx + 0] = c;
-      pixels[idx + 1] = c;
-      pixels[idx + 2] = c;
-      pixels[idx + 3] = 255;
+  const px = data.data;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (x + y * W) * 4, c = grays.pixels[x + y * grays.W];
+      px[i] = px[i+1] = px[i+2] = c; px[i+3] = 255;
     }
   }
   ctx.putImageData(data, (canvas.width - W) / 2, (canvas.height - H) / 2);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
-function ExtractGray(src_canvas) {
-  const canvas = document.createElement("canvas");
-  canvas.width = src_canvas.width;
-  canvas.height = src_canvas.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(src_canvas, 0, 0);
-
-  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-  const stride = canvas.width;
-  const obj = new Gray(canvas);
-  for (let y = 0; y < canvas.height; ++y) {
-    for (let x = 0; x < canvas.width; ++x) {
-      const base = 4 * (x + y * stride);
-      const luma = Math.floor(data[base]*0.2126 + data[base+1]*0.7152 + data[base+2]*0.0722);
-      obj.pixels[x + y * stride] = luma;
-      obj.average += luma;
-    }
-  }
-  console.log("Average gray level: " + Math.floor(obj.average / (obj.W * obj.H)));
-  return obj;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function ShowProgress() {
-  DrawStippling();
-  if (!params.iter) return;
-  const progress = params.iter.progress;
-  const canvas = document.querySelector("#main-canvas");
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return;  // Can't draw progress bar if we have a WebGL context.
-
-  const off = 340;
-  const width = (canvas.width - off) * 90 / 100;
-  const len = Math.floor(progress * width);
-  const percent = Math.floor(progress * 100);
-  ctx.fillStyle = '#ccf';
-  ctx.fillRect(off, 30, len, 16);
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#99e";
-  ctx.strokeRect(off, 30, len, 16);
-  ctx.font = '12px serif';
-  ctx.fillStyle = '#33d';
-  ctx.fillText(percent + "%", off, 42);
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function DrawVoronoi(canvas) {
-  if (params.points.length === 0) return;
+function drawVoronoi2D(canvas, points) {
+  if (!points.length) return;
   const W = canvas.width, H = canvas.height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const ctx = ctx2D(canvas);
   const data = ctx.getImageData(0, 0, W, H);
-  const pixels = data.data;
+  const px = data.data;
   const scale = params.use_edges ? 8 : 1;
-  const out = computeVoronoi(W, H, params.points);
-  for (let y = 0, idx = 0; y < H; ++y) {
-    for (let x = 0; x < W; ++x, ++idx) {
-      const c = Math.min(params.points[out[idx]].c * scale, 255);
-      pixels[4*idx+0] = c;
-      pixels[4*idx+1] = c;
-      pixels[4*idx+2] = c;
-    }
+  const out = computeVoronoi(W, H, points);
+  for (let i = 0; i < W * H; i++) {
+    const c = Math.min(points[out[i]].c * scale, 255);
+    px[4*i] = px[4*i+1] = px[4*i+2] = c;
   }
   ctx.putImageData(data, 0, 0);
 }
 
-function DrawStipplingWebGL(canvas) {
-  const gl = params.gl;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  const c = params.invert ? 0. : 1.;
-  gl.clearColor(c, c, c, 1.);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-
-  if (params.points.length == 0) return;
-
-  gl.useProgram(params.points_program);
-
-  const points_data = new Float32Array(params.points.length * 2);
-  for (let i = 0; i < params.points.length; ++i) {
-    points_data[2 * i + 0] = params.points[i].x;
-    points_data[2 * i + 1] = params.points[i].y;
+// ── Gray extraction ───────────────────────────────────────────────────────────
+function extractGray(src_canvas) {
+  const tmp = document.createElement('canvas');
+  tmp.width = src_canvas.width; tmp.height = src_canvas.height;
+  const ctx = ctx2D(tmp);
+  ctx.drawImage(src_canvas, 0, 0);
+  const data = ctx.getImageData(0, 0, tmp.width, tmp.height).data;
+  const W = tmp.width, H = tmp.height;
+  const pixels = new Uint8ClampedArray(W * H);
+  let average = 0;
+  for (let i = 0; i < W * H; i++) {
+    const luma = Math.floor(data[4*i]*0.2126 + data[4*i+1]*0.7152 + data[4*i+2]*0.0722);
+    pixels[i] = luma; average += luma;
   }
-  gl.bindBuffer(gl.ARRAY_BUFFER, params.points_buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, points_data, gl.STATIC_DRAW);
-
-  const vtxLocation = gl.getAttribLocation(params.points_program, "vtx");
-  gl.enableVertexAttribArray(vtxLocation);
-  gl.vertexAttribPointer(vtxLocation, 2, gl.FLOAT, false, 0, 0);
-
-  const kRadius = gl.getUniformLocation(params.points_program, "u_radius");
-  const kColor = gl.getUniformLocation(params.points_program, "u_color");
-  const C = params.invert ? 1. : 0.;
-  gl.uniform1f(kRadius, params.radius);
-  gl.uniform4f(kColor, C, C, C, 1.);
-
-  gl.drawArrays(gl.POINTS, 0, params.points.length);
+  return { W, H, pixels, average };
 }
 
-function DrawStippling2D(canvas) {
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) {
-    console.log("ERROR! 2d-context is not available.");
-    return;
-  }
-  ctx.fillStyle = params.invert ? 'black' : 'white';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const radius = Math.min(params.radius, canvas.width / 100);
-  ctx.strokeStyle = ctx.fillStyle = params.invert ? 'white' : 'black';
-  for (const pt of params.points) {
-    DrawCircle(ctx, pt.x * canvas.width, pt.y * canvas.height, radius);
-  }
+// ── Drag & Drop ───────────────────────────────────────────────────────────────
+function SetupDragAndDrop() {
+  const drop = document.getElementById('drop-area');
+  const stop = e => { e.preventDefault(); e.stopPropagation(); };
+  ['dragenter','dragover','dragleave','drop'].forEach(n => drop.addEventListener(n, stop));
+  ['dragenter','dragover'].forEach(n => drop.addEventListener(n, () => drop.classList.add('highlight')));
+  ['dragleave','drop'].forEach(n => drop.addEventListener(n, () => drop.classList.remove('highlight')));
+  drop.addEventListener('drop', e => HandleSource(e.dataTransfer.files[0]));
 }
 
-function DrawCircle(ctx, x, y, radius) {
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, 2 * Math.PI);
-  ctx.closePath();
-  ctx.fill();
+// ── UI ────────────────────────────────────────────────────────────────────────
+function SetupUI() {
+  const elmt = document.getElementById('gui-container');
+  const gui  = new lil.GUI({ width: 250, container: elmt });
+  gui.domElement.id = 'gui';
+
+  const reset          = () => { state = null; schedule(); };
+  const redo           = () => { if (state) display(state); };
+  const goSrc          = () => { if (source) { setupCanvas(source); state = null; schedule(); } };
+  const switchRenderer = () => { if (source) { setupCanvas(source); if (state) display(state); } };
+
+  gui.add(params, 'num_points',      500, 500000, 10).name('Max Points')       .listen().onChange(reset);
+  gui.add(params, 'rho',            -1.,  1.,    .01).name('Density cut-off')  .listen().onChange(reset);
+  gui.add(params, 'use_edges'                       ).name('Edge detection')   .listen().onChange(goSrc);
+  gui.add(params, 'alpha',           0.,  0.2,   .01).name('mix edges/source') .listen().onChange(goSrc);
+  gui.add(params, 'strength',        1.,  16.,   .01).name('Edges strength')   .listen().onChange(goSrc);
+  gui.add(params, 'num_iters',       2,   50,      1).name('Iterations')       .listen().onChange(reset);
+  gui.add(params, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations') .listen().onChange(reset);
+  gui.add(params, 'radius',          0.2, 3.,    .01).name('Points radius')    .listen().onChange(redo);
+  gui.add(params, 'invert'                          ).name('Invert')           .listen().onChange(redo);
+  gui.add(params, 'use_webgl'                       ).name('Use WebGL render') .listen().onChange(switchRenderer);
+  gui.add(params, 'show_voronoi'                    ).name('Show Voronoi')     .listen().onChange(redo);
+  gui.add({ reset }, 'reset'                        ).name('Reset');
+  gui.add(params, 'adapt_iters',     1,   20,      1).name('Video adapt iters').listen();
+  _playCtrl = gui.add({ toggleVideo }, 'toggleVideo' ).name('Play');
 }
 
-function DrawStippling() {
-  const mainCanvas = document.querySelector("#main-canvas");
-  const voronoiCanvas = document.querySelector("#voronoi-canvas");
-
-  // Sync canvas sizes
-  if (voronoiCanvas.width !== mainCanvas.width) voronoiCanvas.width = mainCanvas.width;
-  if (voronoiCanvas.height !== mainCanvas.height) voronoiCanvas.height = mainCanvas.height;
-  
-  const voronoiCtx = voronoiCanvas.getContext("2d", { willReadFrequently: true });
-  voronoiCtx.clearRect(0, 0, voronoiCanvas.width, voronoiCanvas.height);
-
-  // Main stipple rendering
-  if (params.use_webgl && params.gl) {
-    DrawStipplingWebGL(mainCanvas);
-    // Overlay rendering
-    if (params.show_voronoi && params.iter && params.iter.done) {
-      DrawVoronoi(voronoiCanvas); // Use the single fast function on the overlay canvas
-    }
-  } else { // 2D mode
-    DrawStippling2D(mainCanvas);
-    // Integrated rendering (all on main canvas)
-    if (params.show_voronoi && params.iter && params.iter.done) {
-      DrawVoronoi(mainCanvas);
-    } else if (params.show_target) {
-      DrawTarget();
-    }
-  }
+// ── Entry ─────────────────────────────────────────────────────────────────────
+function main() {
+  SetupDragAndDrop();
+  SetupUI();
+  const img = new Image();
+  img.onload = () => setSource(img);
+  img.src = './book.webp';
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 document.addEventListener('DOMContentLoaded', main);
 
