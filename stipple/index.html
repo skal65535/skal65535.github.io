@@ -60,7 +60,7 @@
 
 </head>
 
-<body onload="main();">
+<body>
 
 <div id="drop-area">
   <form class="my-form">
@@ -155,8 +155,10 @@ void main() {
 <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
-<script>
+<script type="module">
 "use strict";
+
+import { Point, StipplingIterator, computeVoronoi } from './stipple.js';
 
 ////////////////////////////////////////////////////////////////////////////////
 // The interesting stuff
@@ -175,38 +177,25 @@ const params = {  // Global parameters
   show_target: false,
   image: null,
   gui: null,
-  ops: -1,
-  tid: -1,   // timer id
+  iter: null,     // StipplingIterator
+  tid: -1,        // timer id
   points: [],
   grays: null,
   work_width: 512,
   work_height: 512,
 
-  ResetParams: () => {
-    this.num_points = 20000;
-    this.num_iters = 10;
-    this.num_Lloyd_iters = 4;
-    this.rho = 0.;
-    this.alpha = 0.;
-    this.strength = 1.;
-    this.radius = 1.5;
-    this.use_edges = true;
-    this.invert = false;
-    this.show_voronoi = false;
-    this.show_target = false;
-    this.ops = -1;
-    this.work_width = 512;
-    this.work_height = 512;
-    ResetTimer();
-  },
   reset: () => {
-    // Doesn't work yet => params.ResetParams();
-    params.points.length = 0;
+    params.iter = null;
     Render(true);
   },
   redo: () => { Render(false); },
   go:   () => { Render(true); },
 }
+
+// expose for HTML event handlers
+window.params = params;
+window.Render = Render;
+window.HandleFile = HandleFile;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Drag'n'Drop
@@ -277,92 +266,6 @@ function SetupUI() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Voronoi-related
-
-function Norm2(dx, dy) { return dx * dx + dy * dy; }
-class Point {
-  x = 0.;
-  y = 0.;
-  c = 0;
-  constructor(x = 0., y = 0., c = 0) { this.x = x; this.y = y; this.c = c; }
-  Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
-}
-
-class Cell {
-  acc = 0;      // sum{1}
-  r_acc = 0;    // sum{rho}
-  x_acc = 0;    // sum{x} / acc
-  y_acc = 0;    // sum{y} / acc
-  rx_acc = 0;   // sum{rho * x} / r_acc
-  ry_acc = 0;   // sum{rho * y} / r_acc
-  rxx_acc = 0;   // higher moments, for determining cell's typical size
-  rxy_acc = 0;
-  ryy_acc = 0;
-
-  Reset() {
-    this.acc = this.r_acc = this.x_acc = this.y_acc = 0;
-    this.rx_acc = this.ry_acc = 0;
-    this.rxx_acc = this.rxy_acc = this.ryy_acc = 0;
-  }
-  Add(x, y, r) {
-    this.acc   += 1;
-    this.x_acc += x;
-    this.y_acc += y;
-    this.r_acc  += r;
-    this.rx_acc += r * x;
-    this.ry_acc += r * y;
-    this.rxx_acc += r * x * x;
-    this.rxy_acc += r * x * y;
-    this.ryy_acc += r * y * y;
-  }
-  Average() {
-    if (this.acc == 0) return false;
-    const norm = 1. / this.acc;
-    this.x_acc *= norm;
-    this.y_acc *= norm;
-    if (this.r_acc > 0) {
-      const r_norm = 1. / this.r_acc;
-      this.rx_acc *= r_norm;
-      this.ry_acc *= r_norm;
-      this.rxx_acc *= r_norm;
-      this.rxy_acc *= r_norm;
-      this.ryy_acc *= r_norm;
-    }
-    return true;
-  }
-  AddRho(x, y, r) {
-    this.r_acc  += r;
-    this.rx_acc += r * x;
-    this.ry_acc += r * y;
-  }
-  AverageRho() {
-    if (this.r_acc == 0) return false;
-    const r_norm = 1. / this.r_acc;
-    this.rx_acc *= r_norm;
-    this.ry_acc *= r_norm;
-    return true;
-  }
-  MainDirection() {
-    // cf. http://scipp.ucsc.edu/~haber/ph116A/diag2x2_11.pdf
-    const exx = this.rxx_acc - this.x_acc * this.x_acc;
-    const eyy = this.ryy_acc - this.y_acc * this.y_acc;
-    const num = this.rxy_acc - this.x_acc * this.y_acc;
-    const den = exx - eyy;
-    let t = 0.;
-    if (num * num + den * den > 0.) {
-      t = 0.5 * Math.atan2(2. * num, den);
-    }
-    // displacement of a half-radius in the main direction
-    const radius = 0.5 * Math.sqrt(this.acc / Math.M_PI);   // a = pi.r^2
-    return { dx: radius * Math.cos(t), dy: radius * Math.sin(t) };
-  }
-  Print() {
-    const norm = 1. / this.acc;
-    const r_norm = 1. / this.r_acc;
-    console.log("acc=" + this.acc + " x,y=" + (this.x_acc * norm) + "," + (this.y_acc * norm) +
-                "  r_acc=" + this.r_acc + " x,y=" + (this.rx_acc * r_norm) + "," + (this.ry_acc * r_norm));
-  }
-}
 
 class Gray {
   W = 0;
@@ -376,105 +279,6 @@ class Gray {
     this.pixels = new Uint8ClampedArray(this.W * this.H);
     this.average = 0.;
   }
-}
-
-// returns a Uint32Array with voronoi cells Ids
-function RenderVoronoi(W, H, points) {
-  points.sort((a,b) => {  // sort by y-coordinate
-    if (a.y == b.y) return a.x - b.x;
-    return a.y - b.y;
-  });
-  const out = new Uint32Array(W * H);   // result
-  let best_start = 0;
-  for (let y = 0, idx = 0; y < H; ++y) {
-    let best = best_start;
-    for (let x = 0; x < W; ++x, ++idx) {
-      const X = x / W, Y = y / H
-      const pt0 = new Point(X, Y);
-      let best_d2 = pt0.Distance2(points[best]);
-      const min_y = Y - Math.sqrt(best_d2);
-      for (let n = best - 1; n >= 0; --n) {
-        const pt = points[n];
-        if (pt.y <= min_y) break;
-        const d2 = pt0.Distance2(pt);
-        if (d2 < best_d2) {
-          best_d2 = d2;
-          best = n;
-        }
-      }
-      const max_y = Y + Math.sqrt(best_d2);
-      for (let n = best + 1; n < points.length; ++n) {
-        const pt = points[n];
-        if (pt.y >= max_y) break;
-        const d2 = pt0.Distance2(pt);
-        if (d2 < best_d2) {
-          best_d2 = d2;
-          best = n;
-        }
-      }
-      out[idx] = best;
-      if (x == 0) best_start = best;  // for next line
-    }
-  }
-  return out;
-}
-
-function CollectVoronoiRho(out, grays, points, cells) {
-  for (let y = 0, idx = 0; y < grays.H; ++y) {
-    for (let x = 0; x < grays.W; ++x, ++idx) {
-      const cell = cells[out[idx]];
-      const c = grays.pixels[idx];
-      const X = x / grays.W, Y = y / grays.H;
-      cell.AddRho(X, Y, c);
-    }
-  }
-}
-
-function CollectVoronoiAll(out, grays, points, cells) {
-  for (let c of cells) c.Reset();
-  for (let y = 0, idx = 0; y < grays.H; ++y) {
-    for (let x = 0; x < grays.W; ++x, ++idx) {
-      const cell = cells[out[idx]];
-      const c = grays.pixels[idx];
-      const X = x / grays.W, Y = y / grays.H;
-      cell.Add(X, Y, c);
-    }
-  }
-}
-
-function MoveToCentroid(points, cells) {
-  let d2 = 0.;
-  let count = 0;
-  for (let n = 0; n < cells.length; ++n) {
-    const c = cells[n];
-    if (!c.AverageRho()) continue;
-    const pt = new Point(c.rx_acc, c.ry_acc);
-    d2 += points[n].Distance2(pt);
-    points[n] = pt;
-    ++count;
-  }
-  d2 = d2 * params.work_width * params.work_height / count;
-  return (d2 < 1.e-3);  // is improvement too small already?
-}
-
-function DrawVoronoi(canvas) {
-  const W = canvas.width, H = canvas.height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const data = ctx.getImageData(0, 0, W, H);
-  const pixels = data.data;
-  const scale = params.use_edges ? 8 : 1;
-  const out = RenderVoronoi(W, H, params.points);
-  for (let y = 0, idx = 0; y < H; ++y) {
-    for (let x = 0; x < W; ++x, ++idx) {
-      const X = x / W, Y = y / H;
-      const best = out[idx];
-      const c = Math.min(params.points[best].c * scale, 255);
-      pixels[4 * idx + 0] = c;
-      pixels[4 * idx + 1] = c;
-      pixels[4 * idx + 2] = c;
-    }
-  }
-  ctx.putImageData(data, 0, 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -494,25 +298,15 @@ function ResetTimer() {
     clearInterval(params.tid);
     params.tid = -1;
   }
-  params.ops = -1;
-}
-
-// Seedable 'decent' random generator, returning values in [0, 1.)
-var seed = 91651088029;
-const mulberry32 = () => {
-  let t = seed += 0x6D2B79F5;
-  t = Math.imul(t ^ t >>> 15, t | 1);
-  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-  return ((t ^ t >>> 14) >>> 0) / 4294967296.;
 }
 
 function Init() {
   ResetTimer();
   const image = params.image;
   const canvas = document.querySelector("#main-canvas");
-  const Wo = 1024, Ho = 750; // canvas.width, Ho = canvas.height;
+  const Wo = 1024, Ho = 750;
   let W = image.width, H = image.height;
-  if (W > Wo || H > Ho) {   // needs resizing?
+  if (W > Wo || H > Ho) {
     if (W * Ho > Wo * H) {
       H = Math.floor(H * Wo / W);
       W = Wo;
@@ -524,44 +318,35 @@ function Init() {
   canvas.width = image.width = W;
   canvas.height = image.height = H;
   const gui = document.querySelector("#gui");
-  gui.style.top = (-H + 10) + 'px';  // omg, this is naaaasty
+  gui.style.top = (-H + 10) + 'px';
 
-  RenderTarget(image);  // populate params.grays
+  RenderTarget(image);  // populates params.grays
 
-  const max_num_points = params.num_points;
-  if (params.points.length != max_num_points / 2) {
-    params.points.length = max_num_points / 2;
-    for (let n = 0; n < params.points.length; ++n) {
-      const px = mulberry32(), py = mulberry32();
-      params.points[n] = new Point(px, py);
-    }
-    console.log("=== RESET " + params.points.length + " POINTS ===");
-  }
-  params.ops = 0;  // start!
+  params.iter = new StipplingIterator(params.grays, {
+    num_points:     params.num_points,
+    num_iters:      params.num_iters,
+    num_Lloyd_iters: params.num_Lloyd_iters,
+    rho:            params.rho,
+    seed:           91651088029,
+  });
+  params.points = params.iter.points;
+  console.log("=== RESET " + params.points.length + " POINTS ===");
 }
 
 function Render(is_dirty) {
   if (is_dirty) Init();
-  if (params.ops <= 0) params.start_time = Date.now();
-  if (params.ops >= 0 && !ExtractStippling()) {   // finished?
+  if (params.iter && !params.iter.done) {
+    params.points = params.iter.points;
     ShowProgress();
+    params.iter.step();
     if (params.tid < 0) {
       params.tid = setInterval(() => { Render(false); }, 0);
     }
     return;
   }
   ResetTimer();
+  params.points = params.iter ? params.iter.points : [];
   DrawStippling();
-
-/*
-  const delta = (Date.now() - params.start_time) / 1000.;
-  console.log("Rendering time: " + delta + " secs.");
-  const canvas = document.querySelector("#main-canvas");
-  const src_canvas = document.querySelector("#side-canvas");
-  console.log("image: " + params.image.width + " x " + params.image.height);
-  console.log("main-canvas: " + canvas.width + " x " + canvas.height);
-  console.log("side-canvas: " + src_canvas.width + " x " + src_canvas.height);
-*/
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -610,7 +395,6 @@ function RenderTarget(image) {
   const program = CreateShaders(gl, "vertex-shader-base",
     params.use_edges ? "fragment-shader-edge" : "fragment-shader-basic");
 
-  // rectangle the same size as the image.
   const vtxBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([  // x,y, u,v
@@ -624,10 +408,8 @@ function RenderTarget(image) {
   const vtxLocation = gl.getAttribLocation(program, "vtx");
   gl.enableVertexAttribArray(vtxLocation);
   gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
-  gl.vertexAttribPointer(vtxLocation, 4, gl.FLOAT,
-                         /*normalize=*/false, /*stride=*/0, /*offset=*/0);
+  gl.vertexAttribPointer(vtxLocation, 4, gl.FLOAT, false, 0, 0);
 
-  // upload image to texture
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -636,18 +418,15 @@ function RenderTarget(image) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
 
-  // uniforms setup
-  const kView = gl.getUniformLocation(program, "u_view");
-  const iSize = gl.getUniformLocation(program, "iSize");
+  const kView   = gl.getUniformLocation(program, "u_view");
+  const iSize   = gl.getUniformLocation(program, "iSize");
   const kParams = gl.getUniformLocation(program, "Params");
   gl.uniform4f(kView, 2. / W, -2. / H, 1., -1.);
   gl.uniform2f(iSize, 1. / W, 1. / H);
   gl.uniform2f(kParams, params.alpha, params.strength);
 
-  // go!
-  gl.drawArrays(gl.TRIANGLES, /*offset=*/0, /*count=*/6);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  // convert to gray levels
   params.grays = ExtractGray(canvas);
 }
 
@@ -671,8 +450,6 @@ function DrawTarget() {
     }
   }
   ctx.putImageData(data, (canvas.width - W) / 2, (canvas.height - H) / 2);
-  console.log("grays: " + grays.W + " x " + grays.H);
-  console.log("canvas: " + canvas.width + " x " + canvas.height);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -684,94 +461,33 @@ function ExtractGray(src_canvas) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(src_canvas, 0, 0);
 
-  // extract pixels from context, as Uint8ClampedArray
   const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
   const stride = canvas.width;
   const obj = new Gray(canvas);
   for (let y = 0; y < canvas.height; ++y) {
     for (let x = 0; x < canvas.width; ++x) {
-      const r = data[4 * (x + y * stride) + 0];
-      const g = data[4 * (x + y * stride) + 1];
-      const b = data[4 * (x + y * stride) + 2];
-      const luma = Math.floor(r * 0.2126 + g * 0.7152 + b * 0.0722);
+      const base = 4 * (x + y * stride);
+      const luma = Math.floor(data[base]*0.2126 + data[base+1]*0.7152 + data[base+2]*0.0722);
       obj.pixels[x + y * stride] = luma;
       obj.average += luma;
     }
   }
-  const avg = obj.average / (obj.W * obj.H);
-  console.log("Average gray level: " + Math.floor(avg));
+  console.log("Average gray level: " + Math.floor(obj.average / (obj.W * obj.H)));
   return obj;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function ExtractStippling() {
-  const max_num_points = params.num_points;
-  const W = params.grays.W, H = params.grays.H;
-  const eps_W = 1. / W, eps_H = 1. / H;
-  const max_ops = params.num_iters * params.num_Lloyd_iters;
-  if (params.ops >= max_ops) return true;
-  const num_points = params.points.length;
-  const out = RenderVoronoi(W, H, params.points);
-
-  const cells = new Array(num_points);
-  for (let n = 0; n < num_points; ++n) cells[n] = new Cell;
-  CollectVoronoiRho(out, params.grays, params.points, cells);
-  if (MoveToCentroid(params.points, cells)) {
-    params.ops = max_ops;
-  } else {
-    params.ops++;
-  }
-  const last_iter = ((params.ops % params.num_Lloyd_iters) == 0);
-  if (last_iter) {
-    const avg_rho = Math.floor(params.rho * 255. + params.grays.average / max_num_points);
-    const hysteresis = 0.01 + 0.6 * params.ops / max_ops;
-    const Tu = Math.ceil((1. + hysteresis) * avg_rho);
-    const Tl = Math.floor((1. - hysteresis) * avg_rho);
-
-    CollectVoronoiAll(out, params.grays, params.points, cells);
-    params.points = [];
-    for (const c of cells) {
-      if (!c.Average()) continue;    // empty cell
-      const rho = Math.round(c.r_acc);
-      if (rho < Tl) continue;     // too sparse!
-      const color = c.r_acc / c.acc;
-      const xf = c.rx_acc, yf = c.ry_acc;
-      let stored = false;
-      if (c.acc > 1 && rho > Tu) {  // too dense, split the cell
-        const dsp = c.MainDirection();
-        if (Math.abs(dsp.dx) > eps_W || Math.abs(dsp.dy) > eps_H) {
-          params.points.push(new Point(xf - dsp.dx, yf - dsp.dy, color));
-          params.points.push(new Point(xf + dsp.dx, yf + dsp.dy, color));
-          stored = true;
-        }
-      }
-      if (!stored) {
-        params.points.push(new Point(xf, yf, color));
-      }
-    }
-    console.log("Iteration #" + params.ops + "/" + max_ops +
-                ": T=[" + Tl + ", " + Tu + "]" +
-                " pts:" + num_points + " => " + params.points.length);
-  }
-  if (params.points.length > max_num_points) params.ops = max_ops;
-//  console.log("Extract Stippling: " + W + " x " + H +
-//              " num-points: " + params.points.length);
-  return (params.ops >= max_ops);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 function ShowProgress() {
   DrawStippling();
-
-  const max_ops = params.num_iters * params.num_Lloyd_iters;
+  if (!params.iter) return;
+  const progress = params.iter.progress;
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d");
   const off = 340;
   const width = (canvas.width - off) * 90 / 100;
-  const len = Math.floor(params.ops * width / (max_ops - 1));
-  const percent = Math.floor(params.ops * 100 / (max_ops - 1));
+  const len = Math.floor(progress * width);
+  const percent = Math.floor(progress * 100);
   ctx.fillStyle = '#ccf';
   ctx.fillRect(off, 30, len, 16);
   ctx.lineWidth = 2;
@@ -784,19 +500,30 @@ function ShowProgress() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+function DrawVoronoi(canvas) {
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const data = ctx.getImageData(0, 0, W, H);
+  const pixels = data.data;
+  const scale = params.use_edges ? 8 : 1;
+  const out = computeVoronoi(W, H, params.points);
+  for (let y = 0, idx = 0; y < H; ++y) {
+    for (let x = 0; x < W; ++x, ++idx) {
+      const c = Math.min(params.points[out[idx]].c * scale, 255);
+      pixels[4*idx+0] = c;
+      pixels[4*idx+1] = c;
+      pixels[4*idx+2] = c;
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+}
+
 function DrawCircle(ctx, x, y, radius) {
   ctx.beginPath();
-  ctx.arc(x, y, radius, 0. * Math.PI, 2. * Math.PI);
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
   ctx.closePath();
   ctx.fill();
 }
-function DrawLine(ctx, x0, y0, x1, y1) {
-  ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  ctx.lineTo(x1, y1);
-  ctx.closePath();
-  ctx.stroke();
-};
 
 function DrawStippling() {
   const canvas = document.querySelector("#main-canvas");
@@ -810,14 +537,15 @@ function DrawStippling() {
   const radius = Math.min(params.radius, canvas.width / 100);
   ctx.strokeStyle = ctx.fillStyle = params.invert ? 'white' : 'black';
   for (const pt of params.points) {
-    const x = pt.x * canvas.width, y = pt.y * canvas.height;
-    DrawCircle(ctx, x, y, radius);
+    DrawCircle(ctx, pt.x * canvas.width, pt.y * canvas.height, radius);
   }
   if (params.show_voronoi) DrawVoronoi(canvas);
   else if (params.show_target) DrawTarget();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+document.addEventListener('DOMContentLoaded', main);
 
 </script>
 
