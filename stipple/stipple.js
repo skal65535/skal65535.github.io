@@ -1,7 +1,12 @@
-// stipple.js - Weighted LBG Stippling
-// API: iter = new StipplingIterator(grays, params)
-//      iter.step() -> bool (true = done)
-//      iter.points, iter.done, iter.progress
+// stipple.js — CPU primitives for weighted LBG stippling.
+//
+// Exports:
+//   Point                  — {x, y, c} value object.
+//   seedPoints(N, seed, frame) — initial point cloud, optionally colored from
+//                                a frame's grayscale pixels.
+//   computeVoronoi(W, H, points) — grid-accelerated Voronoi assignment.
+//   StipplingIterator      — CPU Lloyd + split/merge iterator. Takes a
+//                            pre-seeded point list; callers do seeding.
 "use strict";
 
 const log = (...a) => globalThis.STIPPLE_DEBUG && console.log(...a);
@@ -11,12 +16,27 @@ export class Point {
   dist2(p) { const dx = p.x - this.x, dy = p.y - this.y; return dx*dx + dy*dy; }
 }
 
-export class StipplingParams {
-  num_points    = 80000;
-  num_iters     = 10;
-  num_Lloyd_iters = 4;
-  rho           = 0;
-  seed          = 91651088029;
+// Shared seeder used by both CPU and GPU iterators. Reproduces the same
+// xorshift-multiply RNG so a given (seed, N) gives the same layout across
+// backends, which makes the A/B comparison meaningful.
+export function seedPoints(N, seed, frame) {
+  let s = (seed ?? 91651088029) >>> 0;
+  const rand = () => {
+    let t = s = (s + 0x6D2B79F5) >>> 0;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+  const W = frame.W, H = frame.H, pix = frame.pixels;
+  const pts = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const x = rand(), y = rand();
+    const c = pix
+      ? pix[Math.min(W-1, (x*W)|0) + Math.min(H-1, (y*H)|0) * W]
+      : 0;
+    pts[i] = new Point(x, y, c);
+  }
+  return pts;
 }
 
 class Cell {
@@ -201,51 +221,29 @@ function accumulate(cells, out, pixels, W, H, full) {
   }
 }
 
-// grays: { W, H, pixels: Uint8ClampedArray, average: number (sum of all pixel values) }
+// frame: { W, H, pixels: Uint8ClampedArray, average: number }
+// initial_points: required, pre-seeded by the caller (see seedPoints()).
 export class StipplingIterator {
-  _grays; _params; _points; _ops; _max_ops; _rand;
-
-  constructor(grays, params, existing_points = null) {
-    this._grays = grays;
-    this._params = params;
+  constructor(frame, params, initial_points) {
+    if (!initial_points) throw new Error('StipplingIterator: initial_points required');
+    this._frame   = frame;
+    this._params  = params;
     this._max_ops = params.num_iters * params.num_Lloyd_iters;
-    this._ops = 0;
-
-    let seed = params.seed ?? 91651088029;
-    this._rand = () => {
-      let t = seed += 0x6D2B79F5;
-      t = Math.imul(t ^ t >>> 15, t | 1);
-      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-      return ((t ^ t >>> 14) >>> 0) / 4294967296;
-    };
-
-    if (existing_points) {
-      this._points = existing_points.map(p => new Point(p.x, p.y, p.c));
-    } else {
-      // Seed initial colors from the source image so a show_voronoi render
-      // of the just-constructed iter is meaningful (otherwise c=0 → black
-      // until the first Lloyd pass fills colors in).
-      const n = params.num_points >> 1;
-      const W = grays.W, H = grays.H, pix = grays.pixels;
-      this._points = Array.from({length: n}, () => {
-        const x = this._rand(), y = this._rand();
-        const c = pix
-          ? pix[Math.min(W-1, (x*W)|0) + Math.min(H-1, (y*H)|0) * W]
-          : 0;
-        return new Point(x, y, c);
-      });
-    }
+    this._ops     = 0;
+    this._points  = initial_points.map(p => new Point(p.x, p.y, p.c));
   }
 
   get points()   { return this._points; }
   get done()     { return this._ops >= this._max_ops; }
   get progress() { return this._ops / this._max_ops; }
+  get ops()      { return this._ops; }
+  get maxOps()   { return this._max_ops; }
 
   // One Lloyd sub-iteration. Returns true when fully converged.
   step() {
     if (this.done) return true;
-    const {_grays: g, _params: p} = this;
-    const {W, H, pixels} = g;
+    const { _frame: g, _params: p } = this;
+    const { W, H, pixels } = g;
     const N = this._points.length;
     const out = computeVoronoi(W, H, this._points);
     const cells = Array.from({length: N}, () => new Cell());
@@ -265,15 +263,15 @@ export class StipplingIterator {
     else           this._ops++;
 
     if (this._ops % p.num_Lloyd_iters === 0 || this.done) {
-      this._splitMerge(out, cells, g);
+      this._splitMerge(out, cells);
     }
     if (this._points.length > p.num_points) this._ops = this._max_ops;
     return this.done;
   }
 
-  _splitMerge(out, cells, g) {
-    const {W, H} = g;
-    const p = this._params;
+  _splitMerge(out, cells) {
+    const { _frame: g, _params: p } = this;
+    const { W, H } = g;
     const avg_rho = Math.floor(p.rho * 255 + g.average / p.num_points);
     const hysteresis = 0.01 + 0.6 * this._ops / this._max_ops;
     const Tu = Math.ceil((1 + hysteresis) * avg_rho);

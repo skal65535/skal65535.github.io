@@ -85,12 +85,8 @@
   <label class='button' for="FileElmt"
          style='top:30px; left:30px;'>select source</label>
   <button class='button' style='top:30px; left:30px;'
-          onmousedown="params.show_target=true; redisplay();"
-          onmouseup="params.show_target=false; redisplay();">show target</button>
-  <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
-    <button class='button' style='top:30px; left:30px' download='img.webp'
-            onmouseup="const result = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
-                       document.querySelector('#download').href = result;">save img</button></a>
+          onmousedown="app.params.show_target=true;  app.redraw();"
+          onmouseup  ="app.params.show_target=false; app.redraw();">show target</button>
   <form action="https://skal65535.github.io/"
         style='position: relative; top:-150px; left:950px;'>
     <input type="submit" value="skal 2023" id="skal-2023"
@@ -107,310 +103,382 @@
   </div>
 </div>
 
-<!-- All rendering and compute now lives in stipple-shaders.wgsl + stipple-gpu.js. -->
-
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script type="module">
 "use strict";
 
-import {
-  initGPU, GPUStipplingIterator, CPUStipplingIteratorAdapter,
-  GPURenderer, grabFrameGPU,
-} from './stipple-gpu.js';
+import { initGPU, GPURenderer } from './stipple-render.js';
+import { FrameSource }          from './stipple-frame.js';
+import { createIterator }       from './stipple-iter.js';
 
 if (!navigator.gpu) {
   alert('This demo requires WebGPU. Try Chrome/Edge ≥113 or Safari 18+.');
   throw new Error('WebGPU unavailable');
 }
 
-// ── Settings (UI-controlled only, never mutated by algorithm) ─────────────────
-const params = {
-  num_points:      80000,
-  num_iters:       10,
-  num_Lloyd_iters: 4,
-  rho:             0.,
-  alpha:           0.01,
-  strength:        2.6,
-  use_edges:       true,
-  radius:          1.5,
-  invert:          false,
-  use_cpu:         false,   // CPU iterator (stipple.js) for A/B comparison
-  show_voronoi:    false,
-  show_target:     false,
-  adapt_iters:     3,
-};
-
-// ── Module-level mutable state ────────────────────────────────────────────────
-let source       = null;     // HTMLImageElement | HTMLVideoElement
-let state        = null;     // { grays, iter, points, pending }
-let videoPlaying = false;
-let tickSched    = false;
-
-// GPU singletons (recreated when canvas is replaced).
-let gpu      = null;         // { device, context, format }
-let renderer = null;
-
-// ── HTML-exposed API ──────────────────────────────────────────────────────────
-window.params       = params;
-window.HandleSource = HandleSource;
-window.redisplay    = () => { if (state) display(state); };
-
-// ── State ─────────────────────────────────────────────────────────────────────
-function buildState(grays, prev = null) {
-  const opts = {
-    num_points:      params.num_points,
-    num_iters:       prev ? params.adapt_iters : params.num_iters,
-    num_Lloyd_iters: params.num_Lloyd_iters,
-    rho:             params.rho,
-    seed:            91651088029,
-  };
-  const s = { grays, iter: null, points: prev?.points ?? [], pending: true };
-  const Iter = params.use_cpu ? CPUStipplingIteratorAdapter : GPUStipplingIterator;
-  Iter.create(gpu.device, grays, opts, prev?.points).then(it => {
-    s.iter   = it;
-    s.points = it.points;
-    s.pending = false;
-    schedule();
-  }).catch(err => {
-    console.error('Iterator construction failed:', err);
-  });
-  return s;
-}
-
-// ── Tick loop ─────────────────────────────────────────────────────────────────
-function schedule() {
-  if (!tickSched) { tickSched = true; requestAnimationFrame(tick); }
-}
-
-async function tick() {
-  tickSched = false;
-  if (!source || !gpu) return;
-
-  if (!state) {
-    const grays = await grabFrameGPU(gpu.device, source, {
-      W: WORK_W, H: WORK_H, use_edges: params.use_edges,
-      alpha: params.alpha, strength: params.strength,
-      needPixels: params.use_cpu,
-    });
-    // Wait for the first image-sum readback so split/merge thresholds are
-    // sane on the first iter. Subsequent video frames use the stale-by-1
-    // cached average and don't block.
-    await grays.ready;
-    state = buildState(grays);
-  }
-  if (state.pending) { schedule(); return; }
-
-  // Video: refresh source pixels every tick. grabFrameGPU reuses the same
-  // gPixels texture handle, so iter._grays.texture stays valid; the .average
-  // getter reads a cached value updated asynchronously via mapAsync.
-  if (videoPlaying) {
-    const grays = await grabFrameGPU(gpu.device, source, {
-      W: WORK_W, H: WORK_H, use_edges: params.use_edges,
-      alpha: params.alpha, strength: params.strength,
-      needPixels: params.use_cpu,
-    });
-    // CPU mode: refresh grays.pixels so the CPU iterator sees the new frame.
-    if (params.use_cpu && grays.pixels) {
-      state.grays.pixels  = grays.pixels;
-      state.grays.average = grays.average;
-    }
-  }
-
-  // Capture `state` so we can detect a reset that fires mid-step (the await
-  // below yields; a click handler can null `state` while we wait). After the
-  // await, if our captured state is no longer the live one, this tick's work
-  // is for a stale iter and must be dropped.
-  const s = state;
-  await s.iter.step();
-  if (state !== s) return;
-  s.points = s.iter.points;
-  display(s);
-
-  // Convergence-sensing for static images: stop scheduling rAF once we've
-  // run the user-budgeted number of iters (num_iters * num_Lloyd_iters).
-  // Video keeps iterating; Reset / source change / param change builds a
-  // new iter, which resets the counter and unblocks scheduling. Also keep
-  // ticking while a deferred split/merge readback is still in flight so the
-  // final iter's split actually lands on screen.
-  if (videoPlaying || s.iter.ops < s.iter.maxOps ||
-      s.iter.hasPendingSplit) schedule();
-}
-
-// ── Source loading ────────────────────────────────────────────────────────────
 // Work resolution drives JFA + accumulate granularity. 1024² gives ~13 pixels
 // per cell at N=80K, drops seed-collision rate to ~8%, and stays within i32
 // atomic range under Q3 (×8) coordinate quantization.
 const WORK_W = 1024, WORK_H = 1024;
+const DISPLAY_W = 1024, DISPLAY_H = 750;
+const SEED = 91651088029;
 
-async function setSource(src) {
-  source = src;
-  state  = null;
-  await setupCanvas(src);
-  display(null);
-  schedule();
-}
+// ── App: state machine + tick loop. ──────────────────────────────────────────
+// dirty flags + version counter cleanly separate "what needs to happen" from
+// "is something in flight". Each UI change marks dirty + bumpVersion(), which
+// invalidates any in-flight tick so it bails after its next await.
+class App {
+  constructor() {
+    this.params = {
+      num_points:      80000,
+      num_iters:       10,
+      num_Lloyd_iters: 4,
+      rho:             0.,
+      alpha:           0.01,
+      strength:        2.6,
+      use_edges:       true,
+      radius:          1.5,
+      invert:          false,
+      use_cpu:         false,
+      show_voronoi:    false,
+      show_target:     false,
+      adapt_iters:     3,
+    };
 
-function HandleSource(file) {
-  if (source instanceof HTMLVideoElement) source.pause();
-  videoPlaying = false;
-  _updatePlayCtrl();
-  state = null; source = null;
-  // Replace canvas immediately so old points vanish before the new source loads.
-  const _old = document.querySelector('#main-canvas');
-  _old.parentNode.replaceChild(_old.cloneNode(false), _old);
-  gpu = null; renderer = null;
+    this.source       = null;   // HTMLImageElement | HTMLVideoElement
+    this.videoPlaying = false;
+    this.gpu          = null;   // { device, context, format }
+    this.renderer     = null;
+    this.frameSrc     = null;
+    this.frame        = null;   // last captured frame handle
+    this.iter         = null;   // current iterator
+    this.dirty        = { canvas: false, frame: false, iter: false };
+    this.version      = 0;      // bumped on each cancel-and-restart event
+    this.scheduled    = false;
+    this.playCtrl     = null;
+  }
 
-  if (file.type.startsWith('video/')) {
-    const video = document.createElement('video');
-    video.src   = URL.createObjectURL(file);
-    video.muted = true;
-    video.loop  = true;
-    if ('requestVideoFrameCallback' in video) {
-      video.requestVideoFrameCallback(() => setSource(video));
-    } else {
-      video.addEventListener('loadeddata', () => setSource(video), { once: true });
+  // ── Public API (UI handlers call these) ──────────────────────────────────
+
+  async handleSource(file) {
+    if (!file) return;
+    if (this.source instanceof HTMLVideoElement) this.source.pause();
+    this.videoPlaying = false;
+    this._updatePlayCtrl();
+
+    // Cancel in-flight work and clear the canvas immediately so old points
+    // don't linger while the new source loads. The version bump invalidates
+    // any tick that was mid-await.
+    this.version++;
+    this._teardownGPU();
+
+    const src = await this._loadSource(file);
+    if (!src) return;
+    this.source = src;
+    this._markAll();
+  }
+
+  // Drop GPU resources and reset the canvas to a fresh DOM node. Needed when
+  // a tick is mid-await (we want it to see version mismatch and bail) AND
+  // we want the screen blanked right now.
+  _teardownGPU() {
+    this.iter?.destroy?.();     this.iter     = null;
+    this.frameSrc?.destroy?.(); this.frameSrc = null;
+    this.frame                                = null;
+    this.renderer                             = null;
+    this.gpu                                  = null;
+    const old = document.querySelector('#main-canvas');
+    if (old) old.parentNode.replaceChild(old.cloneNode(false), old);
+  }
+
+  toggleVideo() {
+    if (!(this.source instanceof HTMLVideoElement)) return;
+    this.videoPlaying = !this.videoPlaying;
+    this._updatePlayCtrl();
+    if (this.videoPlaying) { this.source.play(); this.schedule(); }
+    else                    this.source.pause();
+  }
+
+  // UI handler aliases.
+  resetIter()    { this.dirty.iter  = true; this._bump(); }
+  refetchFrame() { this.dirty.frame = true; this.dirty.iter = true; this._bump(); }
+  redraw()       { this.schedule(); }
+
+  // ── Scheduling ───────────────────────────────────────────────────────────
+  // While a tick is running, schedule() is a no-op; the running tick's
+  // `finally` re-schedules itself if any work remains (including new dirty
+  // flags set during an await). This guarantees ticks never overlap.
+  schedule() {
+    if (this.scheduled || this.running) return;
+    this.scheduled = true;
+    requestAnimationFrame(() => this.tick());
+  }
+
+  _bump() { this.version++; this.schedule(); }
+
+  _needsAnotherTick() {
+    if (this.dirty.canvas || this.dirty.frame || this.dirty.iter) return true;
+    if (this.videoPlaying) return true;
+    if (this.iter && (this.iter.ops < this.iter.maxOps || this.iter.hasPendingWork)) return true;
+    return false;
+  }
+
+  // ── The tick: grab → build → step → siteIds → display ────────────────────
+  async tick() {
+    this.scheduled = false;
+    this.running   = true;
+    try { await this._tickBody(); }
+    finally {
+      this.running = false;
+      if (this._needsAnotherTick()) this.schedule();
     }
-  } else {
-    const reader = new FileReader();
-    try { reader.readAsDataURL(file); }
-    catch { alert('Could not read the file.'); return; }
-    reader.onloadend = () => {
-      const img = new Image();
-      img.onload = () => setSource(img);
-      img.src = reader.result;
+  }
+
+  async _tickBody() {
+    if (!this.source) return;
+    const ver   = this.version;
+    const stale = () => this.version !== ver;
+
+    if (this.dirty.canvas) {
+      this.dirty.canvas = false;
+      try { await this._setupCanvas(); }
+      catch (e) { console.error('canvas setup failed:', e); return; }
+      if (stale()) return;
+    }
+    if (!this.gpu) return;
+
+    if (this.dirty.frame || !this.frame || this.videoPlaying) {
+      this.dirty.frame = false;
+      try { this.frame = await this.frameSrc.captureFrame(this.source, this._captureOpts()); }
+      catch (e) { console.error('frame capture failed:', e); return; }
+      if (stale()) return;
+      // On the first frame of a new iter, wait for the image-sum readback so
+      // split/merge thresholds are sane from the start. Subsequent frames use
+      // the stale-by-1 cached value and don't block.
+      if (!this.iter) { await this.frame.averageReady; if (stale()) return; }
+      // Video mode: hand the refreshed frame to the iter. Texture handle is
+      // stable (FrameSource reuses it), so GPU bind groups stay valid; for
+      // the CPU iter this is the only path that picks up new pixels.
+      this.iter?.setFrame(this.frame);
+    }
+
+    if (this.dirty.iter || !this.iter) {
+      this.dirty.iter = false;
+      const old = this.iter;
+      this.iter = null;
+      old?.destroy?.();
+      try {
+        this.iter = await createIterator({
+          useCPU: this.params.use_cpu,
+          device: this.gpu.device,
+          frame:  this.frame,
+          params: this._iterParams(),
+        });
+      } catch (e) {
+        console.error('iter create failed:', e);
+        this._display();
+        return;
+      }
+      if (stale()) { this.iter?.destroy?.(); this.iter = null; return; }
+    }
+
+    if (this._shouldStep()) {
+      try { await this.iter.step(); }
+      catch (e) { console.error('iter step failed:', e); return; }
+      if (stale()) return;
+    }
+
+    // Refresh site IDs so the voronoi render reflects current points. For the
+    // GPU iter this is a duplicate JFA (split/merge can have reshuffled IDs
+    // since the iter's last internal JFA); for the CPU iter it's the only
+    // path that populates siteIdsTex at all.
+    if (this.params.show_voronoi) this.iter.refreshSiteIds();
+
+    this._display();
+  }
+
+  // ── Internals ────────────────────────────────────────────────────────────
+
+  _shouldStep() {
+    if (!this.iter) return false;
+    if (this.videoPlaying) return true;
+    return this.iter.ops < this.iter.maxOps || this.iter.hasPendingWork;
+  }
+
+  _display() {
+    if (!this.renderer || !this.gpu) return;
+    const canvas = document.querySelector('#main-canvas');
+    const p = this.params;
+
+    if (p.show_target && this.frame) {
+      this.renderer.renderTarget({ grayTex: this.frame.texture });
+      return;
+    }
+    if (!this.iter) {
+      this.renderer.renderClear({ invert: p.invert });
+      return;
+    }
+    if (p.show_voronoi) {
+      this.renderer.renderVoronoi({
+        siteIdsTex: this.iter.siteIdsTex,
+        points:     this.iter.points,
+        scale:      p.use_edges ? 8 : 1,
+        W: this.frame.W, H: this.frame.H,
+      });
+    } else {
+      this.renderer.renderPoints({
+        sitesBuf: this.iter.sitesBuffer,
+        N:        this.iter.N,
+        canvas,
+        radius:   p.radius,
+        invert:   p.invert,
+      });
+    }
+  }
+
+  _captureOpts() {
+    const p = this.params;
+    return {
+      W: WORK_W, H: WORK_H,
+      useEdges:   p.use_edges,
+      alpha:      p.alpha,
+      strength:   p.strength,
+      needPixels: p.use_cpu,
     };
   }
-}
 
-function toggleVideo() {
-  if (!(source instanceof HTMLVideoElement)) return;
-  videoPlaying = !videoPlaying;
-  _updatePlayCtrl();
-  if (videoPlaying) { source.play(); schedule(); }
-  else              source.pause();
-}
-
-let _playCtrl = null;
-function _updatePlayCtrl() {
-  if (_playCtrl) _playCtrl.name(videoPlaying ? 'Pause' : 'Play');
-}
-
-// ── Canvas / GPU setup ────────────────────────────────────────────────────────
-async function setupCanvas(src) {
-  let canvas = document.querySelector('#main-canvas');
-  // Only clone if the canvas already had a WebGPU context bound. HandleSource
-  // pre-clones (to wipe stale points during file load) and nulls `gpu`, so on
-  // that path we keep the fresh canvas; the goSrc/size-change path falls here
-  // with a live context that needs a fresh canvas to re-configure.
-  if (gpu) {
-    const nc = canvas.cloneNode(true);
-    canvas.parentNode.replaceChild(nc, canvas);
-    canvas = nc;
+  _iterParams() {
+    const p = this.params;
+    return {
+      num_points:      p.num_points,
+      num_iters:       p.num_iters,
+      num_Lloyd_iters: p.num_Lloyd_iters,
+      rho:             p.rho,
+      seed:            SEED,
+    };
   }
 
-  const Wo = 1024, Ho = 750;
-  let W = src.videoWidth ?? src.width;
-  let H = src.videoHeight ?? src.height;
-  if (W > Wo || H > Ho) {
-    if (W * Ho > Wo * H) { H = Math.floor(H * Wo / W); W = Wo; }
-    else                  { W = Math.floor(W * Ho / H); H = Ho; }
-  }
-  canvas.width = W; canvas.height = H;
-  if (src instanceof HTMLImageElement) { src.width = W; src.height = H; }
-  document.querySelector('#gui').style.top = `${-H + 10}px`;
-
-  gpu      = await initGPU(canvas);
-  renderer = await GPURenderer.create(gpu.device, gpu.context, gpu.format);
-}
-
-// ── Display ───────────────────────────────────────────────────────────────────
-function display(s) {
-  const canvas = document.querySelector('#main-canvas');
-  if (!renderer || !gpu) return;
-
-  if (params.show_target && s) {
-    renderer.renderTarget({ grayTex: s.grays.texture });
-    return;
+  _markAll() {
+    this.dirty.canvas = true;
+    this.dirty.frame  = true;
+    this.dirty.iter   = true;
+    this._bump();
   }
 
-  if (!s || !s.iter) {
-    // Blank state: clear by drawing zero points.
-    renderer.renderPoints({
-      sitesBuf: null, N: 0, canvas, radius: params.radius, invert: params.invert,
-    });
-    return;
+  _updatePlayCtrl() {
+    if (this.playCtrl) this.playCtrl.name(this.videoPlaying ? 'Pause' : 'Play');
   }
 
-  if (params.show_voronoi) {
-    // Re-run JFA on current sites so the cell IDs match s.points (which
-    // split/merge may have reshuffled relative to the iter's pre-Lloyd JFA).
-    s.iter.refreshJFA();
-    renderer.renderVoronoi({
-      siteIdsTex: s.iter.siteIdsTex,
-      points:     s.points,
-      scale:      params.use_edges ? 8 : 1,
-      W: s.grays.W, H: s.grays.H,
-    });
-  } else {
-    renderer.renderPoints({
-      sitesBuf: s.iter.sitesBuffer,
-      N:        s.iter.N,
-      canvas,
-      radius:   params.radius,
-      invert:   params.invert,
+  // Replace the canvas, init a fresh device/context, and recreate the
+  // renderer + FrameSource. The old WebGPU context can't be re-configured, so
+  // we clone the canvas node to detach it. Old iter/frame are released.
+  async _setupCanvas() {
+    let canvas = document.querySelector('#main-canvas');
+    if (this.gpu) {
+      const nc = canvas.cloneNode(true);
+      canvas.parentNode.replaceChild(nc, canvas);
+      canvas = nc;
+    }
+    const src = this.source;
+    let W = src.videoWidth ?? src.width;
+    let H = src.videoHeight ?? src.height;
+    if (W > DISPLAY_W || H > DISPLAY_H) {
+      if (W * DISPLAY_H > DISPLAY_W * H) { H = Math.floor(H * DISPLAY_W / W); W = DISPLAY_W; }
+      else                                { W = Math.floor(W * DISPLAY_H / H); H = DISPLAY_H; }
+    }
+    canvas.width = W; canvas.height = H;
+    if (src instanceof HTMLImageElement) { src.width = W; src.height = H; }
+    document.querySelector('#gui').style.top = `${-H + 10}px`;
+
+    this.iter?.destroy?.();      this.iter     = null;
+    this.frameSrc?.destroy?.();  this.frameSrc = null;
+    this.frame                                 = null;
+    this.renderer                              = null;
+
+    this.gpu      = await initGPU(canvas);
+    this.renderer = await GPURenderer.create(this.gpu.device, this.gpu.context, this.gpu.format);
+    this.frameSrc = new FrameSource(this.gpu.device);
+  }
+
+  // Read a File into an Image or Video element.
+  _loadSource(file) {
+    return new Promise((resolve, reject) => {
+      if (file.type.startsWith('video/')) {
+        const video = document.createElement('video');
+        video.src   = URL.createObjectURL(file);
+        video.muted = true;
+        video.loop  = true;
+        const ready = () => resolve(video);
+        if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(ready);
+        else                                       video.addEventListener('loadeddata', ready, { once: true });
+      } else {
+        const reader = new FileReader();
+        try { reader.readAsDataURL(file); }
+        catch { alert('Could not read the file.'); resolve(null); return; }
+        reader.onloadend = () => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = reader.result;
+        };
+      }
     });
   }
-
 }
 
-// ── Drag & Drop ───────────────────────────────────────────────────────────────
-function SetupDragAndDrop() {
+// ── lil-gui binding ──────────────────────────────────────────────────────────
+function setupUI(app) {
+  const elmt = document.getElementById('gui-container');
+  const gui  = new lil.GUI({ width: 250, container: elmt });
+  gui.domElement.id = 'gui';
+
+  const p = app.params;
+  const resetIter    = () => app.resetIter();
+  const refetchFrame = () => app.refetchFrame();
+  const redraw       = () => app.redraw();
+
+  gui.add(p, 'num_points',      500, 500000, 10).name('Max Points')       .listen().onChange(resetIter);
+  gui.add(p, 'rho',            -1.,  1.,    .01).name('Density cut-off')  .listen().onChange(resetIter);
+  gui.add(p, 'use_edges'                       ).name('Edge detection')   .listen().onChange(refetchFrame);
+  gui.add(p, 'alpha',           0.,  0.2,   .01).name('mix edges/source') .listen().onChange(refetchFrame);
+  gui.add(p, 'strength',        1.,  16.,   .01).name('Edges strength')   .listen().onChange(refetchFrame);
+  gui.add(p, 'num_iters',       2,   50,      1).name('Iterations')       .listen().onChange(resetIter);
+  gui.add(p, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations') .listen().onChange(resetIter);
+  gui.add(p, 'radius',          0.2, 3.,    .01).name('Points radius')    .listen().onChange(redraw);
+  gui.add(p, 'invert'                          ).name('Invert')           .listen().onChange(redraw);
+  gui.add(p, 'use_cpu'                         ).name('Use CPU (compare)').listen().onChange(refetchFrame);
+  gui.add(p, 'show_voronoi'                    ).name('Show Voronoi')     .listen().onChange(redraw);
+  gui.add({ reset: resetIter }, 'reset'        ).name('Reset');
+  gui.add(p, 'adapt_iters',     1,   20,      1).name('Video adapt iters').listen();
+  app.playCtrl = gui.add({ toggleVideo: () => app.toggleVideo() }, 'toggleVideo').name('Play');
+}
+
+// ── Drag & Drop ──────────────────────────────────────────────────────────────
+function setupDragAndDrop(app) {
   const drop = document.getElementById('drop-area');
   const stop = e => { e.preventDefault(); e.stopPropagation(); };
   ['dragenter','dragover','dragleave','drop'].forEach(n => drop.addEventListener(n, stop));
   ['dragenter','dragover'].forEach(n => drop.addEventListener(n, () => drop.classList.add('highlight')));
   ['dragleave','drop'].forEach(n => drop.addEventListener(n, () => drop.classList.remove('highlight')));
-  drop.addEventListener('drop', e => HandleSource(e.dataTransfer.files[0]));
+  drop.addEventListener('drop', e => app.handleSource(e.dataTransfer.files[0]));
 }
 
-// ── UI ────────────────────────────────────────────────────────────────────────
-function SetupUI() {
-  const elmt = document.getElementById('gui-container');
-  const gui  = new lil.GUI({ width: 250, container: elmt });
-  gui.domElement.id = 'gui';
+// ── Entry ────────────────────────────────────────────────────────────────────
+const app = new App();
+window.app = app;
+window.HandleSource = file => app.handleSource(file);
 
-  const reset = () => { state = null; schedule(); };
-  const redo  = () => { if (state) display(state); };
-  const goSrc = () => { if (source) { setupCanvas(source).then(() => { state = null; schedule(); }); } };
-
-  gui.add(params, 'num_points',      500, 500000, 10).name('Max Points')       .listen().onChange(reset);
-  gui.add(params, 'rho',            -1.,  1.,    .01).name('Density cut-off')  .listen().onChange(reset);
-  gui.add(params, 'use_edges'                       ).name('Edge detection')   .listen().onChange(goSrc);
-  gui.add(params, 'alpha',           0.,  0.2,   .01).name('mix edges/source') .listen().onChange(goSrc);
-  gui.add(params, 'strength',        1.,  16.,   .01).name('Edges strength')   .listen().onChange(goSrc);
-  gui.add(params, 'num_iters',       2,   50,      1).name('Iterations')       .listen().onChange(reset);
-  gui.add(params, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations') .listen().onChange(reset);
-  gui.add(params, 'radius',          0.2, 3.,    .01).name('Points radius')    .listen().onChange(redo);
-  gui.add(params, 'invert'                          ).name('Invert')           .listen().onChange(redo);
-  gui.add(params, 'use_cpu'                         ).name('Use CPU (compare)') .listen().onChange(reset);
-  gui.add(params, 'show_voronoi'                    ).name('Show Voronoi')     .listen().onChange(redo);
-  gui.add({ reset }, 'reset'                        ).name('Reset');
-  gui.add(params, 'adapt_iters',     1,   20,      1).name('Video adapt iters').listen();
-  _playCtrl = gui.add({ toggleVideo }, 'toggleVideo' ).name('Play');
-}
-
-// ── Entry ─────────────────────────────────────────────────────────────────────
-function main() {
-  SetupDragAndDrop();
-  SetupUI();
+document.addEventListener('DOMContentLoaded', () => {
+  setupDragAndDrop(app);
+  setupUI(app);
   const img = new Image();
-  img.onload = () => setSource(img);
+  img.onload = () => {
+    app.source = img;
+    app._markAll();
+  };
   img.src = './book.webp';
-}
-
-document.addEventListener('DOMContentLoaded', main);
-
+});
 </script>
 
 </body>
