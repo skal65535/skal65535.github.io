@@ -4,6 +4,8 @@
 //      iter.points, iter.done, iter.progress
 "use strict";
 
+const log = (...a) => globalThis.STIPPLE_DEBUG && console.log(...a);
+
 export class Point {
   constructor(x = 0, y = 0, c = 0) { this.x = x; this.y = y; this.c = c; }
   dist2(p) { const dx = p.x - this.x, dy = p.y - this.y; return dx*dx + dy*dy; }
@@ -19,30 +21,28 @@ export class StipplingParams {
 
 class Cell {
   acc = 0; r_acc = 0;
-  x_acc = 0; y_acc = 0;
   rx_acc = 0; ry_acc = 0;
   rxx_acc = 0; rxy_acc = 0; ryy_acc = 0;
 
   reset() {
-    this.acc = this.r_acc = this.x_acc = this.y_acc = 0;
+    this.acc = this.r_acc = 0;
     this.rx_acc = this.ry_acc = this.rxx_acc = this.rxy_acc = this.ryy_acc = 0;
   }
   add(x, y, r) {
-    ++this.acc;
-    this.x_acc += x; this.y_acc += y; this.r_acc += r;
+    ++this.acc; this.r_acc += r;
     this.rx_acc += r*x; this.ry_acc += r*y;
     this.rxx_acc += r*x*x; this.rxy_acc += r*x*y; this.ryy_acc += r*y*y;
   }
   addRho(x, y, r) { this.r_acc += r; this.rx_acc += r*x; this.ry_acc += r*y; }
+  // After average() rx_acc/ry_acc are <r·x>/<r> (r-weighted mean of x).
+  // rxx_acc/rxy_acc/ryy_acc are <r·x²>/<r> etc. mainDirection uses these
+  // consistently r-weighted; computing exx as rxx − rx² (not against an
+  // unweighted mean) keeps the variance estimator coherent.
   average() {
-    if (!this.acc) return false;
-    const n = 1/this.acc;
-    this.x_acc *= n; this.y_acc *= n;
-    if (this.r_acc > 0) {
-      const rn = 1/this.r_acc;
-      this.rx_acc *= rn; this.ry_acc *= rn;
-      this.rxx_acc *= rn; this.rxy_acc *= rn; this.ryy_acc *= rn;
-    }
+    if (!this.acc || this.r_acc <= 0) return this.acc > 0;
+    const rn = 1/this.r_acc;
+    this.rx_acc *= rn; this.ry_acc *= rn;
+    this.rxx_acc *= rn; this.rxy_acc *= rn; this.ryy_acc *= rn;
     return true;
   }
   averageRho() {
@@ -52,9 +52,9 @@ class Cell {
     return true;
   }
   mainDirection() {
-    const exx = this.rxx_acc - this.x_acc * this.x_acc;
-    const eyy = this.ryy_acc - this.y_acc * this.y_acc;
-    const num = this.rxy_acc - this.x_acc * this.y_acc;
+    const exx = this.rxx_acc - this.rx_acc * this.rx_acc;
+    const eyy = this.ryy_acc - this.ry_acc * this.ry_acc;
+    const num = this.rxy_acc - this.rx_acc * this.ry_acc;
     const den = exx - eyy;
     const t = (num*num + den*den > 0) ? 0.5 * Math.atan2(2*num, den) : 0;
     const radius = 0.5 * Math.sqrt(this.acc / Math.PI);
@@ -269,6 +269,7 @@ export class StipplingIterator {
     for (const c of cells) c.reset();
     accumulate(cells, out, g.pixels, W, H, /*full=*/true);
     const prev = cells.length;
+    const Nmax = p.num_points;
     const new_pts = [];
     const inUnit = v => v >= 0 && v <= 1;
     for (const c of cells) {
@@ -277,7 +278,7 @@ export class StipplingIterator {
       if (rho < Tl) continue;
       const color = c.r_acc / c.acc;
       const xf = c.rx_acc, yf = c.ry_acc;
-      if (c.acc > 1 && rho > Tu) {
+      if (c.acc > 1 && rho > Tu && new_pts.length + 2 <= Nmax) {
         const d = c.mainDirection();
         const x1 = xf - d.dx, y1 = yf - d.dy;
         const x2 = xf + d.dx, y2 = yf + d.dy;
@@ -289,9 +290,9 @@ export class StipplingIterator {
           continue;
         }
       }
-      new_pts.push(new Point(xf, yf, color));
+      if (new_pts.length < Nmax) new_pts.push(new Point(xf, yf, color));
     }
     this._points = new_pts;
-    console.log(`iter #${this._ops}/${this._max_ops}: T=[${Tl},${Tu}] pts:${prev}=>${new_pts.length}`);
+    log(`iter #${this._ops}/${this._max_ops}: T=[${Tl},${Tu}] pts:${prev}=>${new_pts.length}`);
   }
 }

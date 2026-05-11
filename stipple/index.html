@@ -221,8 +221,11 @@ async function tick() {
   // Convergence-sensing for static images: stop scheduling rAF once we've
   // run the user-budgeted number of iters (num_iters * num_Lloyd_iters).
   // Video keeps iterating; Reset / source change / param change builds a
-  // new iter, which resets the counter and unblocks scheduling.
-  if (videoPlaying || state.iter.ops < state.iter.maxOps) schedule();
+  // new iter, which resets the counter and unblocks scheduling. Also keep
+  // ticking while a deferred split/merge readback is still in flight so the
+  // final iter's split actually lands on screen.
+  if (videoPlaying || state.iter.ops < state.iter.maxOps ||
+      state.iter.hasPendingSplit) schedule();
 }
 
 // ── Source loading ────────────────────────────────────────────────────────────
@@ -287,9 +290,15 @@ function _updatePlayCtrl() {
 // ── Canvas / GPU setup ────────────────────────────────────────────────────────
 async function setupCanvas(src) {
   let canvas = document.querySelector('#main-canvas');
-  const nc   = canvas.cloneNode(true);
-  canvas.parentNode.replaceChild(nc, canvas);
-  canvas = nc;
+  // Only clone if the canvas already had a WebGPU context bound. HandleSource
+  // pre-clones (to wipe stale points during file load) and nulls `gpu`, so on
+  // that path we keep the fresh canvas; the goSrc/size-change path falls here
+  // with a live context that needs a fresh canvas to re-configure.
+  if (gpu) {
+    const nc = canvas.cloneNode(true);
+    canvas.parentNode.replaceChild(nc, canvas);
+    canvas = nc;
+  }
 
   const Wo = 1024, Ho = 750;
   let W = src.videoWidth ?? src.width;

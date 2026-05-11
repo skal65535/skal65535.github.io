@@ -108,55 +108,6 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   textureStore(jfa_out, p, vec4<u32>(best_id, 0u, 0u, 0u));
 }
 
-// === viz_voronoi ===
-// Debug render: site_ids → false color into rgba8 target. Phase 2 uses this
-// to A/B against CPU computeVoronoi.
-struct Params {
-  W            : u32, H            : u32, full_W       : u32, full_H       : u32,
-  N            : u32, N_max        : u32, jfa_step     : u32, jfa_min_step : u32,
-  pyramid_lvl  : u32, full_moments : u32, _pad0        : u32, _pad1        : u32,
-};
-@group(0) @binding(0) var<uniform> params  : Params;
-@group(0) @binding(1) var site_ids : texture_storage_2d<r32uint, read>;
-@group(0) @binding(2) var out_tex  : texture_storage_2d<rgba8unorm, write>;
-
-fn hash3(i : u32) -> vec3<f32> {
-  let a = (i * 2654435761u) ^ 0x9e3779b9u;
-  let b = (i * 1597334677u) ^ 0xdeadbeefu;
-  let c = (i * 0x27d4eb2fu) ^ 0xcafef00du;
-  return vec3<f32>(f32(a & 255u), f32(b & 255u), f32(c & 255u)) / 255.0;
-}
-
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  if (gid.x >= params.W || gid.y >= params.H) { return; }
-  let p = vec2<i32>(i32(gid.x), i32(gid.y));
-  let id = textureLoad(site_ids, p).x;
-  var col : vec3<f32>;
-  if (id == 0xffffffffu) { col = vec3<f32>(0.0); }
-  else                    { col = hash3(id); }
-  textureStore(out_tex, p, vec4<f32>(col, 1.0));
-}
-
-// === lloyd_noop ===
-// Phase 1 placeholder: copies sites buffer through unchanged. Lets the
-// scaffold run end-to-end without compute work.
-struct Params {
-  W            : u32, H            : u32, full_W       : u32, full_H       : u32,
-  N            : u32, N_max        : u32, jfa_step     : u32, jfa_min_step : u32,
-  pyramid_lvl  : u32, full_moments : u32, _pad0        : u32, _pad1        : u32,
-};
-@group(0) @binding(0) var<uniform> params : Params;
-@group(0) @binding(1) var<storage, read>       sites_in  : array<vec2<f32>>;
-@group(0) @binding(2) var<storage, read_write> sites_out : array<vec2<f32>>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let i = gid.x;
-  if (i >= params.N) { return; }
-  sites_out[i] = sites_in[i];
-}
-
 // === edge_detect ===
 // Sample source RGBA texture, compute luma + center-vs-neighbor edge detect,
 // store grayscale into the rgba8unorm output. Also reduces the grayscale sum
@@ -370,8 +321,8 @@ fn fs(in : VVOut) -> @location(0) vec4<f32> {
 }
 
 // === clear_cells ===
-// Zero the per-cell f32-via-u32 atomic accumulators. 9 slots per cell:
-//   [acc, r, rx, ry, rxx, rxy, ryy, x, y]   stored as bitcast<u32>(f32).
+// Zero the per-cell f32-via-u32 atomic accumulators. 7 slots per cell:
+//   [acc, r, rx, ry, rxx, rxy, ryy]   stored as bitcast<u32>(f32).
 //   0u == bitcast<u32>(0.0f), so zeroing is direct.
 struct Params {
   W : u32, H : u32, full_W : u32, full_H : u32,
@@ -384,7 +335,7 @@ struct Params {
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let i = gid.x;
-  if (i >= params.N * 9u) { return; }
+  if (i >= params.N * 7u) { return; }
   atomicStore(&cells[i], 0u);
 }
 
@@ -424,7 +375,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let X = (f32(gid.x) + 0.5) / f32(params.W);    // [0, 1]
   let Y = (f32(gid.y) + 0.5) / f32(params.H);
 
-  let base = sid * 9u;
+  let base = sid * 7u;
   add_f32(base + 0u, 1.0);                          // acc
   add_f32(base + 1u, r);                            // r_acc
   add_f32(base + 2u, r * X);                        // rx_acc
@@ -434,8 +385,6 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     add_f32(base + 4u, r * X * X);                  // rxx_acc
     add_f32(base + 5u, r * X * Y);                  // rxy_acc
     add_f32(base + 6u, r * Y * Y);                  // ryy_acc
-    add_f32(base + 7u, X);                          // x_acc (unweighted)
-    add_f32(base + 8u, Y);                          // y_acc
   }
 }
 
@@ -454,7 +403,7 @@ struct Params {
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let i = gid.x;
   if (i >= params.N) { return; }
-  let base = i * 9u;
+  let base = i * 7u;
   let r = bitcast<f32>(cells[base + 1u]);
   if (r > 0.0) {
     let rx = bitcast<f32>(cells[base + 2u]);

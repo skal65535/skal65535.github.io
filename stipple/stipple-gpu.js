@@ -12,7 +12,12 @@
 
 import { Point, StipplingIterator, computeVoronoi } from './stipple.js';
 
+const log = (...a) => globalThis.STIPPLE_DEBUG && console.log(...a);
+
+// 10 u32 params + 2 u32 pad → 48 bytes (mirrors WGSL Params struct).
 const PARAMS_BYTES = 12 * 4;
+// Per-cell atomic accumulator slots: [acc, r, rx, ry, rxx, rxy, ryy].
+const CELL_SLOTS = 7;
 
 // ── Device / context init ─────────────────────────────────────────────────────
 export async function initGPU(canvas) {
@@ -310,21 +315,38 @@ export class GPUStipplingIterator {
     });
 
     this._buf_params  = makeParamsBuffer(device);
-    // One params buffer per JFA pass: jfa_step changes per pass, and within
-    // a single command-encoder all writeBuffer calls take effect *together*
-    // before submit. So we need distinct buffers, all pre-written, indexed
-    // by pass number. log2(max(W,H)) + safety.
-    const maxJfaPasses = Math.ceil(Math.log2(Math.max(W, H))) + 2;
-    this._buf_jfa_params = Array.from({length: maxJfaPasses}, (_, i) =>
-      makeParamsBuffer(device, PARAMS_BYTES, `jfa_params_${i}`));
+    // JFA step sequence is (W,H)-determined; pre-compute and pre-allocate a
+    // params buffer per pass (each holds a distinct jfa_step).
+    this._jfa_steps = (() => {
+      const a = [];
+      let s = Math.max(1, Math.floor(Math.max(W, H) / 2));
+      while (true) { a.push(s); if (s === 1) break; s = Math.max(1, s >> 1); }
+      a.push(1);  // JFA+1 boundary cleanup pass.
+      return a;
+    })();
+    this._buf_jfa_params = this._jfa_steps.map((step, i) => {
+      const buf = makeParamsBuffer(device, PARAMS_BYTES, `jfa_params_${i}`);
+      writeIterParams(device, buf, {
+        W, H, full_W: W, full_H: H,
+        N: this._N, N_max,
+        jfa_step: step, jfa_min_step: 1,
+        pyramid_lvl: 0, full_moments: 0,
+      });
+      return buf;
+    });
+    // After all passes, the result lives in jfa_a iff steps.length is even
+    // (we start src=a→dst=b). Odd → final write went to jfa_b; copy back.
+    this._jfa_last_in_a = (this._jfa_steps.length & 1) === 0;
+
+    const cellsBytes = N_max * CELL_SLOTS * 4;
     this._buf_cells   = device.createBuffer({
-      size: N_max * 9 * 4,
+      size: cellsBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST |
              GPUBufferUsage.COPY_SRC,
       label: 'cells',
     });
     this._buf_cells_read = device.createBuffer({
-      size: N_max * 9 * 4,
+      size: cellsBytes,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
       label: 'cells_read',
     });
@@ -343,8 +365,76 @@ export class GPUStipplingIterator {
     this._tex_jfa_a = device.createTexture({ ...texDesc, label: 'jfa_a' });
     this._tex_jfa_b = device.createTexture({ ...texDesc, label: 'jfa_b' });
 
+    // Bind groups are stable across iters: buffer/texture handles don't
+    // change (only buffer *contents* do, which doesn't invalidate the BG).
+    // Building once cuts ~14 BG allocations per iter.
+    this._buildBindGroups();
+
+    this._pendingSplit = null;  // deferred split/merge readback (1-frame lag).
+
     this._uploadSites();
     this._ready = true;
+  }
+
+  _buildBindGroups() {
+    const device = this._device;
+    const view_a = this._tex_jfa_a.createView();
+    const view_b = this._tex_jfa_b.createView();
+    const view_pixels = this._grays.texture.createView();
+
+    this._bg_clear = device.createBindGroup({
+      layout: this._pipe_clear.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this._buf_params } },
+        { binding: 1, resource: view_a },
+      ],
+    });
+    this._bg_seed = device.createBindGroup({
+      layout: this._pipe_seed.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this._buf_params } },
+        { binding: 1, resource: { buffer: this._buf_sites_a } },
+        { binding: 2, resource: view_a },
+      ],
+    });
+    this._bg_jfa = this._jfa_steps.map((_, i) => {
+      // Even passes ping a→b; odd b→a.
+      const src = (i & 1) ? view_b : view_a;
+      const dst = (i & 1) ? view_a : view_b;
+      return device.createBindGroup({
+        layout: this._pipe_jfa.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: this._buf_jfa_params[i] } },
+          { binding: 1, resource: { buffer: this._buf_sites_a } },
+          { binding: 2, resource: src },
+          { binding: 3, resource: dst },
+        ],
+      });
+    });
+    this._bg_cclear = device.createBindGroup({
+      layout: this._pipe_cclear.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this._buf_params } },
+        { binding: 1, resource: { buffer: this._buf_cells } },
+      ],
+    });
+    this._bg_accum = device.createBindGroup({
+      layout: this._pipe_accum.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this._buf_params } },
+        { binding: 1, resource: view_pixels },
+        { binding: 2, resource: view_a },
+        { binding: 3, resource: { buffer: this._buf_cells } },
+      ],
+    });
+    this._bg_lloyd = device.createBindGroup({
+      layout: this._pipe_lloyd.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this._buf_params } },
+        { binding: 1, resource: { buffer: this._buf_cells } },
+        { binding: 2, resource: { buffer: this._buf_sites_a } },
+      ],
+    });
   }
 
   _uploadSites() {
@@ -368,80 +458,34 @@ export class GPUStipplingIterator {
 
   runJFA(enc) {
     const { W, H } = this._grays;
-
     {
-      const bg = this._device.createBindGroup({
-        layout: this._pipe_clear.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_params } },
-          { binding: 1, resource: this._tex_jfa_a.createView() },
-        ],
-      });
-      const pass = enc.beginComputePass();
+      const pass = enc.beginComputePass({ label: 'jfa_clear' });
       pass.setPipeline(this._pipe_clear);
-      pass.setBindGroup(0, bg);
+      pass.setBindGroup(0, this._bg_clear);
       pass.dispatchWorkgroups(Math.ceil(W * H / 64));
       pass.end();
     }
     {
-      const bg = this._device.createBindGroup({
-        layout: this._pipe_seed.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_params } },
-          { binding: 1, resource: { buffer: this._buf_sites_a } },
-          { binding: 2, resource: this._tex_jfa_a.createView() },
-        ],
-      });
-      const pass = enc.beginComputePass();
+      const pass = enc.beginComputePass({ label: 'jfa_seed' });
       pass.setPipeline(this._pipe_seed);
-      pass.setBindGroup(0, bg);
+      pass.setBindGroup(0, this._bg_seed);
       pass.dispatchWorkgroups(Math.ceil(this._N / 64));
       pass.end();
     }
-
-    // Enumerate step sizes and pre-write all per-pass uniforms.
-    // Sequence: W/2, W/4, …, 2, 1, 1  (the trailing extra step=1 is "JFA+1",
-    // which cleans up the small boundary errors that vanilla JFA leaves at
-    // cell borders. Under weighted Lloyd those errors compound and drift
-    // centroids toward the borders.)
-    const steps = [];
-    {
-      let s = Math.max(1, Math.floor(Math.max(W, H) / 2));
-      while (true) { steps.push(s); if (s === 1) break; s = Math.max(1, s >> 1); }
-      steps.push(1);
-    }
-    for (let i = 0; i < steps.length; i++) {
-      writeIterParams(this._device, this._buf_jfa_params[i], {
-        W, H, full_W: W, full_H: H,
-        N: this._N, N_max: this._N_max,
-        jfa_step: steps[i], jfa_min_step: 1,
-        pyramid_lvl: 0, full_moments: 0,
-      });
-    }
-
-    let src = this._tex_jfa_a, dst = this._tex_jfa_b;
-    let lastDst = src;
-    for (let i = 0; i < steps.length; i++) {
-      const bg = this._device.createBindGroup({
-        layout: this._pipe_jfa.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_jfa_params[i] } },
-          { binding: 1, resource: { buffer: this._buf_sites_a } },
-          { binding: 2, resource: src.createView() },
-          { binding: 3, resource: dst.createView() },
-        ],
-      });
-      const pass = enc.beginComputePass({ label: `jfa_${steps[i]}` });
+    // Ping-pong jfa_a ↔ jfa_b through the pre-baked step sequence
+    // (W/2, W/4, …, 2, 1, 1). The trailing extra step=1 is "JFA+1" — it
+    // cleans up the boundary errors that vanilla JFA leaves at cell borders;
+    // under weighted Lloyd those errors compound and drift centroids.
+    for (let i = 0; i < this._jfa_steps.length; i++) {
+      const pass = enc.beginComputePass({ label: `jfa_${this._jfa_steps[i]}` });
       pass.setPipeline(this._pipe_jfa);
-      pass.setBindGroup(0, bg);
+      pass.setBindGroup(0, this._bg_jfa[i]);
       pass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
       pass.end();
-      lastDst = dst;
-      [src, dst] = [dst, src];
     }
-    if (lastDst !== this._tex_jfa_a) {
+    if (!this._jfa_last_in_a) {
       enc.copyTextureToTexture(
-        { texture: lastDst }, { texture: this._tex_jfa_a },
+        { texture: this._tex_jfa_b }, { texture: this._tex_jfa_a },
         { width: W, height: H });
     }
   }
@@ -458,8 +502,21 @@ export class GPUStipplingIterator {
     this._device.queue.submit([enc.finish()]);
   }
 
+  // Whether a deferred split/merge readback is still in flight. Callers (the
+  // HTML tick loop) use this to keep scheduling rAFs past the iter budget so
+  // the final pending split actually lands on screen.
+  get hasPendingSplit() { return this._pendingSplit != null; }
+
   async step() {
     if (!this._ready) await this._pendingInit;
+
+    // Apply the prior iter's pending split/merge (one-frame lag), so the GPU
+    // could keep working while mapAsync resolved.
+    if (this._pendingSplit) {
+      const { arr, N } = await this._pendingSplit;
+      this._pendingSplit = null;
+      this._applySplitMerge(arr, N);
+    }
 
     const device = this._device;
     const p = this._params;
@@ -470,58 +527,34 @@ export class GPUStipplingIterator {
     this._setParams({ full_moments: willSplit ? 1 : 0 });
 
     const enc = device.createCommandEncoder({ label: `iter_${this._ops}` });
+    const { W, H } = this._grays;
 
     // 1. JFA Voronoi → site_ids in _tex_jfa_a.
     this.runJFA(enc);
 
     // 2. Clear per-cell accumulators.
     {
-      const bg = device.createBindGroup({
-        layout: this._pipe_cclear.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_params } },
-          { binding: 1, resource: { buffer: this._buf_cells } },
-        ],
-      });
       const pass = enc.beginComputePass({ label: 'clear_cells' });
       pass.setPipeline(this._pipe_cclear);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(this._N * 9 / 64));
+      pass.setBindGroup(0, this._bg_cclear);
+      pass.dispatchWorkgroups(Math.ceil(this._N * CELL_SLOTS / 64));
       pass.end();
     }
 
-    // 3. Accumulate per-pixel into cells via i32 atomicAdd.
+    // 3. Accumulate per-pixel into cells via f32-via-u32 CAS-loop.
     {
-      const bg = device.createBindGroup({
-        layout: this._pipe_accum.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_params } },
-          { binding: 1, resource: this._grays.texture.createView() },
-          { binding: 2, resource: this._tex_jfa_a.createView() },
-          { binding: 3, resource: { buffer: this._buf_cells } },
-        ],
-      });
-      const { W, H } = this._grays;
       const pass = enc.beginComputePass({ label: 'accumulate' });
       pass.setPipeline(this._pipe_accum);
-      pass.setBindGroup(0, bg);
+      pass.setBindGroup(0, this._bg_accum);
       pass.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8));
       pass.end();
     }
 
-    // 4. Lloyd update: sites_a[i] ← (rx / r, ry / r) / 16 (Q4 → normalized).
+    // 4. Lloyd update: sites_a[i] ← (rx, ry) / r.
     {
-      const bg = device.createBindGroup({
-        layout: this._pipe_lloyd.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._buf_params } },
-          { binding: 1, resource: { buffer: this._buf_cells } },
-          { binding: 2, resource: { buffer: this._buf_sites_a } },
-        ],
-      });
       const pass = enc.beginComputePass({ label: 'lloyd_update' });
       pass.setPipeline(this._pipe_lloyd);
-      pass.setBindGroup(0, bg);
+      pass.setBindGroup(0, this._bg_lloyd);
       pass.dispatchWorkgroups(Math.ceil(this._N / 64));
       pass.end();
     }
@@ -530,66 +563,72 @@ export class GPUStipplingIterator {
     if (willSplit) {
       enc.copyBufferToBuffer(this._buf_cells, 0,
                              this._buf_cells_read, 0,
-                             this._N * 9 * 4);
+                             this._N * CELL_SLOTS * 4);
     }
 
     device.queue.submit([enc.finish()]);
     this._ops++;
 
+    // Kick the readback without awaiting — the result is consumed at the
+    // top of the *next* step(). Frees the GPU to start the next iter while
+    // mapAsync resolves on the JS side.
     if (willSplit) {
-      await this._splitMerge();
+      const N = this._N;
+      const bytes = N * CELL_SLOTS * 4;
+      this._pendingSplit = (async () => {
+        await this._buf_cells_read.mapAsync(GPUMapMode.READ, 0, bytes);
+        const arr = new Float32Array(
+          this._buf_cells_read.getMappedRange(0, bytes).slice(0));
+        this._buf_cells_read.unmap();
+        return { arr, N };
+      })();
     }
     return false;
   }
 
-  // Async readback of cells buffer + JS split/merge logic. Replaces the
-  // points array and re-uploads to sites_a. Mirrors stipple.js _splitMerge.
-  async _splitMerge() {
-    const N = this._N;
-    const bytes = N * 9 * 4;
-    await this._buf_cells_read.mapAsync(GPUMapMode.READ, 0, bytes);
-    const arr = new Float32Array(
-      this._buf_cells_read.getMappedRange(0, bytes).slice(0));
-    this._buf_cells_read.unmap();
-
+  // Applies a readback to produce new _points + sites_a upload.
+  // `g.average` may be stale by one frame in video mode (the sum readback is
+  // also deferred — see grabFrameGPU); this is acceptable since it only
+  // shifts the split/merge thresholds slightly.
+  _applySplitMerge(arr, N) {
     const p = this._params, g = this._grays;
     const { W, H } = g;
-    const avg_rho   = Math.floor(p.rho * 255 + g.average / p.num_points);
+    const avg_rho = Math.floor(p.rho * 255 + g.average / p.num_points);
     // Hysteresis ramps up over the first _max_ops iters, then saturates.
     // The ramp gives initial convergence room; saturation bounds steady-state
     // churn in continuous mode.
-    const hyst      = Math.min(0.61, 0.01 + 0.6 * this._ops / this._max_ops);
-    const Tu        = Math.ceil((1 + hyst) * avg_rho);
-    const Tl        = Math.floor((1 - hyst) * avg_rho);
-    const eps_W     = 1 / W, eps_H = 1 / H;
-    const inUnit    = v => v >= 0 && v <= 1;
-    const new_pts   = [];
+    const hyst    = Math.min(0.61, 0.01 + 0.6 * this._ops / this._max_ops);
+    const Tu      = Math.ceil((1 + hyst) * avg_rho);
+    const Tl      = Math.floor((1 - hyst) * avg_rho);
+    const eps_W   = 1 / W, eps_H = 1 / H;
+    const inUnit  = v => v >= 0 && v <= 1;
+    const Nmax    = this._N_max;
+    const new_pts = [];
 
     for (let i = 0; i < N; i++) {
-      const base = i * 9;
-      const acc = arr[base + 0];
+      const base  = i * CELL_SLOTS;
+      const acc   = arr[base + 0];
       if (acc < 1) continue;
       const r_acc = arr[base + 1];
       if (r_acc <= 0) continue;
 
       const inv_r = 1 / r_acc;
-      const inv_a = 1 / acc;
-      const xf   = arr[base + 2] * inv_r;     // r-weighted centroid x
-      const yf   = arr[base + 3] * inv_r;
-      const rxx  = arr[base + 4] * inv_r;     // <r*x²>/<r>
-      const rxy  = arr[base + 5] * inv_r;
-      const ryy  = arr[base + 6] * inv_r;
-      const xavg = arr[base + 7] * inv_a;     // <x>
-      const yavg = arr[base + 8] * inv_a;
+      const xf    = arr[base + 2] * inv_r;    // r-weighted centroid x
+      const yf    = arr[base + 3] * inv_r;
+      const rxx   = arr[base + 4] * inv_r;    // <r·x²>/<r>
+      const rxy   = arr[base + 5] * inv_r;
+      const ryy   = arr[base + 6] * inv_r;
 
       const rho   = Math.round(r_acc);
       if (rho < Tl) continue;
       const color = r_acc / acc;
 
-      if (acc > 1 && rho > Tu) {
-        const exx = rxx - xavg * xavg;
-        const eyy = ryy - yavg * yavg;
-        const num = rxy - xavg * yavg;
+      if (acc > 1 && rho > Tu && new_pts.length + 2 <= Nmax) {
+        // r-weighted variance/covariance — all moments are r-weighted, so
+        // subtracting (rx/r)² (NOT an unweighted mean) is the coherent form.
+        const exx = rxx - xf * xf;
+        const eyy = ryy - yf * yf;
+        const num = rxy - xf * yf;
         const den = exx - eyy;
         const t   = (num*num + den*den > 0) ? 0.5 * Math.atan2(2*num, den) : 0;
         const radius = 0.5 * Math.sqrt(acc / Math.PI);
@@ -604,11 +643,10 @@ export class GPUStipplingIterator {
           continue;
         }
       }
-      new_pts.push(new Point(xf, yf, color));
+      if (new_pts.length < Nmax) new_pts.push(new Point(xf, yf, color));
     }
-    console.log(`iter #${this._ops}/${this._max_ops}: T=[${Tl},${Tu}] pts:${N}=>${new_pts.length}`);
+    log(`iter #${this._ops}/${this._max_ops}: T=[${Tl},${Tu}] pts:${N}=>${new_pts.length}`);
 
-    if (new_pts.length > this._N_max) new_pts.length = this._N_max;
     this._points = new_pts;
     this._N      = new_pts.length;
     this._uploadSites();
@@ -685,13 +723,14 @@ export class CPUStipplingIteratorAdapter {
     );
   }
 
-  get points()      { return this._iter.points; }
-  get done()        { return false; }
-  get sitesBuffer() { return this._buf_sites; }
-  get N()           { return this._iter.points.length; }
-  get siteIdsTex()  { return this._tex_jfa; }
-  get ops()         { return this._iter._ops; }
-  get maxOps()      { return this._iter._max_ops; }
+  get points()           { return this._iter.points; }
+  get done()             { return false; }
+  get sitesBuffer()      { return this._buf_sites; }
+  get N()                { return this._iter.points.length; }
+  get siteIdsTex()       { return this._tex_jfa; }
+  get ops()              { return this._iter._ops; }
+  get maxOps()           { return this._iter._max_ops; }
+  get hasPendingSplit()  { return false; }
 
   destroy() {
     this._buf_sites?.destroy?.();
