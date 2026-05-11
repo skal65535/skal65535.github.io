@@ -168,7 +168,10 @@ function buildState(grays, prev = null) {
   const s = { grays, iter: null, points: prev?.points ?? [], pending: true };
   const Iter = params.use_cpu ? CPUStipplingIteratorAdapter : GPUStipplingIterator;
   Iter.create(gpu.device, grays, opts, prev?.points).then(it => {
-    s.iter = it; s.pending = false; schedule();
+    s.iter   = it;
+    s.points = it.points;
+    s.pending = false;
+    schedule();
   }).catch(err => {
     console.error('Iterator construction failed:', err);
   });
@@ -214,9 +217,15 @@ async function tick() {
     }
   }
 
-  await state.iter.step();
-  state.points = state.iter.points;
-  display(state);
+  // Capture `state` so we can detect a reset that fires mid-step (the await
+  // below yields; a click handler can null `state` while we wait). After the
+  // await, if our captured state is no longer the live one, this tick's work
+  // is for a stale iter and must be dropped.
+  const s = state;
+  await s.iter.step();
+  if (state !== s) return;
+  s.points = s.iter.points;
+  display(s);
 
   // Convergence-sensing for static images: stop scheduling rAF once we've
   // run the user-budgeted number of iters (num_iters * num_Lloyd_iters).
@@ -224,8 +233,8 @@ async function tick() {
   // new iter, which resets the counter and unblocks scheduling. Also keep
   // ticking while a deferred split/merge readback is still in flight so the
   // final iter's split actually lands on screen.
-  if (videoPlaying || state.iter.ops < state.iter.maxOps ||
-      state.iter.hasPendingSplit) schedule();
+  if (videoPlaying || s.iter.ops < s.iter.maxOps ||
+      s.iter.hasPendingSplit) schedule();
 }
 
 // ── Source loading ────────────────────────────────────────────────────────────

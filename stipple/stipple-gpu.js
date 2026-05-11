@@ -290,9 +290,20 @@ export class GPUStipplingIterator {
     const N_max = Math.max(p.num_points * 2, 1024);
     this._N = N0;
     this._N_max = N_max;
+    // grays.pixels is only populated when the CPU iterator is also in play
+    // (see grabFrameGPU's needPixels). When available we seed initial point
+    // colors from the source image so an immediate show_voronoi render isn't
+    // all-black before the first Lloyd pass fills colors in.
+    const pix = g.pixels;
     this._points = existingPoints
       ? existingPoints.map(pt => new Point(pt.x, pt.y, pt.c))
-      : Array.from({length: N0}, () => new Point(rand(), rand()));
+      : Array.from({length: N0}, () => {
+          const x = rand(), y = rand();
+          const c = pix
+            ? pix[Math.min(W-1, (x*W)|0) + Math.min(H-1, (y*H)|0) * W]
+            : 0;
+          return new Point(x, y, c);
+        });
 
     const mods = await loadShaders(device);
     this._pipe_clear = device.createComputePipeline({

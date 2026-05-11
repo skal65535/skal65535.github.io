@@ -33,7 +33,11 @@ class Cell {
     this.rx_acc += r*x; this.ry_acc += r*y;
     this.rxx_acc += r*x*x; this.rxy_acc += r*x*y; this.ryy_acc += r*y*y;
   }
-  addRho(x, y, r) { this.r_acc += r; this.rx_acc += r*x; this.ry_acc += r*y; }
+  // acc is incremented here (not just on the full add() path) so the Lloyd
+  // step can recover mean-intensity per cell as r_acc/acc and propagate it
+  // into the new Point's color — otherwise points get c=0 every Lloyd iter
+  // and `show_voronoi` flashes black between split/merge frames.
+  addRho(x, y, r) { ++this.acc; this.r_acc += r; this.rx_acc += r*x; this.ry_acc += r*y; }
   // After average() rx_acc/ry_acc are <r·x>/<r> (r-weighted mean of x).
   // rxx_acc/rxy_acc/ryy_acc are <r·x²>/<r> etc. mainDirection uses these
   // consistently r-weighted; computing exx as rxx − rx² (not against an
@@ -218,8 +222,18 @@ export class StipplingIterator {
     if (existing_points) {
       this._points = existing_points.map(p => new Point(p.x, p.y, p.c));
     } else {
+      // Seed initial colors from the source image so a show_voronoi render
+      // of the just-constructed iter is meaningful (otherwise c=0 → black
+      // until the first Lloyd pass fills colors in).
       const n = params.num_points >> 1;
-      this._points = Array.from({length: n}, () => new Point(this._rand(), this._rand()));
+      const W = grays.W, H = grays.H, pix = grays.pixels;
+      this._points = Array.from({length: n}, () => {
+        const x = this._rand(), y = this._rand();
+        const c = pix
+          ? pix[Math.min(W-1, (x*W)|0) + Math.min(H-1, (y*H)|0) * W]
+          : 0;
+        return new Point(x, y, c);
+      });
     }
   }
 
@@ -241,7 +255,7 @@ export class StipplingIterator {
     for (let n = 0; n < N; n++) {
       const c = cells[n];
       if (!c.averageRho()) continue;
-      const pt = new Point(c.rx_acc, c.ry_acc);
+      const pt = new Point(c.rx_acc, c.ry_acc, c.r_acc / c.acc);
       d2 += this._points[n].dist2(pt);
       this._points[n] = pt;
       cnt++;
