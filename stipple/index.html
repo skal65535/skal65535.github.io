@@ -100,7 +100,6 @@
       onmouseout='this.style.background="#cce"'/>
   </form>
   <div id="gui-container">
-    <canvas id="side-canvas" style='display: none;'></canvas>
     <center>
         <canvas id="main-canvas"></canvas>
     </center>
@@ -108,119 +107,22 @@
   </div>
 </div>
 
-<!-- vertex shader -->
-<script  id="vertex-shader-base" type="x-shader/x-vertex">
-attribute vec4 vtx;
-uniform vec4 u_view;
-varying vec2 uv_coord;
-void main() {
-  vec2 pos = vtx.xy * u_view.xy - u_view.zw;
-  gl_Position = vec4(pos, 0., 1.);
-  uv_coord = vtx.zw;
-}
-</script>
+<!-- All rendering and compute now lives in stipple-shaders.wgsl + stipple-gpu.js. -->
 
-<!-- fragment shaders -->
-<script  id="fragment-shader-edge" type="x-shader/x-fragment">
-precision mediump float;
-uniform sampler2D image;
-uniform vec2 iSize;
-uniform vec2 Params;
-
-varying vec2 uv_coord;
-
-void main() {
-  vec3 sum = vec3(0.);
-  vec3 col = texture2D(image, uv_coord).rgb;
-  float amp = 0.25 * (1. - Params.x);
-  for (float i = -1.; i <= 1.; i += 2.) {
-    col -= amp * texture2D(image, uv_coord + vec2(i * iSize.x, 0.)).rgb;
-    col -= amp * texture2D(image, uv_coord + vec2(0., i * iSize.y)).rgb;
-  }
-  col = vec3(dot(col, vec3(.2126, 0.7152, 0.0722)));  // convert to luma
-  vec3 diff = Params.y * abs(col);
-  gl_FragColor = vec4(min(diff, 1.), 1.);
-}
-</script>
-
-<script  id="fragment-shader-basic" type="x-shader/x-fragment">
-precision mediump float;
-uniform sampler2D image;
-varying vec2 uv_coord;
-void main() {
-  vec3 col = texture2D(image, uv_coord).rgb;
-  col = vec3(dot(col, vec3(.2126, 0.7152, 0.0722)));
-  gl_FragColor = vec4(col.rgb, 1.);
-}
-</script>
-
-<script id="vertex-shader-points" type="x-shader/x-vertex">
-attribute vec2 vtx;
-uniform float u_radius;
-void main() {
-  vec2 pos = vtx * 2. - 1.;
-  pos.y *= -1.;
-  gl_Position = vec4(pos, 0., 1.);
-  gl_PointSize = u_radius * 2.0;
-}
-</script>
-<script id="fragment-shader-points" type="x-shader/x-fragment">
-precision mediump float;
-uniform vec4 u_color;
-void main() {
-  if (length(gl_PointCoord - vec2(0.5)) > 0.5) {
-    discard;
-  }
-  gl_FragColor = u_color;
-}
-</script>
-
-<script id="fragment-shader-voronoi" type="x-shader/x-fragment">
-precision mediump float;
-uniform sampler2D u_points;
-uniform vec2 u_canvas_size;
-uniform int u_num_points;
-uniform float u_texture_width;
-uniform float u_texture_height;
-uniform float u_scale;
-
-void main() {
-  vec2 uv = gl_FragCoord.xy / u_canvas_size;
-  float min_dist = 1e9;
-  vec4 final_color = vec4(0,0,0,1);
-
-  for (int i = 0; i < 500001; ++i) {
-    if (i >= u_num_points) break;
-    float col = mod(float(i), u_texture_width);
-    float row = floor(float(i) / u_texture_width);
-    vec2 point_uv = vec2((col + 0.5) / u_texture_width, (row + 0.5) / u_texture_height);
-    vec4 point_data = texture2D(u_points, point_uv);
-    vec2 point_coord = point_data.xy;
-    float dist = distance(uv, point_coord);
-    if (dist < min_dist) {
-      min_dist = dist;
-      float c = point_data.z * u_scale;
-      final_color = vec4(c, c, c, 1.0);
-    }
-  }
-  gl_FragColor = final_color;
-}
-</script>
-
-<script id="vertex-shader-voronoi" type="x-shader/x-vertex">
-attribute vec2 vtx;
-void main() {
-  gl_Position = vec4(vtx, 0.0, 1.0);
-}
-</script>
-
-<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
 <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script type="module">
 "use strict";
 
-import { StipplingIterator, computeVoronoi } from './stipple.js';
+import {
+  initGPU, GPUStipplingIterator, CPUStipplingIteratorAdapter,
+  GPURenderer, grabFrameGPU,
+} from './stipple-gpu.js';
+
+if (!navigator.gpu) {
+  alert('This demo requires WebGPU. Try Chrome/Edge ≥113 or Safari 18+.');
+  throw new Error('WebGPU unavailable');
+}
 
 // ── Settings (UI-controlled only, never mutated by algorithm) ─────────────────
 const params = {
@@ -233,44 +135,44 @@ const params = {
   use_edges:       true,
   radius:          1.5,
   invert:          false,
-  use_webgl:       true,
+  use_cpu:         false,   // CPU iterator (stipple.js) for A/B comparison
   show_voronoi:    false,
   show_target:     false,
   adapt_iters:     3,
 };
 
 // ── Module-level mutable state ────────────────────────────────────────────────
-let source       = null;   // Image | HTMLVideoElement
-let state        = null;   // { grays, iter, points }
+let source       = null;     // HTMLImageElement | HTMLVideoElement
+let state        = null;     // { grays, iter, points, pending }
 let videoPlaying = false;
 let tickSched    = false;
 
-// WebGL resources (main canvas)
-let gl = null, pointsProg = null, pointsBuf = null, voronoiProg = null;
-
-// GL caches (invalidated on context change)
-let _rt    = null;   // grabFrame  – side canvas context
-let _tgt   = null;   // showTarget – main canvas context
-let _voro  = null;   // voronoi    – main canvas context
-let _frame = null;   // grabFrame  – persistent 2D canvas for reliable frame capture
-
-const WORK_W = 512, WORK_H = 512;
+// GPU singletons (recreated when canvas is replaced).
+let gpu      = null;         // { device, context, format }
+let renderer = null;
 
 // ── HTML-exposed API ──────────────────────────────────────────────────────────
-window.params        = params;
-window.HandleSource  = HandleSource;
-window.redisplay     = () => { if (state) display(state); };
+window.params       = params;
+window.HandleSource = HandleSource;
+window.redisplay    = () => { if (state) display(state); };
 
 // ── State ─────────────────────────────────────────────────────────────────────
 function buildState(grays, prev = null) {
-  const iter = new StipplingIterator(grays, {
+  const opts = {
     num_points:      params.num_points,
     num_iters:       prev ? params.adapt_iters : params.num_iters,
     num_Lloyd_iters: params.num_Lloyd_iters,
     rho:             params.rho,
     seed:            91651088029,
-  }, prev?.points);
-  return { grays, iter, points: prev?.points ?? [] };
+  };
+  const s = { grays, iter: null, points: prev?.points ?? [], pending: true };
+  const Iter = params.use_cpu ? CPUStipplingIteratorAdapter : GPUStipplingIterator;
+  Iter.create(gpu.device, grays, opts, prev?.points).then(it => {
+    s.iter = it; s.pending = false; schedule();
+  }).catch(err => {
+    console.error('Iterator construction failed:', err);
+  });
+  return s;
 }
 
 // ── Tick loop ─────────────────────────────────────────────────────────────────
@@ -278,32 +180,61 @@ function schedule() {
   if (!tickSched) { tickSched = true; requestAnimationFrame(tick); }
 }
 
-function tick() {
+async function tick() {
   tickSched = false;
-  if (!source) return;
+  if (!source || !gpu) return;
 
-  if (!state) state = buildState(grabFrame(source));
-
-  if (!state.iter.done) {
-    state.iter.step();
-    state.points = state.iter.points;
-    display(state);
-    schedule();
-    return;
+  if (!state) {
+    const grays = await grabFrameGPU(gpu.device, source, {
+      W: WORK_W, H: WORK_H, use_edges: params.use_edges,
+      alpha: params.alpha, strength: params.strength,
+      needPixels: params.use_cpu,
+    });
+    // Wait for the first image-sum readback so split/merge thresholds are
+    // sane on the first iter. Subsequent video frames use the stale-by-1
+    // cached average and don't block.
+    await grays.ready;
+    state = buildState(grays);
   }
+  if (state.pending) { schedule(); return; }
 
-  display(state);
+  // Video: refresh source pixels every tick. grabFrameGPU reuses the same
+  // gPixels texture handle, so iter._grays.texture stays valid; the .average
+  // getter reads a cached value updated asynchronously via mapAsync.
   if (videoPlaying) {
-    state = buildState(grabFrame(source), state);
-    schedule();
+    const grays = await grabFrameGPU(gpu.device, source, {
+      W: WORK_W, H: WORK_H, use_edges: params.use_edges,
+      alpha: params.alpha, strength: params.strength,
+      needPixels: params.use_cpu,
+    });
+    // CPU mode: refresh grays.pixels so the CPU iterator sees the new frame.
+    if (params.use_cpu && grays.pixels) {
+      state.grays.pixels  = grays.pixels;
+      state.grays.average = grays.average;
+    }
   }
+
+  await state.iter.step();
+  state.points = state.iter.points;
+  display(state);
+
+  // Convergence-sensing for static images: stop scheduling rAF once we've
+  // run the user-budgeted number of iters (num_iters * num_Lloyd_iters).
+  // Video keeps iterating; Reset / source change / param change builds a
+  // new iter, which resets the counter and unblocks scheduling.
+  if (videoPlaying || state.iter.ops < state.iter.maxOps) schedule();
 }
 
 // ── Source loading ────────────────────────────────────────────────────────────
-function setSource(src) {
+// Work resolution drives JFA + accumulate granularity. 1024² gives ~13 pixels
+// per cell at N=80K, drops seed-collision rate to ~8%, and stays within i32
+// atomic range under Q3 (×8) coordinate quantization.
+const WORK_W = 1024, WORK_H = 1024;
+
+async function setSource(src) {
   source = src;
   state  = null;
-  setupCanvas(src);
+  await setupCanvas(src);
   display(null);
   schedule();
 }
@@ -316,7 +247,7 @@ function HandleSource(file) {
   // Replace canvas immediately so old points vanish before the new source loads.
   const _old = document.querySelector('#main-canvas');
   _old.parentNode.replaceChild(_old.cloneNode(false), _old);
-  gl = null; _tgt = null; _voro = null;
+  gpu = null; renderer = null;
 
   if (file.type.startsWith('video/')) {
     const video = document.createElement('video');
@@ -353,8 +284,8 @@ function _updatePlayCtrl() {
   if (_playCtrl) _playCtrl.name(videoPlaying ? 'Pause' : 'Play');
 }
 
-// ── Canvas / WebGL setup ──────────────────────────────────────────────────────
-function setupCanvas(src) {
+// ── Canvas / GPU setup ────────────────────────────────────────────────────────
+async function setupCanvas(src) {
   let canvas = document.querySelector('#main-canvas');
   const nc   = canvas.cloneNode(true);
   canvas.parentNode.replaceChild(nc, canvas);
@@ -371,275 +302,48 @@ function setupCanvas(src) {
   if (src instanceof HTMLImageElement) { src.width = W; src.height = H; }
   document.querySelector('#gui').style.top = `${-H + 10}px`;
 
-  gl = null; _tgt = null; _voro = null;
-  if (params.use_webgl) {
-    gl = canvas.getContext('webgl');
-    if (!gl) { params.use_webgl = false; console.log('WebGL unavailable.'); }
-    else {
-      gl.getExtension('OES_texture_float');
-      pointsProg  = CreateShaders(gl, 'vertex-shader-points',  'fragment-shader-points');
-      pointsBuf   = gl.createBuffer();
-      voronoiProg = CreateShaders(gl, 'vertex-shader-voronoi', 'fragment-shader-voronoi');
-    }
-  }
-}
-
-// ── Frame extraction: source → grays (via side-canvas WebGL pipeline) ─────────
-function grabFrame(src) {
-  const side = document.querySelector('#side-canvas');
-  if (side.width !== WORK_W)  side.width  = WORK_W;
-  if (side.height !== WORK_H) side.height = WORK_H;
-  const sgl = side.getContext('webgl', { preserveDrawingBuffer: true });
-  if (!sgl) return null;
-
-  if (!_rt || _rt.gl !== sgl) {
-    _rt = {
-      gl:         sgl,
-      prog_edge:  CreateShaders(sgl, 'vertex-shader-base', 'fragment-shader-edge'),
-      prog_basic: CreateShaders(sgl, 'vertex-shader-base', 'fragment-shader-basic'),
-      buf:        sgl.createBuffer(),
-      tex:        sgl.createTexture(),
-    };
-    setupTex(sgl, _rt.tex, 'LINEAR', 'NEAREST');
-  }
-
-  // Capture via 2D canvas: reliable for off-DOM video elements where
-  // texImage2D(videoElement) can silently keep stale texture data.
-  if (!_frame) { _frame = document.createElement('canvas'); _frame.width = WORK_W; _frame.height = WORK_H; }
-  const fctx = _frame.getContext('2d');
-  fctx.clearRect(0, 0, WORK_W, WORK_H);   // clear first so stale content never leaks through
-  fctx.drawImage(src, 0, 0, WORK_W, WORK_H);
-
-  const prog = params.use_edges ? _rt.prog_edge : _rt.prog_basic;
-  sgl.viewport(0, 0, WORK_W, WORK_H);
-  sgl.clearColor(0, 0, 0, 0);
-  sgl.clear(sgl.COLOR_BUFFER_BIT);
-  sgl.useProgram(prog);
-
-  uploadQuad(sgl, prog, _rt.buf, WORK_W, WORK_H);
-
-  sgl.bindTexture(sgl.TEXTURE_2D, _rt.tex);
-  sgl.texImage2D(sgl.TEXTURE_2D, 0, sgl.RGBA, sgl.RGBA, sgl.UNSIGNED_BYTE, _frame);
-
-  sgl.uniform4f(sgl.getUniformLocation(prog, 'u_view'), 2/WORK_W, -2/WORK_H, 1, -1);
-  sgl.uniform2f(sgl.getUniformLocation(prog, 'iSize'),  1/WORK_W, 1/WORK_H);
-  sgl.uniform2f(sgl.getUniformLocation(prog, 'Params'), params.alpha, params.strength);
-  sgl.drawArrays(sgl.TRIANGLES, 0, 6);
-
-  return extractGray(side);
+  gpu      = await initGPU(canvas);
+  renderer = await GPURenderer.create(gpu.device, gpu.context, gpu.format);
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────
 function display(s) {
   const canvas = document.querySelector('#main-canvas');
-  const points = s ? s.points : [];
+  if (!renderer || !gpu) return;
 
   if (params.show_target && s) {
-    if (params.use_webgl && gl) drawTargetGL(canvas);
-    else                        drawTarget2D(canvas, s.grays);
+    renderer.renderTarget({ grayTex: s.grays.texture });
     return;
   }
 
-  if (params.use_webgl && gl) {
-    drawPointsGL(canvas, points);
-    if (params.show_voronoi && s && s.iter.done) drawVoronoiGL(canvas, points);
+  if (!s || !s.iter) {
+    // Blank state: clear by drawing zero points.
+    renderer.renderPoints({
+      sitesBuf: null, N: 0, canvas, radius: params.radius, invert: params.invert,
+    });
+    return;
+  }
+
+  if (params.show_voronoi) {
+    // Re-run JFA on current sites so the cell IDs match s.points (which
+    // split/merge may have reshuffled relative to the iter's pre-Lloyd JFA).
+    s.iter.refreshJFA();
+    renderer.renderVoronoi({
+      siteIdsTex: s.iter.siteIdsTex,
+      points:     s.points,
+      scale:      params.use_edges ? 8 : 1,
+      W: s.grays.W, H: s.grays.H,
+    });
   } else {
-    drawPoints2D(canvas, points);
-    if (params.show_voronoi && s && s.iter.done) drawVoronoi2D(canvas, points);
+    renderer.renderPoints({
+      sitesBuf: s.iter.sitesBuffer,
+      N:        s.iter.N,
+      canvas,
+      radius:   params.radius,
+      invert:   params.invert,
+    });
   }
 
-  if (s && !s.iter.done) drawProgressBar(canvas, s.iter.progress);
-}
-
-function drawProgressBar(canvas, progress) {
-  const ctx = ctx2D(canvas);
-  if (!ctx) return;
-  const off = 340, w = (canvas.width - off) * 0.9;
-  const len = Math.floor(progress * w);
-  ctx.fillStyle = '#ccf';
-  ctx.fillRect(off, 30, len, 16);
-  ctx.strokeStyle = '#99e'; ctx.lineWidth = 2;
-  ctx.strokeRect(off, 30, len, 16);
-  ctx.fillStyle = '#33d'; ctx.font = '12px serif';
-  ctx.fillText(Math.floor(progress * 100) + '%', off, 42);
-}
-
-// ── Rendering ─────────────────────────────────────────────────────────────────
-function CreateShader(g, type, src_id) {
-  const shader = g.createShader(type);
-  g.shaderSource(shader, document.getElementById(src_id).text);
-  g.compileShader(shader);
-  if (!g.getShaderParameter(shader, g.COMPILE_STATUS)) {
-    console.log('Shader error ' + src_id + ': ' + g.getShaderInfoLog(shader));
-    g.deleteShader(shader); return null;
-  }
-  return shader;
-}
-
-function CreateShaders(g, vid, fid) {
-  const prog = g.createProgram();
-  g.attachShader(prog, CreateShader(g, g.VERTEX_SHADER,   vid));
-  g.attachShader(prog, CreateShader(g, g.FRAGMENT_SHADER, fid));
-  g.linkProgram(prog); g.useProgram(prog);
-  return prog;
-}
-
-// Set wrap=CLAMP_TO_EDGE + min/mag filters on the currently bound texture.
-function setupTex(g, tex, min, mag = min) {
-  g.bindTexture(g.TEXTURE_2D, tex);
-  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S,     g.CLAMP_TO_EDGE);
-  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T,     g.CLAMP_TO_EDGE);
-  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g[min]);
-  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g[mag]);
-}
-
-// Upload a {x,y, u,v} rect quad covering [0,W]x[0,H] and bind to attr 'vtx' (vec4).
-function uploadQuad(g, prog, buf, W, H) {
-  g.bindBuffer(g.ARRAY_BUFFER, buf);
-  g.bufferData(g.ARRAY_BUFFER, new Float32Array([
-    0,0, 0,0,  W,0, 1,0,  0,H, 0,1,
-    0,H, 0,1,  W,0, 1,0,  W,H, 1,1,
-  ]), g.DYNAMIC_DRAW);
-  setAttrib(g, prog, 'vtx', 4);
-}
-
-function setAttrib(g, prog, name, size) {
-  const loc = g.getAttribLocation(prog, name);
-  g.enableVertexAttribArray(loc);
-  g.vertexAttribPointer(loc, size, g.FLOAT, false, 0, 0);
-}
-
-const ctx2D = canvas => canvas.getContext('2d', { willReadFrequently: true });
-
-function drawPointsGL(canvas, points) {
-  const bg = params.invert ? 0 : 1;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(bg, bg, bg, 1); gl.clear(gl.COLOR_BUFFER_BIT);
-  if (!points.length) return;
-
-  gl.useProgram(pointsProg);
-  const data = new Float32Array(points.length * 2);
-  for (let i = 0; i < points.length; i++) { data[2*i] = points[i].x; data[2*i+1] = points[i].y; }
-  gl.bindBuffer(gl.ARRAY_BUFFER, pointsBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-  setAttrib(gl, pointsProg, 'vtx', 2);
-  const C = params.invert ? 1 : 0;
-  gl.uniform1f(gl.getUniformLocation(pointsProg, 'u_radius'), params.radius);
-  gl.uniform4f(gl.getUniformLocation(pointsProg, 'u_color'), C, C, C, 1);
-  gl.drawArrays(gl.POINTS, 0, points.length);
-}
-
-function drawTargetGL(canvas) {
-  if (!_tgt || _tgt.gl !== gl) {
-    _tgt = { gl, prog: CreateShaders(gl, 'vertex-shader-base', 'fragment-shader-basic'),
-             buf: gl.createBuffer(), tex: gl.createTexture() };
-    setupTex(gl, _tgt.tex, 'LINEAR');
-  }
-  const { prog, buf, tex } = _tgt;
-  const W = canvas.width, H = canvas.height;
-  gl.viewport(0, 0, W, H); gl.useProgram(prog);
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE,
-                document.querySelector('#side-canvas'));
-  uploadQuad(gl, prog, buf, W, H);
-  gl.uniform4f(gl.getUniformLocation(prog, 'u_view'), 2/W, -2/H, 1, -1);
-  gl.drawArrays(gl.TRIANGLES, 0, 6);
-}
-
-function drawVoronoiGL(canvas, points) {
-  const N = points.length;
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.useProgram(voronoiProg);
-
-  if (!_voro || _voro.gl !== gl) {
-    _voro = { gl, tex: gl.createTexture(), buf: gl.createBuffer() };
-    gl.bindBuffer(gl.ARRAY_BUFFER, _voro.buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-  }
-
-  const max_tex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-  const tw = Math.min(max_tex, Math.ceil(Math.sqrt(N)));
-  const th = Math.min(max_tex, Math.ceil(N / tw));
-  setupTex(gl, _voro.tex, 'NEAREST');
-  const data = new Float32Array(tw * th * 4);
-  for (let i = 0; i < N; i++) {
-    data[4*i]   = points[i].x;
-    data[4*i+1] = 1 - points[i].y;
-    data[4*i+2] = points[i].c / 255;
-    data[4*i+3] = 1;
-  }
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.FLOAT, data);
-
-  gl.uniform1i(gl.getUniformLocation(voronoiProg, 'u_points'), 0);
-  gl.uniform2f(gl.getUniformLocation(voronoiProg, 'u_canvas_size'), canvas.width, canvas.height);
-  gl.uniform1i(gl.getUniformLocation(voronoiProg, 'u_num_points'), N);
-  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_texture_width'), tw);
-  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_texture_height'), th);
-  gl.uniform1f(gl.getUniformLocation(voronoiProg, 'u_scale'), params.use_edges ? 8 : 1);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, _voro.buf);
-  setAttrib(gl, voronoiProg, 'vtx', 2);
-  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-}
-
-function drawPoints2D(canvas, points) {
-  const ctx = ctx2D(canvas);
-  ctx.fillStyle = params.invert ? 'black' : 'white';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const radius = Math.min(params.radius, canvas.width / 100);
-  ctx.fillStyle = params.invert ? 'white' : 'black';
-  for (const pt of points) {
-    ctx.beginPath();
-    ctx.arc(pt.x * canvas.width, pt.y * canvas.height, radius, 0, 2 * Math.PI);
-    ctx.fill();
-  }
-}
-
-function drawTarget2D(canvas, grays) {
-  if (!grays) return;
-  const ctx = ctx2D(canvas);
-  const W = Math.min(canvas.width, grays.W), H = Math.min(canvas.height, grays.H);
-  const data = ctx.getImageData(0, 0, W, H);
-  const px = data.data;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = (x + y * W) * 4, c = grays.pixels[x + y * grays.W];
-      px[i] = px[i+1] = px[i+2] = c; px[i+3] = 255;
-    }
-  }
-  ctx.putImageData(data, (canvas.width - W) / 2, (canvas.height - H) / 2);
-}
-
-function drawVoronoi2D(canvas, points) {
-  if (!points.length) return;
-  const W = canvas.width, H = canvas.height;
-  const ctx = ctx2D(canvas);
-  const data = ctx.getImageData(0, 0, W, H);
-  const px = data.data;
-  const scale = params.use_edges ? 8 : 1;
-  const out = computeVoronoi(W, H, points);
-  for (let i = 0; i < W * H; i++) {
-    const c = Math.min(points[out[i]].c * scale, 255);
-    px[4*i] = px[4*i+1] = px[4*i+2] = c;
-  }
-  ctx.putImageData(data, 0, 0);
-}
-
-// ── Gray extraction ───────────────────────────────────────────────────────────
-function extractGray(src_canvas) {
-  const tmp = document.createElement('canvas');
-  tmp.width = src_canvas.width; tmp.height = src_canvas.height;
-  const ctx = ctx2D(tmp);
-  ctx.drawImage(src_canvas, 0, 0);
-  const data = ctx.getImageData(0, 0, tmp.width, tmp.height).data;
-  const W = tmp.width, H = tmp.height;
-  const pixels = new Uint8ClampedArray(W * H);
-  let average = 0;
-  for (let i = 0; i < W * H; i++) {
-    const luma = Math.floor(data[4*i]*0.2126 + data[4*i+1]*0.7152 + data[4*i+2]*0.0722);
-    pixels[i] = luma; average += luma;
-  }
-  return { W, H, pixels, average };
 }
 
 // ── Drag & Drop ───────────────────────────────────────────────────────────────
@@ -658,10 +362,9 @@ function SetupUI() {
   const gui  = new lil.GUI({ width: 250, container: elmt });
   gui.domElement.id = 'gui';
 
-  const reset          = () => { state = null; schedule(); };
-  const redo           = () => { if (state) display(state); };
-  const goSrc          = () => { if (source) { setupCanvas(source); state = null; schedule(); } };
-  const switchRenderer = () => { if (source) { setupCanvas(source); if (state) display(state); } };
+  const reset = () => { state = null; schedule(); };
+  const redo  = () => { if (state) display(state); };
+  const goSrc = () => { if (source) { setupCanvas(source).then(() => { state = null; schedule(); }); } };
 
   gui.add(params, 'num_points',      500, 500000, 10).name('Max Points')       .listen().onChange(reset);
   gui.add(params, 'rho',            -1.,  1.,    .01).name('Density cut-off')  .listen().onChange(reset);
@@ -672,7 +375,7 @@ function SetupUI() {
   gui.add(params, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations') .listen().onChange(reset);
   gui.add(params, 'radius',          0.2, 3.,    .01).name('Points radius')    .listen().onChange(redo);
   gui.add(params, 'invert'                          ).name('Invert')           .listen().onChange(redo);
-  gui.add(params, 'use_webgl'                       ).name('Use WebGL render') .listen().onChange(switchRenderer);
+  gui.add(params, 'use_cpu'                         ).name('Use CPU (compare)') .listen().onChange(reset);
   gui.add(params, 'show_voronoi'                    ).name('Show Voronoi')     .listen().onChange(redo);
   gui.add({ reset }, 'reset'                        ).name('Reset');
   gui.add(params, 'adapt_iters',     1,   20,      1).name('Video adapt iters').listen();
