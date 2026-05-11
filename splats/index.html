@@ -1,52 +1,69 @@
-
 <!-- 3DGS renderer with WebGPU -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gaussian Splat rendering with WebGPU</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="../common/main.css">
+<style>
+  #side-canvas, #progress-canvas { display: none; }
+  #info {
+    position: absolute; right: 14px; top: 60px;
+    background: var(--panel-bg); color: var(--ink);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 4px 8px; font: 12px var(--font-mono); z-index: 5;
+  }
+</style>
 </head>
 
-<body onload="main();">
-<div id='main-area'>
-  <center>
-    <b>one-file <a href='https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf'>Gaussian Splat</a>
-    rendering, using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
-    (WIP)</b><br/>
-    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
-    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <div><canvas id="main-canvas"></canvas>
-      <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
-      <form action="https://skal65535.github.io/">
-        <input type="submit" value="skal 2023" id="skal-back"/>
-      </form>
-      <canvas id="progress-canvas" height='10px'></canvas>
-    </div>
-    <br/>
-    <canvas id="side-canvas"></canvas>
-  </center>
+<body>
+<div id="main-area" class="wide">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2023"></a>
+
+  <h2>Gaussian Splat rendering with WebGPU</h2>
+  <p>
+    One-file <a href="https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_low.pdf">Gaussian Splat</a>
+    rendering using <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API">WebGPU</a> (WIP).
+  </p>
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
+    <div id="info"><span id="fps"></span></div>
+    <canvas id="progress-canvas" height="10"></canvas>
+    <div id="gui-container"></div>
+  </div>
+  <canvas id="side-canvas"></canvas>
+
+  <p class="blurb small">
     This WebGPU implementation uses a compute-shader to extract the splats'
     parameters (position, axis, color) once for all.<br/>
     The vertex shader generates a quad as triangle-strip.<br/>
-    The fragment shader has several 'visu' functions, other than the expected 'gaussian'.
-    <i>Try 'cone', it looks good too!</i><br/>
+    The fragment shader has several 'visu' functions, other than the expected
+    'gaussian'. <i>Try 'cone', it looks good too!</i><br/>
     The exact depth-sort is done on CPU at regular intervals (it's a
     web-worker), while the GPU is doing an incremental insertion-sort [WIP!]
-    to keep the splats approximately sorted while the CPU is working for real.<br/>
-    <ul>
-    KNOWN BUGS / LIMITATIONS:
-    <li>z-sorting is imperfect, slow (see console with 'print timing'!), and produces flickering.
-    The bottleneck is the writeBuffer() to send back the sorted id back to the GPU.</li>
+    to keep the splats approximately sorted while the CPU is working for real.
+  </p>
+  <p class="blurb small">
+    <b>KNOWN BUGS / LIMITATIONS:</b>
+  </p>
+  <ul class="blurb small">
+    <li>z-sorting is imperfect, slow (see console with 'print timing'!), and
+    produces flickering. The bottleneck is the <code>writeBuffer()</code> to
+    send the sorted ids back to the GPU.</li>
     <li>No Spherical Harmonics for now.</li>
-    </ul>
+  </ul>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
 <script src="../common/args.js"></script>
-<script src="../common/utils.js"></script>
-<script>
+
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
+         createTexture, createBindGroup } from '../common/webgpu.js';
+import { mkGui }                          from '../common/controls.js';
 const kVisus = {  // mapping from name to shader function
   'gaussian': 'gaussian', 'cone': 'cone',
   '(ellipsis)': 'ellipsis', '(dot)': 'small_dot', '(axis)': 'axis',
@@ -173,47 +190,47 @@ const GUI_init = () => {
     render.gui = undefined;
     return;
   }
-  render.gui = new lil.GUI({container: document.getElementById('#main-area'),
-                            name: 'WebGPU Gaussian Splatting demo'});
-  render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').listen().onChange(GUI_reload);
-  render.gui.add(params, 'visu', Object.keys(kVisus)).listen().onChange(GUI_change);
-  render.gui.add(params, 'use_compute_shader').name('use compute-shader').listen().onChange(GUI_change);
-  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
-  const fun_folder = render.gui.addFolder('fun').close();
-  fun_folder.add(params, 'haze', 1., 4., 0.05).name('haze effect (fun!)').listen().onChange(GUI_change);
-  fun_folder.add(params, 'dof', 0., 1., 0.01).name('Depth of Field').listen().onChange(GUI_change);
-  fun_folder.add(params, 'z_dof', 0., 1., 0.01).name('DoF distance').listen().onChange(GUI_change);
-  const sort_folder = render.gui.addFolder('z-sort');
-  sort_folder.add(params, 'sort_name', Object.keys(kSorts)).name('depth sorting algo').listen().onChange(() => init({sorting:true}));
-  sort_folder.add(params, 'sort_culled').name('culled sort').listen().onChange(GUI_change);
-  // sort_folder.add(params, 'sort_wasm').name('use WASM sort').listen().onChange(() => init({sorting:true}));
-  sort_folder.add(params, 'sort_sortsize', [4, 8, 16, 32, 64, 128, 256]).name('sorting chunk size').listen().onChange(GUI_change);
-  sort_folder.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size').listen().onChange(GUI_change);
-  sort_folder.add(params, 'sort_every', 1, 64, 1).name('CPU sort every...').listen();
-  sort_folder.add(params, 'sort_debug').name('visual debug').listen().onChange(() => init({sorting:true}));
-  const cam_folder = render.gui.addFolder('camera').close();
-  cam_folder.add(params, 'fov', 0., 180., 5.).listen();
-  cam_folder.add(params, 'radius', 0.0001, 100., 0.01).listen();
-  cam_folder.add(params, 'theta', 0., 360., 1.).listen();
-  cam_folder.add(params, 'phi', -180., 180., 1.).listen();
-  cam_folder.add(params, 'auto_rotate').name('auto rotate').listen();
-  const dbg_folder = render.gui.addFolder('Debug').close();
-  dbg_folder.add(params.dbg, 'synth_splats', 1, 100000, 1).name("# of synth splats").listen().onChange(GUI_reload);
-  dbg_folder.add(params.dbg, 'random_colors').name('random colors').listen().onChange(GUI_reload);
-  dbg_folder.add(params.dbg, 'progressive').name('progressive load').listen();
-  dbg_folder.add(params.dbg, 'use_localhost').name('use localhost:8000').listen();
-  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
-  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
-  dbg_folder.add(params.dbg, 'use_depth').name('use depth (?!)').listen().onChange(() => init({textures:true}));
-  dbg_folder.add(params.dbg, 'draw_axis').name('draw axis').listen().onChange(() => init({textures:true}));
-  dbg_folder.add(params.dbg, 'skip_compute').name('skip compute (!?)').listen();
-  dbg_folder.add(params, 'wsize', [4, 16, 64, 128, 256]).name('workgroup size').listen().onChange(GUI_change);
-  dbg_folder.add(render, 'stored_splats').name('in-GPU splats').listen().disable();
-  render.gui.add(render, 'txt_info').name('total splats').listen().disable();
-  render.gui.add(render, 'txt_visible').name('visible').listen().disable();
+  render.gui = mkGui(document.getElementById('gui-container'), { title: '3D Gaussian Splatting' });
+  render.gui.add(params, 'model_name', Object.keys(kModels)).name('model').onChange(GUI_reload);
+  render.gui.add(params, 'visu', Object.keys(kVisus))      .name('visu') .onChange(GUI_change);
+  render.gui.add(params, 'use_compute_shader')             .name('use compute-shader').onChange(GUI_change);
+  render.gui.add(params, 'use_MSAA')                       .name('multisampling').onChange(() => init({textures:true}));
 
-  render.gui.domElement.style.top = '5%';
-  render.gui.domElement.style.right = '3%';
+  const funF = render.gui.addFolder('fun', { collapsed: true });
+  funF.add(params, 'haze',  1., 4., 0.05)                  .name('haze effect (fun!)').onChange(GUI_change);
+  funF.add(params, 'dof',   0., 1., 0.01)                  .name('Depth of Field')   .onChange(GUI_change);
+  funF.add(params, 'z_dof', 0., 1., 0.01)                  .name('DoF distance')     .onChange(GUI_change);
+
+  const sortF = render.gui.addFolder('z-sort');
+  sortF.add(params, 'sort_name', Object.keys(kSorts))      .name('depth sort algo').onChange(() => init({sorting:true}));
+  sortF.add(params, 'sort_culled')                         .name('culled sort')   .onChange(GUI_change);
+  sortF.add(params, 'sort_sortsize', [4, 8, 16, 32, 64, 128, 256]).name('sorting chunk size').onChange(GUI_change);
+  sortF.add(params, 'sort_groupsize', [4, 8, 16, 32, 64, 128, 256]).name('group size')       .onChange(GUI_change);
+  sortF.add(params, 'sort_every', 1, 64, 1)                .name('CPU sort every...');
+  sortF.add(params, 'sort_debug')                          .name('visual debug')  .onChange(() => init({sorting:true}));
+
+  const camF = render.gui.addFolder('camera', { collapsed: true });
+  camF.add(params, 'fov',    0., 180., 5.)                 .name('fov');
+  camF.add(params, 'radius', 0.0001, 100., 0.01)           .name('radius');
+  camF.add(params, 'theta',  0., 360., 1.)                 .name('theta');
+  camF.add(params, 'phi',   -180., 180., 1.)               .name('phi');
+  camF.add(params, 'auto_rotate')                          .name('auto rotate');
+
+  const dbgF = render.gui.addFolder('Debug', { collapsed: true });
+  dbgF.add(params.dbg, 'synth_splats', 1, 100000, 1)       .name('# synth splats').onChange(GUI_reload);
+  dbgF.add(params.dbg, 'random_colors')                    .name('random colors') .onChange(GUI_reload);
+  dbgF.add(params.dbg, 'progressive')                      .name('progressive load');
+  dbgF.add(params.dbg, 'use_localhost')                    .name('use localhost:8000');
+  dbgF.add(params.dbg, 'timing')                           .name('print timing');
+  dbgF.add(params.dbg, 'trace', 0, 3, 1)                   .name('trace level');
+  dbgF.add(params.dbg, 'use_depth')                        .name('use depth (?!)') .onChange(() => init({textures:true}));
+  dbgF.add(params.dbg, 'draw_axis')                        .name('draw axis')      .onChange(() => init({textures:true}));
+  dbgF.add(params.dbg, 'skip_compute')                     .name('skip compute (!?)');
+  dbgF.add(params, 'wsize', [4, 16, 64, 128, 256])         .name('workgroup size') .onChange(GUI_change);
+  dbgF.add(render, 'stored_splats')                        .name('in-GPU splats')  .listen().disable();
+
+  render.gui.add(render, 'txt_info')                       .name('total splats')   .listen().disable();
+  render.gui.add(render, 'txt_visible')                    .name('visible')        .listen().disable();
 
   do_resize();
 }
@@ -318,7 +335,8 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
@@ -485,7 +503,7 @@ async function create_sort_pipeline(render) {
       entryPoint: 'main',
     }
   });
-  render.sort_bind_group = Create_Bind_Group(
+  render.sort_bind_group = createBindGroup(
     render.device, render.sort_pipeline,
     [render.GPU.uniforms, render.GPU.positions, render.GPU.idx]);
 }
@@ -550,7 +568,7 @@ function create_update_pipeline(render) {
     });
 
     // create COMPUTE binding groups
-    const update_bind_group = Create_Bind_Group(
+    const update_bind_group = createBindGroup(
       render.device, render.update_pipeline,
       [render.GPU.uniforms,
        render.GPU.positions,
@@ -682,7 +700,7 @@ function create_splats_pipeline(render) {
   }
   render.splats_pipeline = render.device.createRenderPipeline(pipeline_descriptor);
 
-  render.splats_bind_group = Create_Bind_Group(
+  render.splats_bind_group = createBindGroup(
     render.device, render.splats_pipeline,
     [render.GPU.uniforms, render.GPU.positions, render.GPU.colors,
      params.use_compute_shader ? render.GPU.axis : render.GPU.sigmas]);
@@ -719,7 +737,7 @@ function create_axis_pipeline(render) {    // RENDER pipeline for axis
     depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus', },
     multisample: { count: (params.use_MSAA ? 4 : 1), },
   });
-  render.axis_bind_group = Create_Bind_Group(render.device, render.axis_pipeline, [render.GPU.uniforms]);
+  render.axis_bind_group = createBindGroup(render.device, render.axis_pipeline, [render.GPU.uniforms]);
 }
 
 function create_pipelines(render) {
@@ -741,18 +759,18 @@ async function init_buffers(render) {
         ", num_splats:", render.num_splats);
 
   // Create the persistent GPU buffers that will be filled progressively
-  render.GPU.sigmas = Create_Storage_Buffer(
+  render.GPU.sigmas = createStorageBuffer(
       render.device, render.max_splats * STRIDE_COV3 * UINT32_SIZE,
       GPUBufferUsage.COPY_DST);
-  render.GPU.positions = Create_Storage_Buffer(
+  render.GPU.positions = createStorageBuffer(
       render.device, render.max_splats * STRIDE_POS * FLOAT32_SIZE,
       GPUBufferUsage.COPY_DST);
-  render.GPU.colors = Create_Storage_Buffer(
+  render.GPU.colors = createStorageBuffer(
       render.device, render.max_splats * 1 * UINT32_SIZE,
       GPUBufferUsage.COPY_DST);
 
   // Create uniforms buffer
-  render.GPU.uniforms = Create_Uniform_Buffer(
+  render.GPU.uniforms = createUniformBuffer(
       render.device, 44 * FLOAT32_SIZE);
 
   // shared CPU storage for sorted idx (persistent across sorting methods)
@@ -765,13 +783,13 @@ async function init_buffers(render) {
 
   // map new buffer
   render.GPU.idx =
-    Create_GPU_Buffer(render.device, render.CPU.idx, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
+    createGPUBuffer(render.device, render.CPU.idx, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
 }
 
 async function init_side_buffers(render) {
   // create the cov2x2 buffer to communicate between COMPUTE and VERTEX shaders
   if (params.use_compute_shader) {
-    render.GPU.axis = Create_Storage_Buffer(
+    render.GPU.axis = createStorageBuffer(
         render.device, render.max_splats * STRIDE_COV2 * UINT32_SIZE,
         GPUBufferUsage.VERTEX);
   } else {
@@ -788,7 +806,7 @@ async function init_textures(render) {
     render.multisample_texture = undefined;
   }
   if (params.use_MSAA) {
-    render.multisample_texture = Create_Texture(
+    render.multisample_texture = createTexture(
         render.device, canvas.width, canvas.height, render.textureFormat,
         GPUTextureUsage.RENDER_ATTACHMENT, 4, 'multisample');
   }
@@ -797,7 +815,7 @@ async function init_textures(render) {
     render.depthTexture = undefined;
   }
   if (params.dbg.use_depth || params.dbg.draw_axis) {
-    render.depthTexture = Create_Texture(
+    render.depthTexture = createTexture(
         render.device, canvas.width, canvas.height, 'depth24plus',
         GPUTextureUsage.RENDER_ATTACHMENT, (params.use_MSAA ? 4 : 1), 'depth');
   }
@@ -1755,6 +1773,11 @@ async function main() {
   } catch(e) { Oops(e); }
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

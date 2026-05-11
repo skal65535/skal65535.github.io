@@ -1,56 +1,64 @@
 <!-- Bounding Volume Hierarchy -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BVH</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
 </head>
 
-<body onload="main();">
-<div id='main-area'>
-  <center>
-    <b>BVH (WebGPU required!)</b><br/>
-  </center>
+<body>
+<div id="main-area" class="wide">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2025"></a>
+
+  <h2>BVH <small>(WebGPU required!)</small></h2>
   <p>
-    This is a variation over <a href='https://www.codercorner.com/ZeroByteBVH.pdf'>Zero-Byte-BVH</a>.<br/>
+    This is a variation over
+    <a href="https://www.codercorner.com/ZeroByteBVH.pdf">Zero-Byte-BVH</a>.<br/>
     We implement axis-aligned bounding boxes hierarchy at no cost by
     reordering the triangles by group of 6, each group defining a bounding
-    box (with the min/max coordinates of each of the 18 vertices).<br/>
-    <div><canvas id="main-canvas"'></canvas></div>
-    <form action="https://skal65535.github.io/"
-          style='position: relative; top:-50px; right:15px;'>
-      <input type="submit" value="skal 2025" id="skal-back"/>
-    </form>
-    <br/>
+    box (with the min/max coordinates of each of the 18 vertices).
+  </p>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
+    <div id="gui-container"></div>
+  </div>
+
+  <p class="blurb small">
     Triangles are pre-sorted by group of 6: such a group defines a bounding-box
-    if you sort the vertices' coordinates along x/y/z. This bounding box can
-    be cached or pre-calculated (see the 'Optimized BVH' method).
-    <br/>
-    The shader will launch a ray for each pixel to recursively test the bounding boxes.
-    If a box is hit by the ray, the remaining triangles are split in two exact halves
-    and thus generate two new boxes to test, etc. until we hit a leaf.
-    <br/>
+    if you sort the vertices' coordinates along x/y/z. This bounding box can be
+    cached or pre-calculated (see the 'Optimized BVH' method).<br/>
+    The shader launches a ray for each pixel to recursively test the bounding
+    boxes. If a box is hit by the ray, the remaining triangles are split into
+    two exact halves and thus generate two new boxes to test, etc. until we
+    hit a leaf.<br/>
     If you don't cache the bounding boxes corresponding to a group of 6
-    triangles, this BVH is for free in memory space.
+    triangles, this BVH is <b>for free in memory space</b>.
     <b>The hierarchy is hard-coded within the triangles ordering.</b>
-    <br/>
   </p>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
 <script src="../common/args.js"></script>
 <script src="../common/matrix.js"></script>
-<script src="../common/utils.js"></script>
-<script>
+
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
+         createTexture, createBindGroup } from '../common/webgpu.js';
+import { mkGui }                          from '../common/controls.js';
 
 ////////////////////////////////////////////////////////////////////////////////
 
 const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 
-var MeshVtx = null, MeshTris = null;
+// The mesh data files (dragon.js, bunny.js, …) are classic scripts that set
+// the implicit globals `MeshVtx` and `MeshTris`. From inside this ES module
+// we have to reach them via `window.*`, not local bindings.
 
 ////////////////////////////////////////////////////////////////////////////////
 // Params
@@ -95,29 +103,23 @@ const GUI_init = () => {
     params.gui = undefined;
     return;
   }
-  params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
+  params.gui = mkGui(document.getElementById('gui-container'), { title: 'BVH' });
   params.gui.add(params, 'method', {'none (triangle-list)': 0, 'BVH': 1, 'Optimized BVH': 2})
-                .listen().onChange(GUI_change);
-  params.gui.add(params, 'mesh', {'Dragon': 0, 'Bunny': 1, 'Teddy': 2, 
-                                  'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5, })
-                .listen().onChange(async () => { await set_mesh(); });
-  params.gui.add(params, 'show_mesh').name("show mesh").listen().onChange(GUI_change);
-  params.gui.add(params, 'show_boxes').name("bounding boxes").listen().onChange(GUI_change);
-  params.gui.add(params, 'shadows').name("compute shadows").listen().onChange(GUI_change);
-  params.gui.add(params, 'leaf_size', 6., 960., 6.).name("leaf size").listen().onChange(GUI_change);
-  const cam_folder = params.gui.addFolder('camera / visu').close();
-  cam_folder.add(params.cam, 'fov', 5., 180., 5.).listen();
-  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen()
-  cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
-  cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
-  cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
+                .name('method').onChange(GUI_change);
+  params.gui.add(params, 'mesh', {'Dragon': 0, 'Bunny': 1, 'Teddy': 2,
+                                  'Tyranosaurus': 3, 'Armadillo': 4, 'Cruiser': 5})
+                .name('mesh').onChange(async () => { await set_mesh(); });
+  params.gui.add(params, 'show_mesh')               .name('show mesh')      .onChange(GUI_change);
+  params.gui.add(params, 'show_boxes')              .name('bounding boxes') .onChange(GUI_change);
+  params.gui.add(params, 'shadows')                 .name('compute shadows').onChange(GUI_change);
+  params.gui.add(params, 'leaf_size', 6., 960., 6.) .name('leaf size')      .onChange(GUI_change);
 
-  params.gui.add(render, 'txt_info').name('fps').listen().disable();
-  params.gui.add(render, 'txt_info2').name('faces').listen().disable();
-  params.gui.add(render, 'txt_info3').name('points').listen().disable();
-
-  params.gui.domElement.style.top = '15%';
-  params.gui.domElement.style.right = '3%';
+  const cam = params.gui.addFolder('camera / visu', { collapsed: true });
+  cam.add(params.cam, 'fov',         5.,  180.,  5.)   .name('fov');
+  cam.add(params.cam, 'radius',      0.0001, 100., 0.01).name('radius');
+  cam.add(params.cam, 'theta',       0.,  360.,  1.)   .name('theta');
+  cam.add(params.cam, 'phi',        -180., 180., 1.)   .name('phi');
+  cam.add(params.cam, 'auto_rotate')                   .name('auto rotate');
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -155,8 +157,9 @@ window.addEventListener("resize", (e) => {
 });
 
 function do_resize() {
+  if (!render.device) return;            // GPU not ready yet
   init_buffers(render);
-  create_pipelines(render);
+  if (render.ok) create_pipelines(render);   // wait until mesh buffers exist
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -168,7 +171,8 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
@@ -575,10 +579,10 @@ async function init_buffers(render) {
   if (render.device == null) return;
 
   // Create uniforms buffer
-  render.GPU.uniforms = Create_Uniform_Buffer(render.device, 68 * 4);
+  render.GPU.uniforms = createUniformBuffer(render.device, 68 * 4);
 
   // depth texture
-  render.GPU.depth_texture = Create_Texture(
+  render.GPU.depth_texture = createTexture(
       render.device, canvas.width, canvas.height, 'depth24plus',
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       1, 'depth');
@@ -620,31 +624,38 @@ async function init_script(name) {
     head.removeChild(params.script);
     params.script = null;
   }
-  // new script
-  params.script = document.createElement('script');
-  params.script.onload = function() {
-    render.nb_tris = Math.floor(MeshTris.length / 3);
-    render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
-
-    render.nb_vtx = Math.floor(MeshVtx.length / 3);
-    render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
-
-    const bboxes = ComputeBoxes(MeshTris, MeshVtx);
-    render.nb_bbox = bboxes.length / 6;
-    render.GPU.bbox = Create_GPU_Buffer(render.device, bboxes, GPUBufferUsage.VERTEX);
-
-    render.txt_info2 = `${render.nb_tris}`;
-    render.txt_info3 = `${render.nb_vtx}`;
-
-    create_pipelines(render);
-    render.ok = true;
-    MeshVtx = null;
-    MeshTris = null;
-  }
   render.ok = false;
-  params.script.src = name;
-  head.appendChild(params.script);
+  params.script = document.createElement('script');
   console.log(`mesh to load: ${name}`);
+  // Return a promise that resolves once the script has loaded AND its
+  // bookkeeping (buffer creation, pipelines) has run, so callers that
+  // `await` us see the mesh actually ready.
+  return new Promise((resolve, reject) => {
+    params.script.onload = function() {
+      const tris = window.MeshTris, vtx = window.MeshVtx;
+      render.nb_tris = Math.floor(tris.length / 3);
+      render.GPU.tris = createGPUBuffer(render.device, tris, GPUBufferUsage.INDEX);
+
+      render.nb_vtx = Math.floor(vtx.length / 3);
+      render.GPU.vtx = createGPUBuffer(render.device, vtx, GPUBufferUsage.VERTEX);
+
+      const bboxes = ComputeBoxes(tris, vtx);
+      render.nb_bbox = bboxes.length / 6;
+      render.GPU.bbox = createGPUBuffer(render.device, bboxes, GPUBufferUsage.VERTEX);
+
+      render.txt_info2 = `${render.nb_tris}`;
+      render.txt_info3 = `${render.nb_vtx}`;
+
+      create_pipelines(render);
+      render.ok = true;
+      window.MeshVtx = null;
+      window.MeshTris = null;
+      resolve();
+    };
+    params.script.onerror = () => reject(new Error(`Failed to load ${name}`));
+    params.script.src = name;
+    head.appendChild(params.script);
+  });
 }
 
 async function set_mesh() {
@@ -795,6 +806,11 @@ async function main() {
   } catch(e) { Oops(e); }
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

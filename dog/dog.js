@@ -1,5 +1,8 @@
 "use strict";
 
+import { mkGui } from '../common/controls.js';
+import { onFileDrop, loadImageFile } from '../common/utils.js';
+
 ////////////////////////////////////////////////////////////////////////////////
 // DoG: The interesting stuff
 
@@ -13,7 +16,6 @@ const params = {  // Global parameters
   GrayScale: false,
   original: false,
   image: null,
-  gui: null,
 }
 
 function ComputeWeights() {
@@ -30,56 +32,25 @@ function ComputeWeights() {
   return w;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Drag'n'Drop
-
-function PreventDefaults (e) {
-  e.preventDefault();
-  e.stopPropagation();
-}
-function HandleDrop(e) {
-  HandleFile(e.dataTransfer.files[0]);
-}
-function HandleFile(file) {
-  const reader = new FileReader();
-  reader.readAsDataURL(file);
-  reader.onloadend = function() {
-    params.image = new Image();
-    params.image.onload = function() { Render(); };
-    params.image.src = reader.result;
-  }
-}
-function SetupDragAndDrop() {
-  const dropArea = document.getElementById('main-area');
-  function highlight(e) { dropArea.classList.add('highlight'); }
-  function unhighlight(e) { dropArea.classList.remove('highlight'); }
-
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, PreventDefaults, false); }
-  );
-  ['dragenter', 'dragover'].forEach(
-    name => { dropArea.addEventListener(name, highlight, false); }
-  );
-  ['dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, unhighlight, false); }
-  );
-  dropArea.addEventListener('drop', HandleDrop, false)
+async function HandleFile(file) {
+  if (!file) return;
+  try {
+    params.image = await loadImageFile(file);
+    Render();
+  } catch (e) { console.error(e); }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
-  params.gui = new dat.GUI();
-  params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'Sigma', 0.01, 3., .001).name('Sigma').listen().onChange(Render);
-  params.gui.add(params, 'p', 10., 200., .1).name('p').listen().onChange(Render);
-  params.gui.add(params, 'Epsilon', 0.01, 1., .01).name('Epsilon').listen().onChange(Render);
-  params.gui.add(params, 'Phi', 0.01, 10., .1).name('Phi').listen().onChange(Render);
-  params.gui.add(params, 'K', 0.5, 4., .05).name('K').listen().onChange(Render);
-  params.gui.add(params, 'Blend', 0.0, 1., .01).name('Blend w/ source').listen().onChange(Render);
-  params.gui.add(params, 'GrayScale').name('grayscale').listen().onChange(Render);
-  const canvas = document.getElementById('gui-container');
-  canvas.appendChild(params.gui.domElement);
+  const gui = mkGui(document.getElementById('gui-container'), { title: 'DoG' });
+  gui.add(params, 'Sigma',   0.01, 3.,  .001).name('Sigma')         .onChange(Render);
+  gui.add(params, 'p',      10.,  200.,  .1 ).name('p')             .onChange(Render);
+  gui.add(params, 'Epsilon', 0.01, 1.,   .01).name('Epsilon')       .onChange(Render);
+  gui.add(params, 'Phi',     0.01, 10.,  .1 ).name('Phi')           .onChange(Render);
+  gui.add(params, 'K',       0.5,  4.,   .05).name('K')             .onChange(Render);
+  gui.add(params, 'Blend',   0.0,  1.,   .01).name('Blend w/ source').onChange(Render);
+  gui.add(params, 'GrayScale')               .name('grayscale')     .onChange(Render);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -90,8 +61,21 @@ function main() {
   params.image.src = "./SF.webp";
   params.image.onload = function() { Render(); };
 
-  SetupDragAndDrop();
+  onFileDrop(document.getElementById('main-area'), HandleFile);
+  document.getElementById('FileElmt').addEventListener('change',
+    e => HandleFile(e.target.files[0]));
+
+  const showOrig = document.getElementById('show-original-btn');
+  showOrig.addEventListener('pointerdown',   () => { params.original = true;  Render(); });
+  showOrig.addEventListener('pointerup',     () => { params.original = false; Render(); });
+  showOrig.addEventListener('pointercancel', () => { params.original = false; Render(); });
   SetupUI();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
 }
 
 function CreateShader(gl, type, src_id) {

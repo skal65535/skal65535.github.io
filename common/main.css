@@ -1,23 +1,446 @@
-canvas {
-  margin: 10px;
-  box-shadow: 0 0 5px black;
-  outline: none;  // because of the 'tabindex' focus trick
+/* common/main.css — shared pastel-card style for skal demos.
+ *
+ * Pages opt in by linking this file and using the canonical structure:
+ *
+ *   <div id="main-area">
+ *     <a id="skal-back" href="https://skal65535.github.io/" data-year="2026"></a>
+ *     ...heading, blurb, button-row...
+ *     <canvas id="main-canvas"></canvas>
+ *     <div id="gui-container"></div>     <!-- floats top-right on desktop -->
+ *   </div>
+ *
+ * Per-demo tweaks: override CSS variables on #main-area.
+ */
+
+:root {
+  /* Bluer pastel — saturated enough to read as "blue card", not "off-white". */
+  --page-bg:        #c6cee8;
+  --card-bg:        #dde2f4;
+  --card-border:    #99a0c2;
+  --card-border-hi: #6a3aa0;
+  --canvas-bg:      #ffffff;
+  --canvas-border:  #1a2240;
+
+  --btn-bg:         #aab0d4;
+  --btn-bg-hover:   #c4cae9;
+  --btn-border:     #2a335b;
+  --btn-fg:         #0e1330;
+
+  --back-bg:        #b8c0e5;
+  --back-bg-hover:  #cad2f4;
+  --back-border:    #1c244a;
+
+  --panel-bg:       rgba(206, 214, 240, 0.92);
+  --panel-border:   #7a82a8;
+  --panel-shadow:   rgba(20, 30, 70, 0.30);
+
+  --ink:            #131a36;
+  --ink-dim:        #4a527a;
+  --accent:         #3a4aa0;
+
+  --radius-card:    20px;
+  --radius-btn:     8px;
+  --radius-small:   5px;
+
+  --font-ui:        system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:      ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --gap:            10px;
 }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+a { color: var(--accent); }
+a:hover { color: #1e2c80; }
+
+/* ── Card / main area ───────────────────────────────────────────── */
 
 #main-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
+  position: relative;
+  border: 3px dashed var(--card-border);
+  border-radius: var(--radius-card);
+  background: var(--card-bg);
+  margin: var(--gap) auto;
+  padding: 16px 18px 18px;
+  max-width: 1080px;
+  box-sizing: border-box;
+}
+#main-area.highlight { border-color: var(--card-border-hi); }
+/* Wider card for WebGPU demos whose canvases want more room. */
+#main-area.wide { max-width: min(1600px, 96vw); }
+
+#main-area h1, #main-area h2 { text-align: center; margin: 0 0 10px; color: var(--ink); }
+#main-area p, #main-area .blurb { margin: 6px 0; }
+#main-area .blurb.small { font-size: 0.88em; color: var(--ink-dim); }
+
+/* ── Canvas ─────────────────────────────────────────────────────── */
+/* `outline:none` on every canvas (tabindex focus trick); display+margin
+ * only on #main-canvas so layouts with multiple canvases (yuv, delta, …)
+ * aren't forced into a vertical stack. */
+
+canvas { outline: none; }
+
+#main-canvas {
+  display: block;
   margin: 10px auto;
-  padding: 10px;
-  background: #eef;
-  display: inline-block;
+  border: 2px solid var(--canvas-border);
+  border-radius: var(--radius-card);
+  background: var(--canvas-bg);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
+  max-width: 100%;
+  height: auto;
+  touch-action: none;            /* let the demo handle pinch / pan */
 }
 
-#skal-2023 {
-  float: right;
-  border-radius: 5px;
-  padding: 5px;
-  background: #cce;
-  border: 1px solid #112;
+/* WebGPU demos that render against a black background. The selector matches
+ * the ID's specificity so it actually overrides the white canvas-bg above. */
+canvas#main-canvas.dark { background: #000; }
+
+/* ── Buttons ────────────────────────────────────────────────────── */
+/* The selector forces UA-default <button> and plain <label> to use the
+ * same box model — without this, <button> picks up its UA padding and
+ * <label> doesn't, leading to mismatched sizes. */
+
+.button,
+button.button,
+label.button,
+a.button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  min-width: 130px;
+  padding: 0 16px;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  cursor: pointer;
+  border-radius: var(--radius-btn);
+  border: 2px solid var(--btn-border);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  user-select: none;
+  text-decoration: none;
+  text-align: center;
+  white-space: nowrap;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.button:hover { background: var(--btn-bg-hover); }
+.button:active { transform: translateY(1px); }
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+/* Native <input type=range> rows for demos that don't use mkGui. */
+.slider-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+.slider-row label { white-space: nowrap; }
+.slider-row input[type=range] {
+  flex: 1;
+  min-width: 160px;
+  max-width: 320px;
+  accent-color: var(--accent);
+}
+
+/* ── Back-to-index "skal" pill ──────────────────────────────────── */
+
+#skal-back {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  display: inline-block;
+  padding: 5px 10px;
+  background: var(--back-bg);
+  border: 1px solid var(--back-border);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  text-decoration: none;
+  font: inherit;
+  font-size: 13px;
+  z-index: 5;
+}
+#skal-back::before { content: 'skal '; }
+#skal-back::after  { content: attr(data-year); }
+#skal-back:hover { background: var(--back-bg-hover); }
+
+/* ── Canvas wrapper (anchors the floating panel over the canvas) ─ */
+/* Pages opt in by wrapping <canvas> + <div id="gui-container"> in this. */
+
+.canvas-wrap {
+  position: relative;
+  display: block;
+  margin: 10px auto;
+}
+.canvas-wrap > #main-canvas { margin: 0; }   /* no double-margin */
+
+/* ── GUI panel (controls.js) ────────────────────────────────────── */
+/* Desktop: floats at the top-right of its positioned ancestor (.canvas-wrap).
+ * Collapsable + draggable via its title bar. Mobile (≤ 768px): static below
+ * the canvas. */
+
+.skal-gui {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px var(--panel-shadow);
+  width: 260px;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.skal-gui-title {
+  padding: 7px 10px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 11px;
+  cursor: move;
+  user-select: none;
+  touch-action: none;            /* allow drag on touch without browser pan */
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.skal-gui-title::after {
+  content: '▾';
+  font-size: 10px;
+  opacity: 0.9;
+}
+.skal-gui.collapsed > .skal-gui-body,
+.skal-gui.collapsed > .skal-folder { display: none; }
+.skal-gui.collapsed > .skal-gui-title::after { content: '▸'; }
+
+.skal-gui-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+/* ── Control rows ───────────────────────────────────────────────── */
+
+.skal-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.skal-row-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.skal-row-label {
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.skal-readout {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+/* Slider */
+.skal-row-slider input[type=range] {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+/* Toggle: label left, checkbox right. */
+.skal-row-toggle {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+.skal-row-toggle input[type=checkbox] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+/* Select: label on top, full-width select. */
+.skal-row-select select {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #fff;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Button row inside the panel. */
+.skal-row-button button.skal-btn {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 2px solid var(--btn-border);
+  border-radius: var(--radius-small);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.skal-row-button button.skal-btn:hover { background: var(--btn-bg-hover); }
+
+/* Free-text row */
+.skal-row-text input[type=text] {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: #fff;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Color row */
+.skal-row-color {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+.skal-row-color input[type=color] {
+  width: 44px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+}
+
+/* Read-only display (.listen().disable()): strip input chrome so it reads
+ * like a value, not an edit field. */
+.skal-row.skal-readonly input,
+.skal-row.skal-readonly select {
+  background: transparent;
+  border: none;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 0;
+  cursor: default;
+  opacity: 1;
+}
+.skal-row.skal-readonly input[type=range] {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* Folders */
+.skal-folder {
+  border-left: 2px solid var(--panel-border);
+  padding-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skal-folder-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.skal-folder-title::after { content: ' ▾'; font-size: 10px; }
+.skal-folder.collapsed > .skal-folder-body { display: none; }
+.skal-folder.collapsed > .skal-folder-title::after { content: ' ▸'; }
+.skal-folder-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Mobile (≤ 768px) ───────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  #main-area {
+    padding: 12px;
+    margin: 6px;
+    border-width: 2px;
+  }
+  #skal-back {
+    top: 10px;
+    right: 10px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .button,
+  button.button,
+  label.button,
+  a.button {
+    height: 44px;                /* iOS-friendly target */
+    min-width: 120px;
+    font-size: 15px;
+  }
+  .button-row { gap: 10px; }
+
+  /* Panel un-floats and sits below the canvas in normal flow. */
+  .skal-gui {
+    position: static;
+    top: auto;
+    right: auto;
+    left: auto;
+    bottom: auto;
+    margin: 10px auto 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .skal-gui-body {
+    padding: 12px;
+    gap: 12px;
+  }
+  .skal-row-label { font-size: 14px; }
+  .skal-readout   { font-size: 13px; }
+  .skal-row-slider input[type=range] { height: 28px; }
+  .skal-row-toggle input[type=checkbox] {
+    width: 22px;
+    height: 22px;
+  }
 }

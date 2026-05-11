@@ -1,46 +1,59 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!-- Matrix Inversion algo -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Matrix Inversion algorithm</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
+<style>
+  textarea#input {
+    width: 100%; max-width: 100%; box-sizing: border-box;
+    font: 12px var(--font-mono);
+    background: #fff; border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 8px;
+  }
+</style>
 </head>
 
-<body onload="init();">
-<h1><center>Matrix inversion algorithm</center></h1>
+<body>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
 
-Solving <code>A.B = C</code> for the matrix B, when A and C are a known matrices<br/>
-<p>
+  <h2>Matrix inversion algorithm</h2>
 
-<input type='button' onclick='solve();' value='randomize'>
-<input type='button' onclick='main();' value='new matrix A'>
-<p>
-<div>
-  <input type="range" min="1" max="10" value="2" id="size"
-    onchange="params.size = this.value; main();">
-    <label for='size' id='size_label'>size</label>
-  <br/>
-  <input type="range" min="10" max="1000" value="100" id="iter"
-    onchange="params.max_iters = this.value; solve();">
-    <label for='iter' id='iter_label'>max iter</label>
-  <br/>
-  <input type="range" min="1" max="1000" value="200" id="lambda"
-    onchange="params.lambda = this.value / 1000.; solve();">
-    <label for='lambda' id='lambda_label'>...</label>
-  <br/>
-  <input type="checkbox" id="two_stages" onchange='params.two_stages = checked; solve();'/>
-  <label for="two_stages">use two stages</label>
-  <br/>
+  <p>Solving <code>A.B = C</code> for the matrix B, when A and C are known matrices</p>
+
+  <div class="button-row">
+    <button class="button" onclick='solve();'>randomize</button>
+    <button class="button" onclick='main();'>new matrix A</button>
+  </div>
+
+  <div class="slider-row">
+    <input type="range" min="1" max="10" value="2" id="size"
+           onchange="params.size = this.value; main();">
+    <label for="size" id="size_label">size</label>
+  </div>
+  <div class="slider-row">
+    <input type="range" min="10" max="1000" value="100" id="iter"
+           onchange="params.max_iters = this.value; solve();">
+    <label for="iter" id="iter_label">max iter</label>
+  </div>
+  <div class="slider-row">
+    <input type="range" min="1" max="1000" value="200" id="lambda"
+           onchange="params.lambda = this.value / 1000.; solve();">
+    <label for="lambda" id="lambda_label">...</label>
+  </div>
+  <div class="slider-row">
+    <input type="checkbox" id="two_stages" onchange='params.two_stages = checked; solve();'/>
+    <label for="two_stages">use two stages</label>
+  </div>
+
+  <textarea id="input" name="input" rows="10" cols="120" readonly></textarea>
+  <canvas id="main-canvas" width="800" height="200"></canvas>
 </div>
-<p>
-<textarea id="input" name="input" rows="10" cols="120" readOnly></textarea>
-<br/>
-<canvas id='main-canvas' width='800px' height='200px'></canvas>
-<br/>
-
 
 <script>
 let params = {
@@ -376,8 +389,11 @@ function init() {
   main();
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 </script>
-
-<a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
 </body>
 </html>

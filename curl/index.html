@@ -1,38 +1,48 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!-- Curl Noise -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Curly thing using WebGPU</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
+<style>
+  #side-canvas, #progress-canvas { display: none; }
+  #info {
+    position: absolute; right: 14px; top: 60px;
+    background: var(--panel-bg); color: var(--ink);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 4px 8px; font: 12px var(--font-mono); z-index: 5;
+  }
+</style>
 </head>
 
-<body onload="main();">
-<div id='main-area'>
-  <center>
-    <b><a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Curl Noise</a> using WebGPU</b><br/>
-    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
-    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <div><canvas id="main-canvas"></canvas>
-      <div id='info'><span id='fps' style='display:inline-block;width:90px;'></span></div>
-      <form action="https://skal65535.github.io/">
-        <input type="submit" value="skal 2024" id="skal-back"/>
-      </form>
-      <canvas id="progress-canvas" height='10px'></canvas>
-    </div>
-    <br/>
-    <canvas id="side-canvas"></canvas>
-  </center>
+<body>
+<div id="main-area" class="wide">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
+
+  <h2><a href="https://www.cs.ubc.ca/~rbridson/docs/bridson-siggraph2007-curlnoise.pdf">Curl Noise</a> using WebGPU</h2>
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
+    <div id="info"><span id="fps"></span></div>
+    <canvas id="progress-canvas" height="10"></canvas>
+    <div id="gui-container"></div>
+  </div>
+  <canvas id="side-canvas"></canvas>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
 <script src="../common/matrix.js"></script>
 <script src="../common/polyhedrons.js"></script>
 <script src="../common/args.js"></script>
-<script src="../common/utils.js"></script>
-<script>
+
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
+         createTexture, createBindGroup } from '../common/webgpu.js';
+import { mkGui }                          from '../common/controls.js';
 
 const kNoise = { 'curl': 0, 'rotation axis': 1, };
 const kShowMaps = [ 'None', 'Shadow', 'Depth' ];
@@ -110,53 +120,48 @@ const GUI_init = () => {
     render.gui = undefined;
     return;
   }
-  render.gui = new lil.GUI({container: document.getElementById('#main-area'),
-                            name: 'Curl Noise'});
-  render.gui.add(params, 'poly', Object.keys(kPolys)).name('base polyhedron').listen().onChange(GUI_reload);
-  render.gui.add(params, 'depth', 1, 256, 1).name('sub-div level').listen().onChange(GUI_reload);
-//  render.gui.add(params, 'noise', Object.keys(kNoise)).listen().onChange(GUI_change);
-  render.gui.add(params, 'noise_amp', 0., 20.).name('noise amplitude').listen().onChange(GUI_change);
-  render.gui.add(params, 'wireframe').name('wireframe').listen().onChange(GUI_reload);
-  render.gui.add(params, 'spherify').name('spherify').listen();
-  render.gui.add(params, 'post_proc').name('post_processing').listen();
-  render.gui.add(params, 'blur', {'square': 0, 'optimized': 1}).name('Bokeh algo').listen().onChange(GUI_change);
-//  render.gui.add(params, 'use_MSAA').name('multisampling').listen().onChange(() => init({textures:true}));
-  render.gui.add(params, 'smoky').name('smoke!!').listen().onChange(GUI_reload);
-  render.gui.add(params, 'funky').name('funky!').listen().onChange(GUI_reload);
-  render.gui.add(params, 'circle', 0., 2., .01).name('funkiness!').listen().onChange();
-  const light_folder = render.gui.addFolder('light').close();
-  light_folder.addColor(params.light, 'color').name('color').listen();
-  light_folder.add(params.light, 'shadow_nb_samples', 1., 256., 1.).name('shadow samples').listen();
-  light_folder.add(params.light, 'shadow_extent', 1., 64., 1.).name('shadow extent').listen();
-  light_folder.add(params.light, 'shadow_jitter', 0., 10., .01).name('shadow jitter').listen();
-  light_folder.add(params.light, 'algo', { 'optimized': 0, 'basic': 1, }).name('shadow algorithm').listen().onChange(GUI_change);
-  light_folder.add(params.light, 'animate').name('animate').listen();
+  render.gui = mkGui(document.getElementById('gui-container'), { title: 'Curl Noise' });
+  render.gui.add(params, 'poly', Object.keys(kPolys))     .name('base polyhedron').onChange(GUI_reload);
+  render.gui.add(params, 'depth', 1, 256, 1)              .name('sub-div level')  .onChange(GUI_reload);
+  render.gui.add(params, 'noise_amp', 0., 20.)            .name('noise amplitude').onChange(GUI_change);
+  render.gui.add(params, 'wireframe')                     .name('wireframe')      .onChange(GUI_reload);
+  render.gui.add(params, 'spherify')                      .name('spherify');
+  render.gui.add(params, 'post_proc')                     .name('post processing');
+  render.gui.add(params, 'blur', {'square': 0, 'optimized': 1}).name('Bokeh algo').onChange(GUI_change);
+  render.gui.add(params, 'smoky')                         .name('smoke!!')        .onChange(GUI_reload);
+  render.gui.add(params, 'funky')                         .name('funky!')         .onChange(GUI_reload);
+  render.gui.add(params, 'circle', 0., 2., .01)           .name('funkiness!');
 
-  const cam_folder = render.gui.addFolder('camera').close();
-  cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
-  cam_folder.add(params.cam, 'dist', 0.0001, 5., 0.01).name('distance').listen();
-  cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
-  cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
-  cam_folder.add(params.cam, 'znear', 0.0001, 10., 0.01).listen();
-  cam_folder.add(params.cam, 'zfar', 0.0001, 10., 0.01).listen();
+  const lightF = render.gui.addFolder('light', { collapsed: true });
+  lightF.addColor(params.light, 'color')                  .name('color');
+  lightF.add(params.light, 'shadow_nb_samples', 1, 256, 1).name('shadow samples');
+  lightF.add(params.light, 'shadow_extent',     1,  64, 1).name('shadow extent');
+  lightF.add(params.light, 'shadow_jitter',     0,  10, .01).name('shadow jitter');
+  lightF.add(params.light, 'algo', { 'optimized': 0, 'basic': 1 }).name('shadow algorithm').onChange(GUI_change);
+  lightF.add(params.light, 'animate')                     .name('animate');
 
-  const model_folder = render.gui.addFolder('model').close();
-  model_folder.add(params.model, 'specular', 0., 2., 0.01).name('specular').listen();
-  model_folder.add(params.model, 'theta', 0., 360., 1.).listen();
-  model_folder.add(params.model, 'phi', -180., 180., 1.).listen();
-  model_folder.add(params.model, 'auto_rotate').name('auto rotate').listen();
-  model_folder.add(params.model, 'hide').name('hide').listen();
+  const camF = render.gui.addFolder('camera', { collapsed: true });
+  camF.add(params.cam, 'fov',    0.,  180.,  5.)          .name('fov');
+  camF.add(params.cam, 'dist',   0.0001, 5., 0.01)        .name('distance');
+  camF.add(params.cam, 'theta',  0.,  360.,  1.)          .name('theta');
+  camF.add(params.cam, 'phi',   -180., 180., 1.)          .name('phi');
+  camF.add(params.cam, 'znear',  0.0001, 10., 0.01)       .name('znear');
+  camF.add(params.cam, 'zfar',   0.0001, 10., 0.01)       .name('zfar');
 
-  const dbg_folder = render.gui.addFolder('Debug').close();
-  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
-  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
-  dbg_folder.add(params.dbg, 'ortho').name('ortho view').listen();
-  dbg_folder.add(params.dbg, 'show_sm', kShowMaps).name('map shown:').listen().onChange(GUI_change);
+  const modelF = render.gui.addFolder('model', { collapsed: true });
+  modelF.add(params.model, 'specular',    0., 2.,    0.01).name('specular');
+  modelF.add(params.model, 'theta',       0., 360.,  1.)  .name('theta');
+  modelF.add(params.model, 'phi',        -180., 180., 1.) .name('phi');
+  modelF.add(params.model, 'auto_rotate')                 .name('auto rotate');
+  modelF.add(params.model, 'hide')                        .name('hide');
 
-  render.gui.add(render, 'txt_info').name('info').listen().disable();
+  const dbgF = render.gui.addFolder('Debug', { collapsed: true });
+  dbgF.add(params.dbg, 'trace', 0, 3, 1)                  .name('trace level');
+  dbgF.add(params.dbg, 'timing')                          .name('print timing');
+  dbgF.add(params.dbg, 'ortho')                           .name('ortho view');
+  dbgF.add(params.dbg, 'show_sm', kShowMaps)              .name('map shown:').onChange(GUI_change);
 
-  render.gui.domElement.style.top = '5%';
-  render.gui.domElement.style.right = '3%';
+  render.gui.add(render, 'txt_info')                      .name('info').listen().disable();
 
   do_resize();
 }
@@ -254,7 +259,8 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
@@ -1000,21 +1006,21 @@ async function init_textures(render) {
     render.multisample_texture = undefined;
   }
   if (params.use_MSAA) {
-    render.multisample_texture = Create_Texture(
+    render.multisample_texture = createTexture(
         render.device, canvas.width, canvas.height, render.textureFormat,
         GPUTextureUsage.RENDER_ATTACHMENT, 4, 'multisample');
   }
-  render.depth_texture = Create_Texture(
+  render.depth_texture = createTexture(
       render.device, canvas.width, canvas.height, 'depth24plus',
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       (params.use_MSAA ? 4 : 1), 'depth');
 
-  render.post_texture = Create_Texture(
+  render.post_texture = createTexture(
       render.device, canvas.width, canvas.height, render.textureFormat,
       GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
       (params.use_MSAA ? 4 : 1), 'post');
 
-  render.light_depth = Create_Texture(
+  render.light_depth = createTexture(
       render.device, params.sm_size, params.sm_size, 'depth32float',
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING, 1, 'light-depth');
   render.GPU.light_entries = [
@@ -1333,20 +1339,20 @@ async function set_poly(polyhedron_name) {
   const poly = kPolys[polyhedron_name];
 
   render.nb_vtx = poly.vtx.length / 4;
-  render.GPU.vtx = Create_GPU_Buffer(render.device, poly.vtx, GPUBufferUsage.VERTEX);
+  render.GPU.vtx = createGPUBuffer(render.device, poly.vtx, GPUBufferUsage.VERTEX);
   render.nb_faces = poly.faces.length / 3;
-  render.GPU.faces = Create_GPU_Buffer(render.device, poly.faces);
+  render.GPU.faces = createGPUBuffer(render.device, poly.faces);
 
   const uv = MakeSubUV(params.depth);
   const idx = MakeSubIdx(params.depth);
   render.nb_idx = idx.length;
-  render.GPU.idx = Create_GPU_Buffer(render.device, idx, GPUBufferUsage.INDEX);
-  render.GPU.uv = Create_GPU_Buffer(render.device, uv);
+  render.GPU.idx = createGPUBuffer(render.device, idx, GPUBufferUsage.INDEX);
+  render.GPU.uv = createGPUBuffer(render.device, uv);
 
   // uniforms buffers
-  render.GPU.m_uniforms = Create_Uniform_Buffer(render.device, 68 * 4);
-  render.GPU.l_uniforms = Create_Uniform_Buffer(render.device, 24 * 4);
-  render.GPU.p_uniforms = Create_Uniform_Buffer(render.device, 17 * 4);
+  render.GPU.m_uniforms = createUniformBuffer(render.device, 68 * 4);
+  render.GPU.l_uniforms = createUniformBuffer(render.device, 24 * 4);
+  render.GPU.p_uniforms = createUniformBuffer(render.device, 17 * 4);
   render.GPU.uniform_entries = [
     { binding: 0, resource: render.GPU.m_uniforms, },
     { binding: 1, resource: render.GPU.l_uniforms, },
@@ -1361,7 +1367,7 @@ async function set_poly(polyhedron_name) {
 
   if (params.dbg.light) {
     const Y = 0.3;
-    render.GPU.dbg_plane = Create_GPU_Buffer(render.device,
+    render.GPU.dbg_plane = createGPUBuffer(render.device,
       new Float32Array([ -1, Y, -1.,  0., 0.,    0.,
                           1, Y, -1.,  1., 0.,    0.,
                          -1, Y,  1.,  0., 1.,    0.,
@@ -1397,6 +1403,11 @@ async function main() {
   } catch(e) { Oops(e); }
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

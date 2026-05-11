@@ -1,111 +1,75 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thinning algorithms</title>
-
+<link rel="stylesheet" href="../common/main.css">
 <style>
-#drop-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
-  margin: 10px auto;
-  padding: 10px;
-  width: 1024px;
-  height: 700px;
-  background: #eef;
-}
-#drop-area.highlight {
-  border-color: purple;
-}
-.button {
-  display: inline-block;
-  padding: 8px;
-  background: #bbc;
-  cursor: pointer;
-  border-radius: 5px;
-  border: 3px solid #334;
-  z-index:1;
-  position:relative;
-  font-size: 14px;
-}
-.button:hover {
-  background: #cce;
-}
-#main-canvas {
-  z-index:0;
-  border: 2px solid #000;
-  border-radius: 20px;
-  position: relative;
-  left:-2px;
-  top:-50px;
-  background: #fff;
-  margin: 0px;
-  box-shadow: 0 0 5px black;
-}
-#gui {
- position: relative;
- top: -700px;
- left: 30px;
-}
+  #main-canvas { max-width: 1024px; width: 100%; height: auto; }
+  #side-canvas { display: none; }
+  /* Inline "click here" button sitting in the prose: small pill that
+   * follows the text baseline rather than taking up a full button-row slot. */
+  button.inline-go {
+    font: inherit;
+    color: var(--btn-fg);
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-border);
+    border-radius: var(--radius-small);
+    padding: 1px 8px;
+    cursor: pointer;
+  }
+  button.inline-go:hover { background: var(--btn-bg-hover); }
 </style>
-
 </head>
 
-<body onload="main();">
+<body>
 
-<div id="drop-area">
-  <form class="my-form">
-    <input type="file" id="FileElmt" style='display:none;'
-           multiple accept="image/*" onchange="HandleFile(this.files[0])">
-  </form>
-  <div height='100px'>
-    <h2><center>Two algorithms for thinning binarized images</center></h2>
-    The idea is to abrase a binarized image until only the stable skeleton
-    is left. We implement two algos from the the 90's with WebGL.<br/>
-    <ul>
-    <li><a href='https://dl.acm.org/doi/pdf/10.1145/357994.358023'><it>A fast parallel algorithm for thinning digital patterns</it></a> (1984), by T.Y. Zhang and C.Y. Suen.</li>
-    <li><it>Parallel thinning with two sub-iteration algorithms</it> (1989), by Zicheng Guo and Richard Hall.</li>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2023"></a>
+
+  <h2>Two algorithms for thinning binarized images</h2>
+  <p class="blurb small">
+    The idea is to abrade a binarized image until only the stable skeleton
+    is left. We implement two algos from the 90's with WebGL.
+  </p>
+  <ul class="blurb small">
+    <li><a href='https://dl.acm.org/doi/pdf/10.1145/357994.358023'><i>A fast parallel algorithm for thinning digital patterns</i></a> (1984), by T.Y. Zhang and C.Y. Suen.</li>
+    <li><i>Parallel thinning with two sub-iteration algorithms</i> (1989), by Zicheng Guo and Richard Hall.</li>
     <li>Useful: <a href='https://www.researchgate.net/publication/264002184_A_Comparative_Study_of_Iterative_Thinning_Algorithms_for_BMP_Images'>survey</a>
-    of four algorithms</li>
-    </ul>
-    To launch the thinning, select anything else than 'none' in the drop-down menu. Or
-    <button onmousedown='params.algo="Zhang-Suen"; Init();'>click here</button><br/>.
+      of four algorithms.</li>
+  </ul>
+  <p class="blurb small">
+    To launch the thinning, select anything else than <i>none</i> in the
+    drop-down menu. Or
+    <button class="inline-go" id="click-here-btn">click here</button>.
     A funny fact is that if you invert the source image, you'll get a
     complementary skeleton that meshes perfectly with the normal one.<br/>
-    <font size='-1'>
-    Drag and drop image on the canvas below, preferably a grayscale one.
-    </font>
-  </div>
-  <label class='button' for="FileElmt"
-         style='top:30px; left:30px;'>select source</label>
-  <button class='button' style='top:30px; left:30px;'
-          onmousedown="params.show_src=true; Render();"
-          onmouseup="params.show_src=false; DrawResult();">show source</button>
+    Drag and drop an image on the canvas below, preferably a grayscale one.
+  </p>
 
-  <a id="download" href="about:blank" download="img.webp" target="_blank" title="Download Image">
-    <button class='button' style='top:30px; left:30px' download='img.webp'
-            onmouseup="const result = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
-                       document.querySelector('#download').href = result;">save img</button></a>
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-250px; left:950px;'>
-    <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 1px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
+  <form class="my-form">
+    <input type="file" id="FileElmt" style="display:none"
+           multiple accept="image/*">
   </form>
-  <div id="gui-container">
-    <canvas id="side-canvas" style='display: none;'></canvas>
-    <center><canvas id="main-canvas"></canvas></center>
 
+  <div class="button-row">
+    <label class="button" for="FileElmt">select source</label>
+    <button class="button" id="show-btn">show source</button>
+    <a id="download" class="button" href="about:blank" download="img.webp" target="_blank">save img</a>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas"></canvas>
+    <canvas id="side-canvas"></canvas>
+    <div id="gui-container"></div>
   </div>
 </div>
 
-
 <!-- vertex shader -->
-<script  id="vertex-shader-base" type="x-shader/x-vertex">
+<script id="vertex-shader-base" type="x-shader/x-vertex">
 attribute vec4 vtx;
 uniform vec4 u_view;
 varying vec2 uv_coord;
@@ -117,7 +81,7 @@ void main() {
 </script>
 
 <!-- fragment shaders -->
-<script  id="fragment-shader-GH" type="x-shader/x-fragment">
+<script id="fragment-shader-GH" type="x-shader/x-fragment">
 precision mediump float;
 uniform sampler2D image;
 uniform vec2 iSize;
@@ -151,7 +115,7 @@ void main() {
       bool m = (Params.y == 0.) ? ((p6 || p7 || !p9) && p8)
                                 : ((p2 || p3 || !p5) && p4);
       if (!m) {
-        gl_FragColor = vec4(0., 0., 0., 1.);   // delete the value
+        gl_FragColor = vec4(0., 0., 0., 1.);
         return;
       }
     }
@@ -159,7 +123,7 @@ void main() {
   gl_FragColor = vec4(vec3(gray(0., 0.)), 1.);
 }
 </script>
-<script  id="fragment-shader-ZS" type="x-shader/x-fragment">
+<script id="fragment-shader-ZS" type="x-shader/x-fragment">
 precision mediump float;
 uniform sampler2D image;
 uniform vec2 iSize;
@@ -193,7 +157,7 @@ void main() {
       int m1 = (Params.y == 0.) ? b_to_i(p2 && p4 && p6) : b_to_i(p2 && p4 && p8);
       int m2 = (Params.y == 0.) ? b_to_i(p4 && p6 && p8) : b_to_i(p2 && p6 && p8);
       if (m1 == 0 && m2 == 0) {
-        gl_FragColor = vec4(0., 0., 0., 1.);   // delete the value
+        gl_FragColor = vec4(0., 0., 0., 1.);
         return;
       }
     }
@@ -201,7 +165,7 @@ void main() {
   gl_FragColor = vec4(vec3(gray(0., 0.)), 1.);
 }
 </script>
-<script  id="fragment-shader-none" type="x-shader/x-fragment">
+<script id="fragment-shader-none" type="x-shader/x-fragment">
 precision mediump float;
 uniform sampler2D image;
 uniform vec2 iSize;
@@ -219,16 +183,13 @@ void main() {
 }
 </script>
 
-<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script> -->
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
-
-<script>
+<script type="module">
 "use strict";
 
-////////////////////////////////////////////////////////////////////////////////
-// The less interesting stuff
+import { mkGui }                     from '../common/controls.js';
+import { onFileDrop, loadImageFile } from '../common/utils.js';
 
-const params = {  // Global parameters
+const params = {
   algo: 'none',
   threshold: 128,
   max_iters: 100,
@@ -236,79 +197,53 @@ const params = {  // Global parameters
   invert: false,
   show_src: false,
   image: null,
-  gui: null,
   iter: -1,
-  tid: -1,   // timer id
-  gl:null,
+  tid: -1,
+  gl: null,
   gui_text: '--',
-
   reset: () => { Init(); },
-}
+};
 
-////////////////////////////////////////////////////////////////////////////////
-// Drag'n'Drop
-
-function PreventDefaults (e) {
-  e.preventDefault();
-  e.stopPropagation();
-}
-function HandleDrop(e) {
-  HandleFile(e.dataTransfer.files[0]);
-}
-function HandleFile(file) {
-  const reader = new FileReader();
-  try { reader.readAsDataURL(file); } catch {
+async function HandleFile(file) {
+  if (!file) return;
+  try {
+    params.image = await loadImageFile(file);
+    Init();
+  } catch (e) {
     alert("could not read the data blob.\nNot a readable image file.");
-    return;
-  }
-  reader.onloadend = function() {
-    params.image = new Image();
-    params.image.onload = function() { Init(); };
-    params.image.src = reader.result;
   }
 }
-function SetupDragAndDrop() {
-  const dropArea = document.getElementById('drop-area');
-  function highlight(e) { dropArea.classList.add('highlight'); }
-  function unhighlight(e) { dropArea.classList.remove('highlight'); }
-
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, PreventDefaults, false); }
-  );
-  ['dragenter', 'dragover'].forEach(
-    name => { dropArea.addEventListener(name, highlight, false); }
-  );
-  ['dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, unhighlight, false); }
-  );
-  dropArea.addEventListener('drop', HandleDrop, false)
-}
-
-////////////////////////////////////////////////////////////////////////////////
 
 function SetupUI() {
-  const elmt = document.getElementById('gui-container');
-  params.gui = new lil.GUI({ width: 250, container: elmt, });
-  params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'algo', [ 'Guo-Hall', 'Zhang-Suen', 'none' ])
-            .name('Thinning algorithm')
-            .listen().onChange(Init);
-  params.gui.add(params, 'threshold', 1, 255, 1).name('B/W Threshold')
-            .listen().onChange(Init);
-  params.gui.add(params, 'max_iters', 0, 500, 1).name('Max Iterations')
-            .listen().onChange(Init);
-  params.gui.add(params, 'delay', 0., 10000, 100).name('Display Delay');
-  params.gui.add(params, 'invert').name('Invert Source')
-            .listen().onChange(Init);
-  params.gui.add(params, 'reset').name('Reset');
-  params.gui.add(params, 'gui_text').name('completion').listen().disable();
+  const gui = mkGui(document.getElementById('gui-container'), { title: 'Parameters' });
+  gui.add(params, 'algo', ['Guo-Hall', 'Zhang-Suen', 'none'])
+     .name('Thinning algorithm').listen().onChange(Init);
+  gui.add(params, 'threshold', 1, 255, 1).name('B/W Threshold').listen().onChange(Init);
+  gui.add(params, 'max_iters', 0, 500, 1).name('Max Iterations').listen().onChange(Init);
+  gui.add(params, 'delay', 0., 10000, 100).name('Display Delay');
+  gui.add(params, 'invert').name('Invert Source').listen().onChange(Init);
+  gui.add(params, 'reset').name('Reset');
+  gui.add(params, 'gui_text').name('completion').listen().disable();
+
+  // Show-source button (press = source, release = result).
+  const showBtn = document.getElementById('show-btn');
+  showBtn.addEventListener('pointerdown', () => { params.show_src = true;  Render(); });
+  showBtn.addEventListener('pointerup',   () => { params.show_src = false; DrawResult(); });
+  showBtn.addEventListener('pointercancel',() => { params.show_src = false; DrawResult(); });
+
+  // Save-img: refresh the download link's href before the click is followed.
+  const dl = document.getElementById('download');
+  dl.addEventListener('pointerdown', () => {
+    dl.href = document.querySelector('#main-canvas').toDataURL('image/webp', 1);
+  });
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Main calls
-
 function main() {
-  SetupDragAndDrop();
+  onFileDrop(document.getElementById('main-area'), HandleFile);
+  document.getElementById('FileElmt').addEventListener('change',
+    e => HandleFile(e.target.files[0]));
+  document.getElementById('click-here-btn').addEventListener('pointerdown',
+    () => { params.algo = 'Zhang-Suen'; Init(); });
   SetupUI();
   params.image = new Image();
   params.image.src = "./can_you_feel_it.webp";
@@ -317,45 +252,31 @@ function main() {
 
 function StartTimer() {
   ResetTimer();
-  params.iter = 0;  // start!
+  params.iter = 0;
   if (params.tid < 0) params.tid = setInterval(() => { Render(); }, params.delay);
 }
-
 function ResetTimer() {
-  if (params.tid >= 0) {
-    clearInterval(params.tid);
-    params.tid = -1;
-  }
+  if (params.tid >= 0) { clearInterval(params.tid); params.tid = -1; }
   params.iter = -1;
   params.show_src = false;
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 function Init() {
   const image = params.image;
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (ctx == null) {
-    console.log("Can't get 2d-context.");
-    return;
-  }
+  if (ctx == null) { console.log("Can't get 2d-context."); return; }
   const Wo = 1024, Ho = 750;
   let W = image.width, H = image.height;
-  if (W > Wo || H > Ho) {   // needs resizing?
-    if (W * Ho > Wo * H) {
-      H = Math.floor(H * Wo / W);
-      W = Wo;
-    } else {
-      W = Math.floor(W * Ho / H);
-      H = Ho;
-    }
+  if (W > Wo || H > Ho) {
+    if (W * Ho > Wo * H) { H = Math.floor(H * Wo / W); W = Wo; }
+    else                  { W = Math.floor(W * Ho / H); H = Ho; }
   }
   params.off_x = Math.max(0., (W - image.width) / 2);
   params.off_y = Math.max(0., (H - image.height) / 2);
   canvas.width = W;
   canvas.height = H;
-  if (image.width != W || image.height != H) {   // resize image to fit canvas
+  if (image.width != W || image.height != H) {
     ctx.drawImage(image, 0, 0, W, H);
     image.src = canvas.toDataURL();
   }
@@ -363,23 +284,15 @@ function Init() {
   const side = document.querySelector("#side-canvas");
   side.width = W;
   side.height = H;
-  params.gl = side.getContext("webgl", { antialias: false, depth: false});
-  if (params.gl == null) {
-    console.log("Can't get webgl-context.");
-    return;
-  }
+  params.gl = side.getContext("webgl", { antialias: false, depth: false });
+  if (params.gl == null) { console.log("Can't get webgl-context."); return; }
   SetupShaders(params.gl);
-
-  const gui = document.querySelector("#gui");
-  gui.style.top = (-H + 10) + 'px';  // omg, this is naaaasty
 
   DrawImage();
   StartTimer();
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Main WebGL calls
-
+// WebGL helpers
 function CreateShader(gl, type, src_id) {
   const shader = gl.createShader(type);
   const src = document.getElementById(src_id).text;
@@ -387,40 +300,28 @@ function CreateShader(gl, type, src_id) {
   gl.compileShader(shader);
   const compiled = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
   if (!compiled) {
-    const error = gl.getShaderInfoLog(shader);
-    console.log('*** Shader Compile Error \'' + src_id + '\':' + error + '\n');
+    console.log('*** Shader Compile Error \'' + src_id + '\':' + gl.getShaderInfoLog(shader) + '\n');
     gl.deleteShader(shader);
     return null;
   }
   return shader;
 }
-
-function CreateShaders(gl, v_shader_id, f_shader_id) {
-  const f_shader = CreateShader(gl, gl.FRAGMENT_SHADER, f_shader_id);
-  const v_shader = CreateShader(gl, gl.VERTEX_SHADER, v_shader_id);
-  const shader_program = gl.createProgram();
-  gl.attachShader(shader_program, f_shader);
-  gl.attachShader(shader_program, v_shader);
-  gl.linkProgram(shader_program);
-  return shader_program;
+function CreateShaders(gl, v_id, f_id) {
+  const f = CreateShader(gl, gl.FRAGMENT_SHADER, f_id);
+  const v = CreateShader(gl, gl.VERTEX_SHADER, v_id);
+  const prog = gl.createProgram();
+  gl.attachShader(prog, f); gl.attachShader(prog, v);
+  gl.linkProgram(prog);
+  return prog;
 }
-
 function SetupShaders(gl) {
-  params.shader_GH = CreateShaders(
-      gl, "vertex-shader-base", "fragment-shader-GH");
-  params.shader_ZS = CreateShaders(
-      gl, "vertex-shader-base", "fragment-shader-ZS");
-  params.shader_none = CreateShaders(
-      gl, "vertex-shader-base", "fragment-shader-none");
+  params.shader_GH   = CreateShaders(gl, "vertex-shader-base", "fragment-shader-GH");
+  params.shader_ZS   = CreateShaders(gl, "vertex-shader-base", "fragment-shader-ZS");
+  params.shader_none = CreateShaders(gl, "vertex-shader-base", "fragment-shader-none");
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 function Render() {
-  if (params.show_src) {
-    DrawImage();
-    return;
-  }
+  if (params.show_src) { DrawImage(); return; }
   const image = params.image;
   if (image == null) return;
   const canvas = document.querySelector("#side-canvas");
@@ -436,23 +337,16 @@ function Render() {
                                                   params.shader_none;
   gl.useProgram(program);
 
-  // rectangle the same size as the image.
   const vtxBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, vtxBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([  // x,y, u,v
-     0, 0, 0., 0.,
-     W, 0, 1., 0.,
-     0, H, 0., 1.,
-     0, H, 0., 1.,
-     W, 0, 1., 0.,
-     W, H, 1., 1.
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+     0, 0, 0., 0.,   W, 0, 1., 0.,   0, H, 0., 1.,
+     0, H, 0., 1.,   W, 0, 1., 0.,   W, H, 1., 1.
   ]), gl.STATIC_DRAW);
   const vtxLocation = gl.getAttribLocation(program, "vtx");
   gl.enableVertexAttribArray(vtxLocation);
-  gl.vertexAttribPointer(vtxLocation, 4, gl.FLOAT,
-                         /*normalize=*/false, /*stride=*/0, /*offset=*/0);
+  gl.vertexAttribPointer(vtxLocation, 4, gl.FLOAT, false, 0, 0);
 
-  // upload image to texture
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -462,30 +356,24 @@ function Render() {
   const main_canvas = document.querySelector("#main-canvas");
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, main_canvas);
 
-  // uniforms setup
-  const kView = gl.getUniformLocation(program, "u_view");
-  const iSize = gl.getUniformLocation(program, "iSize");
+  const kView   = gl.getUniformLocation(program, "u_view");
+  const iSize   = gl.getUniformLocation(program, "iSize");
   const kParams = gl.getUniformLocation(program, "Params");
   gl.uniform4f(kView, 2. / W, -2. / H, 1., -1.);
   gl.uniform2f(iSize, 1. / W, 1. / H);
   gl.uniform4f(kParams, params.threshold / 255.,
-                        params.iter % 2 ? 1. : 0.,
-                        0., 0.);
+                        params.iter % 2 ? 1. : 0., 0., 0.);
 
-  // go!
-  gl.drawArrays(gl.TRIANGLES, /*offset=*/0, /*count=*/6);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-  // Copy the result in side-canvas back to main-canvas
   if (DrawResult()) {
     params.iter = params.max_iters;
   } else {
     ++params.iter;
   }
   params.gui_text = params.iter + "/" + params.max_iters;
-  if (params.iter == params.max_iters) ResetTimer();  // done!
+  if (params.iter == params.max_iters) ResetTimer();
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 function DrawResult() {
   const canvas = document.querySelector("#main-canvas");
@@ -506,8 +394,11 @@ function DrawImage() {
   }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

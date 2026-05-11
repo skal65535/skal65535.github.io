@@ -1,41 +1,54 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!-- Ising model simulations with WebGPU -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ising model simulations with WebGPU</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
 <style>
-#sample-canvas {
-  background:#000; color:#fff; outline: 1px solid black; display: inline-block;
-  position:absolute; bottom:10%; left:5%;
-  border: 3px solid #fff; border-radius: 10px;
-}
-#title {
- position: absolute; top:80px; left:140px; overflow:hidden;
- font-size: 36px; color:white; text-shadow: 0 0 5px #ff0000;
-}
+  /* Stats overlays — absolutely positioned over the main canvas; the JS
+   * then nudges them via style.bottom / .right / etc. sample-canvas is
+   * always visible; side-canvas starts hidden and JS turns it on. */
+  #sample-canvas, #side-canvas {
+    position: absolute;
+    background: #000; color: #fff;
+    border: 2px solid #fff; border-radius: 10px;
+    z-index: 3;
+  }
+  #sample-canvas { bottom: 10px; left: 10px;  display: block; }
+  #side-canvas   { bottom: 10px; right: 10px; display: none;  }
+
+  /* Mobile: shrink the card's padding so the (now square + full-width)
+   * canvas can actually fill the screen, and flow the stats canvases
+   * below the main canvas instead of stacking in its corners. */
+  @media (max-width: 768px) {
+    #main-area  { padding: 8px 6px; }
+    #sample-canvas, #side-canvas {
+      position: static;
+      margin: 8px auto;
+      max-width: 100%;
+      height: auto;
+    }
+  }
 </style>
 </head>
 
-<body onload="main();">
-<div id='main-area'>
-  <center>
-    <b>Ising-model simulation using <a href='https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API'>WebGPU</a>
-    </b><br/>
-    On <b>Chrome 113+</b>, you need to <a href='https://github.com/gpuweb/gpuweb/wiki/Implementation-Status'>enable</a>
-    the <i>chrome://flags/#enable-webgpu-developer-features</i> !!<p>
-    <div><canvas id="main-canvas"'></canvas></div>
-    <form action="https://skal65535.github.io/">
-      <input type="submit" value="skal 2024" id="skal-back"/>
-    </form>
-    <br/>
-    <div id="title">WebGPU Monte-Carlo simulation<br/>Ising Model</div>
+<body>
+<div id="main-area" class="wide">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
+
+  <h2>WebGPU Monte-Carlo simulation: Ising Model</h2>
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
     <canvas id="sample-canvas"></canvas>
     <canvas id="side-canvas"></canvas>
-  </center>
+    <div id="gui-container"></div>
+  </div>
+
+  <p class="blurb small">
     Using WebGPU, we simulate an <a href="https://en.wikipedia.org/wiki/Ising_model">Ising Model</a>
     for magnetic spins, with no external field.
     The critical parameter is <i>beta = J / kT</i>, where J is the coupling constant between spins
@@ -70,13 +83,17 @@
     with different periods, and then combined into a final 24bit result.
     <br/>
     This is how you do to stay massively parallel!
-    <br/>
+  </p>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
 <script src="../common/args.js"></script>
-<script src="../common/utils.js"></script>
-<script>
+
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
+         createTexture, createBindGroup } from '../common/webgpu.js';
+import { mkGui }                          from '../common/controls.js';
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -159,49 +176,52 @@ if (parse_arg_bool("dbg")) {
 const GUI_change = async () => { await init({}); }  // parameter changed
 
 const GUI_init = () => {
-  canvas.width  = parse_arg("w", innerWidth * .9);
-  canvas.height = parse_arg("h", innerHeight * .8);
+  // On phones, make the canvas square and full-width so it doesn't end up
+  // tall-and-narrow. Desktop keeps the original "fill the page" behavior.
+  const mobile = innerWidth <= 768;
+  canvas.width  = parse_arg("w", mobile ? innerWidth                    : innerWidth  * .9);
+  canvas.height = parse_arg("h", mobile ? Math.floor(innerWidth * .95)  : innerHeight * .8);
 
   if (params.no_gui) {
     render.gui = undefined;
     return;
   }
-  render.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'Ising model'});
-  render.gui.add(params, 'nb_spins', 4, 128, 1).name('# spins / dimension').listen().onChange(() => init({start:true}));
-  render.gui.add(params, 'use_2d').name('multi-2d model').listen().onChange(() => init({start:true}));
-  render.gui.add(params, 'kT_J', params.Tmin, params.Tmax, 0.0001).name("kT/J").listen().onChange(() => init({temperature:true}));
-  //  render.gui.add(params, 'p', .0, 1., 0.001).listen().onChange(GUI_change);
-  render.gui.add(params, 'auto_scan').name('auto-scan').listen().onChange(GUI_change);
-  render.gui.add(params, 'Tmin').name("Tmin").listen().onChange(() => init({temperature:true,stats:true,}));
-  render.gui.add(params, 'Tmax').name("Tmax").listen().onChange(() => init({temperature:true,stats:true,}));
-  render.gui.add(params, 'scan_period', 1, 10000).name('scan period').listen().onChange(GUI_change);
-  render.gui.add(params, 'reset').name('Reset');
-  const sim_folder = render.gui.addFolder('simulation');
-  sim_folder.add(params, 'nb_sim_loops', 1, 10000, 1).name("# internal loops").listen();
-  sim_folder.add(params, 'warmup', 0, 100, 1).name("warm-up cycles").listen();
-  sim_folder.add(params, 'stats_every', 1, 100, 1).name("stat interval").listen();
-  sim_folder.add(params, 'stats_for', 1, 100, 1).name("# stat cycles").listen();
-  const cam_folder = render.gui.addFolder('camera / visu').close();
-  cam_folder.add(params.cam, 'fov', 0., 180., 5.).listen();
-  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen();
-  cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
-  cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
-  cam_folder.add(params.cam, 'show_cube').name('show cube').listen();
-  cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
-  cam_folder.add(params.cam, 'dot_radius_p', .0001, 1., .01).name('+1 dot radius').listen();
-  cam_folder.add(params.cam, 'dot_radius_m', .0001, 1., .01).name('-1 dot radius').listen();
-  cam_folder.add(params.cam, 'show_mag').name('show magnetization').listen();
-  const dbg_folder = render.gui.addFolder('Debug').close();
-  dbg_folder.add(params.dbg, 'freeze').name('freeze simulation').listen();
-  dbg_folder.add(params.dbg, 'visu').name('visualize').listen();
-  dbg_folder.add(params.dbg, 'timing').name('print timing').listen();
-  dbg_folder.add(params.dbg, 'trace', 0, 3, 1).name('trace level').listen();
-  render.gui.add(render, 'txt_info').name('spins').listen().disable();
-  render.gui.add(render, 'txt_info2').name('kspins/ms').listen().disable();
-  render.gui.add(render, 'txt_info3').name('').listen().disable();
+  render.gui = mkGui(document.getElementById('gui-container'), { title: 'Ising model' });
+  render.gui.add(params, 'nb_spins', 4, 128, 1)         .name('# spins / dim').onChange(() => init({start:true}));
+  render.gui.add(params, 'use_2d')                      .name('multi-2d model').onChange(() => init({start:true}));
+  render.gui.add(params, 'kT_J', params.Tmin, params.Tmax, 0.0001).name('kT/J').listen().onChange(() => init({temperature:true}));
+  render.gui.add(params, 'auto_scan')                   .name('auto-scan')    .onChange(GUI_change);
+  render.gui.add(params, 'Tmin')                        .name('Tmin')         .onChange(() => init({temperature:true,stats:true}));
+  render.gui.add(params, 'Tmax')                        .name('Tmax')         .onChange(() => init({temperature:true,stats:true}));
+  render.gui.add(params, 'scan_period', 1, 10000)       .name('scan period')  .onChange(GUI_change);
+  render.gui.add(params, 'reset')                       .name('Reset');
 
-  render.gui.domElement.style.top = '5%';
-  render.gui.domElement.style.right = '3%';
+  const simF = render.gui.addFolder('simulation', { collapsed: true });
+  simF.add(params, 'nb_sim_loops', 1, 10000, 1)         .name('# internal loops');
+  simF.add(params, 'warmup',       0,   100, 1)         .name('warm-up cycles');
+  simF.add(params, 'stats_every',  1,   100, 1)         .name('stat interval');
+  simF.add(params, 'stats_for',    1,   100, 1)         .name('# stat cycles');
+
+  const camF = render.gui.addFolder('camera / visu', { collapsed: true });
+  camF.add(params.cam, 'fov',    0., 180., 5.)          .name('fov');
+  camF.add(params.cam, 'radius', 0.0001, 100., 0.01)    .name('radius');
+  camF.add(params.cam, 'theta',  0., 360., 1.)          .name('theta');
+  camF.add(params.cam, 'phi',   -180., 180., 1.)        .name('phi');
+  camF.add(params.cam, 'show_cube')                     .name('show cube');
+  camF.add(params.cam, 'auto_rotate')                   .name('auto rotate');
+  camF.add(params.cam, 'dot_radius_p', .0001, 1., .01)  .name('+1 dot radius');
+  camF.add(params.cam, 'dot_radius_m', .0001, 1., .01)  .name('-1 dot radius');
+  camF.add(params.cam, 'show_mag')                      .name('show magnetization');
+
+  const dbgF = render.gui.addFolder('Debug', { collapsed: true });
+  dbgF.add(params.dbg, 'freeze')                        .name('freeze simulation');
+  dbgF.add(params.dbg, 'visu')                          .name('visualize');
+  dbgF.add(params.dbg, 'timing')                        .name('print timing');
+  dbgF.add(params.dbg, 'trace', 0, 3, 1)                .name('trace level');
+
+  render.gui.add(render, 'txt_info')  .name('spins')    .listen().disable();
+  render.gui.add(render, 'txt_info2') .name('kspins/ms').listen().disable();
+  render.gui.add(render, 'txt_info3') .name('')         .listen().disable();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -259,7 +279,8 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
@@ -414,7 +435,7 @@ function create_sim_pipeline(render) {  // COMPUTE simulation pipeline
     });
     // create COMPUTE binding groups
     const binding =
-      Create_Bind_Group(render.device, pipeline, [render.GPU.uniforms, render.GPU.spins]);
+      createBindGroup(render.device, pipeline, [render.GPU.uniforms, render.GPU.spins]);
     render.sim_pipelines.push([pipeline, binding]);
   }
 }
@@ -459,7 +480,7 @@ function create_stats_pipeline(render) {  // COMPUTE stats pipeline
     },
   });
   render.stats_binding =
-    Create_Bind_Group(render.device, render.stats_pipeline,
+    createBindGroup(render.device, render.stats_pipeline,
                       [render.GPU.uniforms, render.GPU.spins, render.GPU.stats]);
 }
 const visu_uniforms_struct_code = `
@@ -550,7 +571,7 @@ function create_visu_pipeline(render) {  // RENDER pipeline drawing the spins
     },
   });
   render.visu_bind_group =
-    Create_Bind_Group(render.device, render.visu_pipeline,
+    createBindGroup(render.device, render.visu_pipeline,
                       [render.GPU.visu_uniforms, render.GPU.spins]);
 }
 
@@ -611,7 +632,7 @@ function create_cube_pipeline(render) {
     },
   });
   render.cube_bind_group =
-    Create_Bind_Group(render.device, render.cube_pipeline, [render.GPU.visu_uniforms]);
+    createBindGroup(render.device, render.cube_pipeline, [render.GPU.visu_uniforms]);
 }
 
 function find_worksize(size, wsize) {
@@ -642,7 +663,7 @@ async function init_textures(render) {
     render.depthTexture.destroy();
     render.depthTexture = undefined;
   }
-  render.depthTexture = Create_Texture(
+  render.depthTexture = createTexture(
       render.device, canvas.width, canvas.height, 'depth24plus',
       GPUTextureUsage.RENDER_ATTACHMENT, 1, 'depth');
 }
@@ -652,8 +673,8 @@ function draw_mag(s, data, min, max, width, height = canvas.height / 8) {
   width = Math.min(width, canvas.width);
   height = Math.min(height, 300);
   side_canvas.style.display = 'inline-block';
-  side_canvas.style.bottom = '10%';
-  side_canvas.style.right = '5%';
+  side_canvas.style.bottom = '10px';     // pin to canvas-wrap bottom-right
+  side_canvas.style.right  = '10px';
   side_canvas.width = width;
   side_canvas.height = height + 10;
   const ctx = side_canvas.getContext('2d');
@@ -814,16 +835,16 @@ async function init_buffers(render) {
 
   // Create the persistent GPU buffers that will be filled progressively
   render.GPU.spins =
-    Create_GPU_Buffer(render.device, get_random_spins(render.nb_spins),
+    createGPUBuffer(render.device, get_random_spins(render.nb_spins),
                       GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC);
 
   // Create uniforms buffer
-  render.GPU.uniforms = Create_Uniform_Buffer(render.device, UNIFORMS_SIZE * 4);
-  render.GPU.visu_uniforms = Create_Uniform_Buffer(render.device, 44 * 4);
+  render.GPU.uniforms = createUniformBuffer(render.device, UNIFORMS_SIZE * 4);
+  render.GPU.visu_uniforms = createUniformBuffer(render.device, 44 * 4);
 
   // buffer to copy the stats out of the GPU
   const size_stats = render.nb_spins;
-  render.GPU.stats = Create_Storage_Buffer(
+  render.GPU.stats = createStorageBuffer(
       render.device, size_stats * 4, GPUBufferUsage.COPY_SRC);
   render.GPU.mapped_stats = render.device.createBuffer({
     size: size_stats * 4,
@@ -1131,6 +1152,11 @@ async function main() {
   } catch(e) { Oops(e); }
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

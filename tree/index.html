@@ -1,71 +1,40 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tree under gravity</title>
-
-<style>
-#drop-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
-  margin: 10px auto;
-  padding: 10px;
-  width: 1024px;
-  height: 200px;
-  background: #eef;
-}
-#main-canvas {
-  z-index:0;
-  border: 2px solid #000;
-  border-radius: 20px;
-  position: relative;
-  left:-2px;
-  top:-10px;
-  background: #fff;
-  margin: 0px;
-  box-shadow: 0 0 5px black;
-}
-#gui {
- position: relative;
- top: -750px;
- left: 750px;
-}
-</style>
-
+<link rel="stylesheet" href="../common/main.css">
 </head>
 
-<body onload="main();">
+<body>
 
-<div id="drop-area">
-  <div height='100px'>
-    <h2><center>There's nothing special about the Root of a tree</center></h2>
-    <font size='-1'>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2023"></a>
+
+  <h2>There's nothing special about the Root of a tree</h2>
+  <p class="blurb small">
     This is just the visualization of a random tree.
-    <ul>
+  </p>
+  <ul class="blurb small">
     <li>click or touch to drag nodes around</li>
     <li>double-Click or double-tap on a node to <b>promote</b> it to Root</li>
-    </ul>
-    </font>
-  </div>
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-100px; left:950px;'>
-    <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 1px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
-  </form>
-  <div id="gui-container">
-    <center><canvas id="main-canvas"></canvas></center>
+  </ul>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas"></canvas>
+    <div id="gui-container"></div>
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
-
-<script>
+<script type="module">
 "use strict";
+
+import { mkGui }                  from '../common/controls.js';
+import { onDrag, onDoubleTap }    from '../common/touch.js';
+import { makeRng }                from '../common/utils.js';
 
 ////////////////////////////////////////////////////////////////////////////////
 // The less interesting stuff
@@ -101,7 +70,6 @@ const params = {  // Global parameters
   g: 1.0,
   xm: 0., xM: 1., ym: 0., yM: 1.,  // bounding box
 
-  gui: null,
   tid: -1,   // timer id
   focus_id: -1,
 
@@ -148,7 +116,7 @@ const params = {  // Global parameters
   },
   SetRoot: (root) => {
     // fix path to root
-    let i = root, p = params.nodes[i].parent;;
+    let i = root, p = params.nodes[i].parent;
     while (i != p) {
       const P = params.nodes[p].parent;
       params.nodes[p].parent = i;
@@ -163,60 +131,31 @@ const params = {  // Global parameters
       let j = i;
       do {
         params.nodes[j].mass += 1;
-        const p = params.nodes[j].parent;
         j = params.nodes[j].parent;
       } while (j != root);
       params.nodes[root].mass += 1;
     }
   },
 
-
-  // Helpers for mouse/tap events
-  last_x: 0,
-  last_y: 0,
-  ScaleXY: (x, y) => {
+  // Map clientX/Y → world (bounding-box) coordinates. Uses the canvas's
+  // *displayed* size so it works after CSS scaling on mobile.
+  ScaleXY: (clientX, clientY) => {
     const canvas = document.querySelector("#main-canvas");
-    const bounds = canvas.getBoundingClientRect();
-    x = (x - bounds.left) / canvas.width;
-    y = (y - bounds.top) / canvas.height;
-    params.last_x = params.xm + x * (params.xM - params.xm);
-    params.last_y = params.ym + y * (params.yM - params.ym);
-    return [params.last_x, params.last_y];
-  },
-  EventToXY: (event) => {
-    return params.ScaleXY(event.x, event.y);
-  },
-  TouchToXY: (event) => {
-    if (event.touches.length == 0) return [params.last_x, params.last_y];
-    event.preventDefault();
-    return params.ScaleXY(event.touches[0].clientX, event.touches[0].clientY);
-  },
-  // Double-tap touch event
-  dblTap: false,
-  DoubleTapEvent: ([x, y]) => {
-    if (!params.dblTap) {
-      params.dblTap = true;
-      setTimeout(() => params.dblTap = false, 300);
-      params.DownEvent([x, y]);
-    } else {
-      params.SelectEvent([x, y]);
-    }
+    const b = canvas.getBoundingClientRect();
+    const u = (clientX - b.left) / b.width;
+    const v = (clientY - b.top)  / b.height;
+    return [params.xm + u * (params.xM - params.xm),
+            params.ym + v * (params.yM - params.ym)];
   },
 
-  // Mouse Events
-  DownEvent: ([x, y]) => {
-    params.focus_id = params.FindNode(x, y);
-  },
+  // Drag handlers (driven by common/touch.js onDrag).
+  DownEvent: ([x, y]) => { params.focus_id = params.FindNode(x, y); },
   MoveEvent: ([x, y]) => {
     if (params.focus_id < 0) return;
-    const id = params.focus_id;
-    const n = params.nodes[id];
-    n.x = x;
-    n.y = y;
-    n.dx = 0.;
-    n.dy = 0.;
+    const n = params.nodes[params.focus_id];
+    n.x = x; n.y = y; n.dx = 0.; n.dy = 0.;
   },
-  UpEvent: ([x, y]) => { params.focus_id = -1; },
+  UpEvent:   () => { params.focus_id = -1; },
   SelectEvent: ([x, y]) => {
     const id = params.FindNode(x, y);
     if (id >= 0) params.SetRoot(id);
@@ -241,7 +180,6 @@ const params = {  // Global parameters
       }
       if (params.R > 0.) {
         const R = params.R / 10.;
-        let fx = 0., fy = 0.;
         for (let p of params.nodes) {
           if (p.id == n.id) continue;
           const ux = p.x - n.x, uy = p.y - n.y;
@@ -251,8 +189,6 @@ const params = {  // Global parameters
             n.ddy -= R * uy / d / d;
           }
         }
-        n.ddx += fx;
-        n.ddy += fy;
       }
       if (params.C > 0.) {      // viscosity
         n.ddx -= params.C * n.dx;
@@ -268,18 +204,14 @@ const params = {  // Global parameters
     }
     if (params.root >= 0) {
       const n = params.nodes[params.root];
-      n.dx = 0.;
-      n.dy = 0.;
-      n.ddx = 0.;
-      n.ddy = 0.;
+      n.dx = 0.; n.dy = 0.; n.ddx = 0.; n.ddy = 0.;
     }
     if (params.focus_id >= 0) {
       const n = params.nodes[params.focus_id];
-      n.dx = 0.;
-      n.dy = 0.;
+      n.dx = 0.; n.dy = 0.;
     }
   },
-  Mix: (a, b, x) => { return (1. - x) * a + x * b; },
+  Mix: (a, b, x) => (1. - x) * a + x * b,
   Render: () => {
     const canvas = document.querySelector("#main-canvas");
     const ctx = canvas.getContext("2d");
@@ -291,10 +223,9 @@ const params = {  // Global parameters
     params.yM = params.Mix(params.yM, yM, .001);
     const scale_x = W / (params.xM - params.xm);
     const scale_y = H / (params.yM - params.ym);
-    const radius = 10.;
     const scale = 5. / params.nodes.length;
 
-    ctx.fillStyle = '#000000'
+    ctx.fillStyle = '#000000';
     ctx.clearRect(0, 0, W, H);
     ctx.font = "24px Arial";
     ctx.strokeStyle = '#000000';
@@ -327,89 +258,66 @@ const params = {  // Global parameters
       ctx.fill();
     }
   },
-}
+};
 
-// Seedable 'decent' random generator, returning values in [0, 1.)
-var seed = 91651088029;
-const mulberry32 = () => {
-  let t = seed += 0x6D2B79F5;
-  t = Math.imul(t ^ t >>> 15, t | 1);
-  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
-  return ((t ^ t >>> 14) >>> 0) / 4294967296.;
-}
+const rng = makeRng();
+const mulberry32 = () => rng.next01();
 
 ////////////////////////////////////////////////////////////////////////////////
 // Main calls
 
-function main() {
-  const elmt = document.getElementById('gui-container');
-  params.gui = new lil.GUI({ width: 250, container: elmt, });
-  params.gui.domElement.id = 'gui';
-  params.gui.add(params, 'num_nodes', 1, 255, 1).name('Number of Nodes')
-            .listen().onChange(Init);
-  params.gui.add(params, 'K', 0.00, 20., 0.1).name('Rigidity').listen();
-  params.gui.add(params, 'C', 0.00, 2., 0.1).name('Viscosity').listen();
-  params.gui.add(params, 'R', 0.00, 1.00, 0.1).name('Repulsion').listen();
-  params.gui.add(params, 'l0', 0.001, 1., 0.01).name('Rest Length').listen();
-  params.gui.add(params, 'g', 0.01, 5.00, 0.01).name('Gravity').listen();
-  params.gui.add(params, 'reset').name('Reset');
-
-  params.reset();
-  StartTimer();
+function setupUI() {
+  const gui = mkGui(document.getElementById('gui-container'), { title: 'Parameters' });
+  gui.add(params, 'num_nodes', 1, 255, 1)  .name('Number of Nodes').onChange(Init);
+  gui.add(params, 'K',  0.00, 20.,  0.1)   .name('Rigidity');
+  gui.add(params, 'C',  0.00,  2.,  0.1)   .name('Viscosity');
+  gui.add(params, 'R',  0.00,  1.,  0.1)   .name('Repulsion');
+  gui.add(params, 'l0', 0.001, 1.,  0.01)  .name('Rest Length');
+  gui.add(params, 'g',  0.01,  5.,  0.01)  .name('Gravity');
+  gui.add(params, 'reset')                 .name('Reset');
 }
 
 function StartTimer() {
   ResetTimer();
   if (params.tid < 0) params.tid = setInterval(() => { Render(); });
 }
-
 function ResetTimer() {
-  if (params.tid >= 0) {
-    clearInterval(params.tid);
-    params.tid = -1;
-  }
+  if (params.tid >= 0) { clearInterval(params.tid); params.tid = -1; }
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 function Init() {
   const canvas = document.querySelector("#main-canvas");
   const ctx = canvas.getContext("2d");
-  if (ctx == null) {
-    console.log("Can't get 2d-context.");
-    return;
-  }
-  const Wo = 800, Ho = 600;
-  canvas.width = Wo;
-  canvas.height = Ho;
-
-  const gui = document.querySelector("#gui");
-  gui.style.top = (-Ho + 10) + 'px';  // omg, this is naaaasty
+  if (ctx == null) { console.log("Can't get 2d-context."); return; }
+  canvas.width  = 800;
+  canvas.height = 600;
 
   params.ResetNodes();
   params.SetRoot(0);
   params.nodes[params.root].x = .5;
   params.nodes[params.root].y = .1;
-
-  canvas.addEventListener('mousedown', (e) => params.DownEvent(params.EventToXY(e)));
-  canvas.addEventListener('mouseup', (e) => params.UpEvent(params.EventToXY(e)));
-  canvas.addEventListener('mousemove', (e) => params.MoveEvent(params.EventToXY(e)));
-  canvas.addEventListener('dblclick', (e) => params.SelectEvent(params.EventToXY(e)));
-  canvas.addEventListener('touchstart', (e) => params.DoubleTapEvent(params.TouchToXY(e)));
-  canvas.addEventListener('touchend', (e) => params.UpEvent(params.TouchToXY(e)));
-  canvas.addEventListener('touchmove', (e) => params.MoveEvent(params.TouchToXY(e)));
   StartTimer();
 }
-
-////////////////////////////////////////////////////////////////////////////////
 
 function Render() {
   params.Anim();
   params.Render();
 }
 
-////////////////////////////////////////////////////////////////////////////////
+// ── Entry ────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  setupUI();
+  Init();
 
+  const canvas = document.querySelector("#main-canvas");
+  onDrag(canvas, {
+    down: ev => params.DownEvent(params.ScaleXY(ev.clientX, ev.clientY)),
+    move: ev => params.MoveEvent(params.ScaleXY(ev.clientX, ev.clientY)),
+    up:   ()  => params.UpEvent(),
+    cancel: () => params.UpEvent(),
+  });
+  onDoubleTap(canvas, ev => params.SelectEvent(params.ScaleXY(ev.clientX, ev.clientY)));
+});
 </script>
 
 </body>

@@ -1,28 +1,36 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WebGPU simulating particles</title>
+<link rel="stylesheet" href="../common/main.css">
 </head>
 
-<body onload="init_all();">
-
 <body>
-<div>
-  <center>
-    <canvas id="canvas" style='outline: 1px solid black;'></canvas><br/>
-    Particles simulation with WebGPU (WIP)<p>
-    click and move mouse to add a circular obstacle<br/>
-  </center>
+
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2023"></a>
+  <h2>Particles simulation with WebGPU (WIP)</h2>
+  <p class="blurb small">click and move mouse to add a circular obstacle</p>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
+    <div id="gui-container"></div>
+  </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 <script src="../common/args.js"></script>
-<script src="../common/utils.js"></script>
 
-<script>
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer } from '../common/webgpu.js';
+import { mkGui }                                         from '../common/controls.js';
+
+const RandomRange = (a, b) => Math.random() * (b - a) + a;
 
 const params = {
   num_balls: parse_arg("n", 12000, 1, 1000000),
@@ -65,7 +73,7 @@ const params = {
   change: () => { init(false); },
 };
 
-const canvas = document.querySelector("#canvas");
+const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 canvas.width  = parse_arg("w", 800);
 canvas.height = parse_arg("h", 800);
@@ -97,7 +105,8 @@ async function init_GPU(render) {
   if (render.device != undefined) render.device.destroy();
   render.device = undefined;
 
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("GPU Device acquired");
@@ -110,7 +119,7 @@ async function init_GPU(render) {
                  usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
                  alphaMode: 'premultiplied'});
 
-  render.uniforms_buffer = Create_Uniform_Buffer(render.device, 16 * 4);
+  render.uniforms_buffer = createUniformBuffer(render.device, 16 * 4);
 }
 
 function init_particles(render) {
@@ -127,8 +136,8 @@ function init_particles(render) {
     balls[i * 6 + 5] = RandomRange( 0.2, 1.);  // brightness
   }
   render.balls_buffers = new Array(2);
-  render.balls_buffers[0] = Create_GPU_Buffer(render.device, balls, GPUBufferUsage.VERTEX);
-  render.balls_buffers[1] = Create_GPU_Buffer(render.device, balls, GPUBufferUsage.VERTEX);
+  render.balls_buffers[0] = createGPUBuffer(render.device, balls, GPUBufferUsage.VERTEX);
+  render.balls_buffers[1] = createGPUBuffer(render.device, balls, GPUBufferUsage.VERTEX);
 
   // proxy
   render.cell_x = Math.ceil(canvas.width * 4 / params.density);
@@ -152,8 +161,8 @@ function init_particles(render) {
     }
   }
   render.proxy_buffers = new Array(2);
-  render.proxy_buffers[0] = Create_GPU_Buffer(render.device, proxy, 0, true);
-  render.proxy_buffers[1] = Create_GPU_Buffer(render.device, proxy, 0, true);
+  render.proxy_buffers[0] = createGPUBuffer(render.device, proxy, 0, true);
+  render.proxy_buffers[1] = createGPUBuffer(render.device, proxy, 0, true);
 
   [render.dim_x, render.dim_y] = find_worksize(render.num_cells, params.wsize);
   [render.b_dim_x, render.b_dim_y] = find_worksize(params.num_balls, params.wsize);
@@ -639,26 +648,25 @@ function init_pipelines(render) {
 }
 
 function init_GUI() {
-  const gui = new lil.GUI({name: 'WebGPU particle demo'});
-  gui.add(params, 'num_balls', 1, 100000, 1).listen().onChange(params.reset);
-  gui.add(params, 'density', 1, 32, 1).name('cell density (in 1/4th)').listen().onChange(params.reset);
-  gui.add(params, 'rmin', 1., 10., .1).name('min radius').listen().onChange(params.reset);
-  gui.add(params, 'rmax', 1., 10., .1).name('max radius').listen().onChange(params.reset);
-  gui.add(params, 'dt', .000001, 0.01, .001).listen().onChange(params.change);
-  gui.add(params, 'gravity', .1, 10., .1).listen().onChange(params.change);
-  gui.add(params, 'viscosity', .0, .2, .01).listen().onChange(params.change);
-  gui.add(params, 'cohesive_coeff', 0.5, 1.01, .01).name('cohesive coefficient').listen().onChange(params.change);
-  gui.add(params, 'force', 0.0, .2, .01).name('force radius').listen().onChange(params.change);
-  gui.add(params, 'collisions').listen().onChange(params.change);
-  gui.add(params, 'do_force').name('w/ force').listen();
-  gui.add(params, 'draw').name('draw particles').listen();
-  gui.add(params, 'animate_particles').name('animate particles').listen();
-  gui.add(params, 'use_proxy').name('use proxy').listen().onChange(params.change);
-  gui.add(params, 'use_LJ').name('use Lennard-Jones').listen().onChange(params.change);
-  gui.add(params, 'debug', {'none':0, 'proxy':1, 'Voronoi':2, 'count': 3}).name('debug').listen().onChange(params.change);
-  gui.add(params, 'reset').name('Reset');
-  gui.add(params, 'fps').name('fps').listen().disable();
-  gui.add(params, 'frame').name('frame #').listen().disable();
+  const gui = mkGui(document.getElementById('gui-container'), { title: 'Particles' });
+  gui.add(params, 'num_balls',      1, 100000, 1)   .name('num_balls')     .onChange(params.reset);
+  gui.add(params, 'density',        1, 32,     1)   .name('cell density')  .onChange(params.reset);
+  gui.add(params, 'rmin',           1., 10.,   .1)  .name('min radius')    .onChange(params.reset);
+  gui.add(params, 'rmax',           1., 10.,   .1)  .name('max radius')    .onChange(params.reset);
+  gui.add(params, 'dt',          1e-6, 0.01,   .001).name('dt')            .onChange(params.change);
+  gui.add(params, 'gravity',       .1, 10.,    .1)  .name('gravity')       .onChange(params.change);
+  gui.add(params, 'viscosity',     .0,  .2,    .01) .name('viscosity')     .onChange(params.change);
+  gui.add(params, 'cohesive_coeff', 0.5, 1.01, .01) .name('cohesive coeff').onChange(params.change);
+  gui.add(params, 'force',         0., .2,     .01) .name('force radius')  .onChange(params.change);
+  gui.add(params, 'collisions')                     .name('collisions')    .onChange(params.change);
+  gui.add(params, 'do_force')                       .name('w/ force');
+  gui.add(params, 'draw')                           .name('draw particles');
+  gui.add(params, 'animate_particles')              .name('animate');
+  gui.add(params, 'use_proxy')                      .name('use proxy')     .onChange(params.change);
+  gui.add(params, 'use_LJ')                         .name('Lennard-Jones') .onChange(params.change);
+  gui.add(params, 'debug', {'none':0, 'proxy':1, 'Voronoi':2, 'count': 3})
+                                                    .name('debug')         .onChange(params.change);
+  gui.add(params, 'reset')                          .name('Reset');
 }
 
 function transmit_uniforms() {
@@ -750,6 +758,11 @@ async function init_all() {
   await init(true);
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init_all);
+} else {
+  init_all();
+}
 </script>
 
 </body>

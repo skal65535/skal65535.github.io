@@ -1,76 +1,62 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Show me the deltas!</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
 <style>
-#main-area.highlight { border-color: purple; }
-.button {
-  display: inline-block;
-  padding: 8px;
-  background: #bbc;
-  cursor: pointer;
-  border-radius: 5px;
-  border: 3px solid #334;
-  z-index:1;
-  position:relative;
-  font-size: 14px;
-}
-.button:hover {
-  background: #cce;
-}
-#delta-canvas {
-  z-index:0;
-  border: 2px solid #000; border-radius: 20px;
-  margin: 0px;
-  background: #000;
-  box-shadow: 0 0 8px black;
-  outline: 1px solid black;
-}
+  #delta-canvas, #H1-canvas, #H2-canvas {
+    border: 2px solid var(--canvas-border);
+    border-radius: 12px;
+    background: var(--canvas-bg);
+    box-shadow: 0 0 5px rgba(0,0,0,0.35);
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    max-width: 100%;
+    justify-items: center;
+  }
+  #grid canvas { max-width: 100%; height: auto; }
 </style>
 </head>
 
-<body onload="main();">
+<body>
 
-<div id="main-area" style='width: 1024px; height: 700px;'>
-  <div height='100px'>
-    This is a small tool for showing the image's delta
-    <br/>
-    <font size='-1'>Drag and drop image on the canvas below.</font>
-  </div>
-  <label class='button' for="FileElmt"
-         style='top:80px; left:50px;'>select an image</label>
-  <div>
-    <center>
-    <canvas id="input-image" width='256px' height='400px' style='display:none;'>
-      <input type="file" id="FileElmt" style='display:none;'
-             multiple accept="image/*" onchange="HandleFile(this.files[0])">
-    </canvas>
-    <table>
-    <tr>
-      <td><canvas id="main-canvas" width='512px' height='400px'></canvas></td>
-      <td width='100px'></td>
-      <td><canvas id="delta-canvas" width='512px' height='400px'></canvas></td>
-    </tr>
-    <tr>
-      <td><canvas id="H1-canvas" width='256px' height='200px' style='border:2px solid #334;'></canvas></td>
-      <td width='100px'></td>
-      <td><canvas id="H2-canvas" width='256px' height='200px' style='border:2px solid #334;'></canvas></td>
-    </tr>
-    </table>
-    </center>
-  </div>
-  <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
-    <input type="submit" value="skal 2024" id="skal-back"/>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
+
+  <h2>Show me the deltas!</h2>
+  <p>This is a small tool for showing the image's delta.</p>
+  <p class="blurb small">Drag and drop image on the canvas below.</p>
+
+  <form class="my-form">
+    <input type="file" id="FileElmt" style="display:none"
+           multiple accept="image/*">
   </form>
+
+  <div class="button-row">
+    <label class="button" for="FileElmt">select an image</label>
+  </div>
+
+  <canvas id="input-image" width="256" height="400" style="display:none"></canvas>
+
+  <div id="grid">
+    <canvas id="main-canvas"  width="512" height="400"></canvas>
+    <canvas id="delta-canvas" width="512" height="400"></canvas>
+    <canvas id="H1-canvas"    width="256" height="200"></canvas>
+    <canvas id="H2-canvas"    width="256" height="200"></canvas>
+  </div>
 </div>
 
-<script>
+<script type="module">
 "use strict";
 
-////////////////////////////////////////////////////////////////////////////////
+import { onFileDrop, loadImageFile } from '../common/utils.js';
 
 const params = {  // Global parameters
   original: null,
@@ -78,51 +64,22 @@ const params = {  // Global parameters
   delta: null,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Drag'n'Drop
-
-function PreventDefaults (e) {
-  e.preventDefault();
-  e.stopPropagation();
+async function HandleFile(file) {
+  if (!file) return;
+  try {
+    params.original = await loadImageFile(file);
+    Render();
+  } catch (e) { console.error(e); }
 }
-function HandleDrop(e) {
-  HandleFile(e.dataTransfer.files[0]);
-}
-function HandleFile(file) {
-  const reader = new FileReader();
-  reader.readAsDataURL(file);
-  reader.onloadend = function() {
-    params.original = new Image();
-    params.original.onload = function() { Render(); };
-    params.original.src = reader.result;
-  }
-}
-
-function SetupDragAndDrop() {
-  const dropArea = document.getElementById('main-area');
-  function highlight(e) { dropArea.classList.add('highlight'); }
-  function unhighlight(e) { dropArea.classList.remove('highlight'); }
-
-  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, PreventDefaults, false); }
-  );
-  ['dragenter', 'dragover'].forEach(
-    name => { dropArea.addEventListener(name, highlight, false); }
-  );
-  ['dragleave', 'drop'].forEach(
-    name => { dropArea.addEventListener(name, unhighlight, false); }
-  );
-  dropArea.addEventListener('drop', HandleDrop, false)
-}
-
-////////////////////////////////////////////////////////////////////////////////
 
 function main() {
   params.original = new Image();
   params.original.src = "./mona.webp";
   params.original.onload = function() { Render(); };
 
-  SetupDragAndDrop();
+  onFileDrop(document.getElementById('main-area'), HandleFile);
+  document.getElementById('FileElmt').addEventListener('change',
+    e => HandleFile(e.target.files[0]));
 }
 
 function Render() {
@@ -225,7 +182,11 @@ function DrawHisto(canvas, H) {
   }
 }
 
-
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

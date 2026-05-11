@@ -1,70 +1,99 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!-- CVM algorithm demo -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CVM algorithm</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
+<style>
+  #histo { background: #fff; border: 2px solid var(--canvas-border);
+           border-radius: 12px; max-width: 100%; height: auto; }
+  textarea#input {
+    width: 100%; max-width: 100%; box-sizing: border-box;
+    font: 13px var(--font-mono);
+    background: #fff; border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 8px;
+  }
+</style>
 </head>
 
-<body onload="SetText('hamlet');">
-<h1><center>A <a href='https://arxiv.org/abs/2301.10191'>CVM algorithm</a> demo</center></h1>
+<body>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
 
-The CVM online algorithm <b>estimates the number of unique words</b> in a very very
-<b>long input stream</b> (think 'one day worth of Google queries' for
-instance. Or IP addresses.) in an space and time efficient manner.<br/>
-This is known as the <a href='https://en.wikipedia.org/wiki/Count-distinct_problem#CVM_Algorithm'>Count-distinct</a>
-problem.<br/>
-The CVM algorithm maintains a fixed-size buffer of unique words (see the 'Max buffering size' slider below)
-along with a decimation probability 'p'.<br/>
-The algorithm operates with 'rounds': unique words are collected in the buffer. When full,
-The buffer is partially flushed with a probability 'p' and another round starts with a lowered probability 'p'.
-<br/>
-Initially, the probability is halved, but we can adjust the flushing rate (and thus,
-the average number of rounds) by adjusting the 'rejection proba' parameter below.
-<br/>
-This allows different tradeoff in precision / rounds. Each round's flush has a higher
-computational cost than just looking up the set of unique words so far.
-<p>
-The demo below will take the input text below (which you can change) and
-run the algorithm 10000 times, collecting histogram of the estimated number
-of unique words (which depends on the parameters like 'Max buffering size').
-<br/>
-This can be compared to the expected exact value (drawn in red in the
-histogram). The deviation (sigma) and average number of rounds is collected
-too.<br/>
-Note: the algorithm doesn't return the list of unique words, not even a weighted
-estimation! It still is useful to estimate the space complexity of a proper
-second pass, e.g.<br/>
-<p>
+  <h2>A <a href="https://arxiv.org/abs/2301.10191">CVM algorithm</a> demo</h2>
 
-Predefined inputs: <input type='button' onclick='SetText("hamlet");' value='Hamlet'>
-<input type='button' onclick='SetText("DNA");' value='DNA sequence'>
-<input type='button' onclick='SetText("digits");' value='Random 5-digit numbers'>
-<input type='button' onclick='SetText("words");' value='Random "words"'>
-<p>
-<div>
-  <input type="range" min="1" max="10000" value="50" id="max_size" 
-    oninput="params.set_max_size(this.value);"
-    onchange="Main();">
-  Max buffering size for unique words: <span id="max_size_value"></span><br/>
-  <input type="range" min="0." max="100." value="50." id="reject_proba"
-    oninput="params.set_reject_proba(this.value / 100.);"
-    onchange="Main();">
-  Rejection proba: <span id="reject_proba_value">.5</span><br/>  
-</div>
-<p>
-Distribution of estimates:<br/>
-<canvas id="histo" width="512" height="300"></canvas><br/>
-<input type="range" min="10" max="40" value="20" id="nb_bins"
-  oninput="params.set_nb_bins(this.value); Draw();"
-  onchange="params.set_nb_bins(this.value); Draw();">
-  number of bins: <span id="nb_bins_value"></span>
+  <p>
+    The CVM online algorithm <b>estimates the number of unique words</b> in a
+    very very <b>long input stream</b> (think 'one day worth of Google
+    queries' for instance. Or IP addresses.) in an space and time efficient
+    manner.<br/>
+    This is known as the
+    <a href="https://en.wikipedia.org/wiki/Count-distinct_problem#CVM_Algorithm">Count-distinct</a>
+    problem.<br/>
+    The CVM algorithm maintains a fixed-size buffer of unique words (see the
+    'Max buffering size' slider below) along with a decimation probability
+    'p'.<br/>
+    The algorithm operates with 'rounds': unique words are collected in the
+    buffer. When full, the buffer is partially flushed with a probability 'p'
+    and another round starts with a lowered probability 'p'.<br/>
+    Initially, the probability is halved, but we can adjust the flushing rate
+    (and thus, the average number of rounds) by adjusting the 'rejection
+    proba' parameter below.<br/>
+    This allows different tradeoff in precision / rounds. Each round's flush
+    has a higher computational cost than just looking up the set of unique
+    words so far.
+  </p>
+  <p>
+    The demo below will take the input text below (which you can change) and
+    run the algorithm 10000 times, collecting histogram of the estimated
+    number of unique words (which depends on the parameters like 'Max
+    buffering size').<br/>
+    This can be compared to the expected exact value (drawn in red in the
+    histogram). The deviation (sigma) and average number of rounds is
+    collected too.<br/>
+    Note: the algorithm doesn't return the list of unique words, not even a
+    weighted estimation! It still is useful to estimate the space complexity
+    of a proper second pass, e.g.
+  </p>
 
-<p>
-<h3>Input text: <input type='button' onclick='Main();' value='Text has changed. GO!'><br/></h3>
+  <div class="button-row">
+    Predefined inputs:
+    <button class="button" onclick='SetText("hamlet");'>Hamlet</button>
+    <button class="button" onclick='SetText("DNA");'>DNA sequence</button>
+    <button class="button" onclick='SetText("digits");'>Random 5-digit numbers</button>
+    <button class="button" onclick='SetText("words");'>Random "words"</button>
+  </div>
+
+  <div class="slider-row">
+    <input type="range" min="1" max="10000" value="50" id="max_size"
+      oninput="params.set_max_size(this.value);"
+      onchange="Main();">
+    <label>Max buffering size for unique words: <span id="max_size_value"></span></label>
+  </div>
+  <div class="slider-row">
+    <input type="range" min="0." max="100." value="50." id="reject_proba"
+      oninput="params.set_reject_proba(this.value / 100.);"
+      onchange="Main();">
+    <label>Rejection proba: <span id="reject_proba_value">.5</span></label>
+  </div>
+
+  <p>Distribution of estimates:</p>
+  <canvas id="histo" width="512" height="300"></canvas>
+
+  <div class="slider-row">
+    <input type="range" min="10" max="40" value="20" id="nb_bins"
+      oninput="params.set_nb_bins(this.value); Draw();"
+      onchange="params.set_nb_bins(this.value); Draw();">
+    <label>number of bins: <span id="nb_bins_value"></span></label>
+  </div>
+
+  <h3>Input text:
+    <button class="button" onclick='Main();'>Text has changed. GO!</button>
+  </h3>
 
 <textarea id="input" name="input" rows="8" cols="80" onchange='Main();'>
 'Tis sweet and commendable in your nature, Hamlet,
@@ -368,8 +397,13 @@ function Loop() {
     ResetAnimation();
   }
 }
-</script>
 
-<a href='https://skal65535.github.io/'>BACK</a> to Skal's page.<br/>
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => SetText('hamlet'));
+} else {
+  SetText('hamlet');
+}
+</script>
+</div>
 </body>
 </html>

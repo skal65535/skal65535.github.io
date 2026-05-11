@@ -1,46 +1,55 @@
 <!-- Triangle Splatting -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Triangle Splats</title>
-<link rel="stylesheet" href="../splats/style.css">
+<link rel="stylesheet" href="../common/main.css">
 </head>
 
-<body onload="main();">
-<div id='main-area'>
-  <center>
-    <b>Triangle Splats (WebGPU required!)</b>
-    <br/>
-  </center>
+<body>
+<div id="main-area" class="wide">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2025"></a>
+
+  <h2>Triangle Splats <small>(WebGPU required!)</small></h2>
   <p>
-    <a href="https://trianglesplatting.github.io/">Triangle Splatting</a>.  Still very experimental (please be patient, it's loading slowly!)<br/>
-    This is a quick demo to show the difference with the original weights (based on the distance to the
-    <b>edges</b>), and the barycentric weights (based on the distance to the <b>vertices</b>).
-    The latter are somewhat easier to compute in the shader (see the <code>vertex_values()</code> function in the shader's code).</br>
-    The 'sigma' slider is the a <b>global</b> sigma value (see paper), used instead of per-triangle values (NYI).<br/>
-    <div><canvas id="main-canvas"'></canvas></div>
-    <form action="https://skal65535.github.io/"
-          style='position: relative; top:-50px; right:15px;'>
-      <input type="submit" value="skal 2025" id="skal-back"/>
-    </form>
-    <br/>
+    <a href="https://trianglesplatting.github.io/">Triangle Splatting</a>.
+    Still very experimental (please be patient, it's loading slowly!)<br/>
+    This is a quick demo to show the difference with the original weights
+    (based on the distance to the <b>edges</b>), and the barycentric weights
+    (based on the distance to the <b>vertices</b>).
+    The latter are somewhat easier to compute in the shader (see the
+    <code>vertex_values()</code> function in the shader's code).<br/>
+    The 'sigma' slider is the a <b>global</b> sigma value (see paper), used
+    instead of per-triangle values (NYI).
   </p>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" class="dark"></canvas>
+    <div id="gui-container"></div>
+  </div>
 </div>
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
 <script src="../common/args.js"></script>
 <script src="../common/matrix.js"></script>
-<script src="../common/utils.js"></script>
-<script>
+
+<script type="module">
 "use strict";
+
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
+         createTexture, createBindGroup } from '../common/webgpu.js';
+import { mkGui }                          from '../common/controls.js';
 
 ////////////////////////////////////////////////////////////////////////////////
 
 const canvas = document.querySelector("#main-canvas");
 const ctx = canvas.getContext("webgpu");
 
-var MeshVtx = null, MeshTris = null;
+// The mesh data files (room.js, garden.js) are classic scripts that set
+// implicit globals `MeshVtx` / `MeshTris` / `MeshColors`. From inside this
+// ES module we have to reach them via `window.*`.
 
 ////////////////////////////////////////////////////////////////////////////////
 // Params
@@ -84,25 +93,23 @@ const GUI_init = () => {
     params.gui = undefined;
     return;
   }
-  params.gui = new lil.GUI({container: document.getElementById('#main-area'), name: 'BVH'});
-  params.gui.add(params, 'mesh', {'Room': 0, 'Garden': 1, })
-                .listen().onChange(async () => { await set_mesh(); });
-  params.gui.add(params, 'sigma', .001, 5., .001).listen();
-  params.gui.add(params, 'use_barycentric').name('use barycentric coord').listen().onChange(param_change);
-  params.gui.add(params, 'use_length').name('use length').listen().onChange(param_change);
-  const cam_folder = params.gui.addFolder('camera / visu').close();
-  cam_folder.add(params.cam, 'fov', 5., 180., 5.).listen();
-  cam_folder.add(params.cam, 'radius', 0.0001, 100., 0.01).listen()
-  cam_folder.add(params.cam, 'theta', 0., 360., 1.).listen();
-  cam_folder.add(params.cam, 'phi', -180., 180., 1.).listen();
-  cam_folder.add(params.cam, 'auto_rotate').name('auto rotate').listen();
+  params.gui = mkGui(document.getElementById('gui-container'), { title: 'Triangle Splats' });
+  params.gui.add(params, 'mesh', {'Room': 0, 'Garden': 1 })
+                                                .name('mesh').onChange(async () => { await set_mesh(); });
+  params.gui.add(params, 'sigma', .001, 5., .001).name('sigma');
+  params.gui.add(params, 'use_barycentric')     .name('use barycentric coord').onChange(param_change);
+  params.gui.add(params, 'use_length')          .name('use length')           .onChange(param_change);
 
-  params.gui.add(render, 'txt_info').name('fps').listen().disable();
-  params.gui.add(render, 'txt_info2').name('faces').listen().disable();
+  const cam = params.gui.addFolder('camera / visu', { collapsed: true });
+  cam.add(params.cam, 'fov',         5.,  180.,  5.)    .name('fov');
+  cam.add(params.cam, 'radius',      0.0001, 100., 0.01).name('radius');
+  cam.add(params.cam, 'theta',       0.,  360.,  1.)    .name('theta');
+  cam.add(params.cam, 'phi',        -180., 180., 1.)    .name('phi');
+  cam.add(params.cam, 'auto_rotate')                    .name('auto rotate');
+
+  params.gui.add(render, 'txt_info') .name('fps')   .listen().disable();
+  params.gui.add(render, 'txt_info2').name('faces') .listen().disable();
   params.gui.add(render, 'txt_info3').name('points').listen().disable();
-
-  params.gui.domElement.style.top = '15%';
-  params.gui.domElement.style.right = '3%';
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -140,8 +147,9 @@ window.addEventListener("resize", (e) => {
 });
 
 function do_resize() {
+  if (!render.device) return;
   init_buffers(render);
-  create_pipelines(render);
+  if (render.ok) create_pipelines(render);   // wait until mesh buffers exist
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -153,7 +161,8 @@ function Oops(e) {
 }
 
 const GPU_init = async () => {
-  const gpu = await Init_WebGPU(Oops);
+  let gpu;
+  try { gpu = await initGPU(null); } catch (e) { Oops(e.message); }
   render.device = gpu.device;
   render.textureFormat = gpu.format;
   console.log("WebGPU Device acquired.");
@@ -353,10 +362,10 @@ async function init_buffers(render) {
   if (render.device == null) return;
 
   // Create uniforms buffer
-  render.GPU.uniforms = Create_Uniform_Buffer(render.device, 60 * 4);
+  render.GPU.uniforms = createUniformBuffer(render.device, 60 * 4);
 
   // depth texture
-  render.GPU.depth_texture = Create_Texture(
+  render.GPU.depth_texture = createTexture(
       render.device, canvas.width, canvas.height, 'depth24plus',
       GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       1, 'depth');
@@ -398,28 +407,35 @@ async function init_script(name) {
     head.removeChild(params.script);
     params.script = null;
   }
-  // new script
-  params.script = document.createElement('script');
-  params.script.onload = function() {
-    render.nb_tris = Math.floor(MeshTris.length / 3);
-    render.GPU.tris = Create_GPU_Buffer(render.device, MeshTris, GPUBufferUsage.INDEX);
-    render.GPU.colors = Create_GPU_Buffer(render.device, MeshColors, GPUBufferUsage.VERTEX);
-
-    render.nb_vtx = Math.floor(MeshVtx.length / 3);
-    render.GPU.vtx = Create_GPU_Buffer(render.device, MeshVtx, GPUBufferUsage.VERTEX);
-
-    render.txt_info2 = `${render.nb_tris}`;
-    render.txt_info3 = `${render.nb_vtx}`;
-
-    create_pipelines(render);
-    render.ok = true;
-    MeshVtx = null;
-    MeshTris = null;
-  }
   render.ok = false;
-  params.script.src = name;
-  head.appendChild(params.script);
+  params.script = document.createElement('script');
   console.log(`mesh to load: ${name}`);
+  return new Promise((resolve, reject) => {
+    params.script.onload = function() {
+      const tris   = window.MeshTris;
+      const vtx    = window.MeshVtx;
+      const colors = window.MeshColors;
+      render.nb_tris   = Math.floor(tris.length / 3);
+      render.GPU.tris  = createGPUBuffer(render.device, tris,   GPUBufferUsage.INDEX);
+      render.GPU.colors = createGPUBuffer(render.device, colors, GPUBufferUsage.VERTEX);
+
+      render.nb_vtx = Math.floor(vtx.length / 3);
+      render.GPU.vtx = createGPUBuffer(render.device, vtx, GPUBufferUsage.VERTEX);
+
+      render.txt_info2 = `${render.nb_tris}`;
+      render.txt_info3 = `${render.nb_vtx}`;
+
+      create_pipelines(render);
+      render.ok = true;
+      window.MeshVtx = null;
+      window.MeshTris = null;
+      window.MeshColors = null;
+      resolve();
+    };
+    params.script.onerror = () => reject(new Error(`Failed to load ${name}`));
+    params.script.src = name;
+    head.appendChild(params.script);
+  });
 }
 
 async function set_mesh() {
@@ -565,6 +581,11 @@ async function main() {
   } catch(e) { Oops(e); }
 }
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', main);
+} else {
+  main();
+}
 </script>
 
 </body>

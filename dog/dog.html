@@ -1,64 +1,45 @@
-<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!-- skal/ (pascal.massimino@gmail.com) 2024 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DoG: difference of Gaussians</title>
-<link rel="stylesheet" href="../splats/style.css">
-<style>
-#main-area.highlight { border-color: purple; }
-.button {
-  display: inline-block;
-  padding: 8px;
-  background: #bbc;
-  cursor: pointer;
-  border-radius: 5px;
-  border: 3px solid #334;
-  z-index:1;
-  position:relative;
-  font-size: 14px;
-}
-.button:hover {
-  background: #cce;
-}
-#gui {
- position: relative;
- top: -230px;
- right: -6px;
-}
-</style>
+<link rel="stylesheet" href="../common/main.css">
 </head>
 
-<body onload="main();">
+<body>
 
-<div id="main-area" style='width: 1024px; height: 930px;'>
-  <form class="my-form">
-    <input type="file" id="FileElmt" style='display:none;'
-           multiple accept="image/*" onchange="HandleFile(this.files[0])">
-  </form>
-  <div height='100px'>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2024"></a>
+
+  <h2>Difference of Gaussians (DoG)</h2>
+  <p>
     This is a small tool for experimenting with the parameters of the
     <b>Difference Of Gaussians</b> (DoG) operator, as described in
     <a href="https://users.cs.northwestern.edu/~sco590/winnemoeller-cag2012.pdf">this paper</a>
     by Holger Winnemoeller &amp; al. Also, you might find
     <a href="https://www.youtube.com/watch?v=5EuYKEvugLU">Acerola's video</a>
-    on the topic quite entertaining!<br/>
-    <br/>
-    <font size='-1'>Drag and drop image on the canvas below.</font>
-  </div>
-  <button class='button' style='top:80px; left:30px;'
-          onmousedown="params.original=true; Render();"
-          onmouseup="params.original=false; Render();">show original</button>
-  <label class='button' for="FileElmt"
-         style='top:80px; left:750px;'>select an image</label>
-  <div id="gui-container">
-    <canvas id="main-canvas" width='1024px' height='800px' style='left:-2px; position:relative;'></canvas>
-  </div>
-  <form action="https://skal65535.github.io/" style='position:relative; top:-93%; left:95%;'>
-    <input type="submit" value="skal 2024" id="skal-back"/>
-  </form>
-</div>
+    on the topic quite entertaining!
+  </p>
+  <p class="blurb small">Drag and drop image on the canvas below.</p>
 
+  <form class="my-form">
+    <input type="file" id="FileElmt" style="display:none"
+           multiple accept="image/*">
+  </form>
+
+  <div class="button-row">
+    <button class="button" id="show-original-btn">show original</button>
+    <label class="button" for="FileElmt">select an image</label>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas" width="1024" height="768"></canvas>
+    <div id="gui-container"></div>
+  </div>
+</div>
 
 <!-- vertex shader -->
 <script  id="vertex-shader-2d" type="x-shader/x-vertex">
@@ -111,10 +92,7 @@ varying vec2 uv_coord;
 void main() { gl_FragColor = texture2D(image, uv_coord); }
 </script>
 
-<!-- <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17"></script> -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
-
-<script src="./dog.js"></script>
+<script type="module" src="./dog.js"></script>
 
 </body>
 </html>

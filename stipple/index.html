@@ -1,116 +1,65 @@
 <!-- skal/ (pascal.massimino@gmail.com) 2023 -->
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Stippling experiment</title>
-
+<link rel="stylesheet" href="../common/main.css">
 <style>
-#drop-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
-  margin: 10px auto;
-  padding: 10px;
-  width: 1024px;
-  height: 700px;
-  background: #eef;
-}
-#drop-area.highlight {
-  border-color: purple;
-}
-.button {
-  display: inline-block;
-  padding: 8px;
-  background: #bbc;
-  cursor: pointer;
-  border-radius: 5px;
-  border: 3px solid #334;
-  z-index:1;
-  position:relative;
-  font-size: 14px;
-}
-.button:hover {
-  background: #cce;
-}
-#main-canvas {
-  z-index:0;
-  border: 2px solid #000;
-  border-radius: 20px;
-  position: relative;
-  left:-2px;
-  top:-50px;
-  background: #fff;
-  margin: 0px;
-  box-shadow: 0 0 5px black;
-}
-#gui {
- position: relative;
- top: -700px;
- left: 30px;
-}
-.dg {
-  color: #f55;
-  text-shadow: none !important;
-}
-.dg .c input[type=text] {
-  background: #e9e9e9;
-}
+  /* Per-page tweaks. The canvas is sized at runtime; cap CSS width so on
+     desktop it stays at the native pixel grid, and on mobile it scales down. */
+  #main-canvas { max-width: 1024px; width: 100%; }
 </style>
-
 </head>
 
 <body>
 
-<div id="drop-area">
-  <form class="my-form">
-    <input type="file" id="FileElmt" style='display:none;'
-           accept="image/*,video/*" onchange="HandleSource(this.files[0])">
-  </form>
-  <div height='100px'>
-    <h2><center>Weighted Linde-Buzo-Gray Stippling Demo</center></h2>
-    Stippling tool, as described in
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/" data-year="2026"></a>
+
+  <h2>Weighted Linde-Buzo-Gray Stippling Demo</h2>
+  <p>Stippling tool, as described in
     <a href="http://graphics.uni-konstanz.de/publikationen/Deussen2017LindeBuzoGray/WeightedLindeBuzoGrayStippling_authorversion.pdf">this paper</a>
     by O. Deussen, M. Spicker and Q. Zheng. [<a href="https://github.com/MarcSpicker/LindeBuzoGrayStippling">github repo</a>]
-    <br/>
-    <font size='-1'>
-    The source image is converted to grayscale and then edge-detected and blended back with the source
-    (~sharpening).<br/>
-    Then a large number of cells is spawns and evolved (removal, split, ...) until the maximum number
-    of points is reached or the confidence is good enough.
-    <br/>
+  </p>
+  <p class="blurb small">
+    The source image is converted to grayscale and then edge-detected and
+    blended back with the source (~sharpening).<br/>
+    Then a large number of cells is spawned and evolved (removal, split, ...)
+    until the maximum number of points is reached or the confidence is good
+    enough.<br/>
     Drag and drop image or video on the canvas below.
-    </font>
-  </div>
-  <label class='button' for="FileElmt"
-         style='top:30px; left:30px;'>select source</label>
-  <button class='button' style='top:30px; left:30px;'
-          onmousedown="app.params.show_target=true;  app.redraw();"
-          onmouseup  ="app.params.show_target=false; app.redraw();">show target</button>
-  <form action="https://skal65535.github.io/"
-        style='position: relative; top:-150px; left:950px;'>
-    <input type="submit" value="skal 2023" id="skal-2023"
-           style='border-radius: 5px; padding: 5px;
-                  background: #cce; border: 1px solid #112;'
-      onmouseover='this.style.background="#cdf"'
-      onmouseout='this.style.background="#cce"'/>
-  </form>
-  <div id="gui-container">
-    <center>
-        <canvas id="main-canvas"></canvas>
-    </center>
+  </p>
 
+  <form class="my-form">
+    <input type="file" id="FileElmt" style="display:none"
+           accept="image/*,video/*" onchange="HandleSource(this.files[0])">
+  </form>
+
+  <div class="button-row">
+    <label class="button" for="FileElmt">select source</label>
+    <button class="button"
+            onpointerdown="app.params.show_target=true;  app.redraw();"
+            onpointerup  ="app.params.show_target=false; app.redraw();"
+            onpointercancel="app.params.show_target=false; app.redraw();">show target</button>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="main-canvas"></canvas>
+    <div id="gui-container"></div>
   </div>
 </div>
-
-<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18"></script>
 
 <script type="module">
 "use strict";
 
-import { initGPU, GPURenderer } from './stipple-render.js';
-import { FrameSource }          from './stipple-frame.js';
-import { createIterator }       from './stipple-iter.js';
+import { initGPU }        from '../common/webgpu.js';
+import { mkGui }          from '../common/controls.js';
+import { GPURenderer }    from './stipple-render.js';
+import { FrameSource }    from './stipple-frame.js';
+import { createIterator } from './stipple-iter.js';
 
 if (!navigator.gpu) {
   alert('This demo requires WebGPU. Try Chrome/Edge ≥113 or Safari 18+.');
@@ -389,7 +338,6 @@ class App {
     }
     canvas.width = W; canvas.height = H;
     if (src instanceof HTMLImageElement) { src.width = W; src.height = H; }
-    document.querySelector('#gui').style.top = `${-H + 10}px`;
 
     this.iter?.destroy?.();      this.iter     = null;
     this.frameSrc?.destroy?.();  this.frameSrc = null;
@@ -427,36 +375,34 @@ class App {
   }
 }
 
-// ── lil-gui binding ──────────────────────────────────────────────────────────
+// ── UI binding (common/controls.js) ──────────────────────────────────────────
 function setupUI(app) {
-  const elmt = document.getElementById('gui-container');
-  const gui  = new lil.GUI({ width: 250, container: elmt });
-  gui.domElement.id = 'gui';
+  const gui = mkGui(document.getElementById('gui-container'), { title: 'Parameters' });
 
   const p = app.params;
   const resetIter    = () => app.resetIter();
   const refetchFrame = () => app.refetchFrame();
   const redraw       = () => app.redraw();
 
-  gui.add(p, 'num_points',      500, 500000, 10).name('Max Points')       .listen().onChange(resetIter);
-  gui.add(p, 'rho',            -1.,  1.,    .01).name('Density cut-off')  .listen().onChange(resetIter);
-  gui.add(p, 'use_edges'                       ).name('Edge detection')   .listen().onChange(refetchFrame);
-  gui.add(p, 'alpha',           0.,  0.2,   .01).name('mix edges/source') .listen().onChange(refetchFrame);
-  gui.add(p, 'strength',        1.,  16.,   .01).name('Edges strength')   .listen().onChange(refetchFrame);
-  gui.add(p, 'num_iters',       2,   50,      1).name('Iterations')       .listen().onChange(resetIter);
-  gui.add(p, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations') .listen().onChange(resetIter);
-  gui.add(p, 'radius',          0.2, 3.,    .01).name('Points radius')    .listen().onChange(redraw);
-  gui.add(p, 'invert'                          ).name('Invert')           .listen().onChange(redraw);
-  gui.add(p, 'use_cpu'                         ).name('Use CPU (compare)').listen().onChange(refetchFrame);
-  gui.add(p, 'show_voronoi'                    ).name('Show Voronoi')     .listen().onChange(redraw);
+  gui.add(p, 'num_points',      500, 500000, 10).name('Max Points')      .onChange(resetIter);
+  gui.add(p, 'rho',            -1.,  1.,    .01).name('Density cut-off') .onChange(resetIter);
+  gui.add(p, 'use_edges'                       ).name('Edge detection')  .onChange(refetchFrame);
+  gui.add(p, 'alpha',           0.,  0.2,   .01).name('mix edges/source').onChange(refetchFrame);
+  gui.add(p, 'strength',        1.,  16.,   .01).name('Edges strength')  .onChange(refetchFrame);
+  gui.add(p, 'num_iters',       2,   50,      1).name('Iterations')      .onChange(resetIter);
+  gui.add(p, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations').onChange(resetIter);
+  gui.add(p, 'radius',          0.2, 3.,    .01).name('Points radius')   .onChange(redraw);
+  gui.add(p, 'invert'                          ).name('Invert')          .onChange(redraw);
+  gui.add(p, 'use_cpu'                         ).name('Use CPU (compare)').onChange(refetchFrame);
+  gui.add(p, 'show_voronoi'                    ).name('Show Voronoi')    .onChange(redraw);
   gui.add({ reset: resetIter }, 'reset'        ).name('Reset');
-  gui.add(p, 'adapt_iters',     1,   20,      1).name('Video adapt iters').listen();
+  gui.add(p, 'adapt_iters',     1,   20,      1).name('Video adapt iters');
   app.playCtrl = gui.add({ toggleVideo: () => app.toggleVideo() }, 'toggleVideo').name('Play');
 }
 
 // ── Drag & Drop ──────────────────────────────────────────────────────────────
 function setupDragAndDrop(app) {
-  const drop = document.getElementById('drop-area');
+  const drop = document.getElementById('main-area');
   const stop = e => { e.preventDefault(); e.stopPropagation(); };
   ['dragenter','dragover','dragleave','drop'].forEach(n => drop.addEventListener(n, stop));
   ['dragenter','dragover'].forEach(n => drop.addEventListener(n, () => drop.classList.add('highlight')));

@@ -1,82 +1,95 @@
+// common/utils.js — shared helpers used by several demos.
 //
-// common WebGPU functions
+// ES module. Add new helpers here rather than spinning up another file in
+// common/. Currently exports:
 //
-////////////////////////////////////////////////////////////////////////////////
+//   makeRng        — seedable PRNG (mulberry32)
+//   drawCircle     — 2D canvas circle (stroke or fill)
+//   drawLine       — 2D canvas line
+//   makeFPS        — EMA-smoothed frame-rate counter
+//   onFileDrop     — drag-and-drop file handler on a DOM element
+//   loadImageFile  — Promise wrapper around FileReader + Image
+//   preventDefaults — convenience: stops propagation of an event
 
-function Create_GPU_Buffer(device, src_buf, buf_usage = 0) {
-  const desc = {
-    size: (src_buf.byteLength + 3) & ~3,  // needs to be a multiple of 4
-    usage: buf_usage | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    mappedAtCreation: true,
+// Seedable PRNG. `next01()` returns a float in [0, 1); `nextSigned()` returns
+// one in [-1, 1). The seed lives on `rng.seed` and can be reassigned mid-stream.
+export function makeRng(seed = 91651088029) {
+  const r = {
+    seed,
+    next01() {
+      let t = r.seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    },
+    nextSigned() { return r.next01() * 2 - 1; },
   };
-  const gpu_buf = device.createBuffer(desc);
-  new src_buf.constructor(gpu_buf.getMappedRange()).set(src_buf);
-  gpu_buf.unmap();
-  return gpu_buf;
+  return r;
 }
 
-function Create_Uniform_Buffer(device, size) {
-  return device.createBuffer({
-    size: (size + 3) & ~3,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+// 2D canvas helpers. Take the context explicitly so callers don't need a global.
+export function drawCircle(ctx, x, y, color, radius, fill = false) {
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, 2 * Math.PI);
+  ctx.strokeStyle = ctx.fillStyle = color;
+  fill ? ctx.fill() : ctx.stroke();
+}
+export function drawLine(ctx, x1, y1, x2, y2, color) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+
+// EMA-smoothed FPS. Call .tick() once per frame; reads the current value
+// from .value or as the return of .tick().
+export function makeFPS({ weight = 0.8 } = {}) {
+  let lastT = performance.now();
+  let fps = 0;
+  return {
+    tick() {
+      const cur = performance.now();
+      if (cur > lastT) {
+        const n = 1000 / (cur - lastT);
+        fps = Math.round(fps * weight + n * (1 - weight));
+        lastT = cur;
+      }
+      return fps;
+    },
+    get value() { return fps; },
+  };
+}
+
+// Drag-and-drop. `onFile(File)` is invoked when a file is dropped on `area`.
+// Adds the `highlightClass` to `area` during a drag-over (matches the CSS hook
+// `#main-area.highlight` already in common/main.css).
+export function onFileDrop(area, onFile, { highlightClass = 'highlight' } = {}) {
+  const prevent = e => { e.preventDefault(); e.stopPropagation(); };
+  ['dragenter','dragover','dragleave','drop'].forEach(n => area.addEventListener(n, prevent));
+  ['dragenter','dragover'].forEach(n => area.addEventListener(n, () => area.classList.add(highlightClass)));
+  ['dragleave','drop'].forEach(n => area.addEventListener(n, () => area.classList.remove(highlightClass)));
+  area.addEventListener('drop', e => {
+    const f = e.dataTransfer?.files?.[0];
+    if (f) onFile(f);
   });
 }
 
-function Create_Storage_Buffer(device, size, usage = 0) {
-  return device.createBuffer({
-    size: (size + 3) & ~3,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | usage,
+// Read a File as a data URL, then decode it into an HTMLImageElement.
+// Resolves with the loaded image; rejects on read or decode failure.
+export function loadImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('FileReader failed'));
+    reader.onloadend = () => {
+      const img = new Image();
+      img.onload  = () => resolve(img);
+      img.onerror = () => reject(new Error('Image decode failed'));
+      img.src = reader.result;
+    };
+    try { reader.readAsDataURL(file); }
+    catch (e) { reject(e); }
   });
 }
 
-function Create_Texture(device, width, height, format, usage, sampleCount = 1, label = undefined) {
-  return device.createTexture({
-    label: label,
-    size: [width, height],
-    format: format,
-    usage: usage,
-    sampleCount: sampleCount,
-  });
-}
-
-function Create_Bind_Group(device, pipeline, buffers, layout = 0) {
-  let entries = [];
-  for (let i = 0; i < buffers.length; ++i) {
-    entries.push({ binding: i, resource: buffers[i],});
-  }
-  return device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(layout),
-    entries: entries,
-  });
-}
-
-async function Init_WebGPU(onError) {
-  if (!navigator.gpu) {
-    const msg = "WebGPU not supported.";
-    if (onError) onError(msg);
-    throw new Error(msg);
-  }
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) {
-    const msg = "Couldn’t request WebGPU adapter.";
-    if (onError) onError(msg);
-    throw new Error(msg);
-  }
-  const device = await adapter.requestDevice();
-  if (!device) {
-    const msg = "Couldn’t request WebGPU logical device.";
-    if (onError) onError(msg);
-    throw new Error(msg);
-  }
-
-  device.addEventListener('uncapturederror', (event) => {
-    console.error("WebGPU uncaptured error:", event.error.message);
-  });
-
-  const format = navigator.gpu.getPreferredCanvasFormat();
-  return { device, adapter, format };
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-function RandomRange(a, b) { return Math.random() * (b - a) + a; }
+export function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
