@@ -4,8 +4,6 @@
 // those markers and compiles each as an independent module. Bindings are
 // per-module (each module starts with its own @group(0) @binding(...)).
 //
-// Phase 1 ships only the JFA kernels and a no-op lloyd kernel so the
-// end-to-end pipeline can run. Accumulate + gather land in Phase 3.
 
 // === clear_jfa ===
 struct Params {
@@ -234,9 +232,11 @@ fn vs(@builtin(vertex_index)   vid : u32,
 
 @fragment
 fn fs(in : VOut) -> @location(0) vec4<f32> {
-  if (dot(in.quad_uv, in.quad_uv) > 1.0) { discard; }
-  let c = pp.invert;   // 1 = white point, 0 = black
-  return vec4<f32>(c, c, c, 1.0);
+  let dist = dot(in.quad_uv, in.quad_uv);
+  if (dist > 1.0) { discard; }
+  let alpha = smoothstep(1.0, 0.00, dist);
+  let color = mix(vec3f(0., 0., 0.), vec3f(1., 1., 1.), pp.invert);
+  return vec4f(color, alpha);
 }
 
 // === target_render ===
