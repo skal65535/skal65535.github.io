@@ -384,6 +384,7 @@ function setupUI(app) {
   const refetchFrame = () => app.refetchFrame();
   const redraw       = () => app.redraw();
 
+  gui.add({ reset: resetIter }, 'reset'        ).name('Reset');
   gui.add(p, 'num_points',      500, 500000, 10).name('Max Points')      .onChange(resetIter);
   gui.add(p, 'rho',            -1.,  1.,    .01).name('Density cut-off') .onChange(resetIter);
   gui.add(p, 'use_edges'                       ).name('Edge detection')  .onChange(refetchFrame);
@@ -392,12 +393,11 @@ function setupUI(app) {
   gui.add(p, 'num_iters',       2,   50,      1).name('Iterations')      .onChange(resetIter);
   gui.add(p, 'num_Lloyd_iters', 1,   10,      1).name('Lloyd Iterations').onChange(resetIter);
   gui.add(p, 'radius',          0.2, 3.,    .01).name('Points radius')   .onChange(redraw);
+  gui.add(p, 'show_voronoi'                    ).name('Show Voronoi')    .onChange(redraw);
+  app.playCtrl = gui.add({ toggleVideo: () => app.toggleVideo() }, 'toggleVideo').name('Play');
+  gui.add(p, 'adapt_iters',     1,   20,      1).name('Video adapt iters');
   gui.add(p, 'invert'                          ).name('Invert')          .onChange(redraw);
   gui.add(p, 'use_cpu'                         ).name('Use CPU (compare)').onChange(refetchFrame);
-  gui.add(p, 'show_voronoi'                    ).name('Show Voronoi')    .onChange(redraw);
-  gui.add({ reset: resetIter }, 'reset'        ).name('Reset');
-  gui.add(p, 'adapt_iters',     1,   20,      1).name('Video adapt iters');
-  app.playCtrl = gui.add({ toggleVideo: () => app.toggleVideo() }, 'toggleVideo').name('Play');
 }
 
 // ── Drag & Drop ──────────────────────────────────────────────────────────────
