@@ -164,25 +164,20 @@ a.button {
   accent-color: var(--accent);
 }
 
-/* ── Back-to-index "skal" pill ──────────────────────────────────── */
+/* ── Back to Home button ────────────────────────────────────────── */
 
 #skal-back {
-  position: absolute;
-  top: 12px;
-  right: 16px;
   display: inline-block;
-  padding: 5px 10px;
+  margin-bottom: 15px;
+  padding: 8px 12px;
   background: var(--back-bg);
   border: 1px solid var(--back-border);
-  border-radius: var(--radius-small);
+  border-radius: var(--radius-btn);
   color: var(--ink);
   text-decoration: none;
-  font: inherit;
-  font-size: 13px;
-  z-index: 5;
+  font-size: 14px;
+  font-weight: 500;
 }
-#skal-back::before { content: 'skal '; }
-#skal-back::after  { content: attr(data-year); }
 #skal-back:hover { background: var(--back-bg-hover); }
 
 /* ── Canvas wrapper (anchors the floating panel over the canvas) ─ */
@@ -404,12 +399,6 @@ a.button {
     padding: 12px;
     margin: 6px;
     border-width: 2px;
-  }
-  #skal-back {
-    top: 10px;
-    right: 10px;
-    padding: 4px 8px;
-    font-size: 12px;
   }
   .button,
   button.button,
