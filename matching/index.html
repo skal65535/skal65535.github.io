@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Computer Vision 3D Reconstruction</title>
+    <link rel="stylesheet" href="../common/main.css">
+    <link rel="stylesheet" href="main.css">
+</head>
+<body>
+    <div id="main-area">
+        <a id="skal-back" href="https://skal65535.github.io/">‹ Home</a>
+        <h2>Computer Vision 3D Reconstruction</h2>
+        <p class="blurb small">
+            Experiment in 3D reconstruction from multiple images. Feature detection
+            and matching estimate camera poses and reconstruct a 3D point cloud.
+            Work in progress.
+        </p>
+
+        <div id="progress-container" style="display:none;">
+            <div id="progress-bar"></div>
+            <span id="progress-label"></span>
+        </div>
+
+        <div class="images-area">
+            <div class="images-column">
+                <label class="button" for="fileInput">Load Images</label>
+                <input id="fileInput" type="file" multiple accept="image/*" style="display:none">
+                <div id="imagesGrid" class="images-grid"></div>
+            </div>
+            <div class="image-preview">
+                <canvas id="previewCanvas"></canvas>
+                <div class="preview-placeholder">hover a thumbnail</div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>3D Camera &amp; Epipolar Geometry</h2>
+            <div class="canvas-wrap">
+                <div id="vizContainer" class="viz-container">
+                    <div class="viz-message">Load images to begin 3D reconstruction</div>
+                </div>
+                <div id="gui-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://docs.opencv.org/4.x/opencv.js" async onload="onOpenCvReady();"></script>
+    <script src="main.js" type="module"></script>
+</body>
+</html>
