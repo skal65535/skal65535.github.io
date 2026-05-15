@@ -177,7 +177,7 @@ class Preview {
     const alpha = new ANSBinSymbol(2, 2);
     const stats_yco = new ValueStats;
     const stats_cg = new ValueStats;
-    const pred = Color(kYCoCgMax >> 1, kYCoCgMax >> 1, 0, 255);
+    const pred = new Color(kYCoCgMax >> 1, kYCoCgMax >> 1, 0, 255);
     for (let i = 0; i < this.nb_colors; ++i) {
       if (this.has_alpha && reader.NextAdaptiveBit(alpha)) pred.a = 1 - pred.a;
       const y = pred.r = reader.ReadAValue(stats_yco, false, pred.r);
