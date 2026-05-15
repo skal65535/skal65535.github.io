@@ -7,6 +7,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Triangle Splats</title>
 <link rel="stylesheet" href="../common/main.css">
+<style>
+  #info {
+    position: absolute; left: 14px; top: 14px;
+    background: var(--panel-bg); color: var(--ink);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 4px 8px; font: 12px var(--font-mono); z-index: 5;
+  }
+</style>
 </head>
 
 <body>
@@ -28,6 +36,7 @@
 
   <div class="canvas-wrap">
     <canvas id="main-canvas" class="dark"></canvas>
+    <div id="info"><span id="fps"></span></div>
     <div id="gui-container"></div>
   </div>
 </div>
@@ -107,7 +116,6 @@ const GUI_init = () => {
   cam.add(params.cam, 'phi',        -180., 180., 1.)    .name('phi');
   cam.add(params.cam, 'auto_rotate')                    .name('auto rotate');
 
-  params.gui.add(render, 'txt_info') .name('fps')   .listen().disable();
   params.gui.add(render, 'txt_info2').name('faces') .listen().disable();
   params.gui.add(render, 'txt_info3').name('points').listen().disable();
 }
@@ -491,7 +499,7 @@ async function frame() {
       render.fps = Math.round(render.fps * 0.8 + new_fps * 0.2);
     }
   }
-  render.txt_info = render.fps.toFixed(1) + " fps";
+  document.getElementById('fps').innerText = render.fps.toFixed(1) + ' fps';
   render.time_stamp = time_stamp;
 
   render.loop_id = requestAnimationFrame(frame);
@@ -554,7 +562,6 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   },
 
   // side info
-  txt_info: "",
   txt_info2: "",
   txt_info3: "",
   time_stamp: undefined,
