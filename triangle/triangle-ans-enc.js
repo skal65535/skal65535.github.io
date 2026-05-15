@@ -1,34 +1,5 @@
 'use strict';
 
-const kProbaMax              = 1 << 16;
-const kYCoCgBitDepth         = 6;
-const kYCoCgMax              = (1 << kYCoCgBitDepth) - 1;
-const kPreviewMinNumVertices = 0;
-const kPreviewMaxNumVertices = 1024;
-const kPreviewMinNumColors   = 2;
-const kPreviewMaxNumColors   = 32;
-const kPreviewMinGridSize    = 2;
-const kPreviewMaxGridSize    = 256;
-const kPreviewOpaqueProba    = 3 * kProbaMax / 4;
-const kPreviewNoiseProba     = kProbaMax / 2;
-
-// ---------------------------------------------------------------------------
-
-function ANSBinSymbol(p0, p1) { this.p0_ = p0; this.sum_ = p0 + p1; }
-ANSBinSymbol.prototype.Update = function(bit) {
-  if (this.sum_ < 256) { if (!bit) ++this.p0_; ++this.sum_; }
-  return bit;
-};
-ANSBinSymbol.prototype.Proba = function() {
-  return Math.floor((this.p0_ << 16) / this.sum_);
-};
-
-function ValueStats() {
-  this.zero = new ANSBinSymbol(1, 1);
-  this.sign = new ANSBinSymbol(1, 1);
-  this.bits = Array.from({length: kYCoCgBitDepth}, () => new ANSBinSymbol(1, 1));
-}
-
 // ---------------------------------------------------------------------------
 
 class ANSEnc {
@@ -166,19 +137,6 @@ function encodePreview(preview, color_data) {
 
 // ---------------------------------------------------------------------------
 
-function RGBtoYCoCg(r, g, b, a) {
-  const clamp63 = v => Math.max(0, Math.min(kYCoCgMax, v));
-  const q = v => clamp63(Math.round((v + 128) * kYCoCgMax / 255));
-  return {
-    y:  clamp63(Math.round((2*g + r + b) / 4 * kYCoCgMax / 255)),
-    co: q((r - b) / 2),
-    cg: q((2*g - r - b) / 4),
-    a:  a > 0 ? 1 : 0,
-  };
-}
-
-// ---------------------------------------------------------------------------
-
 if (typeof module !== 'undefined') {
-  module.exports = { ANSEnc, ANSBinSymbol, ValueStats, encodePreview, RGBtoYCoCg };
+  module.exports = { ANSEnc, encodePreview };
 }

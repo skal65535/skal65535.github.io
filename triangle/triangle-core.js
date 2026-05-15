@@ -347,3 +347,29 @@ const Delaunay = (function() {
   }
   return Delaunay;
 })();
+
+////////////////////////////////////////////////////////////////////////////////
+// RGB -> YCoCg (encoder direction)
+function RGBtoYCoCg(r, g, b, a) {
+  const clamp63 = v => Math.max(0, Math.min(kYCoCgMax, v));
+  const q = v => clamp63(Math.round((v + 128) * kYCoCgMax / 255));
+  return {
+    y:  clamp63(Math.round((2*g + r + b) / 4 * kYCoCgMax / 255)),
+    co: q((r - b) / 2),
+    cg: q((2*g - r - b) / 4),
+    a:  a > 0 ? 1 : 0,
+  };
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = {
+    kProbaMax, kYCoCgBitDepth, kYCoCgMax, kMaxSum,
+    kPreviewMinNumVertices, kPreviewMaxNumVertices,
+    kPreviewMinNumColors, kPreviewMaxNumColors,
+    kPreviewMinGridSize, kPreviewMaxGridSize,
+    kPreviewOpaqueProba, kPreviewNoiseProba,
+    ANSBinSymbol, ValueStats, ANSDec,
+    Vtx, Color, clip8b, YCoCg_to_RGB, RGBtoYCoCg,
+    Preview, Delaunay,
+  };
+}

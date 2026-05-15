@@ -96,6 +96,7 @@ ANSDec.prototype.ReadAValue = function(stats, is_positive, pred) {
     'kPreviewMinNumColors', 'kPreviewMaxNumColors',
     'kPreviewMinGridSize', 'kPreviewMaxGridSize',
     'kPreviewOpaqueProba', 'kPreviewNoiseProba',
+    'ANSBinSymbol', 'ValueStats',
     trimmed
   );
   const fakeModule = { exports: {} };
@@ -105,7 +106,8 @@ ANSDec.prototype.ReadAValue = function(stats, is_positive, pred) {
     kPreviewMinNumVertices, kPreviewMaxNumVertices,
     kPreviewMinNumColors, kPreviewMaxNumColors,
     kPreviewMinGridSize, kPreviewMaxGridSize,
-    kPreviewOpaqueProba, kPreviewNoiseProba
+    kPreviewOpaqueProba, kPreviewNoiseProba,
+    ANSBinSymbol, ValueStats
   );
   // Inject exported symbols into global scope for test access
   Object.assign(global, fakeModule.exports);

@@ -1,0 +1,227 @@
+'use strict';
+
+// Phase 2: initial state computation.
+// Browser: depends on triangle-core.js + triangle-ans-enc.js loaded first.
+// Node.js: auto-requires triangle-core.js for globals (Delaunay, RGBtoYCoCg, ...).
+if (typeof module !== 'undefined' && typeof Delaunay === 'undefined') {
+  Object.assign(global, require('./triangle-core.js'));
+}
+
+// ---------------------------------------------------------------------------
+// Downsample imageData to gx×gy grid; returns Float32Array [gx*gy*4] RGBA.
+function sampleGrid(imageData, gx, gy) {
+  const { data, width: sw, height: sh } = imageData;
+  const out = new Float32Array(gx * gy * 4);
+  for (let gy_i = 0; gy_i < gy; ++gy_i) {
+    for (let gx_i = 0; gx_i < gx; ++gx_i) {
+      const x0 = Math.round(gx_i * sw / gx);
+      const x1 = Math.max(x0 + 1, Math.round((gx_i + 1) * sw / gx));
+      const y0 = Math.round(gy_i * sh / gy);
+      const y1 = Math.max(y0 + 1, Math.round((gy_i + 1) * sh / gy));
+      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (let py = y0; py < Math.min(y1, sh); ++py) {
+        for (let px = x0; px < Math.min(x1, sw); ++px) {
+          const off = (py * sw + px) * 4;
+          r += data[off]; g += data[off+1]; b += data[off+2]; a += data[off+3]; ++n;
+        }
+      }
+      const s = 1 / Math.max(n, 1), idx = (gy_i * gx + gx_i) * 4;
+      out[idx] = r*s; out[idx+1] = g*s; out[idx+2] = b*s; out[idx+3] = a*s;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Weighted YCoCg perceptual distance.
+function ycoCgDist(a, b) {
+  const dy = a.y-b.y, dco = a.co-b.co, dcg = a.cg-b.cg;
+  return 0.3*dy*dy + 0.1*dco*dco + 0.6*dcg*dcg;
+}
+
+// ---------------------------------------------------------------------------
+// K-means palette in YCoCg space (max-min init, 20 iterations).
+function buildPalette(grid, nb_colors) {
+  const n = grid.length >> 2;
+  const pts = new Array(n);
+  for (let i = 0; i < n; ++i)
+    pts[i] = RGBtoYCoCg(grid[i*4], grid[i*4+1], grid[i*4+2], grid[i*4+3]);
+
+  const centers = [Object.assign({}, pts[0])];
+  while (centers.length < nb_colors) {
+    let best = 0, bestD = -1;
+    for (let i = 0; i < n; ++i) {
+      let d = Infinity;
+      for (const c of centers) { const dd = ycoCgDist(pts[i], c); if (dd < d) d = dd; }
+      if (d > bestD) { bestD = d; best = i; }
+    }
+    centers.push(Object.assign({}, pts[best]));
+  }
+
+  const labels = new Int32Array(n);
+  for (let iter = 0; iter < 20; ++iter) {
+    for (let i = 0; i < n; ++i) {
+      let best = 0, bestD = Infinity;
+      for (let k = 0; k < nb_colors; ++k) {
+        const d = ycoCgDist(pts[i], centers[k]); if (d < bestD) { bestD = d; best = k; }
+      }
+      labels[i] = best;
+    }
+    const sy = new Float32Array(nb_colors), sco = new Float32Array(nb_colors);
+    const scg = new Float32Array(nb_colors), sa = new Float32Array(nb_colors);
+    const cnt = new Int32Array(nb_colors);
+    for (let i = 0; i < n; ++i) {
+      const k = labels[i], p = pts[i];
+      sy[k] += p.y; sco[k] += p.co; scg[k] += p.cg; sa[k] += p.a; cnt[k]++;
+    }
+    for (let k = 0; k < nb_colors; ++k) {
+      if (cnt[k] > 0) centers[k] = {
+        y: Math.round(sy[k]/cnt[k]), co: Math.round(sco[k]/cnt[k]),
+        cg: Math.round(scg[k]/cnt[k]), a: sa[k]/cnt[k] > 0.5 ? 1 : 0,
+      };
+    }
+  }
+  return centers;
+}
+
+// ---------------------------------------------------------------------------
+// YCoCg [0,63] -> RGB float.
+function ycoCgToRGBf(y, co, cg) {
+  const yf = y * 255/63, cgf = cg * 255/63 - 128, cof = co * 255/63 - 128;
+  const diff = yf - cgf;
+  const clamp = v => Math.max(0, Math.min(255, v));
+  return { r: clamp(diff+cof), g: clamp(yf+cgf), b: clamp(diff-cof) };
+}
+
+// ---------------------------------------------------------------------------
+// Barycentric coordinates of (px,py) in triangle (x0,y0)-(x1,y1)-(x2,y2).
+// Returns [u,v,w] (all >= 0 if inside) or null if degenerate/outside.
+function computeBary(px, py, x0, y0, x1, y1, x2, y2) {
+  const d = (y1-y2)*(x0-x2) + (x2-x1)*(y0-y2);
+  if (Math.abs(d) < 1e-8) return null;
+  const u = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) / d;
+  const v = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) / d;
+  const w = 1 - u - v;
+  return (u >= -1e-4 && v >= -1e-4 && w >= -1e-4) ? [u, v, w] : null;
+}
+
+// ---------------------------------------------------------------------------
+// CPU Gouraud rasterizer onto gx×gy grid.
+// vtx: array of Vtx; triangles: from Delaunay.getTriangles(); palRGB: [{r,g,b}].
+// Returns Float32Array [gx*gy*3] RGB.
+function rasterizeGrid(gx, gy, vtx, triangles, palRGB) {
+  const out = new Float32Array(gx * gy * 3);
+  for (let y = 0; y < gy; ++y) {
+    for (let x = 0; x < gx; ++x) {
+      for (const tri of triangles) {
+        const v0 = vtx[tri.vtx[0]], v1 = vtx[tri.vtx[1]], v2 = vtx[tri.vtx[2]];
+        const bary = computeBary(x, y, v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
+        if (!bary) continue;
+        const c0 = palRGB[v0.idx], c1 = palRGB[v1.idx], c2 = palRGB[v2.idx];
+        const i = (y*gx + x)*3;
+        out[i]   = bary[0]*c0.r + bary[1]*c1.r + bary[2]*c2.r;
+        out[i+1] = bary[0]*c0.g + bary[1]*c1.g + bary[2]*c2.g;
+        out[i+2] = bary[0]*c0.b + bary[1]*c1.b + bary[2]*c2.b;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Find nearest palette entry (YCoCg distance) for a given YCoCg sample.
+function findClosestPalette(ycocg, palette) {
+  let best = 0, bestD = Infinity;
+  for (let k = 0; k < palette.length; ++k) {
+    const d = ycoCgDist(ycocg, palette[k]); if (d < bestD) { bestD = d; best = k; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Greedy vertex placement: start with 4 corners, then add nb_pts non-corner
+// vertices by repeatedly picking the grid cell with the highest SAD residual.
+function placeVertices(grid, gx, gy, palette, nb_pts) {
+  const palRGB = palette.map(p => ycoCgToRGBf(p.y, p.co, p.cg));
+  const refRGB = new Float32Array(gx * gy * 3);
+  for (let i = 0; i < gx*gy; ++i) {
+    refRGB[i*3] = grid[i*4]; refRGB[i*3+1] = grid[i*4+1]; refRGB[i*3+2] = grid[i*4+2];
+  }
+
+  const getYCoCg = (x, y) => RGBtoYCoCg(grid[(y*gx+x)*4], grid[(y*gx+x)*4+1], grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
+
+  const qpts = [
+    { x:0,    y:0,    idx: findClosestPalette(getYCoCg(0,    0),    palette) },
+    { x:gx-1, y:0,    idx: findClosestPalette(getYCoCg(gx-1, 0),    palette) },
+    { x:0,    y:gy-1, idx: findClosestPalette(getYCoCg(0,    gy-1), palette) },
+    { x:gx-1, y:gy-1, idx: findClosestPalette(getYCoCg(gx-1, gy-1),palette) },
+  ];
+  const vtxSet = new Set(qpts.map(v => v.y*gx + v.x));
+
+  for (let k = 0; k < nb_pts; ++k) {
+    const del = new Delaunay(gx, gy, qpts);
+    const rendered = rasterizeGrid(gx, gy, del.vtx, del.getTriangles(), palRGB);
+
+    let bestKey = -1, bestScore = -1;
+    for (let gy_i = 0; gy_i < gy; ++gy_i) {
+      for (let gx_i = 0; gx_i < gx; ++gx_i) {
+        if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
+        const key = gy_i*gx + gx_i;
+        if (vtxSet.has(key)) continue;
+        const i = key*3;
+        const dr = rendered[i]-refRGB[i], dg = rendered[i+1]-refRGB[i+1], db = rendered[i+2]-refRGB[i+2];
+        const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
+        if (score > bestScore) { bestScore = score; bestKey = key; }
+      }
+    }
+    if (bestKey < 0) break;
+    const bx = bestKey % gx, by = Math.floor(bestKey / gx);
+    qpts.push({ x: bx, y: by, idx: findClosestPalette(getYCoCg(bx, by), palette) });
+    vtxSet.add(bestKey);
+  }
+  return qpts;
+}
+
+// ---------------------------------------------------------------------------
+// Top-level: build a Preview + color_data from an ImageData-like object.
+// options: { grid_x, grid_y, nb_colors, nb_pts, has_alpha, use_noise }
+function buildInitialState(imageData, options = {}) {
+  const {
+    grid_x = 32, grid_y = 32,
+    nb_colors = 8, nb_pts = 64,
+    has_alpha = false, use_noise = false,
+  } = options;
+
+  const grid = sampleGrid(imageData, grid_x, grid_y);
+  const palette = buildPalette(grid, nb_colors);
+  const qpts = placeVertices(grid, grid_x, grid_y, palette, nb_pts);
+
+  // Sort palette by (cg, co, y, a) as required by the encoder.
+  const order = palette.map((_, i) => i).sort((a, b) => {
+    const pa = palette[a], pb = palette[b];
+    return pa.cg !== pb.cg ? pa.cg-pb.cg : pa.co !== pb.co ? pa.co-pb.co :
+           pa.y  !== pb.y  ? pa.y -pb.y  : pa.a - pb.a;
+  });
+  const sortedPalette = order.map(i => palette[i]);
+  const remap = new Int32Array(nb_colors);
+  order.forEach((oldIdx, newIdx) => { remap[oldIdx] = newIdx; });
+
+  const corners = qpts.slice(0, 4).map(v => ({...v, idx: remap[v.idx]}));
+  const nonCorners = qpts.slice(4)
+    .map(v => ({...v, idx: remap[v.idx]}))
+    .sort((a, b) => a.y !== b.y ? a.y-b.y : a.x-b.x);
+
+  const preview = {
+    grid_x, grid_y, use_noise, nb_colors, has_alpha,
+    nb_pts: nonCorners.length,
+    qpts: [...corners, ...nonCorners],
+  };
+  return { preview, color_data: sortedPalette };
+}
+
+// ---------------------------------------------------------------------------
+if (typeof module !== 'undefined') {
+  // For Node.js testing: require triangle-core.js first to get Delaunay, RGBtoYCoCg.
+  module.exports = { sampleGrid, buildPalette, rasterizeGrid, placeVertices, buildInitialState };
+}
