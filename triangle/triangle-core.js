@@ -63,7 +63,7 @@ ANSDec.prototype.NextBit = function(p0) {
   if (p0 == 0) return 1;
   if (q0 == 0) return 0;
   const xfrac = this.state_[0] % kProbaMax;
-  const bit = (xfrac >= p0);
+  const bit = (xfrac >= p0) ? 1 : 0;
   if (!bit) {
     this.state_[0] = p0 * (this.state_[0] >>> 16) + xfrac;
   } else {
@@ -204,7 +204,7 @@ class Preview {
       kPreviewMinNumVertices);
     const max_num_pts = Math.min(pts_left, kPreviewMaxNumVertices);
     this.nb_pts = reader.ReadRange(min_num_pts, max_num_pts);
-    this.qpts = new Array(this.nb_pts + 4, 0);
+    this.qpts = new Array(this.nb_pts + 4);
     this.counts = new Array(this.nb_colors).fill(0);
     const stats_idx = new ANSBinSymbol(2, 2);
     let idx = 0;
@@ -343,7 +343,25 @@ const Delaunay = (function() {
     },
     getTriangles: function() {
       return this.triangles.slice();
-    }
+    },
+    // Returns flat typed arrays ready for GPU upload.
+    // positions: Float32Array [vtx*2] (x,y per vertex)
+    // indices:   Uint32Array  [tri*3] (vertex indices per triangle)
+    // colorIdx:  Uint32Array  [vtx]   (palette index per vertex)
+    getFlatBuffers: function() {
+      const verts = this.vtx, tris = this.triangles;
+      const positions = new Float32Array(verts.length * 2);
+      const colorIdx  = new Uint32Array(verts.length);
+      for (let i = 0; i < verts.length; ++i) {
+        positions[i*2] = verts[i].x; positions[i*2+1] = verts[i].y;
+        colorIdx[i] = verts[i].idx;
+      }
+      const indices = new Uint32Array(tris.length * 3);
+      for (let i = 0; i < tris.length; ++i) {
+        indices[i*3] = tris[i].vtx[0]; indices[i*3+1] = tris[i].vtx[1]; indices[i*3+2] = tris[i].vtx[2];
+      }
+      return { positions, indices, colorIdx };
+    },
   }
   return Delaunay;
 })();

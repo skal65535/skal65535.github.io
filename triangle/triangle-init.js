@@ -85,15 +85,6 @@ function buildPalette(grid, nb_colors) {
 }
 
 // ---------------------------------------------------------------------------
-// YCoCg [0,63] -> RGB float.
-function ycoCgToRGBf(y, co, cg) {
-  const yf = y * 255/63, cgf = cg * 255/63 - 128, cof = co * 255/63 - 128;
-  const diff = yf - cgf;
-  const clamp = v => Math.max(0, Math.min(255, v));
-  return { r: clamp(diff+cof), g: clamp(yf+cgf), b: clamp(diff-cof) };
-}
-
-// ---------------------------------------------------------------------------
 // Barycentric coordinates of (px,py) in triangle (x0,y0)-(x1,y1)-(x2,y2).
 // Returns [u,v,w] (all >= 0 if inside) or null if degenerate/outside.
 function computeBary(px, py, x0, y0, x1, y1, x2, y2) {
@@ -143,7 +134,7 @@ function findClosestPalette(ycocg, palette) {
 // Greedy vertex placement: start with 4 corners, then add nb_pts non-corner
 // vertices by repeatedly picking the grid cell with the highest SAD residual.
 function placeVertices(grid, gx, gy, palette, nb_pts) {
-  const palRGB = palette.map(p => ycoCgToRGBf(p.y, p.co, p.cg));
+  const palRGB = palette.map(p => YCoCg_to_RGB(p.y, p.co, p.cg, 1));
   const refRGB = new Float32Array(gx * gy * 3);
   for (let i = 0; i < gx*gy; ++i) {
     refRGB[i*3] = grid[i*4]; refRGB[i*3+1] = grid[i*4+1]; refRGB[i*3+2] = grid[i*4+2];
