@@ -11,11 +11,11 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uni : Uniforms;
 @group(0) @binding(1) var<storage, read> positions : array<f32>;   // [nv*2] x,y in grid coords
 @group(0) @binding(2) var<storage, read> colorIdx  : array<u32>;   // [nv]
-@group(0) @binding(3) var<storage, read> palette   : array<f32>;   // [nc*3] r,g,b in [0,255]
+@group(0) @binding(3) var<storage, read> palette   : array<f32>;   // [nc*4] r,g,b,a in [0,255]
 
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0)       col : vec3<f32>,
+  @location(0)       col : vec4<f32>,
 };
 
 @vertex
@@ -24,16 +24,16 @@ fn vs_main(@builtin(vertex_index) vi : u32) -> VSOut {
   let vy = positions[vi * 2u + 1u];
   let ndcx =  vx * uni.inv_gx * 2.0 - 1.0;
   let ndcy = -(vy * uni.inv_gy * 2.0 - 1.0);
-  let ci = colorIdx[vi] * 3u;
+  let ci = colorIdx[vi] * 4u;
   var o : VSOut;
   o.pos = vec4<f32>(ndcx, ndcy, 0.0, 1.0);
-  o.col = vec3<f32>(palette[ci], palette[ci+1u], palette[ci+2u]);
+  o.col = vec4<f32>(palette[ci], palette[ci+1u], palette[ci+2u], palette[ci+3u]);
   return o;
 }
 
 @fragment
-fn fs_main(@location(0) col : vec3<f32>) -> @location(0) vec4<f32> {
-  return vec4<f32>(col / 255.0, 1.0);
+fn fs_main(@location(0) col : vec4<f32>) -> @location(0) vec4<f32> {
+  return col / 255.0;
 }
 `;
 
@@ -48,10 +48,13 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
   if (gid.x >= sz.x || gid.y >= sz.y) { return; }
   let pixel = textureLoad(rendered, vec2<i32>(i32(gid.x), i32(gid.y)), 0);
   let base  = (gid.y * sz.x + gid.x) * 4u;
-  let dr = pixel.r - reference[base]     / 255.0;
+  let ref_a = reference[base + 3u] / 255.0;
+  let dr = pixel.r - reference[base]      / 255.0;
   let dg = pixel.g - reference[base + 1u] / 255.0;
   let db = pixel.b - reference[base + 2u] / 255.0;
-  let sad = 0.3 * abs(dr) + 0.6 * abs(dg) + 0.1 * abs(db);
+  let da = pixel.a - ref_a;
+  let sad = ref_a * (0.3 * abs(dr) + 0.6 * abs(dg) + 0.1 * abs(db))
+          + (1.0 - ref_a) * abs(da);
   let fixed = u32(sad * 65536.0);
   atomicAdd(&accum, fixed);
 }
@@ -173,9 +176,12 @@ class TriangleGPU {
     });
     device.queue.writeBuffer(cidxBuf, 0, colorIdx);
 
-    const palArr = new Float32Array(nc * 3);
+    const palArr = new Float32Array(nc * 4);
     for (let i = 0; i < nc; ++i) {
-      palArr[i*3] = palRGB[i].r; palArr[i*3+1] = palRGB[i].g; palArr[i*3+2] = palRGB[i].b;
+      palArr[i*4]   = palRGB[i].r;
+      palArr[i*4+1] = palRGB[i].g;
+      palArr[i*4+2] = palRGB[i].b;
+      palArr[i*4+3] = palRGB[i].a !== undefined ? palRGB[i].a : 255;
     }
     const palBuf = device.createBuffer({
       size: palArr.byteLength,

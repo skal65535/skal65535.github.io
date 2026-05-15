@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Triangle optimizer test</title>
+<style>
+body { font-family: monospace; padding: 1em; }
+.row { display:flex; gap:1em; flex-wrap:wrap; margin-top:1em; align-items:flex-start; }
+.cv  { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:.85em; }
+canvas { border:1px solid #888; image-rendering:pixelated; width:192px; height:192px; }
+label { margin-right:.8em; }
+input[type=number] { width:5em; }
+input[type=range]  { width:8em; vertical-align:middle; }
+#log { max-height:260px; overflow:auto; background:#f0f0f0; padding:.5em; margin-top:.5em; }
+</style>
+</head>
+<body>
+<h2>Triangle optimizer</h2>
+<div style="display:flex;flex-wrap:wrap;gap:.5em;align-items:center;">
+  <label>Image: <input type="file" id="file" accept="image/*"></label>
+  <label>Grid: <input id="gx" type="number" value="64" min="4" max="64"> ×
+               <input id="gy" type="number" value="64" min="4" max="64"></label>
+  <label>Colors: <input id="nc" type="number" value="6" min="2" max="32"></label>
+  <label>Init pts: <input id="np" type="number" value="128" min="0" max="256"></label>
+  <label>Iters: <input id="iters" type="number" value="100000" min="10"></label>
+  <label>Log every: <input id="logEvery" type="number" value="1000" min="1"></label>
+  <label>λ: <input id="lambda" type="range" min="-6" max="-2" step="0.25" value="-4">
+    <span id="lambdaVal">1e-4</span></label>
+  <label><input type="checkbox" id="showTri"> triangles</label>
+  <button id="resetBtn">Reset</button>
+  <button id="btn">Run</button>
+  <span id="status" style="margin-left:.5em;"></span>
+</div>
+<details style="margin-top:.4em;">
+<summary style="cursor:pointer;font-size:.9em;">Mutation probabilities</summary>
+<div style="display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin-top:.3em;font-size:.85em;">
+  <label>vtx move: <input class="prob" id="p_vm"  type="range" min="0" max="100" value="50"> <span id="v_vm">50</span>%</label>
+  <label>vtx add:  <input class="prob" id="p_va"  type="range" min="0" max="100" value="20"> <span id="v_va">20</span>%</label>
+  <label>vtx sub:  <input class="prob" id="p_vs"  type="range" min="0" max="100" value="25"> <span id="v_vs">25</span>%</label>
+  <label>idx move: <input class="prob" id="p_ci"  type="range" min="0" max="100" value="25"> <span id="v_ci">25</span>%</label>
+  <label>col move: <input class="prob" id="p_cm"  type="range" min="0" max="100" value="20"> <span id="v_cm">20</span>%</label>
+  <label>col add:  <input class="prob" id="p_ca"  type="range" min="0" max="100" value="1">  <span id="v_ca">1</span>%</label>
+  <label>col sub:  <input class="prob" id="p_cs"  type="range" min="0" max="100" value="3">  <span id="v_cs">3</span>%</label>
+</div>
+</details>
+<div class="row">
+  <div class="cv"><canvas id="cRef"></canvas><span>Reference</span></div>
+  <div class="cv"><canvas id="cOpt"></canvas><span>Optimized (CPU)</span></div>
+  <div class="cv"><canvas id="cGpu"></canvas><span>Optimized (GPU)</span></div>
+</div>
+<div id="cmap" style="margin-top:.4em;display:flex;flex-wrap:wrap;gap:3px;"></div>
+<pre id="log"></pre>
+
+<script src="triangle-core.js"></script>
+<script src="triangle-ans-enc.js"></script>
+<script src="triangle-init.js"></script>
+<script src="triangle-gpu.js"></script>
+<script src="triangle-optimizer.js"></script>
+<script>
+'use strict';
+const logEl   = document.getElementById('log');
+const statusEl = document.getElementById('status');
+
+// Lambda slider display
+const lambdaSlider = document.getElementById('lambda');
+const lambdaVal    = document.getElementById('lambdaVal');
+function updateLambdaDisplay() {
+  lambdaVal.textContent = Math.pow(10, +lambdaSlider.value).toExponential(0);
+}
+lambdaSlider.addEventListener('input', updateLambdaDisplay);
+updateLambdaDisplay();
+
+for (const el of document.querySelectorAll('.prob')) {
+  el.addEventListener('input', () => { document.getElementById('v_' + el.id.slice(2)).textContent = el.value; });
+}
+
+function getMutationProbas() {
+  const g = id => +document.getElementById(id).value;
+  return {
+    proba_vertex_move:      g('p_vm'),
+    proba_vertex_add:       g('p_va'),
+    proba_vertex_sub:       g('p_vs'),
+    proba_color_index_move: g('p_ci'),
+    proba_color_move:       g('p_cm'),
+    proba_color_add:        g('p_ca'),
+    proba_color_sub:        g('p_cs'),
+  };
+}
+
+function addLog(s) { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+
+function drawRGB(canvas, w, h, rgbF32) {
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < w*h; ++i) {
+    id.data[i*4]   = rgbF32[i*3]   | 0;
+    id.data[i*4+1] = rgbF32[i*3+1] | 0;
+    id.data[i*4+2] = rgbF32[i*3+2] | 0;
+    id.data[i*4+3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+function drawRGBA(canvas, w, h, rgbaF32) {
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < w*h; ++i) {
+    id.data[i*4]   = rgbaF32[i*4]   | 0;
+    id.data[i*4+1] = rgbaF32[i*4+1] | 0;
+    id.data[i*4+2] = rgbaF32[i*4+2] | 0;
+    id.data[i*4+3] = rgbaF32[i*4+3] | 0;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+async function readbackTexture(device, texture, gx, gy) {
+  const rowPitch = Math.ceil(gx * 4 / 256) * 256;
+  const buf = device.createBuffer({ size: rowPitch * gy,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: rowPitch }, [gx, gy]);
+  device.queue.submit([enc.finish()]);
+  await buf.mapAsync(GPUMapMode.READ);
+  const src = new Uint8Array(buf.getMappedRange());
+  const rgba = new Float32Array(gx * gy * 4);
+  for (let y = 0; y < gy; ++y) for (let x = 0; x < gx; ++x) {
+    const s = y*rowPitch + x*4, d = (y*gx+x)*4;
+    rgba[d] = src[s]; rgba[d+1] = src[s+1]; rgba[d+2] = src[s+2]; rgba[d+3] = src[s+3];
+  }
+  buf.unmap(); buf.destroy();
+  return rgba;
+}
+
+function renderColormap(color_data) {
+  const el = document.getElementById('cmap');
+  el.innerHTML = '';
+  for (const c of color_data) {
+    const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
+    const div = document.createElement('div');
+    div.style.cssText = `width:16px;height:16px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
+                        `border:1px solid #888;display:inline-block;`;
+    div.title = `y=${c.y} co=${c.co} cg=${c.cg} a=${c.a}`;
+    el.appendChild(div);
+  }
+}
+
+function renderPreview(canvas, preview, color_data) {
+  const b64 = encodePreview(preview, color_data);
+  const reader = new ANSDec(atob(b64));
+  const p = new Preview();
+  p.grid_x = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
+  p.grid_y = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
+  p.use_noise = !!reader.NextBit(kPreviewNoiseProba);
+  p.ReadPalette(reader);
+  p.ReadVertices(reader);
+  const del = new Delaunay(p.grid_x, p.grid_y, p.qpts);
+  const rgba = rasterizeGrid(p.grid_x, p.grid_y, del.vtx, del.getTriangles(), p.cmap);
+  drawRGBA(canvas, p.grid_x, p.grid_y, rgba);
+  renderColormap(color_data);
+  if (document.getElementById('showTri').checked) {
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 0.5;
+    for (const t of del.getTriangles()) {
+      const [v0, v1, v2] = [del.vtx[t.vtx[0]], del.vtx[t.vtx[1]], del.vtx[t.vtx[2]]];
+      ctx.beginPath();
+      ctx.moveTo(v0.x + 0.5, v0.y + 0.5);
+      ctx.lineTo(v1.x + 0.5, v1.y + 0.5);
+      ctx.lineTo(v2.x + 0.5, v2.y + 0.5);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+}
+
+function makeSyntheticImage(w, h) {
+  const data = new Uint8ClampedArray(w*h*4);
+  for (let y = 0; y < h; ++y) for (let x = 0; x < w; ++x) {
+    const i = (y*w+x)*4;
+    data[i]   = Math.round(x/(w-1)*255);
+    data[i+1] = Math.round(y/(h-1)*255);
+    data[i+2] = Math.round((1-x/(w-1))*128+64);
+    data[i+3] = 255;
+  }
+  return { data, width:w, height:h };
+}
+
+let loadedImageData = null;
+
+document.getElementById('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = async () => {
+    const GX = +document.getElementById('gx').value;
+    const GY = +document.getElementById('gy').value;
+    const cv = document.createElement('canvas');
+    cv.width = GX; cv.height = GY;
+    cv.getContext('2d').drawImage(img, 0, 0, GX, GY);
+    loadedImageData = cv.getContext('2d').getImageData(0, 0, GX, GY);
+    URL.revokeObjectURL(img.src);
+    await resetState();
+  };
+  img.src = URL.createObjectURL(f);
+});
+
+let gOpt = null;
+const btn = document.getElementById('btn');
+
+btn.addEventListener('click', () => {
+  if (gOpt) { gOpt.stop(); return; }
+  runOptimizer();
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (gOpt) { gOpt.stop(); gOpt = null; }
+  resetState();
+});
+
+async function resetState() {
+  const GX = +document.getElementById('gx').value;
+  const GY = +document.getElementById('gy').value;
+  const nc = +document.getElementById('nc').value;
+  const np = +document.getElementById('np').value;
+
+  const imgData = loadedImageData || makeSyntheticImage(GX, GY);
+  const grid = sampleGrid(imgData, GX, GY);
+  const { preview: initPreview, color_data: initColors } =
+    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np });
+
+  logEl.textContent = '';
+  statusEl.textContent = '';
+  drawRGBA(document.getElementById('cRef'), GX, GY, grid);
+  renderPreview(document.getElementById('cOpt'), initPreview, initColors);
+  addLog(`Reset: nb_pts=${initPreview.nb_pts}  nb_colors=${initPreview.nb_colors}  size=${encodeSize(initPreview,initColors)}B  has_alpha=${initPreview.has_alpha}`);
+
+  try {
+    const device = await createWebGPUDevice();
+    const gpu = new TriangleGPU(device, GX, GY);
+    gpu.setReference(grid);
+    const del = buildDel(initPreview);
+    const pal = buildPalRGB(initColors);
+    await gpu.computeLoss(del, pal);
+    const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
+    drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
+    gpu.destroy(); device.destroy();
+  } catch(e) { addLog('WebGPU: ' + e.message); }
+}
+
+async function runOptimizer() {
+  btn.textContent = 'Stop';
+  logEl.textContent = '';
+  statusEl.textContent = '';
+
+  const GX      = +document.getElementById('gx').value;
+  const GY      = +document.getElementById('gy').value;
+  const nc      = +document.getElementById('nc').value;
+  const np      = +document.getElementById('np').value;
+  const maxIter  = +document.getElementById('iters').value || 500;
+  const logEvery = +document.getElementById('logEvery').value || 100;
+  const lambda   = Math.pow(10, +lambdaSlider.value);
+
+  const imgData = loadedImageData || makeSyntheticImage(GX, GY);
+  const grid = sampleGrid(imgData, GX, GY);
+
+  const { preview: initPreview, color_data: initColors } =
+    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np });
+  addLog(`Initial: nb_pts=${initPreview.nb_pts}  nb_colors=${initPreview.nb_colors}  size=${encodeSize(initPreview,initColors)}B`);
+
+  drawRGBA(document.getElementById('cRef'), GX, GY, grid);
+
+  let device;
+  try { device = await createWebGPUDevice(); }
+  catch(e) {
+    addLog('WebGPU unavailable: ' + e.message);
+    document.getElementById('btn').disabled = false;
+    return;
+  }
+
+  const gpu = new TriangleGPU(device, GX, GY);
+  gpu.setReference(grid);
+
+  const opt = new TriangleOptimizer(gpu, initPreview, initColors, { lambda, ...getMutationProbas() });
+  gOpt = opt;
+  const initScore = await opt.init();
+  addLog(`Initial score: ${initScore.toFixed(6)}  (lambda=${lambda.toExponential(0)})`);
+
+  const t0 = performance.now();
+  const result = await opt.run(maxIter, async (iter, best, r) => {
+    Object.assign(opt, getMutationProbas());
+    const elapsed = ((performance.now()-t0)/1000).toFixed(1);
+    statusEl.textContent = `iter=${iter}  best=${best.toFixed(5)}  ${elapsed}s`;
+    if (iter % logEvery === 0) {
+      const sz = encodeSize(opt.preview, opt.color_data);
+      addLog(`[${iter}] best=${best.toFixed(6)}  score=${r.score.toFixed(6)}  size=${sz}B  acc=${r.accepted?'Y':'N'}`);
+      renderPreview(document.getElementById('cOpt'), opt.preview, opt.color_data);
+      const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
+      drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
+    }
+  });
+
+  const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+  addLog(`Done ${elapsed}s  (${Math.round(maxIter/elapsed)} iter/s)`);
+  addLog(`Final: nb_pts=${result.preview.nb_pts}  nb_colors=${result.preview.nb_colors}  size=${encodeSize(result.preview,result.color_data)}B  loss=${result.loss.toFixed(6)}`);
+  statusEl.textContent = `Done — best loss=${result.loss.toFixed(6)}`;
+
+  renderPreview(document.getElementById('cOpt'), result.preview, result.color_data);
+
+  const del2 = new Delaunay(result.preview.grid_x, result.preview.grid_y, result.preview.qpts);
+  const pal2 = buildPalRGB(result.color_data);
+  await gpu.computeLoss(del2, pal2);
+  const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
+  drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
+
+  gpu.destroy(); device.destroy();
+  gOpt = null;
+  btn.textContent = 'Run';
+}
+
+resetState();
+</script>
+</body>
+</html>

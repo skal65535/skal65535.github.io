@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ANS encoder round-trip tests</title>
+<style>
+body { font-family: monospace; padding: 1em; }
+.ok   { color: green; }
+.fail { color: red; font-weight: bold; }
+#summary { margin-top: 1em; font-size: 1.1em; font-weight: bold; }
+</style>
+</head>
+<body>
+<h2>ANS encoder round-trip tests</h2>
+<pre id="out"></pre>
+<div id="summary"></div>
+<script src="triangle-core.js"></script>
+<script src="triangle-ans-enc.js"></script>
+<script>
+'use strict';
+let pass = 0, fail = 0;
+const out = document.getElementById('out');
+
+function check(label, got, exp) {
+  const ok = got === exp;
+  const span = document.createElement('span');
+  span.className = ok ? 'ok' : 'fail';
+  span.textContent = (ok ? 'OK  ' : 'FAIL') + ' ' + label +
+    (ok ? '' : '  got=' + got + ' exp=' + exp) + '\n';
+  out.appendChild(span);
+  ok ? ++pass : ++fail;
+}
+
+function makeReader(fn) {
+  const enc = new ANSEnc();
+  fn(enc);
+  const bytes = enc.Assemble();
+  let s = '';
+  for (let i = 0; i < bytes.length; ++i) s += String.fromCharCode(bytes[i]);
+  return new ANSDec(s);
+}
+
+// PutRange / ReadRange
+for (const [v, lo, hi] of [
+  [0,0,0],[0,0,1],[1,0,1],
+  [0,0,255],[127,0,255],[255,0,255],
+  [3,2,256],[2,2,256],[256,2,256],[5,5,5],
+]) check(`PutRange(${v},${lo},${hi})`, makeReader(e=>e.PutRange(v,lo,hi)).ReadRange(lo,hi), v);
+
+// PutBit / NextBit
+for (const [b, p0] of [
+  [0,kProbaMax>>1],[1,kProbaMax>>1],
+  [0,1],[1,1],
+  [0,kProbaMax-1],[1,kProbaMax-1],
+]) check(`PutBit(${b},${p0})`, makeReader(e=>e.PutBit(b,p0)).NextBit(p0), b);
+
+// Mixed sequence
+{
+  const dec = makeReader(enc => {
+    enc.PutRange(42,0,255); enc.PutBit(1,kProbaMax>>1);
+    enc.PutRange(7,2,256);  enc.PutBit(0,kProbaMax>>2);
+    enc.PutRange(200,0,255);
+  });
+  check('seq range1', dec.ReadRange(0,255), 42);
+  check('seq bit1',   dec.NextBit(kProbaMax>>1), 1);
+  check('seq range2', dec.ReadRange(2,256), 7);
+  check('seq bit2',   dec.NextBit(kProbaMax>>2), 0);
+  check('seq range3', dec.ReadRange(0,255), 200);
+}
+
+// PutAValue / ReadAValue
+for (const [value, pred, pos] of [
+  [10,0,false],[10,10,false],[12,10,false],[8,10,false],
+  [5,0,true],[63,20,true],[63,63,false],[0,0,false],
+  [31,31,false],[1,0,true],[63,0,true],
+]) {
+  const dec = makeReader(enc => enc.PutAValue(new ValueStats(), pos, pred, value));
+  check(`PutAValue(${value},pred=${pred},pos=${pos})`,
+        dec.ReadAValue(new ValueStats(), pos, pred), value);
+}
+
+// Adaptive ValueStats sequence
+{
+  const vals = [5,5,10,5,20,5,0,63,30];
+  const enc = new ANSEnc(), st = new ValueStats();
+  let pred = 0;
+  for (const v of vals) { enc.PutAValue(st, false, pred, v); pred = v; }
+  const bytes = enc.Assemble();
+  let s = ''; for (let i = 0; i < bytes.length; ++i) s += String.fromCharCode(bytes[i]);
+  const dec = new ANSDec(s), st2 = new ValueStats();
+  pred = 0; let ok = true;
+  for (const v of vals) {
+    const g = dec.ReadAValue(st2, false, pred);
+    if (g !== v) { ok = false; check(`adaptive[${v}]`, g, v); }
+    pred = g;
+  }
+  if (ok) check('adaptive sequence', true, true);
+}
+
+// encodePreview round-trip
+{
+  const grid_x = 4, grid_y = 4, nb_colors = 2;
+  const color_data = [
+    { y:20, co:30, cg:10, a:1 },
+    { y:40, co:35, cg:25, a:1 },
+  ];
+  const preview = {
+    grid_x, grid_y, use_noise:false, nb_colors, has_alpha:false, nb_pts:1,
+    qpts: [
+      {x:0,       y:0,       idx:0},
+      {x:grid_x-1,y:0,       idx:1},
+      {x:0,       y:grid_y-1,idx:0},
+      {x:grid_x-1,y:grid_y-1,idx:1},
+      {x:1,       y:1,       idx:0},
+    ],
+  };
+  const b64 = encodePreview(preview, color_data);
+  const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  let s = ''; for (let i = 0; i < raw.length; ++i) s += String.fromCharCode(raw[i]);
+  const dec = new ANSDec(s);
+
+  check('preview grid_x',    dec.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize), grid_x);
+  check('preview grid_y',    dec.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize), grid_y);
+  check('preview use_noise', dec.NextBit(kPreviewNoiseProba), 0);
+  check('preview nb_colors', dec.ReadRange(kPreviewMinNumColors, kPreviewMaxNumColors), nb_colors);
+  check('preview has_alpha', dec.NextBit(kPreviewOpaqueProba), 0);
+
+  const sy = new ValueStats(), scg = new ValueStats();
+  let py = kYCoCgMax>>1, pco = kYCoCgMax>>1, pcg = 0;
+  for (let i = 0; i < nb_colors; ++i) {
+    py  = dec.ReadAValue(sy,  false, py);
+    pco = dec.ReadAValue(sy,  false, pco);
+    pcg = dec.ReadAValue(scg, true,  pcg);
+    check(`color[${i}].y`,  py,  color_data[i].y);
+    check(`color[${i}].co`, pco, color_data[i].co);
+    check(`color[${i}].cg`, pcg, color_data[i].cg);
+  }
+
+  const nb_nc = grid_x*grid_y - 4;
+  const min_pts = Math.max(nb_colors-4, 0);
+  const max_pts = Math.min(nb_nc, kPreviewMaxNumVertices);
+  check('preview nb_pts', dec.ReadRange(min_pts, max_pts), 1);
+
+  const istats = new ANSBinSymbol(2,2);
+  const decIdx = (pred) => {
+    if (dec.NextAdaptiveBit(istats)) {
+      const tmp = dec.ReadRange(0, nb_colors-2);
+      return tmp >= pred ? tmp+1 : tmp;
+    }
+    return pred;
+  };
+  let ci = 0;
+  ci = decIdx(ci); check('corner TL', ci, preview.qpts[0].idx);
+  ci = decIdx(ci); check('corner TR', ci, preview.qpts[1].idx);
+  ci = decIdx(ci); check('corner BL', ci, preview.qpts[2].idx);
+  ci = decIdx(ci); check('corner BR', ci, preview.qpts[3].idx);
+
+  let pts_left = 1, cells_left = nb_nc, found = false;
+  for (let y = 0; y < grid_y && pts_left > 0; ++y) {
+    for (let x = 0; x < grid_x && pts_left > 0; ++x) {
+      if ((x===0||x===grid_x-1)&&(y===0||y===grid_y-1)) continue;
+      const bit = dec.NextBit(kProbaMax - Math.floor((pts_left<<16)/cells_left));
+      if (bit) {
+        ci = decIdx(ci);
+        if (x===1&&y===1) { check('vtx(1,1).idx', ci, preview.qpts[4].idx); found=true; }
+        --pts_left;
+      }
+      --cells_left;
+    }
+  }
+  if (!found) check('vtx(1,1) found', false, true);
+}
+
+const sum = document.getElementById('summary');
+sum.textContent = fail===0 ? `ALL PASS (${pass})` : `${fail} FAILURES / ${pass+fail} tests`;
+sum.style.color = fail===0 ? 'green' : 'red';
+</script>
+</body>
+</html>

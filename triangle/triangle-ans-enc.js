@@ -75,6 +75,18 @@ class ANSEnc {
 // ---------------------------------------------------------------------------
 
 function encodePreview(preview, color_data) {
+  // Sort palette by (cg, co, y, a) — required by is_positive=true encoding of cg.
+  const order = color_data.map((_, i) => i).sort((a, b) => {
+    const ca = color_data[a], cb = color_data[b];
+    return ca.cg !== cb.cg ? ca.cg - cb.cg :
+           ca.co !== cb.co ? ca.co - cb.co :
+           ca.y  !== cb.y  ? ca.y  - cb.y  : ca.a - cb.a;
+  });
+  color_data = order.map(i => color_data[i]);
+  const remap = new Int32Array(order.length);
+  order.forEach((o, ni) => { remap[o] = ni; });
+  preview = { ...preview, qpts: preview.qpts.map(v => ({ ...v, idx: remap[v.idx] })) };
+
   const enc = new ANSEnc();
   const {grid_x: gx, grid_y: gy, nb_colors: nc, nb_pts} = preview;
 

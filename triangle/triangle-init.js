@@ -99,9 +99,9 @@ function computeBary(px, py, x0, y0, x1, y1, x2, y2) {
 // ---------------------------------------------------------------------------
 // CPU Gouraud rasterizer onto gx×gy grid.
 // vtx: array of Vtx; triangles: from Delaunay.getTriangles(); palRGB: [{r,g,b}].
-// Returns Float32Array [gx*gy*3] RGB.
+// Returns Float32Array [gx*gy*4] RGBA.
 function rasterizeGrid(gx, gy, vtx, triangles, palRGB) {
-  const out = new Float32Array(gx * gy * 3);
+  const out = new Float32Array(gx * gy * 4);
   for (let y = 0; y < gy; ++y) {
     for (let x = 0; x < gx; ++x) {
       for (const tri of triangles) {
@@ -109,10 +109,11 @@ function rasterizeGrid(gx, gy, vtx, triangles, palRGB) {
         const bary = computeBary(x, y, v0.x, v0.y, v1.x, v1.y, v2.x, v2.y);
         if (!bary) continue;
         const c0 = palRGB[v0.idx], c1 = palRGB[v1.idx], c2 = palRGB[v2.idx];
-        const i = (y*gx + x)*3;
+        const i = (y*gx + x)*4;
         out[i]   = bary[0]*c0.r + bary[1]*c1.r + bary[2]*c2.r;
         out[i+1] = bary[0]*c0.g + bary[1]*c1.g + bary[2]*c2.g;
         out[i+2] = bary[0]*c0.b + bary[1]*c1.b + bary[2]*c2.b;
+        out[i+3] = bary[0]*c0.a + bary[1]*c1.a + bary[2]*c2.a;
         break;
       }
     }
@@ -134,11 +135,7 @@ function findClosestPalette(ycocg, palette) {
 // Greedy vertex placement: start with 4 corners, then add nb_pts non-corner
 // vertices by repeatedly picking the grid cell with the highest SAD residual.
 function placeVertices(grid, gx, gy, palette, nb_pts) {
-  const palRGB = palette.map(p => YCoCg_to_RGB(p.y, p.co, p.cg, 1));
-  const refRGB = new Float32Array(gx * gy * 3);
-  for (let i = 0; i < gx*gy; ++i) {
-    refRGB[i*3] = grid[i*4]; refRGB[i*3+1] = grid[i*4+1]; refRGB[i*3+2] = grid[i*4+2];
-  }
+  const palRGB = palette.map(p => YCoCg_to_RGB(p.y, p.co, p.cg, p.a));
 
   const getYCoCg = (x, y) => RGBtoYCoCg(grid[(y*gx+x)*4], grid[(y*gx+x)*4+1], grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
 
@@ -160,8 +157,8 @@ function placeVertices(grid, gx, gy, palette, nb_pts) {
         if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
         const key = gy_i*gx + gx_i;
         if (vtxSet.has(key)) continue;
-        const i = key*3;
-        const dr = rendered[i]-refRGB[i], dg = rendered[i+1]-refRGB[i+1], db = rendered[i+2]-refRGB[i+2];
+        const i = key*4;
+        const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
         const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
         if (score > bestScore) { bestScore = score; bestKey = key; }
       }
@@ -181,10 +178,12 @@ function buildInitialState(imageData, options = {}) {
   const {
     grid_x = 32, grid_y = 32,
     nb_colors = 8, nb_pts = 64,
-    has_alpha = false, use_noise = false,
+    has_alpha = null, use_noise = false,
   } = options;
 
   const grid = sampleGrid(imageData, grid_x, grid_y);
+  const actualHasAlpha = has_alpha !== null ? has_alpha :
+    grid.some((v, i) => (i & 3) === 3 && v < 255);
   const palette = buildPalette(grid, nb_colors);
   const qpts = placeVertices(grid, grid_x, grid_y, palette, nb_pts);
 
@@ -204,7 +203,7 @@ function buildInitialState(imageData, options = {}) {
     .sort((a, b) => a.y !== b.y ? a.y-b.y : a.x-b.x);
 
   const preview = {
-    grid_x, grid_y, use_noise, nb_colors, has_alpha,
+    grid_x, grid_y, use_noise, nb_colors, has_alpha: actualHasAlpha,
     nb_pts: nonCorners.length,
     qpts: [...corners, ...nonCorners],
   };
