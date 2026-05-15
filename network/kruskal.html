@@ -9,6 +9,12 @@
 <link rel="stylesheet" href="../common/main.css">
 <style>
   #main-canvas { width: 100%; height: auto; }
+  #info {
+    position: absolute; left: 14px; top: 14px;
+    background: var(--panel-bg); color: var(--ink);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 4px 8px; font: 12px var(--font-mono); z-index: 5;
+  }
 </style>
 </head>
 
@@ -27,6 +33,7 @@
   <div class="canvas-wrap">
     <!-- 'tabindex' is a trick to make the canvas capture key events -->
     <canvas id="main-canvas" width="1000" height="700" tabindex="1"></canvas>
+    <div id="info"><span id="fps"></span></div>
     <div id="gui-container"></div>
   </div>
 </div>
@@ -43,32 +50,71 @@ class Point {
     constructor(x, y) { this.x = x; this.y = y; }
     Distance2(p) { return Norm2(p.x - this.x, p.y - this.y); }
 }
-class Link {
-    constructor(i, j, key) { this.i = i; this.j = j; this.key = key; }
-}
-
 // Kruskal's algorithm for Minimum Spanning Tree.
 //  https://en.wikipedia.org/wiki/Kruskal%27s_algorithm
+//
+// Edges are kept in three parallel reusable buffers (keys + i + j), and
+// `idx` is the permutation we sort. Avoids the per-frame allocation of
+// O(N²) Link objects and the (key·N+i)·N+j packing — stable sort + ordered
+// fill (i<j) gives identical tie-breaking.
+const _buf = {
+    cap: 0,                       // edge capacity
+    keys: null, ei: null, ej: null, idx: null,
+    F: null,                      // union-find parents
+    ensure(N) {
+        const M = N * (N - 1) / 2;
+        if (M > this.cap) {
+            this.cap  = M;
+            this.keys = new Float64Array(M);
+            this.ei   = new Uint32Array(M);
+            this.ej   = new Uint32Array(M);
+            this.idx  = new Uint32Array(M);
+        }
+        if (!this.F || this.F.length < N) this.F = new Uint32Array(N);
+        return M;
+    },
+};
+
 function findSet(F, p) {
      let P = p;
      while (F[p] != p) p = F[p];
      while (F[P] != P) { const tmp = F[P]; F[P] = p; P = tmp; }
      return p;
 }
-function findMSTKruskal(edges, pts) {
-    edges.sort((a, b) => { return (b.key - a.key); });
-    let F = [];
-    for (let i = 0; i < pts.length; ++i) F.push(i);
-    let links = [];
-    while (edges.length > 0) {
-        const p = edges.pop();
-        const Ri = findSet(F, p.i), Rj = findSet(F, p.j);
-        if (Ri != Rj) {
-            links.push(p);
-            F[Rj] = Ri;
+function findMSTKruskal(pts, out) {
+    const N = pts.length;
+    const M = _buf.ensure(N);
+    const keys = _buf.keys, ei = _buf.ei, ej = _buf.ej, idx = _buf.idx, F = _buf.F;
+    // Fill edges in lexicographic (i<j) order so stable sort ties match
+    // the old packed-key behavior.
+    let k = 0;
+    for (let i = 0; i < N - 1; ++i) {
+        const Pi = pts[i], xi = Pi.x, yi = Pi.y;
+        for (let j = i + 1; j < N; ++j) {
+            const dx = pts[j].x - xi, dy = pts[j].y - yi;
+            keys[k] = dx * dx + dy * dy;
+            ei[k] = i; ej[k] = j;
+            idx[k] = k;
+            ++k;
         }
     }
-    return links;
+    // Sort only the index permutation (avoids parallel-array shuffling).
+    const view = idx.subarray(0, k);
+    view.sort((a, b) => keys[a] - keys[b]);
+    for (let i = 0; i < N; ++i) F[i] = i;
+
+    out.length = 0;
+    let need = N - 1;
+    for (let p = 0; p < k && need > 0; ++p) {
+        const e = view[p];
+        const Ri = findSet(F, ei[e]), Rj = findSet(F, ej[e]);
+        if (Ri != Rj) {
+            out.push(e);
+            F[Rj] = Ri;
+            --need;
+        }
+    }
+    return out;
 }
 
 // Shortest path algo
@@ -114,7 +160,6 @@ const settings = {
     SPT: false,
     radius: 1.,
     background_color: '#0a1230',
-    fps: 0,
     reset: () => { randomPoints(); },
 }
 
@@ -172,20 +217,6 @@ function movePoints(pts, amp) {
     }
 }
 
-// Fully connected graph
-function makeAllPairs(pts) {
-    const N = pts.length;
-    let t = [];
-    for (let i = 0; i < N - 1; ++i) {
-        for (let j = i + 1; j < N; ++j) {
-            let key = pts[i].Distance2(pts[j]);
-            key = (key * N + i) * N + j;
-            t.push(new Link(i, j, key));
-        }
-    }
-    return t;
-}
-
 // BEGIN MAIN
 const canvas = document.getElementById('main-canvas');
 const m = canvas.getContext("2d");
@@ -207,6 +238,7 @@ window.addEventListener('resize', fitCanvas);
 
 // Generate points
 const points = []
+const mstOut = [];   // reused per-frame, holds edge indices into _buf
 randomPoints();
 
 // Mouse / finger tracking (used for Shortest-Paths anchor and click-to-add).
@@ -226,7 +258,6 @@ canvas.addEventListener('keydown', ev => {
 // GUI
 const gui = mkGui(document.getElementById('gui-container'), { title: 'Parameters' });
 gui.add(settings, 'reset').name('Reset');
-gui.add(settings, 'fps').name('frame rate').listen().disable();
 gui.add(settings, 'count', 1, 1000, 1).name('Number of points').listen().onChange(randomPoints);
 gui.add(settings, 'ctype', { square: 0, circle: 1, disc: 2, treskel: 3 })
    .name('Initial Pattern').listen().onChange(randomPoints);
@@ -253,16 +284,16 @@ function update() {
         for (const a of points) drawCircle(m, a.x, a.y, 'white', settings.radius);
     }
     if (settings.MST) {
-        let links = findMSTKruskal(makeAllPairs(points), points);
+        const links = findMSTKruskal(points, mstOut);
+        const ei = _buf.ei, ej = _buf.ej;
         let total_d = 0.;
-        for (const l of links) {
-            const Pi = points[l.i], Pj = points[l.j];
+        for (const e of links) {
+            const Pi = points[ei[e]], Pj = points[ej[e]];
             drawLine(m, Pi.x, Pi.y, Pj.x, Pj.y, '#00ffc0');
             total_d += Math.sqrt(Pi.Distance2(Pj));
         }
-        total_d = total_d.toFixed(0);
         m.fillStyle = '#00ffc0';
-        m.fillText("Total Length: " + total_d, 10, canvas.height - 14);
+        m.fillText("Total Length: " + total_d.toFixed(0), 10, canvas.height - 14);
     }
     if (settings.SPT) {
         let node0 = findNearest(points, mouse_pos);
@@ -277,7 +308,7 @@ function update() {
             drawLine(m, A.x, A.y, B.x, B.y, color);
         }
     }
-    settings.fps = fps.tick();
+    document.getElementById('fps').innerText = fps.tick().toFixed(1) + ' fps';
     requestAnimationFrame(update);
 }
 

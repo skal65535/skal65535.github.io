@@ -10,6 +10,12 @@
 <link rel="stylesheet" href="../common/main.css">
 <style>
   #main-canvas { max-width: 1000px; width: 100%; height: auto; }
+  #info {
+    position: absolute; left: 14px; top: 14px;
+    background: var(--panel-bg); color: var(--ink);
+    border: 1px solid var(--panel-border); border-radius: 6px;
+    padding: 4px 8px; font: 12px var(--font-mono); z-index: 5;
+  }
 </style>
 </head>
 
@@ -28,6 +34,7 @@
   <div class="canvas-wrap">
     <!-- 'tabindex' is a trick to make the canvas capture key events -->
     <canvas id="main-canvas" width="1000" height="800" tabindex="1"></canvas>
+    <div id="info"><span id="fps"></span></div>
     <div id="gui-container"></div>
   </div>
 </div>
@@ -177,7 +184,6 @@ const params = {
   background_color: '#0a1230',
   convexHull: true,
   circum: true,
-  fps: 0,
   reset: () => { randomPoints(); },
 }
 
@@ -227,7 +233,6 @@ randomPoints();
 // GUI
 const gui = mkGui(document.getElementById('gui-container'), { title: 'Parameters' });
 gui.add(params, 'reset').name('Reset');
-gui.add(params, 'fps').name('frame rate').listen().disable();
 gui.add(params, 'count', 1, 1000, 1).name('Number of points').listen().onChange(randomPoints);
 gui.add(params, 'ctype', { square: 0, circle: 1, disc: 2, treskel: 3 })
    .name('Initial Pattern').listen().onChange(randomPoints);
@@ -289,7 +294,7 @@ function update() {
     m.fillText("area: " + C.area(), 165, canvas.height - 30);
   }
 
-  params.fps = fps.tick();
+  document.getElementById('fps').innerText = fps.tick().toFixed(1) + ' fps';
   requestAnimationFrame(update);
 }
 

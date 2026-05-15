@@ -1,154 +1,219 @@
-<!-- skal/ (pascal.massimino@gmail.com) 2023 -->
+<!-- skal/ (pascal.massimino@gmail.com) -->
 <!-- Generator for 'QRCode with picture' -->
-
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QR Code Generator</title>
+<link rel="stylesheet" href="../common/main.css">
 <script src="./QRCode.js"></script>
-
 <style>
-canvas { margin: 10px; box-shadow: 0 0 5px black; }
-#output { background-color: grey; }
-#imagePixel { display: none; }   /* Hidden */
+  /* Intermediate canvases used by the dither pipeline; not shown. */
+  #imagePixel { display: none; }
 
-#drop-area {
-  border: 3px dashed #ccc;
-  border-radius: 20px;
-  font-family: sans-serif;
-  margin: 10px auto;
-  padding: 10px;
-  background: #eef;
-  display: inline-block;
-}
-#drop-area.highlight { border-color: purple; }
+  .qr-canvases {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    justify-content: center;
+    align-items: flex-start;   /* don't stretch shorter canvases to row height */
+    margin: 10px 0;
+  }
+  .qr-canvases canvas {
+    background: var(--canvas-bg);
+    border: 2px solid var(--canvas-border);
+    border-radius: var(--radius-small);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    /* Display at native bitmap size — any CSS scaling here resamples the
+       high-frequency dither and produces horizontal moiré, even with
+       `image-rendering: pixelated` (browsers ignore it for some downscales). */
+    image-rendering: crisp-edges;  /* Firefox */
+    image-rendering: pixelated;    /* Chrome/Safari — wins over crisp-edges */
+  }
+  #output { background: #777; }
+
+  .qr-text {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 640px;
+    margin: 10px auto;
+  }
+  .qr-text textarea {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    padding: 6px 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-small);
+    background: #fff;
+    color: var(--ink);
+    resize: vertical;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .qr-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px 18px;
+    max-width: 880px;
+    margin: 10px auto;
+  }
+  .qr-controls > label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .qr-controls select {
+    font: inherit;
+    font-size: 13px;
+    padding: 4px 6px;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-small);
+    background: #fff;
+    color: var(--ink);
+    min-width: 130px;
+  }
+  .qr-controls .res {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-left: 6px;
+  }
+  .qr-controls .hint {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--ink-dim);
+    text-align: center;
+  }
 </style>
 </head>
 
 <body>
-<div id="drop-area" style='width:920px;'>
 
-<h1 align='center'>QR Code Generator</h1>
-<font size='-1'>Drag and Drop an image below, or click on it to open file dialog</font><br/>
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/">‹ Home</a>
+  <h2>QR Code Generator</h2>
+  <p class="blurb">
+    Drag and drop an image onto the card (or click the input canvas) and a
+    halftoned QR code is embedded into it.
+  </p>
 
-<form action="https://skal65535.github.io/"
-      style='position: relative; top:-90px; left:0px;'>
-  <input type="submit" value="skal 2023"
-         style='float: right; border-radius: 5px; padding: 5px;
-                background: #cce; border: 1px solid #112;'
-         onmouseover='this.style.background="#cdf"'
-         onmouseout='this.style.background="#cce"'/>
-</form>
+  <div class="qr-canvases">
+    <canvas id="imageInput" title="Click to choose an image"
+            onclick='document.getElementById("file_dialog").click()'>
+      <input id="file_dialog" type="file" style="display:none" accept="image/*"/>
+    </canvas>
+    <canvas id="imagePixel"></canvas>
+    <canvas id="imageDithered" title="Dithered version"></canvas>
+    <a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
+      <canvas id="output"></canvas>
+    </a>
+  </div>
 
-<canvas id="imageInput" onclick='document.getElementById("file_dialog").click()'>
-  <input id='file_dialog' type="file" style="display:none;" accept="image/*"/>
-</canvas>
-<canvas id="imagePixel"></canvas>
-<canvas id="imageDithered"></canvas>
-<a id="download" href="about:blank" download="qr.webp" target="_blank" title="Download QR Code">
-  <canvas id="output"></canvas>
-</a>
-<br/>
+  <div class="qr-text">
+    <label for="text" style="font-size:13px;">Embedded text</label>
+    <textarea id="text" rows="3" onchange="GenerateQRCode();">https://skal65535.github.io/QR</textarea>
+    <div class="button-row" style="margin:0;">
+      <button id="go" class="button" onclick="GenerateQRCode();">Generate QR Code</button>
+    </div>
+  </div>
 
-Embedded text:<br/>
-<textarea id="text" cols="50" rows="3" onchange='GenerateQRCode();'>https://skal65535.github.io/QR</textarea>
-<br/>
-<button id="go" onclick="GenerateQRCode();">Generate QR Code</button>
-<br/>
+  <div class="qr-controls">
+    <label>Error correction
+      <select id="error_level_selector" onchange="GenerateQRCode();">
+        <option value="L">Low (7%)</option>
+        <option value="M">Medium (15%)</option>
+        <option value="Q">Quartile (25%)</option>
+        <option value="H" selected>High (30%)</option>
+      </select>
+    </label>
 
-<table>
-<tr><td>Error correction:</td><td>
-<select id="error_level_selector" onchange='GenerateQRCode();'>
-  <option value="L">Low (7%)</option>
-  <option value="M">Medium (15%)</option>
-  <option value="Q">Quartile (25%)</option>
-  <option value="H" selected>High (30%)</option>
-</select>
-<br/>
-</td></tr>
+    <label>QR size<span class="res" id="resolution"></span>
+      <select id="size_selector" onchange="GenerateQRCode();">
+        <option value="0">Auto</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6" selected>6</option>
+        <option disabled>___</option>
+        <option value="7">7</option>
+        <option value="8">8</option>
+        <option value="9">9</option>
+        <option value="10">10</option>
+      </select>
+    </label>
 
-<tr><td>QR size:</td><td>
-<select id="size_selector" onchange='GenerateQRCode();'>
-  <option value="0">Auto</option>
-  <option value="1">1</option>
-  <option value="2">2</option>
-  <option value="3">3</option>
-  <option value="4">4</option>
-  <option value="5">5</option>
-  <option value="6" selected>6</option>
-  <option disabled>___</option>
-  <option value="7">7</option>
-  <option value="8">8</option>
-  <option value="9">9</option>
-  <option value="10">10</option>
-</select>
-<div style="display:inline;" id='resolution'></div>
-<br/>
-</td></tr>
+    <label>Background
+      <select id="background" onchange="GenerateQRCode();">
+        <option value="image" selected>Image (grayscale)</option>
+        <option value="color">Image (color)</option>
+        <option value="noise">Noise</option>
+        <option value="trans">None</option>
+      </select>
+    </label>
 
-<tr><td>Background:</td><td>
-<select id="background" onchange='GenerateQRCode();'>
-  <option value="image" selected>Image</option>
-  <option value="noise">Noise</option>
-  <option value="trans">None</option>
-</select><br/>
-</td></tr>
+    <label>Pixel size
+      <select id="pixel_size_selector" onchange="GenerateQRCode();">
+        <option value="1">1 × 1</option>
+        <option value="2" selected>2 × 2</option>
+        <option value="3">3 × 3</option>
+        <option value="4">4 × 4</option>
+      </select>
+    </label>
 
-<tr><td>Pixel size:</td><td>
-<select id="pixel_size_selector" onchange='GenerateQRCode();'>
-  <option value="1">1 x 1</option>
-  <option value="2" selected>2 x 2</option>
-  <option value="3">3 x 3</option>
-  <option value="4">4 x 4</option>
-</select><br/>
-</td></tr>
+    <label>Dithering
+      <select id="dithering_selector" onchange="GenerateQRCode();">
+        <option value="diffusion" selected>Diffusion</option>
+        <option value="ordered">Ordered</option>
+        <option value="random">Random</option>
+        <option value="none">None</option>
+      </select>
+    </label>
 
-<tr><td>Dithering:</td><td>
-<select id="dithering_selector" onchange='GenerateQRCode();'>
-  <option value="diffusion" selected>Diffusion</option>
-  <option value="ordered">Ordered</option>
-  <option value="random">Random</option>
-  <option value="none">None</option>
-</select><br/>
-</td></tr>
+    <label>Gray levels
+      <select id="gray_selector" onchange="GenerateQRCode();">
+        <option value="2" selected>2</option>
+        <option value="4">4</option>
+        <option value="16">16</option>
+        <option value="256">All (256)</option>
+      </select>
+    </label>
 
-<tr><td>Gray levels:</td><td>
-<select id="gray_selector" onchange='GenerateQRCode();'>
-  <option value="2" selected>2</option>
-  <option value="4">4</option>
-  <option value="16">16</option>
-  <option value="256">All (256)</option>
-</select><br/>
-</td></tr>
+    <label>Luminosity
+      <select id="luma_selector" onchange="GenerateQRCode();">
+        <option value="0">dark</option>
+        <option value="128" selected>normal</option>
+        <option value="255">light</option>
+      </select>
+    </label>
 
-<tr><td>Luminosity:</td><td>
-<select id="luma_selector" onchange='GenerateQRCode();'>
-  <option value="0">dark</option>
-  <option value="128" selected>normal</option>
-  <option value="255">light</option>
-</select><br/>
-</td></tr>
+    <label>Alpha cutoff
+      <select id="alpha_selector" onchange="GenerateQRCode();">
+        <option value="0">(off)</option>
+        <option value="64">low</option>
+        <option value="128" selected>mid</option>
+        <option value="255">high</option>
+      </select>
+    </label>
 
-<tr><td>Alpha cutoff:</td><td>
-<select id="alpha_selector" onchange='GenerateQRCode();'>
-  <option value="0">(off)</option>
-  <option value="64" >low</option>
-  <option value="128" selected>mid</option>
-  <option value="255">high</option>
-</select>
-<div style="display:inline;">(controls transparent areas)</div>
-<br/>
-</td></tr>
-</table>
+    <div class="hint">Alpha cutoff controls transparent areas.</div>
+  </div>
 
-<br/>
-Original idea by <a href='https://codepen.io/xiongbinsh/full/goyobm'>Xiong Bin</a>.
-See also <a href='https://cgv.cs.nthu.edu.tw/projects/Recreational_Graphics/Halftone_QRCodes'>this paper</a>,
-as mentioned by <a href='https://www.realtimerendering.com/blog/cooler-qr-codes/'>E. Haines</a>.
-
-
-</div>  <!-- main div -->
+  <p class="blurb small" style="text-align:center;">
+    Original idea by <a href="https://codepen.io/xiongbinsh/full/goyobm">Xiong Bin</a>.
+    See also <a href="https://cgv.cs.nthu.edu.tw/projects/Recreational_Graphics/Halftone_QRCodes">this paper</a>,
+    as mentioned by <a href="https://www.realtimerendering.com/blog/cooler-qr-codes/">E. Haines</a>.
+  </p>
+</div>
 
 <script src="./app.js" defer></script>
 

@@ -105,7 +105,7 @@ open-sourced code for fun :) Here are some side-projects demo pages:
    I also rewrote some I2C functions for a MCP2221 USB<->I2C micro-controller, so i could play
    with my IMU directly from my MacBook laptop. No longer have to use a Raspberry Pi!
 
-## [Particles](https://skal65535.github.io/particle_life/particle_life.html#91651088029) from [life_code](https://github.com/skal65535/life_code) project
+## [Particles](https://skal65535.github.io/particle_life/#91651088029) from [life_code](https://github.com/skal65535/life_code) project
 
    Explore randomly interacting particles. Click on 'Random exploration' button for interesting things to happen!
 

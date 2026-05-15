@@ -167,18 +167,26 @@ a.button {
 /* ── Back to Home button ────────────────────────────────────────── */
 
 #skal-back {
-  display: inline-block;
-  margin-bottom: 15px;
-  padding: 8px 12px;
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 2;
+  padding: 6px 10px;
   background: var(--back-bg);
   border: 1px solid var(--back-border);
   border-radius: var(--radius-btn);
   color: var(--ink);
   text-decoration: none;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
 }
 #skal-back:hover { background: var(--back-bg-hover); }
+
+/* Reserve space on the left of the title so it doesn't collide with the
+ * absolutely-positioned back button on narrow screens. */
+#main-area > h1:first-of-type,
+#main-area > #skal-back + h1,
+#main-area > #skal-back + h2 { padding: 0 90px; }
 
 /* ── Canvas wrapper (anchors the floating panel over the canvas) ─ */
 /* Pages opt in by wrapping <canvas> + <div id="gui-container"> in this. */
@@ -400,6 +408,10 @@ a.button {
     margin: 6px;
     border-width: 2px;
   }
+  #skal-back { top: 12px; left: 12px; padding: 5px 8px; font-size: 12px; }
+  #main-area > h1:first-of-type,
+  #main-area > #skal-back + h1,
+  #main-area > #skal-back + h2 { padding: 0 70px; font-size: 1.15em; }
   .button,
   button.button,
   label.button,
