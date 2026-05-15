@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Phase 3 GPU test</title>
+<style>body{font-family:monospace;padding:1em;} pre{background:#f0f0f0;padding:1em;} canvas{border:1px solid #888;}</style>
+</head>
+<body>
+<h2>Phase 3: GPU vs CPU rasterizer</h2>
+<div id="log"></div>
+<div style="display:flex;gap:1em;margin-top:1em;">
+  <div><div>Reference (sampled image)</div><canvas id="ref" width="64" height="64"></canvas></div>
+  <div><div>CPU Gouraud render</div><canvas id="cpu" width="64" height="64"></canvas></div>
+  <div><div>GPU render</div><canvas id="gpu" width="64" height="64"></canvas></div>
+</div>
+<script src="triangle-core.js"></script>
+<script src="triangle-ans-enc.js"></script>
+<script src="triangle-init.js"></script>
+<script src="triangle-gpu.js"></script>
+<script>
+'use strict';
+const log = document.getElementById('log');
+function print(s, ok) {
+  const p = document.createElement('pre');
+  p.style.color = ok === false ? 'red' : ok === true ? 'green' : 'black';
+  p.textContent = s;
+  log.appendChild(p);
+}
+
+function drawGrid(canvas, w, h, rgbF32) {
+  const ctx = canvas.getContext('2d');
+  canvas.width = w; canvas.height = h;
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; ++i) {
+    id.data[i*4]   = rgbF32[i*3]   | 0;
+    id.data[i*4+1] = rgbF32[i*3+1] | 0;
+    id.data[i*4+2] = rgbF32[i*3+2] | 0;
+    id.data[i*4+3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+function drawGridRGBA(canvas, w, h, rgbaF32) {
+  const ctx = canvas.getContext('2d');
+  canvas.width = w; canvas.height = h;
+  const id = ctx.createImageData(w, h);
+  for (let i = 0; i < w * h; ++i) {
+    id.data[i*4]   = rgbaF32[i*4]   | 0;
+    id.data[i*4+1] = rgbaF32[i*4+1] | 0;
+    id.data[i*4+2] = rgbaF32[i*4+2] | 0;
+    id.data[i*4+3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+// Build a synthetic 64x64 test image (gradient)
+function makeSyntheticImage(w, h) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; ++y) {
+    for (let x = 0; x < w; ++x) {
+      const i = (y * w + x) * 4;
+      data[i]   = Math.round(x / (w-1) * 255);
+      data[i+1] = Math.round(y / (h-1) * 255);
+      data[i+2] = Math.round((1 - x/(w-1)) * 128 + 64);
+      data[i+3] = 255;
+    }
+  }
+  return { data, width: w, height: h };
+}
+
+// CPU SAD: weighted 0.3R + 0.6G + 0.1B, returns normalized [0,1]
+function cpuSAD(rendered, reference, gx, gy) {
+  let sum = 0;
+  for (let i = 0; i < gx * gy; ++i) {
+    const dr = Math.abs(rendered[i*3]   - reference[i*4])   / 255;
+    const dg = Math.abs(rendered[i*3+1] - reference[i*4+1]) / 255;
+    const db = Math.abs(rendered[i*3+2] - reference[i*4+2]) / 255;
+    sum += 0.3*dr + 0.6*dg + 0.1*db;
+  }
+  return sum / (gx * gy);
+}
+
+async function run() {
+  const GX = 16, GY = 16;
+  const imgData = makeSyntheticImage(GX, GY);
+
+  // Build initial state
+  const { preview, color_data } = buildInitialState(imgData, {
+    grid_x: GX, grid_y: GY, nb_colors: 4, nb_pts: 8,
+  });
+
+  const palRGB = color_data.map(c => YCoCg_to_RGB(c.y, c.co, c.cg, 1));
+  const del = new Delaunay(GX, GY, preview.qpts);
+  const tris = del.getTriangles();
+
+  // CPU rasterize
+  const cpuRender = rasterizeGrid(GX, GY, del.vtx, tris, palRGB);
+  const grid = sampleGrid(imgData, GX, GY);
+
+  const cpuLoss = cpuSAD(cpuRender, grid, GX, GY);
+  print(`CPU loss: ${cpuLoss.toFixed(6)}`);
+
+  // Draw reference and CPU render
+  drawGridRGBA(document.getElementById('ref'), GX, GY, grid);
+  drawGrid(document.getElementById('cpu'), GX, GY, cpuRender);
+
+  // WebGPU
+  let device;
+  try {
+    device = await createWebGPUDevice();
+  } catch(e) {
+    print(`WebGPU unavailable: ${e.message}`, false);
+    return;
+  }
+
+  const gpu = new TriangleGPU(device, GX, GY);
+  gpu.setReference(grid);
+
+  const gpuLoss = await gpu.computeLoss(del, palRGB);
+  print(`GPU loss: ${gpuLoss.toFixed(6)}`);
+
+  const diff = Math.abs(gpuLoss - cpuLoss);
+  const rel  = cpuLoss > 0 ? diff / cpuLoss : diff;
+  const ok   = rel < 0.05;
+  print(`Relative diff: ${(rel*100).toFixed(3)}%  →  ${ok ? 'PASS' : 'FAIL'} (threshold 5%)`, ok);
+
+  // Read back GPU texture to display it (bytesPerRow must be multiple of 256)
+  const rowPitch = Math.ceil(GX * 4 / 256) * 256;
+  const readBuf = device.createBuffer({
+    size: rowPitch * GY,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const enc2 = device.createCommandEncoder();
+  enc2.copyTextureToBuffer(
+    { texture: gpu._renderTarget },
+    { buffer: readBuf, bytesPerRow: rowPitch },
+    [GX, GY]
+  );
+  device.queue.submit([enc2.finish()]);
+  await readBuf.mapAsync(GPUMapMode.READ);
+  const pixels = new Uint8Array(readBuf.getMappedRange());
+  const gpuRGBf = new Float32Array(GX * GY * 3);
+  for (let y = 0; y < GY; ++y) {
+    for (let x = 0; x < GX; ++x) {
+      const src = y * rowPitch + x * 4;
+      const dst = (y * GX + x) * 3;
+      gpuRGBf[dst]   = pixels[src];
+      gpuRGBf[dst+1] = pixels[src+1];
+      gpuRGBf[dst+2] = pixels[src+2];
+    }
+  }
+  readBuf.unmap();
+  drawGrid(document.getElementById('gpu'), GX, GY, gpuRGBf);
+
+  gpu.destroy();
+  device.destroy();
+}
+
+run().catch(e => print('ERROR: ' + e.stack, false));
+</script>
+</body>
+</html>

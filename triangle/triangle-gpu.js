@@ -20,10 +20,10 @@ struct VSOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi : u32) -> VSOut {
-  let gx = positions[vi * 2u];
-  let gy = positions[vi * 2u + 1u];
-  let ndcx =  gx * uni.inv_gx * 2.0 - 1.0;
-  let ndcy = -(gy * uni.inv_gy * 2.0 - 1.0);
+  let vx = positions[vi * 2u];
+  let vy = positions[vi * 2u + 1u];
+  let ndcx =  vx * uni.inv_gx * 2.0 - 1.0;
+  let ndcy = -(vy * uni.inv_gy * 2.0 - 1.0);
   let ci = colorIdx[vi] * 3u;
   var o : VSOut;
   o.pos = vec4<f32>(ndcx, ndcy, 0.0, 1.0);
@@ -77,7 +77,7 @@ class TriangleGPU {
     this._renderTarget = device.createTexture({
       size: [gx, gy],
       format: 'rgba8unorm',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
 
     const bgl = device.createBindGroupLayout({ entries: [
@@ -132,7 +132,7 @@ class TriangleGPU {
   _buildAccumBuffer() {
     this._accumBuffer = this.device.createBuffer({
       size: 4,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
     this._readBuffer = this.device.createBuffer({
       size: 4,
