@@ -506,6 +506,7 @@ class ROIMask {
 }
 
 const app = {
+  // --- Constants & Config ---
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
     obama:  { file: 'obama.webp' },
@@ -514,8 +515,8 @@ const app = {
     claude: { file: 'claude.webp' },
   },
 
+  // --- State ---
   ui: {},
-
   state: {
     optimizer: null,
     loadedImageData: null,
@@ -526,28 +527,27 @@ const app = {
     lastRenderedPreview: null,
     lastRenderedColors: null,
     roiMask: null,
+    stats: { pts: null, colors: null, dist: null, byteSize: null },
   },
 
+  // --- Initialization ---
   init() {
     this.cacheDOMElements();
     this.initTabs();
-    this.initEventListeners();
-    this.initMaskEvents();
-    this.updateTargetPtsDisplay();
-    this.updateLambdaDisplay();
-    this.updateToleranceDisplay();
+    this.bindEventListeners();
+    this.updateAllDisplays();
     this.ui.lambda.disabled = this.ui.autoLambda.checked;
     this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
   },
 
   cacheDOMElements() {
     const ids = [
-      'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
-      'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn', 'resetColorsBtn',
-      'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom',
-      'byteSize', 'statPts', 'statColors', 'statDist', 'debugOpt', 'tolerance', 'toleranceVal',
-      'lambda', 'lambdaVal', 'colorPenalty', 'colorPenaltyVal',
-      'roiBrush', 'roiBrushVal', 'roiStrength', 'roiStrengthVal', 'roiAutoBtn', 'roiResetBtn',
+      'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'autoLambda', 'copyBtn',
+      'presetSelect', 'file', 'resetBtn', 'resetColorsBtn', 'btn', 'targetPts',
+      'targetPtsVal', 'gridSize', 'zoom', 'byteSize', 'statPts', 'statColors',
+      'statDist', 'debugOpt', 'tolerance', 'toleranceVal', 'lambda', 'lambdaVal',
+      'colorPenalty', 'colorPenaltyVal', 'roiBrush', 'roiBrushVal', 'roiStrength',
+      'roiStrengthVal', 'roiAutoBtn', 'roiResetBtn',
     ];
     ids.forEach(id => { this.ui[id] = document.getElementById(id); });
     this.ui.probInputs = document.querySelectorAll('.prob');
@@ -564,55 +564,56 @@ const app = {
     });
   },
 
-  initEventListeners() {
-    this.ui.btn.addEventListener('click', () => this.toggleRun());
-    this.ui.resetBtn.addEventListener('click', () => this.stopAndReset());
-    this.ui.resetColorsBtn.addEventListener('click', () => this.resetColormap());
-    this.ui.copyBtn.addEventListener('click', () => navigator.clipboard.writeText(this.ui.b64out.value));
+  // --- Event Binding ---
+  bindEventListeners() {
+    // Main actions
+    this._bind('btn', 'click', () => this.toggleRun());
+    this._bind('resetBtn', 'click', () => this.stopAndReset());
+    this._bind('resetColorsBtn', 'click', () => this.resetColormap());
+    this._bind('copyBtn', 'click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
-    this.ui.presetSelect.addEventListener('change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
-    this.ui.file.addEventListener('change', e => this.handleFileSelect(e));
+    // Image loading
+    this._bind('presetSelect', 'change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
+    this._bind('file', 'change', e => this.handleFileSelect(e));
 
-    this.ui.targetPts.addEventListener('change', () => this.handleGridParamChange());
-    this.ui.zoom.addEventListener('change', async e => {
+    // Parameter tabs
+    this._bind('targetPts', 'change', () => this.handleGridParamChange());
+    this._bind('zoom', 'change', async e => {
       this.state.zoom = +e.target.value;
       if (this.state.loadedOrigCanvas) this.resampleFromOrig();
       await this.stopAndReset();
     });
     ['nc', 'np', 'randomInit'].forEach(id => {
-      document.getElementById(id).addEventListener('change', () => this.stopAndReset());
+      this._bind(id, 'change', () => this.stopAndReset());
     });
 
-    this.ui.autoLambda.addEventListener('change', e => { this.ui.lambda.disabled = e.target.checked; });
-    this.ui.lambda.addEventListener('input', () => this.updateLambdaDisplay());
-    this.ui.colorPenalty.addEventListener('input', () => {
-      this.ui.colorPenaltyVal.textContent = (+this.ui.colorPenalty.value).toFixed(1);
-    });
-    this.ui.tolerance.addEventListener('input', () => this.updateToleranceDisplay());
-    this.ui.showTri.addEventListener('change', () => {
+    this._bind('autoLambda', 'change', e => { this.ui.lambda.disabled = e.target.checked; });
+    this._bind('showTri', 'change', () => {
       if (this.state.lastRenderedPreview) {
         this.renderPreview(this.ui.cOpt, this.state.lastRenderedPreview, this.state.lastRenderedColors);
       }
     });
 
+    // Sliders with readouts
+    this._bindSlider('lambda', 'lambdaVal', v => this.getLambda('lambda').toExponential(1));
+    this._bindSlider('tolerance', 'toleranceVal', v => v === 0 ? '0' : (+v).toExponential(0));
+    this._bindSlider('colorPenalty', 'colorPenaltyVal', v => (+v).toFixed(1));
+    this._bindSlider('roiBrush', 'roiBrushVal');
+    this._bindSlider('roiStrength', 'roiStrengthVal', v => (+v).toFixed(1), val => {
+        if (this.state.optimizer) this.state.optimizer.roiStrength = val;
+    });
     this.ui.probInputs.forEach(el => {
       const span = document.getElementById('v_' + el.id.slice(2));
       el.addEventListener('input', () => { span.textContent = el.value; });
-      span.textContent = el.value;
     });
 
-    this.ui.roiBrush.addEventListener('input', () => {
-      this.ui.roiBrushVal.textContent = this.ui.roiBrush.value;
-    });
-    this.ui.roiStrength.addEventListener('input', () => {
-      this.ui.roiStrengthVal.textContent = (+this.ui.roiStrength.value).toFixed(1);
-      if (this.state.optimizer) this.state.optimizer.roiStrength = +this.ui.roiStrength.value;
-    });
-    this.ui.roiAutoBtn.addEventListener('click', () => this.applyAutoMask());
-    this.ui.roiResetBtn.addEventListener('click', () => this.resetMask());
+    // Masking
+    this._bind('roiAutoBtn', 'click', () => this.applyAutoMask());
+    this._bind('roiResetBtn', 'click', () => this.resetMask());
+    this.bindMaskPainting();
   },
 
-  initMaskEvents() {
+  bindMaskPainting() {
     const canvas = this.ui.cRef;
     let painting = false;
     const coords = (e) => {
@@ -634,6 +635,35 @@ const app = {
       this.paintMask(x, y);
     });
     window.addEventListener('mouseup', () => { painting = false; });
+  },
+
+  _bind(id, event, handler) {
+    const el = this.ui[id] || document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+  },
+
+  _bindSlider(sliderId, readoutId, formatter = v => v, onChange = () => {}) {
+    const slider = this.ui[sliderId];
+    const readout = this.ui[readoutId];
+    if (!slider || !readout) return;
+    slider.addEventListener('input', () => {
+      const value = +slider.value;
+      readout.textContent = formatter(value);
+      onChange(value);
+    });
+  },
+
+  // --- UI Update & Rendering ---
+  updateAllDisplays() {
+      this.updateTargetPtsDisplay();
+      this.updateLambdaDisplay();
+      this.updateToleranceDisplay();
+      this.ui.colorPenaltyVal.textContent = (+this.ui.colorPenalty.value).toFixed(1);
+      this.ui.roiBrushVal.textContent = this.ui.roiBrush.value;
+      this.ui.roiStrengthVal.textContent = (+this.ui.roiStrength.value).toFixed(1);
+      this.ui.probInputs.forEach(el => {
+          document.getElementById('v_' + el.id.slice(2)).textContent = el.value;
+      });
   },
 
   paintMask(x, y) {
@@ -684,6 +714,7 @@ const app = {
     this.redrawRef();
   },
 
+  // --- Core Logic ---
   getParams() {
     const g = id => +document.getElementById(id).value;
     const optimizerParams = {
@@ -773,9 +804,8 @@ const app = {
           opt.currentScore += delta;
           opt.bestLoss     += delta;
         }
-        const dist = r.distortion;
-        this.ui.statDist.textContent = dist.toFixed(5);
-        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
+        this.updateStats({ dist: r.distortion });
+        this.log(`[${iter}] best=${best.toFixed(5)} dist=${r.distortion.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
         this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
       });
 
@@ -798,6 +828,7 @@ const app = {
   async reset() {
     this.log('');
     this.updateStatus('');
+    this.updateStats({ pts: null, colors: null, dist: null, byteSize: null });
     const params = this.getParams();
     const { preview, color_data } = this.prepareGrid(params);
     this.log(`Reset: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B has_alpha=${preview.has_alpha}`);
@@ -924,14 +955,26 @@ const app = {
 
   log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
   updateStatus(s) { if (s) this.log(s); },
-  updateLambdaDisplay() {
-    this.ui.lambdaVal.textContent = this.getLambda('lambda').toExponential(1);
-  },
+
+  updateLambdaDisplay() { this.ui.lambdaVal.textContent = this.getLambda('lambda').toExponential(1); },
   updateToleranceDisplay() {
     const v = +this.ui.tolerance.value;
     this.ui.toleranceVal.textContent = v === 0 ? '0' : v.toExponential(0);
   },
   updateTargetPtsDisplay() { this.ui.targetPtsVal.textContent = this.TARGET_PTS[+this.ui.targetPts.value]; },
+
+  updateStats(newStats) {
+    Object.assign(this.state.stats, newStats);
+    this.renderStats();
+  },
+
+  renderStats() {
+    const { pts, colors, dist, byteSize } = this.state.stats;
+    this.ui.statPts.textContent = pts ?? '—';
+    this.ui.statColors.textContent = colors ?? '—';
+    this.ui.statDist.textContent = typeof dist === 'number' ? dist.toFixed(5) : '—';
+    this.ui.byteSize.textContent = byteSize != null ? `${byteSize} B` : '';
+  },
 
   drawRGBA(canvas, w, h, rgbaF32) {
     canvas.width = w; canvas.height = h;
@@ -954,9 +997,7 @@ const app = {
     const b64 = encodePreview(preview, color_data);
     this.ui.b64out.value = b64;
     const sz = encodeSize(preview, color_data);
-    this.ui.byteSize.textContent = sz + ' B';
-    this.ui.statPts.textContent = preview.nb_pts;
-    this.ui.statColors.textContent = preview.nb_colors;
+    this.updateStats({ byteSize: sz, pts: preview.nb_pts, colors: preview.nb_colors });
     this.state.lastRenderedPreview = preview;
     this.state.lastRenderedColors = color_data;
   },
@@ -966,8 +1007,8 @@ const app = {
     for (const c of color_data) {
       const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
       const div = document.createElement('div');
-      div.style.cssText = `width:14px;height:14px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
-                          `border:1px solid var(--panel-border);border-radius:2px;display:inline-block;`;
+      div.style.cssText = `width:14px; height:14px; background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});
+                           border:1px solid var(--panel-border); border-radius:2px; display:inline-block;`;
       div.title = `Y=${c.y} Co=${c.co} Cg=${c.cg} a=${c.a} | R=${rgb.r} G=${rgb.g} B=${rgb.b} A=${rgb.a}`;
       this.ui.cmap.appendChild(div);
     }
