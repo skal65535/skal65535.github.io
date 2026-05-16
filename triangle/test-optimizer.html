@@ -1,53 +1,302 @@
+<!-- skal/ (pascal.massimino@gmail.com) -->
 <!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Triangle optimizer test</title>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triangle Optimizer</title>
+<link rel="stylesheet" href="../common/main.css">
 <style>
-body { font-family: monospace; padding: 1em; }
-.row { display:flex; gap:1em; flex-wrap:wrap; margin-top:1em; align-items:flex-start; }
-.cv  { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:.85em; }
-canvas { border:1px solid #888; image-rendering:pixelated; width:192px; height:192px; }
-label { margin-right:.8em; }
-input[type=number] { width:5em; }
-input[type=range]  { width:8em; vertical-align:middle; }
-#log { max-height:260px; overflow:auto; background:#f0f0f0; padding:.5em; margin-top:.5em; }
+  /* Two-column layout: params panel left, work area right. */
+  .opt-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+    margin-top: 14px;
+    align-items: start;
+  }
+  @media (max-width: 768px) { .opt-layout { grid-template-columns: 1fr; } }
+
+  /* Override .skal-gui absolute positioning so it flows in the grid. */
+  .opt-panel { position: static; width: 100%; max-width: 100%; }
+
+  /* Number inputs inside panel rows (mirrors .skal-row-text for numbers). */
+  .skal-row-text input[type=number] {
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 3px 6px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: #fff;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  /* Canvases row */
+  .cv-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; }
+  .cv { display: flex; flex-direction: column; align-items: center;
+        gap: 4px; font-size: 12px; color: var(--ink-dim); }
+  .cv canvas {
+    border: 2px solid var(--canvas-border);
+    border-radius: var(--radius-small);
+    image-rendering: pixelated;
+    background: var(--canvas-bg);
+  }
+
+  /* Colormap swatches */
+  #cmap { display: flex; flex-wrap: wrap; gap: 3px; }
+
+  /* b64 output row */
+  .b64-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+  .b64-row textarea {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    resize: vertical;
+    background: #fff;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-small);
+    padding: 5px 7px;
+    color: var(--ink);
+    min-height: 52px;
+  }
+
+  /* Log */
+  #log {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    max-height: 220px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.06);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-small);
+    padding: 6px 8px;
+    margin: 0;
+    color: var(--ink-dim);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* Status line next to action buttons */
+  #status {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--ink-dim);
+    align-self: center;
+  }
 </style>
 </head>
 <body>
-<h2>Triangle optimizer</h2>
-<div style="display:flex;flex-wrap:wrap;gap:.5em;align-items:center;">
-  <label>Image: <input type="file" id="file" accept="image/*"></label>
-  <label>Grid: <input id="gx" type="number" value="64" min="4" max="64"> ×
-               <input id="gy" type="number" value="64" min="4" max="64"></label>
-  <label>Colors: <input id="nc" type="number" value="6" min="2" max="32"></label>
-  <label>Init pts: <input id="np" type="number" value="128" min="0" max="256"></label>
-  <label>Iters: <input id="iters" type="number" value="100000" min="10"></label>
-  <label>Log every: <input id="logEvery" type="number" value="1000" min="1"></label>
-  <label>λ: <input id="lambda" type="range" min="-6" max="-2" step="0.25" value="-4">
-    <span id="lambdaVal">1e-4</span></label>
-  <label><input type="checkbox" id="showTri"> triangles</label>
-  <button id="resetBtn">Reset</button>
-  <button id="btn">Run</button>
-  <span id="status" style="margin-left:.5em;"></span>
-</div>
-<details style="margin-top:.4em;">
-<summary style="cursor:pointer;font-size:.9em;">Mutation probabilities</summary>
-<div style="display:flex;flex-wrap:wrap;gap:.5em;align-items:center;margin-top:.3em;font-size:.85em;">
-  <label>vtx move: <input class="prob" id="p_vm"  type="range" min="0" max="100" value="50"> <span id="v_vm">50</span>%</label>
-  <label>vtx add:  <input class="prob" id="p_va"  type="range" min="0" max="100" value="20"> <span id="v_va">20</span>%</label>
-  <label>vtx sub:  <input class="prob" id="p_vs"  type="range" min="0" max="100" value="25"> <span id="v_vs">25</span>%</label>
-  <label>idx move: <input class="prob" id="p_ci"  type="range" min="0" max="100" value="25"> <span id="v_ci">25</span>%</label>
-  <label>col move: <input class="prob" id="p_cm"  type="range" min="0" max="100" value="20"> <span id="v_cm">20</span>%</label>
-  <label>col add:  <input class="prob" id="p_ca"  type="range" min="0" max="100" value="1">  <span id="v_ca">1</span>%</label>
-  <label>col sub:  <input class="prob" id="p_cs"  type="range" min="0" max="100" value="3">  <span id="v_cs">3</span>%</label>
-</div>
-</details>
-<div class="row">
-  <div class="cv"><canvas id="cRef"></canvas><span>Reference</span></div>
-  <div class="cv"><canvas id="cOpt"></canvas><span>Optimized (CPU)</span></div>
-  <div class="cv"><canvas id="cGpu"></canvas><span>Optimized (GPU)</span></div>
-</div>
-<div id="cmap" style="margin-top:.4em;display:flex;flex-wrap:wrap;gap:3px;"></div>
-<pre id="log"></pre>
+
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/">‹ Home</a>
+  <h2>Triangle Optimizer</h2>
+
+  <p class="blurb">
+    Encode an image as a compact WebP2 triangle preview using a GPU-accelerated
+    optimizer. Copy the output base64 string into the
+    <a href="index.html">decoder</a> to render it.
+  </p>
+
+  <form>
+    <input type="file" id="file" style="display:none" accept="image/*">
+  </form>
+
+  <div class="button-row">
+    <label class="button" for="file">Select image</label>
+    <button class="button" id="resetBtn">Reset</button>
+    <button class="button" id="btn">Run</button>
+    <span id="status"></span>
+  </div>
+
+  <div class="opt-layout">
+
+    <!-- ── Left: parameter panel ─────────────────────────────────────── -->
+    <div class="skal-gui opt-panel">
+      <div class="skal-gui-title" id="panel-title">Parameters</div>
+      <div class="skal-gui-body">
+
+        <!-- Grid & Compression -->
+        <div class="skal-folder">
+          <div class="skal-folder-title">Grid &amp; Compression</div>
+          <div class="skal-folder-body">
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label" for="targetPts">Target points</label>
+                <span class="skal-readout" id="targetPtsVal"></span>
+              </div>
+              <input type="range" id="targetPts" min="0" max="9" step="1" value="4">
+            </div>
+            <div class="skal-row">
+              <span class="skal-readout" id="gridSize"></span>
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="nc">Colors</label>
+              <input type="number" id="nc" value="6" min="2" max="32">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="np">Init points</label>
+              <input type="number" id="np" value="128" min="0" max="256">
+            </div>
+            <div class="skal-row skal-row-toggle">
+              <label class="skal-row-label" for="randomInit">Random init</label>
+              <input type="checkbox" id="randomInit">
+            </div>
+          </div>
+        </div>
+
+        <!-- Optimizer -->
+        <div class="skal-folder">
+          <div class="skal-folder-title">Optimizer</div>
+          <div class="skal-folder-body">
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="iters">Iterations</label>
+              <input type="number" id="iters" value="100000" min="10">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="logEvery">Log every</label>
+              <input type="number" id="logEvery" value="1000" min="1">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="gpuBatch">GPU batch</label>
+              <input type="number" id="gpuBatch" value="1000" min="1" max="10000">
+            </div>
+            <div class="skal-row skal-row-toggle">
+              <label class="skal-row-label" for="useGPU">Full-GPU loop</label>
+              <input type="checkbox" id="useGPU" checked>
+            </div>
+          </div>
+        </div>
+
+        <!-- Lambda -->
+        <div class="skal-folder">
+          <div class="skal-folder-title">Lambda (λ)</div>
+          <div class="skal-folder-body">
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label" for="lambda">λ</label>
+                <span class="skal-readout" id="lambdaVal">1e-4</span>
+              </div>
+              <input type="range" id="lambda" min="-6" max="-2" step="0.25" value="-4">
+            </div>
+            <div class="skal-row skal-row-toggle">
+              <label class="skal-row-label" for="autoLambda">Auto-λ</label>
+              <input type="checkbox" id="autoLambda">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="targetBytes">Target (bytes)</label>
+              <input type="number" id="targetBytes" value="500" min="10">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="autoGain">Auto-λ gain</label>
+              <input type="number" id="autoGain" value="0.2" min="0.01" max="2" step="0.01">
+            </div>
+          </div>
+        </div>
+
+        <!-- Mutations (collapsed by default) -->
+        <div class="skal-folder collapsed">
+          <div class="skal-folder-title">Mutations</div>
+          <div class="skal-folder-body">
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Vtx move</label>
+                <span class="skal-readout"><span id="v_vm">50</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_vm" min="0" max="100" value="50">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Vtx add</label>
+                <span class="skal-readout"><span id="v_va">20</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_va" min="0" max="100" value="20">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Vtx remove</label>
+                <span class="skal-readout"><span id="v_vs">25</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_vs" min="0" max="100" value="25">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Color index</label>
+                <span class="skal-readout"><span id="v_ci">25</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_ci" min="0" max="100" value="25">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Color move</label>
+                <span class="skal-readout"><span id="v_cm">20</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_cm" min="0" max="100" value="20">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Color add</label>
+                <span class="skal-readout"><span id="v_ca">1</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_ca" min="0" max="100" value="1">
+            </div>
+            <div class="skal-row skal-row-slider">
+              <div class="skal-row-header">
+                <label class="skal-row-label">Color remove</label>
+                <span class="skal-readout"><span id="v_cs">3</span>%</span>
+              </div>
+              <input class="prob" type="range" id="p_cs" min="0" max="100" value="3">
+            </div>
+          </div>
+        </div>
+
+        <!-- Display & advanced -->
+        <div class="skal-folder">
+          <div class="skal-folder-title">Display &amp; Advanced</div>
+          <div class="skal-folder-body">
+            <div class="skal-row skal-row-toggle">
+              <label class="skal-row-label" for="showTri">Show triangles</label>
+              <input type="checkbox" id="showTri">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="vmAmp">Vtx amplitude</label>
+              <input type="number" id="vmAmp" value="1" min="1" max="32">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="borderEscape">Border escape %</label>
+              <input type="number" id="borderEscape" value="5" min="0" max="100">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="topoCadence">Topo every</label>
+              <input type="number" id="topoCadence" value="10" min="1" max="1000">
+            </div>
+          </div>
+        </div>
+
+      </div><!-- .skal-gui-body -->
+    </div><!-- .skal-gui.opt-panel -->
+
+    <!-- ── Right: work area ──────────────────────────────────────────── -->
+    <div>
+      <div class="cv-row">
+        <div class="cv"><canvas id="cRef"></canvas><span>Reference</span></div>
+        <div class="cv"><canvas id="cOpt"></canvas><span>Optimized</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <div id="cmap" style="margin:0;"></div>
+        <span id="byteSize" style="font-size:20px;font-weight:700;color:var(--ink);font-family:var(--font-mono);"></span>
+      </div>
+      <div class="b64-row">
+        <button class="button" id="copyBtn"
+                style="min-width:80px;height:38px;align-self:flex-start;">Copy</button>
+        <textarea id="b64out" readonly rows="3"></textarea>
+      </div>
+      <pre id="log"></pre>
+    </div>
+
+  </div><!-- .opt-layout -->
+</div><!-- #main-area -->
 
 <script src="triangle-core.js"></script>
 <script src="triangle-ans-enc.js"></script>
@@ -56,23 +305,49 @@ input[type=range]  { width:8em; vertical-align:middle; }
 <script src="triangle-optimizer.js"></script>
 <script>
 'use strict';
-const logEl   = document.getElementById('log');
-const statusEl = document.getElementById('status');
 
-// Lambda slider display
+// Folder toggle (mirrors controls.js behavior for manually-built panels).
+document.querySelectorAll('.skal-folder-title').forEach(t => {
+  t.addEventListener('click', () => t.closest('.skal-folder').classList.toggle('collapsed'));
+});
+document.getElementById('panel-title').addEventListener('click', () => {
+  document.querySelector('.skal-gui').classList.toggle('collapsed');
+});
+
+const logEl    = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const cRef     = document.getElementById('cRef');
+const cOpt     = document.getElementById('cOpt');
+const b64out   = document.getElementById('b64out');
+const cmapEl   = document.getElementById('cmap');
+const showTri  = document.getElementById('showTri');
+
 const lambdaSlider = document.getElementById('lambda');
 const lambdaVal    = document.getElementById('lambdaVal');
-function updateLambdaDisplay() {
-  lambdaVal.textContent = Math.pow(10, +lambdaSlider.value).toExponential(0);
+const autoLambdaCb = document.getElementById('autoLambda');
+
+function getLambda() { return Math.pow(10, +lambdaSlider.value); }
+function updateLambdaDisplay() { lambdaVal.textContent = getLambda().toExponential(0); }
+function setLambda(v) {
+  const log = Math.max(-7, Math.min(-1, Math.log10(v)));
+  lambdaSlider.value = log;
+  const val = Math.pow(10, log);
+  lambdaVal.textContent = val.toExponential(2);
+  return val;
 }
 lambdaSlider.addEventListener('input', updateLambdaDisplay);
+autoLambdaCb.addEventListener('change', e => { lambdaSlider.disabled = e.target.checked; });
 updateLambdaDisplay();
+document.getElementById('copyBtn').addEventListener('click', () => navigator.clipboard.writeText(b64out.value));
 
+const probSpans = {};
 for (const el of document.querySelectorAll('.prob')) {
-  el.addEventListener('input', () => { document.getElementById('v_' + el.id.slice(2)).textContent = el.value; });
+  const span = document.getElementById('v_' + el.id.slice(2));
+  probSpans[el.id] = span;
+  el.addEventListener('input', () => { span.textContent = el.value; });
 }
 
-function getMutationProbas() {
+function getOptParams() {
   const g = id => +document.getElementById(id).value;
   return {
     proba_vertex_move:      g('p_vm'),
@@ -82,23 +357,14 @@ function getMutationProbas() {
     proba_color_move:       g('p_cm'),
     proba_color_add:        g('p_ca'),
     proba_color_sub:        g('p_cs'),
+    vertex_amplitude:       g('vmAmp') || 1,
+    border_escape_prob:     g('borderEscape'),
+    topo_cadence:           g('topoCadence') || 10,
+    ...(!autoLambdaCb.checked && { lambda: getLambda() }),
   };
 }
 
 function addLog(s) { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
-
-function drawRGB(canvas, w, h, rgbF32) {
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  const id = ctx.createImageData(w, h);
-  for (let i = 0; i < w*h; ++i) {
-    id.data[i*4]   = rgbF32[i*3]   | 0;
-    id.data[i*4+1] = rgbF32[i*3+1] | 0;
-    id.data[i*4+2] = rgbF32[i*3+2] | 0;
-    id.data[i*4+3] = 255;
-  }
-  ctx.putImageData(id, 0, 0);
-}
 
 function drawRGBA(canvas, w, h, rgbaF32) {
   canvas.width = w; canvas.height = h;
@@ -113,13 +379,13 @@ function drawRGBA(canvas, w, h, rgbaF32) {
   ctx.putImageData(id, 0, 0);
 }
 
-async function readbackTexture(device, texture, gx, gy) {
+async function readbackTexture(gx, gy) {
   const rowPitch = Math.ceil(gx * 4 / 256) * 256;
-  const buf = device.createBuffer({ size: rowPitch * gy,
+  const buf = gDevice.createBuffer({ size: rowPitch * gy,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc = device.createCommandEncoder();
-  enc.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: rowPitch }, [gx, gy]);
-  device.queue.submit([enc.finish()]);
+  const enc = gDevice.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: gGpu._renderTarget }, { buffer: buf, bytesPerRow: rowPitch }, [gx, gy]);
+  gDevice.queue.submit([enc.finish()]);
   await buf.mapAsync(GPUMapMode.READ);
   const src = new Uint8Array(buf.getMappedRange());
   const rgba = new Float32Array(gx * gy * 4);
@@ -132,46 +398,55 @@ async function readbackTexture(device, texture, gx, gy) {
 }
 
 function renderColormap(color_data) {
-  const el = document.getElementById('cmap');
-  el.innerHTML = '';
+  cmapEl.innerHTML = '';
   for (const c of color_data) {
     const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
     const div = document.createElement('div');
     div.style.cssText = `width:16px;height:16px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
-                        `border:1px solid #888;display:inline-block;`;
+                        `border:1px solid var(--panel-border);border-radius:2px;display:inline-block;`;
     div.title = `y=${c.y} co=${c.co} cg=${c.cg} a=${c.a}`;
-    el.appendChild(div);
+    cmapEl.appendChild(div);
   }
 }
 
-function renderPreview(canvas, preview, color_data) {
-  const b64 = encodePreview(preview, color_data);
-  const reader = new ANSDec(atob(b64));
-  const p = new Preview();
-  p.grid_x = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
-  p.grid_y = reader.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
-  p.use_noise = !!reader.NextBit(kPreviewNoiseProba);
-  p.ReadPalette(reader);
-  p.ReadVertices(reader);
-  const del = new Delaunay(p.grid_x, p.grid_y, p.qpts);
-  const rgba = rasterizeGrid(p.grid_x, p.grid_y, del.vtx, del.getTriangles(), p.cmap);
-  drawRGBA(canvas, p.grid_x, p.grid_y, rgba);
-  renderColormap(color_data);
-  if (document.getElementById('showTri').checked) {
-    const ctx = canvas.getContext('2d');
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = 0.5;
-    for (const t of del.getTriangles()) {
-      const [v0, v1, v2] = [del.vtx[t.vtx[0]], del.vtx[t.vtx[1]], del.vtx[t.vtx[2]]];
-      ctx.beginPath();
-      ctx.moveTo(v0.x + 0.5, v0.y + 0.5);
-      ctx.lineTo(v1.x + 0.5, v1.y + 0.5);
-      ctx.lineTo(v2.x + 0.5, v2.y + 0.5);
-      ctx.closePath();
-      ctx.stroke();
-    }
+function overlayTriangles(canvas, del) {
+  if (!showTri.checked) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 0.5;
+  for (const t of del.getTriangles()) {
+    const [v0, v1, v2] = [del.vtx[t.vtx[0]], del.vtx[t.vtx[1]], del.vtx[t.vtx[2]]];
+    ctx.beginPath();
+    ctx.moveTo(v0.x + 0.5, v0.y + 0.5);
+    ctx.lineTo(v1.x + 0.5, v1.y + 0.5);
+    ctx.lineTo(v2.x + 0.5, v2.y + 0.5);
+    ctx.closePath();
+    ctx.stroke();
   }
 }
+
+let lastRenderedPreview = null, lastRenderedColors = null;
+
+async function renderPreview(canvas, preview, color_data) {
+  if (!gGpu) return;
+  const del = buildDel(preview);
+  const pal = buildPalRGB(color_data);
+  await gGpu.computeLoss(del, pal);
+  if (!gGpu) return;
+  const rgba = await readbackTexture(preview.grid_x, preview.grid_y);
+  drawRGBA(canvas, preview.grid_x, preview.grid_y, rgba);
+  overlayTriangles(canvas, del);
+  renderColormap(color_data);
+  b64out.value = encodePreview(preview, color_data);
+  document.getElementById('byteSize').textContent = encodeSize(preview, color_data) + ' B';
+  lastRenderedPreview = preview;
+  lastRenderedColors  = color_data;
+}
+
+showTri.addEventListener('change', () => {
+  if (!gOpt && lastRenderedPreview)
+    renderPreview(cOpt, lastRenderedPreview, lastRenderedColors);
+});
 
 function makeSyntheticImage(w, h) {
   const data = new Uint8ClampedArray(w*h*4);
@@ -185,25 +460,106 @@ function makeSyntheticImage(w, h) {
   return { data, width:w, height:h };
 }
 
-let loadedImageData = null;
+let loadedImageData = null, loadedOrigCanvas = null;
+let gDevice = null, gGpu = null, gOptGpu = null, gOpt = null;
+let GX = 64, GY = 64;
+
+function computeGridDims(imgW, imgH, targetPts) {
+  const ar = imgW / imgH;
+  const gx = Math.max(4, Math.round(Math.sqrt(targetPts * ar)));
+  const gy = Math.max(4, Math.round(Math.sqrt(targetPts / ar)));
+  return { gx, gy };
+}
+
+function setCanvasDisplaySize(canvas, gx, gy) {
+  const maxDim = 256;
+  if (gx >= gy) {
+    canvas.style.width  = maxDim + 'px';
+    canvas.style.height = Math.round(maxDim * gy / gx) + 'px';
+  } else {
+    canvas.style.height = maxDim + 'px';
+    canvas.style.width  = Math.round(maxDim * gx / gy) + 'px';
+  }
+}
+
+const TARGET_PTS = [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000];
+const targetPtsEl  = document.getElementById('targetPts');
+const targetPtsVal = document.getElementById('targetPtsVal');
+function getTargetPts() { return TARGET_PTS[+targetPtsEl.value]; }
+function updateTargetPtsDisplay() { targetPtsVal.textContent = getTargetPts(); }
+targetPtsEl.addEventListener('input', updateTargetPtsDisplay);
+updateTargetPtsDisplay();
+
+function updateGridFromImage(imgW, imgH) {
+  const tp = getTargetPts();
+  const d = computeGridDims(imgW, imgH, tp);
+  GX = d.gx; GY = d.gy;
+  document.getElementById('gridSize').textContent = `${GX}×${GY} (${GX*GY} pts)`;
+  setCanvasDisplaySize(cRef, GX, GY);
+  setCanvasDisplaySize(cOpt, GX, GY);
+}
+
+async function ensureGPU(gx, gy, grid) {
+  if (gGpu && gGpu._gx === gx && gGpu._gy === gy) {
+    gGpu.setReference(grid);
+    if (gOptGpu) gOptGpu._refGrid = grid;
+    return;
+  }
+  if (gOptGpu) { gOptGpu.destroy(); gOptGpu = null; }
+  if (gGpu) { gGpu.destroy(); gGpu = null; }
+  if (gDevice) { gDevice.destroy(); gDevice = null; }
+  gDevice = await createWebGPUDevice();
+  gGpu = new TriangleGPU(gDevice, gx, gy);
+  gGpu._gx = gx; gGpu._gy = gy;
+  gGpu.setReference(grid);
+  gOptGpu = new TriangleOptGPU(gDevice, gx, gy);
+  gOptGpu._refGrid = grid;
+}
+
+function resampleFromOrig() {
+  const cv = document.createElement('canvas');
+  cv.width = GX; cv.height = GY;
+  cv.getContext('2d').drawImage(loadedOrigCanvas, 0, 0, GX, GY);
+  loadedImageData = cv.getContext('2d').getImageData(0, 0, GX, GY);
+}
+
+async function stopAndReset() {
+  if (gOpt) { gOpt.stop(); gOpt = null; }
+  btn.textContent = 'Run';
+  await resetState();
+}
 
 document.getElementById('file').addEventListener('change', async e => {
   const f = e.target.files[0]; if (!f) return;
   const img = new Image();
   img.onload = async () => {
-    const GX = +document.getElementById('gx').value;
-    const GY = +document.getElementById('gy').value;
-    const cv = document.createElement('canvas');
-    cv.width = GX; cv.height = GY;
-    cv.getContext('2d').drawImage(img, 0, 0, GX, GY);
-    loadedImageData = cv.getContext('2d').getImageData(0, 0, GX, GY);
+    loadedOrigCanvas = document.createElement('canvas');
+    loadedOrigCanvas.width = img.naturalWidth;
+    loadedOrigCanvas.height = img.naturalHeight;
+    loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
+    updateGridFromImage(img.naturalWidth, img.naturalHeight);
+    resampleFromOrig();
     URL.revokeObjectURL(img.src);
-    await resetState();
+    await stopAndReset();
   };
   img.src = URL.createObjectURL(f);
 });
 
-let gOpt = null;
+document.getElementById('targetPts').addEventListener('change', async () => {
+  if (loadedOrigCanvas) {
+    updateGridFromImage(loadedOrigCanvas.width, loadedOrigCanvas.height);
+    resampleFromOrig();
+  } else {
+    updateGridFromImage(1, 1);
+  }
+  await stopAndReset();
+});
+
+for (const id of ['nc', 'np']) {
+  document.getElementById(id).addEventListener('change', stopAndReset);
+}
+document.getElementById('randomInit').addEventListener('change', stopAndReset);
+
 const btn = document.getElementById('btn');
 
 btn.addEventListener('click', () => {
@@ -211,39 +567,27 @@ btn.addEventListener('click', () => {
   runOptimizer();
 });
 
-document.getElementById('resetBtn').addEventListener('click', () => {
-  if (gOpt) { gOpt.stop(); gOpt = null; }
-  resetState();
-});
+document.getElementById('resetBtn').addEventListener('click', stopAndReset);
+
+function prepareGrid(nc, np) {
+  const imgData = loadedImageData || makeSyntheticImage(GX, GY);
+  const grid    = sampleGrid(imgData, GX, GY);
+  const random_init = document.getElementById('randomInit').checked;
+  const { preview, color_data } =
+    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np, random_init });
+  drawRGBA(cRef, GX, GY, grid);
+  return { imgData, grid, preview, color_data };
+}
 
 async function resetState() {
-  const GX = +document.getElementById('gx').value;
-  const GY = +document.getElementById('gy').value;
   const nc = +document.getElementById('nc').value;
   const np = +document.getElementById('np').value;
-
-  const imgData = loadedImageData || makeSyntheticImage(GX, GY);
-  const grid = sampleGrid(imgData, GX, GY);
-  const { preview: initPreview, color_data: initColors } =
-    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np });
-
   logEl.textContent = '';
   statusEl.textContent = '';
-  drawRGBA(document.getElementById('cRef'), GX, GY, grid);
-  renderPreview(document.getElementById('cOpt'), initPreview, initColors);
-  addLog(`Reset: nb_pts=${initPreview.nb_pts}  nb_colors=${initPreview.nb_colors}  size=${encodeSize(initPreview,initColors)}B  has_alpha=${initPreview.has_alpha}`);
-
-  try {
-    const device = await createWebGPUDevice();
-    const gpu = new TriangleGPU(device, GX, GY);
-    gpu.setReference(grid);
-    const del = buildDel(initPreview);
-    const pal = buildPalRGB(initColors);
-    await gpu.computeLoss(del, pal);
-    const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
-    drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
-    gpu.destroy(); device.destroy();
-  } catch(e) { addLog('WebGPU: ' + e.message); }
+  const { grid, preview, color_data } = prepareGrid(nc, np);
+  addLog(`Reset: nb_pts=${preview.nb_pts}  nb_colors=${preview.nb_colors}  size=${encodeSize(preview,color_data)}B  has_alpha=${preview.has_alpha}`);
+  await ensureGPU(GX, GY, grid);
+  await renderPreview(cOpt, preview, color_data);
 }
 
 async function runOptimizer() {
@@ -251,50 +595,43 @@ async function runOptimizer() {
   logEl.textContent = '';
   statusEl.textContent = '';
 
-  const GX      = +document.getElementById('gx').value;
-  const GY      = +document.getElementById('gy').value;
-  const nc      = +document.getElementById('nc').value;
-  const np      = +document.getElementById('np').value;
-  const maxIter  = +document.getElementById('iters').value || 500;
-  const logEvery = +document.getElementById('logEvery').value || 100;
-  const lambda   = Math.pow(10, +lambdaSlider.value);
+  const nc       = +document.getElementById('nc').value;
+  const np       = +document.getElementById('np').value;
+  const maxIter  = +document.getElementById('iters').value || 100000;
+  const logEvery = +document.getElementById('logEvery').value || 1000;
+  const gpuBatch = +document.getElementById('gpuBatch').value || 1000;
 
-  const imgData = loadedImageData || makeSyntheticImage(GX, GY);
-  const grid = sampleGrid(imgData, GX, GY);
-
-  const { preview: initPreview, color_data: initColors } =
-    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np });
+  const { grid, preview: initPreview, color_data: initColors } = prepareGrid(nc, np);
   addLog(`Initial: nb_pts=${initPreview.nb_pts}  nb_colors=${initPreview.nb_colors}  size=${encodeSize(initPreview,initColors)}B`);
+  await ensureGPU(GX, GY, grid);
 
-  drawRGBA(document.getElementById('cRef'), GX, GY, grid);
-
-  let device;
-  try { device = await createWebGPUDevice(); }
-  catch(e) {
-    addLog('WebGPU unavailable: ' + e.message);
-    document.getElementById('btn').disabled = false;
-    return;
-  }
-
-  const gpu = new TriangleGPU(device, GX, GY);
-  gpu.setReference(grid);
-
-  const opt = new TriangleOptimizer(gpu, initPreview, initColors, { lambda, ...getMutationProbas() });
+  const opt = new TriangleOptimizer(gGpu, initPreview, initColors, {
+    gpu_batch_size: gpuBatch,
+    opt_gpu: document.getElementById('useGPU').checked ? gOptGpu : null,
+    ...getOptParams(),
+  });
+  opt._refGrid = grid;
   gOpt = opt;
   const initScore = await opt.init();
-  addLog(`Initial score: ${initScore.toFixed(6)}  (lambda=${lambda.toExponential(0)})`);
+  addLog(`Initial score: ${initScore.toFixed(6)}  (lambda=${opt.lambda.toExponential(0)})`);
 
+  let lastLogIter = -Infinity;
   const t0 = performance.now();
   const result = await opt.run(maxIter, async (iter, best, r) => {
-    Object.assign(opt, getMutationProbas());
+    Object.assign(opt, getOptParams());
     const elapsed = ((performance.now()-t0)/1000).toFixed(1);
     statusEl.textContent = `iter=${iter}  best=${best.toFixed(5)}  ${elapsed}s`;
-    if (iter % logEvery === 0) {
-      const sz = encodeSize(opt.preview, opt.color_data);
-      addLog(`[${iter}] best=${best.toFixed(6)}  score=${r.score.toFixed(6)}  size=${sz}B  acc=${r.accepted?'Y':'N'}`);
-      renderPreview(document.getElementById('cOpt'), opt.preview, opt.color_data);
-      const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
-      drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
+    if (iter - lastLogIter >= logEvery) {
+      lastLogIter = iter;
+      const sz   = encodeSize(opt.preview, opt.color_data);
+      const dist = r.distortion ?? (r.score - opt.lambda * sz);
+      if (autoLambdaCb.checked) {
+        const target = +document.getElementById('targetBytes').value || 500;
+        const gain   = +document.getElementById('autoGain').value   || 0.2;
+        opt.lambda   = setLambda(opt.lambda * Math.pow(sz / target, gain));
+      }
+      addLog(`[${iter}] dist=${dist.toFixed(5)}  size=${sz}B(λ×sz=${(opt.lambda*sz).toExponential(2)})  λ=${opt.lambda.toExponential(2)}  acc=${r.accepted?'Y':'N'}`);
+      await renderPreview(cOpt, opt.bestPreview, opt.bestColorData);
     }
   });
 
@@ -303,19 +640,13 @@ async function runOptimizer() {
   addLog(`Final: nb_pts=${result.preview.nb_pts}  nb_colors=${result.preview.nb_colors}  size=${encodeSize(result.preview,result.color_data)}B  loss=${result.loss.toFixed(6)}`);
   statusEl.textContent = `Done — best loss=${result.loss.toFixed(6)}`;
 
-  renderPreview(document.getElementById('cOpt'), result.preview, result.color_data);
+  await renderPreview(cOpt, result.preview, result.color_data);
 
-  const del2 = new Delaunay(result.preview.grid_x, result.preview.grid_y, result.preview.qpts);
-  const pal2 = buildPalRGB(result.color_data);
-  await gpu.computeLoss(del2, pal2);
-  const gpuRGBA = await readbackTexture(device, gpu._renderTarget, GX, GY);
-  drawRGBA(document.getElementById('cGpu'), GX, GY, gpuRGBA);
-
-  gpu.destroy(); device.destroy();
   gOpt = null;
   btn.textContent = 'Run';
 }
 
+updateGridFromImage(1, 1);
 resetState();
 </script>
 </body>

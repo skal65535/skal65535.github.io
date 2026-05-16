@@ -132,41 +132,69 @@ function findClosestPalette(ycocg, palette) {
 }
 
 // ---------------------------------------------------------------------------
-// Greedy vertex placement: start with 4 corners, then add nb_pts non-corner
-// vertices by repeatedly picking the grid cell with the highest SAD residual.
-function placeVertices(grid, gx, gy, palette, nb_pts) {
+// Greedy vertex placement: 4 corners + nb_border evenly-spaced boundary pts +
+// greedy SAD-residual interior pts to fill the remaining budget.
+// nb_border defaults to Math.round((gx + gy) / 4).
+function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = false) {
+  if (nb_border === undefined) nb_border = Math.round((gx + gy) / 4);
   const palRGB = palette.map(p => YCoCg_to_RGB(p.y, p.co, p.cg, p.a));
+  const getYCoCg = (x, y) => RGBtoYCoCg(
+    grid[(y*gx+x)*4], grid[(y*gx+x)*4+1], grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
+  const mkVtx   = (x, y) => ({ x, y, idx: findClosestPalette(getYCoCg(x, y), palette) });
 
-  const getYCoCg = (x, y) => RGBtoYCoCg(grid[(y*gx+x)*4], grid[(y*gx+x)*4+1], grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
-
-  const qpts = [
-    { x:0,    y:0,    idx: findClosestPalette(getYCoCg(0,    0),    palette) },
-    { x:gx-1, y:0,    idx: findClosestPalette(getYCoCg(gx-1, 0),    palette) },
-    { x:0,    y:gy-1, idx: findClosestPalette(getYCoCg(0,    gy-1), palette) },
-    { x:gx-1, y:gy-1, idx: findClosestPalette(getYCoCg(gx-1, gy-1),palette) },
-  ];
+  const qpts  = [mkVtx(0, 0), mkVtx(gx-1, 0), mkVtx(0, gy-1), mkVtx(gx-1, gy-1)];
   const vtxSet = new Set(qpts.map(v => v.y*gx + v.x));
 
-  for (let k = 0; k < nb_pts; ++k) {
-    const del = new Delaunay(gx, gy, qpts);
-    const rendered = rasterizeGrid(gx, gy, del.vtx, del.getTriangles(), palRGB);
+  // Phase 1: evenly-spaced boundary vertices (left, right, top, bottom edges).
+  const borderPts = [];
+  for (let i = 1; i < gy-1; ++i) { borderPts.push({x:0,    y:i}); borderPts.push({x:gx-1, y:i}); }
+  for (let i = 1; i < gx-1; ++i) { borderPts.push({x:i,    y:0}); borderPts.push({x:i,    y:gy-1}); }
+  const n_border = Math.min(nb_border, nb_pts, borderPts.length);
+  for (let k = 0; k < n_border; ++k) {
+    const { x, y } = borderPts[Math.round(k * borderPts.length / n_border) % borderPts.length];
+    const key = y*gx + x;
+    if (!vtxSet.has(key)) { qpts.push(mkVtx(x, y)); vtxSet.add(key); }
+  }
 
-    let bestKey = -1, bestScore = -1;
-    for (let gy_i = 0; gy_i < gy; ++gy_i) {
-      for (let gx_i = 0; gx_i < gx; ++gx_i) {
-        if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
-        const key = gy_i*gx + gx_i;
-        if (vtxSet.has(key)) continue;
-        const i = key*4;
-        const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
-        const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
-        if (score > bestScore) { bestScore = score; bestKey = key; }
-      }
+  // Phase 2: place remaining points — randomly or greedily (SAD-residual).
+  const nRemaining = nb_pts - (qpts.length - 4);
+  if (random_init) {
+    const candidates = [];
+    for (let y = 0; y < gy; ++y) for (let x = 0; x < gx; ++x) {
+      const key = y*gx + x;
+      if (!vtxSet.has(key)) candidates.push({x, y, key});
     }
-    if (bestKey < 0) break;
-    const bx = bestKey % gx, by = Math.floor(bestKey / gx);
-    qpts.push({ x: bx, y: by, idx: findClosestPalette(getYCoCg(bx, by), palette) });
-    vtxSet.add(bestKey);
+    for (let i = candidates.length - 1; i > 0; --i) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+    for (let k = 0; k < Math.min(nRemaining, candidates.length); ++k) {
+      const {x, y, key} = candidates[k];
+      qpts.push(mkVtx(x, y));
+      vtxSet.add(key);
+    }
+  } else {
+    for (let k = 0; k < nRemaining; ++k) {
+      const del      = new Delaunay(gx, gy, qpts);
+      const rendered = rasterizeGrid(gx, gy, del.vtx, del.getTriangles(), palRGB);
+
+      let bestKey = -1, bestScore = -1;
+      for (let gy_i = 0; gy_i < gy; ++gy_i) {
+        for (let gx_i = 0; gx_i < gx; ++gx_i) {
+          if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
+          const key = gy_i*gx + gx_i;
+          if (vtxSet.has(key)) continue;
+          const i = key*4;
+          const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
+          const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
+          if (score > bestScore) { bestScore = score; bestKey = key; }
+        }
+      }
+      if (bestKey < 0) break;
+      const bx = bestKey % gx, by = Math.floor(bestKey / gx);
+      qpts.push(mkVtx(bx, by));
+      vtxSet.add(bestKey);
+    }
   }
   return qpts;
 }
@@ -178,14 +206,14 @@ function buildInitialState(imageData, options = {}) {
   const {
     grid_x = 32, grid_y = 32,
     nb_colors = 8, nb_pts = 64,
-    has_alpha = null, use_noise = false,
+    has_alpha = null, use_noise = false, random_init = false,
   } = options;
 
   const grid = sampleGrid(imageData, grid_x, grid_y);
   const actualHasAlpha = has_alpha !== null ? has_alpha :
     grid.some((v, i) => (i & 3) === 3 && v < 255);
   const palette = buildPalette(grid, nb_colors);
-  const qpts = placeVertices(grid, grid_x, grid_y, palette, nb_pts);
+  const qpts = placeVertices(grid, grid_x, grid_y, palette, nb_pts, undefined, random_init);
 
   // Sort palette by (cg, co, y, a) as required by the encoder.
   const order = palette.map((_, i) => i).sort((a, b) => {

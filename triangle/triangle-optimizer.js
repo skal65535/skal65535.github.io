@@ -41,13 +41,24 @@ function encodeSize(preview, color_data) {
 // ---------------------------------------------------------------------------
 // Mutation helpers — all step sizes = 1, matching C++ distance=1.
 
-function applyMoveVertex(preview, color_data, rng) {
+function applyMoveVertex(preview, color_data, rng, amplitude = 1, border_escape = 5) {
   const nb = preview.qpts.length - 4;
   if (nb <= 0) return null;
+  const { grid_x: gx, grid_y: gy } = preview;
   const p = clonePreview(preview);
   const v = p.qpts[4 + Math.floor(rng() * nb)];
-  if (rng() < 0.5) v.x = clampI(v.x + (rng() < 0.5 ? 1 : -1), 1, preview.grid_x - 2);
-  else              v.y = clampI(v.y + (rng() < 0.5 ? 1 : -1), 1, preview.grid_y - 2);
+  const delta = () => (Math.floor(rng() * amplitude) + 1) * (rng() < 0.5 ? -1 : 1);
+  const onBorder = v.x === 0 || v.x === gx-1 || v.y === 0 || v.y === gy-1;
+  if (onBorder && rng() * 100 >= border_escape) {
+    // Slide along current edge, avoiding corners.
+    if (v.x === 0 || v.x === gx-1) v.y = clampI(v.y + delta(), 1, gy-2);
+    else                             v.x = clampI(v.x + delta(), 1, gx-2);
+  } else {
+    // Free move; allow reaching border but reject landing on a corner.
+    if (rng() < 0.5) v.x = clampI(v.x + delta(), 0, gx-1);
+    else              v.y = clampI(v.y + delta(), 0, gy-1);
+    if ((v.x === 0 || v.x === gx-1) && (v.y === 0 || v.y === gy-1)) return null;
+  }
   return { preview: p, color_data };
 }
 
@@ -158,6 +169,79 @@ function applyRemoveColor(preview, color_data, rng) {
 
 // ---------------------------------------------------------------------------
 
+// Convert preview+color_data to typed arrays for TriangleOptGPU.
+// Vertices indexed by qpts order (unique, nv = qpts.length).
+// Triangle indices remapped from del.vtx (which has duplicates) back to qpts indices.
+function makeGPUState(preview, color_data) {
+  const qpts = preview.qpts;
+  const nv   = qpts.length;
+  const nc   = color_data.length;
+
+  const posI32  = new Int32Array(nv * 2);
+  const cidxU32 = new Uint32Array(nv);
+  for (let i = 0; i < nv; ++i) {
+    posI32[i*2]   = qpts[i].x;
+    posI32[i*2+1] = qpts[i].y;
+    cidxU32[i]    = qpts[i].idx;
+  }
+
+  // Build Delaunay to get triangle topology, then remap duplicate vtx → qpts index.
+  const del = buildDel(preview);
+  const { positions: fullPos, indices: fullIdx } = del.getFlatBuffers();
+  const nFull = fullPos.length / 2;
+
+  const qptsMap = new Map();
+  for (let i = 0; i < nv; ++i) {
+    qptsMap.set(`${qpts[i].x},${qpts[i].y}`, i);
+  }
+  const fullToQpts = new Int32Array(nFull);
+  for (let i = 0; i < nFull; ++i) {
+    fullToQpts[i] = qptsMap.get(`${fullPos[i*2] | 0},${fullPos[i*2+1] | 0}`) ?? 0;
+  }
+
+  const nt     = fullIdx.length / 3;
+  const triU32 = new Uint32Array(nt * 3);
+  for (let i = 0; i < fullIdx.length; ++i) triU32[i] = fullToQpts[fullIdx[i]];
+
+  const palU32 = new Uint32Array(nc * 4);
+  for (let i = 0; i < nc; ++i) {
+    const c = color_data[i];
+    palU32[i*4]   = c.y;
+    palU32[i*4+1] = c.co;
+    palU32[i*4+2] = c.cg;
+    palU32[i*4+3] = c.a;
+  }
+
+  return { posI32, cidxU32, triU32, palU32, nv, nt, nc };
+}
+
+// Apply GPU state back into preview.qpts and color_data.
+// posI32: Int32Array [nv*2], cidxU32: Uint32Array [nv], palU32: Uint32Array [nc*4]
+// The topology (triangle indices) is unchanged, only vertex positions/colors mutated.
+function applyGPUState(preview, color_data, posI32, cidxU32, palU32) {
+  const nv = posI32.length / 2;
+  for (let i = 0; i < nv; ++i) {
+    preview.qpts[i].x   = posI32[i*2];
+    preview.qpts[i].y   = posI32[i*2+1];
+    preview.qpts[i].idx = cidxU32[i];
+  }
+  const nc = palU32.length / 4;
+  const nc_old = color_data.length;
+  if (nc !== nc_old) return;   // shouldn't happen in GPU batch
+  for (let i = 0; i < nc; ++i) {
+    color_data[i].y  = palU32[i*4];
+    color_data[i].co = palU32[i*4+1];
+    color_data[i].cg = palU32[i*4+2];
+    color_data[i].a  = palU32[i*4+3];
+  }
+  // re-sort interior qpts by (y,x) as required by the codec
+  const corners = preview.qpts.slice(0, 4);
+  const inner   = preview.qpts.slice(4).sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+  preview.qpts  = [...corners, ...inner];
+}
+
+// ---------------------------------------------------------------------------
+
 class TriangleOptimizer {
   constructor(gpu, preview, color_data, {
     lambda                    = 0.0001,
@@ -171,8 +255,15 @@ class TriangleOptimizer {
     proba_color_move          = 20,
     proba_color_add           = 1,
     proba_color_sub           = 3,
+    proba_flip_alpha          = 25,
+    border_escape_prob        = 5,
+    gpu_batch_size            = 1000,  // iterations per GPU dispatch
+    opt_gpu                   = null,  // TriangleOptGPU instance (optional)
+    vertex_amplitude          = 1,     // max pixel delta per vertex move
+    topo_cadence              = 10,    // topology CPU step every N GPU batches
   } = {}) {
     this.gpu = gpu;
+    this.optGpu     = opt_gpu;
     this.preview    = clonePreview(preview);
     this.color_data = color_data.map(c => ({ ...c }));
     this.lambda     = lambda;
@@ -185,12 +276,20 @@ class TriangleOptimizer {
     this.proba_color_move       = proba_color_move;
     this.proba_color_add        = proba_color_add;
     this.proba_color_sub        = proba_color_sub;
+    this.proba_flip_alpha       = proba_flip_alpha;
+    this.border_escape_prob     = border_escape_prob;
+    this.gpu_batch_size    = gpu_batch_size;
+    this.vertex_amplitude  = vertex_amplitude;
+    this.topo_cadence      = topo_cadence;
+    this._refGrid = null;   // Float32Array [gx*gy*4] set by caller
+    this._refDirty = true;  // force ref upload on first GPU batch
     this.iter     = 0;
     this.bestLoss = Infinity;
     this.bestPreview   = null;
     this.bestColorData = null;
     let s = seed >>> 0;
     this._rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000; };
+    this._rngSeed = seed >>> 0;
   }
 
   async _score(preview, color_data) {
@@ -219,7 +318,7 @@ class TriangleOptimizer {
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
       let r;
       if (np.qpts.length > 4 && chance(this.proba_vertex_move)) {
-        r = applyMoveVertex(np, nc, rng);
+        r = applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob);
         if (r) { np = r.preview; nc = r.color_data; }
       }
       if (chance(this.proba_vertex_add)) {
@@ -246,7 +345,7 @@ class TriangleOptimizer {
         r = applyRemoveColor(np, nc, rng);
         if (r) { np = r.preview; nc = r.color_data; }
       }
-      if (np.has_alpha && chance(25)) {
+      if (np.has_alpha && chance(this.proba_flip_alpha)) {
         r = applyFlipAlpha(np, nc, rng);
         if (r) { np = r.preview; nc = r.color_data; }
       }
@@ -273,13 +372,117 @@ class TriangleOptimizer {
 
   stop() { this._stop = true; }
 
+  // Run one GPU batch of gpu_batch_size iterations.
+  // Returns { accepted, score } where accepted = true if any improvement found.
+  async stepGPUBatch(iterOffset, maxIter) {
+    const { optGpu } = this;
+    const bsz = Math.min(this.gpu_batch_size, maxIter - iterOffset);
+
+    // Build GPU state from current preview / color_data
+    const state = makeGPUState(this.preview, this.color_data);
+
+    // Upload state; re-upload ref only when topology changed (flagged by _refDirty).
+    if (!this._refDirty) {
+      optGpu.uploadStateNoRef(state.posI32, state.cidxU32, state.palU32, state.triU32);
+    } else {
+      optGpu.uploadState(state.posI32, state.cidxU32, state.palU32, state.triU32, this._refGrid);
+      this._refDirty = false;
+    }
+
+    const opts = {
+      p_vm:  this.proba_vertex_move,
+      p_ci:  this.proba_color_index_move,
+      p_cm:  this.proba_color_move,
+      p_fa:  this.preview.has_alpha ? 25 : 0,
+      score_tolerance: this.score_tolerance,
+      has_alpha: this.preview.has_alpha ? 1 : 0,
+      vm_amp: this.vertex_amplitude,
+      vm_border_escape: this.border_escape_prob,
+      rng_seed: this._rngSeed,
+    };
+
+    const distortion = await optGpu.runBatch(bsz, iterOffset, maxIter, opts);
+
+    // After first batch the RNG state lives on GPU; don't re-seed
+    this._rngSeed = undefined;
+
+    // Read back updated state
+    const readback = await optGpu.readState();
+    if (!readback) return { score: this.currentScore, accepted: false };
+    const { posI32, cidxU32, palU32 } = readback;
+    applyGPUState(this.preview, this.color_data, posI32, cidxU32, palU32);
+
+    const size  = encodeSize(this.preview, this.color_data);
+    const score = distortion + this.lambda * size;
+
+    const accepted = score < this.currentScore;
+    if (accepted) {
+      this.currentScore  = score;
+    }
+    if (score < this.bestLoss) {
+      this.bestLoss      = score;
+      this.bestPreview   = clonePreview(this.preview);
+      this.bestColorData = this.color_data.map(c => ({ ...c }));
+    }
+    this.iter += bsz;
+    return { accepted, score: this.currentScore, distortion, size };
+  }
+
   async run(maxIter, onProgress) {
     this._stop = false;
-    for (let i = 0; i < maxIter && !this._stop; ++i) {
-      const r = await this.step(i, maxIter);
-      if (onProgress) await onProgress(i + 1, this.bestLoss, r);
+
+    if (this.optGpu) {
+      // GPU-accelerated inner loop: gpu_batch_size iterations per dispatch.
+      // CPU handles topology mutations between batches.
+      let _lastDist = 1, _lastSize = 1;
+      for (let i = 0; i < maxIter && !this._stop; i += this.gpu_batch_size) {
+        const r = await this.stepGPUBatch(i, maxIter);
+        if (r.distortion !== undefined) { _lastDist = r.distortion; _lastSize = r.size; }
+        if (onProgress) await onProgress(Math.min(i + this.gpu_batch_size, maxIter), this.bestLoss, r);
+
+        // Topology mutations on CPU; frequency adapts to how much size dominates score
+        if ((i / this.gpu_batch_size) % this.topo_cadence === this.topo_cadence - 1) {
+          const sizeFrac = (this.lambda * _lastSize) / Math.max(_lastDist, 1e-8);
+          const nTrials  = Math.max(1, Math.min(20, Math.ceil(sizeFrac)));
+          for (let t = 0; t < nTrials && !this._stop; ++t)
+            await this._cpuTopologyStep(i, maxIter);
+        }
+      }
+    } else {
+      for (let i = 0; i < maxIter && !this._stop; ++i) {
+        const r = await this.step(i, maxIter);
+        if (onProgress) await onProgress(i + 1, this.bestLoss, r);
+      }
     }
+
     return { preview: this.bestPreview, color_data: this.bestColorData, loss: this.bestLoss };
+  }
+
+  // A few CPU-side topology mutations (add/remove vertex/color).
+  async _cpuTopologyStep(iter, maxIter) {
+    const rng     = this._rng;
+    const chance  = p => rng() * 100 < p;
+    let np = clonePreview(this.preview);
+    let nc = this.color_data.map(c => ({ ...c }));
+    let r;
+    if (chance(this.proba_vertex_add))  { r = applyAddVertex(np, nc, rng);    if (r) { np = r.preview; nc = r.color_data; } }
+    if (np.qpts.length > 4 && chance(this.proba_vertex_sub)) { r = applyRemoveVertex(np, nc, rng); if (r) { np = r.preview; nc = r.color_data; } }
+    if (chance(this.proba_color_add))   { r = applyAddColor(np, nc, rng);     if (r) { np = r.preview; nc = r.color_data; } }
+    if (np.nb_colors > kPreviewMinNumColors && chance(this.proba_color_sub)) { r = applyRemoveColor(np, nc, rng); if (r) { np = r.preview; nc = r.color_data; } }
+
+    const newScore = await this._score(np, nc);
+    const tolerance = this.score_tolerance * (maxIter - iter) / maxIter;
+    if (newScore <= this.currentScore + tolerance) {
+      this.preview      = np;
+      this.color_data   = nc;
+      this.currentScore = newScore;
+      this._refDirty = true;  // topology may have changed; force re-upload
+      if (newScore < this.bestLoss) {
+        this.bestLoss      = newScore;
+        this.bestPreview   = clonePreview(np);
+        this.bestColorData = nc.map(c => ({ ...c }));
+      }
+    }
   }
 }
 
