@@ -235,16 +235,34 @@
             <label class="skal-row-label" for="batchSize">Batch</label>
             <input type="number" id="batchSize" value="20" min="1" max="10000">
           </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="tolerance">Tolerance</label>
+              <span class="skal-readout" id="toleranceVal">2e-4</span>
+            </div>
+            <input type="range" id="tolerance" min="0" max="0.002" step="0.0001" value="0.0002">
+          </div>
+          <div class="skal-row skal-row-toggle">
+            <label class="skal-row-label" for="debugOpt">Debug moves</label>
+            <input type="checkbox" id="debugOpt">
+          </div>
         </div>
 
         <!-- Lambda tab -->
         <div class="tab-pane" id="tab-lambda">
           <div class="skal-row skal-row-slider">
             <div class="skal-row-header">
-              <label class="skal-row-label" for="lambda">λ</label>
-              <span class="skal-readout" id="lambdaVal">1e-4</span>
+              <label class="skal-row-label" for="lambdaVtx">λ vtx</label>
+              <span class="skal-readout" id="lambdaVtxVal">1e-4</span>
             </div>
-            <input type="range" id="lambda" min="-6" max="1" step="0.25" value="-4">
+            <input type="range" id="lambdaVtx" min="-6" max="4" step="0.25" value="-4">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="lambdaColor">λ color</label>
+              <span class="skal-readout" id="lambdaColorVal">1e-4</span>
+            </div>
+            <input type="range" id="lambdaColor" min="-6" max="4" step="0.25" value="-4">
           </div>
           <div class="skal-row skal-row-toggle">
             <label class="skal-row-label" for="autoLambda">Auto-λ</label>
@@ -407,16 +425,18 @@ const app = {
     this.initEventListeners();
     this.updateTargetPtsDisplay();
     this.updateLambdaDisplay();
-    this.ui.lambda.disabled = this.ui.autoLambda.checked;
+    this.updateToleranceDisplay();
+    this.ui.lambdaVtx.disabled = this.ui.lambdaColor.disabled = this.ui.autoLambda.checked;
     this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
   },
 
   cacheDOMElements() {
     const ids = [
       'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
-      'lambdaVal', 'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn',
+      'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn',
       'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom',
-      'byteSize', 'statPts', 'statColors', 'statDist',
+      'byteSize', 'statPts', 'statColors', 'statDist', 'debugOpt', 'tolerance', 'toleranceVal',
+      'lambdaVtx', 'lambdaVtxVal', 'lambdaColor', 'lambdaColorVal',
     ];
     ids.forEach(id => { this.ui[id] = document.getElementById(id); });
     this.ui.probInputs = document.querySelectorAll('.prob');
@@ -451,8 +471,12 @@ const app = {
       document.getElementById(id).addEventListener('change', () => this.stopAndReset());
     });
 
-    this.ui.lambda.addEventListener('input', () => this.updateLambdaDisplay());
-    this.ui.autoLambda.addEventListener('change', e => { this.ui.lambda.disabled = e.target.checked; });
+    this.ui.autoLambda.addEventListener('change', e => {
+      this.ui.lambdaVtx.disabled = this.ui.lambdaColor.disabled = e.target.checked;
+    });
+    this.ui.lambdaVtx.addEventListener('input', () => this.updateLambdaDisplay());
+    this.ui.lambdaColor.addEventListener('input', () => this.updateLambdaDisplay());
+    this.ui.tolerance.addEventListener('input', () => this.updateToleranceDisplay());
     this.ui.showTri.addEventListener('change', () => {
       if (this.state.lastRenderedPreview) {
         this.renderPreview(this.ui.cOpt, this.state.lastRenderedPreview, this.state.lastRenderedColors);
@@ -478,8 +502,12 @@ const app = {
       proba_color_sub:        g('p_cs'),
       vertex_amplitude:       g('vmAmp') || 1,
       border_escape_prob:     g('borderEscape'),
+      score_tolerance:        g('tolerance'),
     };
-    if (!this.ui.autoLambda.checked) optimizerParams.lambda = this.getLambda();
+    if (!this.ui.autoLambda.checked) {
+      optimizerParams.lambda_vtx   = this.getLambda('lambdaVtx');
+      optimizerParams.lambda_color = this.getLambda('lambdaColor');
+    }
 
     return {
       nc: g('nc'),
@@ -493,12 +521,12 @@ const app = {
     };
   },
 
-  getLambda() { return Math.pow(10, +this.ui.lambda.value); },
-  setLambda(v) {
-    const log = Math.max(-7, Math.min(1, Math.log10(v)));
-    this.ui.lambda.value = log;
+  getLambda(id) { return Math.pow(10, +this.ui[id].value); },
+  setLambda(id, v) {
+    const log = Math.max(-7, Math.min(4, Math.log10(v)));
+    this.ui[id].value = log;
     const val = Math.pow(10, log);
-    this.ui.lambdaVal.textContent = val.toExponential(2);
+    this.ui[id + 'Val'].textContent = val.toExponential(2);
     return val;
   },
 
@@ -527,10 +555,11 @@ const app = {
         batch_size: params.batchSize,
         ...params.optimizer,
       });
+      opt.debug = this.ui.debugOpt.checked;
       this.state.optimizer = opt;
 
       const initScore = opt.init();
-      this.log(`Initial score: ${initScore.toFixed(6)} (lambda=${opt.lambda.toExponential(0)})`);
+      this.log(`Initial score: ${initScore.toFixed(6)} (λv=${opt.lambda_vtx.toExponential(0)} λc=${opt.lambda_color.toExponential(0)})`);
 
       const t0 = performance.now();
       const result = await opt.run(params.maxIter, (iter, best, r) => {
@@ -538,14 +567,20 @@ const app = {
         const elapsedS = (performance.now() - t0) / 1000;
         const evPerSec = elapsedS > 0 ? Math.round(iter / elapsedS).toLocaleString() : '—';
 
-        const sz = encodeSize(opt.preview, opt.color_data);
+        const { total: sz, vtx_bytes, color_bytes } = encodeSizeComponents(opt.preview, opt.color_data);
         if (this.ui.autoLambda.checked) {
           const p = this.getParams();
-          opt.lambda = this.setLambda(opt.lambda * Math.pow(sz / p.targetBytes, p.autoGain));
+          const factor = Math.pow(sz / p.targetBytes, p.autoGain);
+          const oldV = opt.lambda_vtx, oldC = opt.lambda_color;
+          opt.lambda_vtx   = this.setLambda('lambdaVtx',   oldV * factor);
+          opt.lambda_color = this.setLambda('lambdaColor', oldC * factor);
+          const delta = (opt.lambda_vtx - oldV) * vtx_bytes + (opt.lambda_color - oldC) * color_bytes;
+          opt.currentScore += delta;
+          opt.bestLoss     += delta;
         }
-        const dist = r.distortion ?? (r.score - opt.lambda * sz);
+        const dist = r.distortion;
         this.ui.statDist.textContent = dist.toFixed(5);
-        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
+        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} vtx=${vtx_bytes}B col=${color_bytes}B λv=${opt.lambda_vtx.toExponential(1)} λc=${opt.lambda_color.toExponential(1)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
         this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
       });
 
@@ -679,7 +714,14 @@ const app = {
 
   log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
   updateStatus(s) { if (s) this.log(s); },
-  updateLambdaDisplay() { this.ui.lambdaVal.textContent = this.getLambda().toExponential(0); },
+  updateLambdaDisplay() {
+    this.ui.lambdaVtxVal.textContent   = this.getLambda('lambdaVtx').toExponential(0);
+    this.ui.lambdaColorVal.textContent = this.getLambda('lambdaColor').toExponential(0);
+  },
+  updateToleranceDisplay() {
+    const v = +this.ui.tolerance.value;
+    this.ui.toleranceVal.textContent = v === 0 ? '0' : v.toExponential(0);
+  },
   updateTargetPtsDisplay() { this.ui.targetPtsVal.textContent = this.TARGET_PTS[+this.ui.targetPts.value]; },
 
   drawRGBA(canvas, w, h, rgbaF32) {

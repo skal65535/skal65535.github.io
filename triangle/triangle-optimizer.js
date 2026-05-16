@@ -36,6 +36,13 @@ function encodeSize(preview, color_data) {
   return Math.ceil(encodePreview(preview, color_data).length * 3 / 4);
 }
 
+function encodeSizeComponents(preview, color_data) {
+  const total      = encodeSize(preview, color_data);
+  const noVtx      = { ...preview, nb_pts: 0, qpts: preview.qpts.slice(0, 4) };
+  const color_bytes = encodeSize(noVtx, color_data);
+  return { total, color_bytes, vtx_bytes: total - color_bytes };
+}
+
 // ---------------------------------------------------------------------------
 // Mutation helpers
 
@@ -167,7 +174,8 @@ class TriangleOptimizer {
   constructor(preview, color_data, {
     refGrid                   = null,   // Float32Array zGrid (gx*zoom × gy*zoom, RGBA [0,255])
     zoom                      = 1,
-    lambda                    = 0.0001,
+    lambda_vtx                = 0.0001,
+    lambda_color              = 0.0001,
     seed                      = 0x12345678,
     score_tolerance           = 0.0002,
     num_mutations_per_iter    = 1,
@@ -187,7 +195,8 @@ class TriangleOptimizer {
     this.color_data = color_data.map(c => ({ ...c }));
     this.refGrid    = refGrid;
     this.zoom       = zoom;
-    this.lambda     = lambda;
+    this.lambda_vtx   = lambda_vtx;
+    this.lambda_color = lambda_color;
     this.score_tolerance        = score_tolerance;
     this.num_mutations_per_iter = num_mutations_per_iter;
     this.proba_vertex_move      = proba_vertex_move;
@@ -213,14 +222,16 @@ class TriangleOptimizer {
     const del    = buildDel(preview);
     const palRGB = buildPalRGB(color_data);
     const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom);
-    const size = encodeSize(preview, color_data);
-    return { distortion, score: distortion + this.lambda * size };
+    const { total, vtx_bytes, color_bytes } = encodeSizeComponents(preview, color_data);
+    const score = distortion + this.lambda_vtx * vtx_bytes + this.lambda_color * color_bytes;
+    return { distortion, score, total, vtx_bytes, color_bytes };
   }
 
   init() {
     const { distortion, score } = this._score(this.preview, this.color_data);
-    this.currentScore = score;
-    this.bestLoss      = score;
+    this.currentScore       = score;
+    this.currentDistortion  = distortion;
+    this.bestLoss           = score;
     this.bestPreview   = clonePreview(this.preview);
     this.bestColorData = this.color_data.map(c => ({ ...c }));
     return score;
@@ -232,24 +243,26 @@ class TriangleOptimizer {
     let np = clonePreview(this.preview);
     let nc = this.color_data.map(c => ({ ...c }));
 
+    let dbgLabel = null;
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
       const mutations = [
-        [this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
-        [this.proba_vertex_add,  () => applyAddVertex(np, nc, rng)],
-        [this.proba_vertex_sub,  () => np.qpts.length > 4 ? applyRemoveVertex(np, nc, rng) : null],
-        [this.proba_color_index_move, () => applyMoveColorIndex(np, nc, rng)],
-        [this.proba_color_move,  () => applyMoveColor(np, nc, rng)],
-        [this.proba_color_add,   () => applyAddColor(np, nc, rng)],
-        [this.proba_color_sub,   () => np.nb_colors > kPreviewMinNumColors ? applyRemoveColor(np, nc, rng) : null],
-        [this.proba_flip_alpha,  () => np.has_alpha ? applyFlipAlpha(np, nc, rng) : null],
+        ['v=', this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
+        ['v+', this.proba_vertex_add,  () => applyAddVertex(np, nc, rng)],
+        ['v-', this.proba_vertex_sub,  () => np.qpts.length > 4 ? applyRemoveVertex(np, nc, rng) : null],
+        ['ci', this.proba_color_index_move, () => applyMoveColorIndex(np, nc, rng)],
+        ['c=', this.proba_color_move,  () => applyMoveColor(np, nc, rng)],
+        ['c+', this.proba_color_add,   () => applyAddColor(np, nc, rng)],
+        ['c-', this.proba_color_sub,   () => np.nb_colors > kPreviewMinNumColors ? applyRemoveColor(np, nc, rng) : null],
+        ['a=', this.proba_flip_alpha,  () => np.has_alpha ? applyFlipAlpha(np, nc, rng) : null],
       ];
-      const total = mutations.reduce((s, [p]) => s + p, 0);
+      const total = mutations.reduce((s, [, p]) => s + p, 0);
       if (total <= 0) break;
       let pick = rng() * total;
-      for (const [p, fn] of mutations) {
+      for (const [lbl, p, fn] of mutations) {
         pick -= p;
         if (pick < 0) {
           const r = fn();
+          if (this.debug) dbgLabel = lbl + (r ? '' : '?');
           if (r) { np = r.preview; nc = r.color_data; }
           break;
         }
@@ -258,12 +271,17 @@ class TriangleOptimizer {
 
     const { distortion, score: newScore } = this._score(np, nc);
     const tolerance = this.score_tolerance * (maxIter - iter) / maxIter;
-    const accept = newScore <= this.currentScore + tolerance;
+    const accept = newScore <= this.bestLoss + tolerance;
+
+    if (this.debug && dbgLabel !== null) {
+      console.log(`[${iter}] ${dbgLabel}${accept ? ' ACC' : ' N'} dist=${distortion.toFixed(6)} score=${newScore.toFixed(6)} cur=${this.currentScore.toFixed(6)} tol=${tolerance.toFixed(6)}`);
+    }
 
     if (accept) {
-      this.preview      = np;
-      this.color_data   = nc;
-      this.currentScore = newScore;
+      this.preview            = np;
+      this.color_data         = nc;
+      this.currentScore       = newScore;
+      this.currentDistortion  = distortion;
       if (newScore < this.bestLoss) {
         this.bestLoss      = newScore;
         this.bestPreview   = clonePreview(np);
