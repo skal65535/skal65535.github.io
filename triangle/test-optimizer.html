@@ -146,12 +146,21 @@
               <input type="number" id="nc" value="6" min="2" max="32">
             </div>
             <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="np">Init points</label>
-              <input type="number" id="np" value="128" min="0" max="256">
+              <label class="skal-row-label" for="np">Init points %</label>
+              <input type="number" id="np" value="30" min="0" max="100">
             </div>
             <div class="skal-row skal-row-toggle">
               <label class="skal-row-label" for="randomInit">Random init</label>
               <input type="checkbox" id="randomInit">
+            </div>
+            <div class="skal-row skal-row-text">
+              <label class="skal-row-label" for="zoom">Zoom</label>
+              <select id="zoom" style="font:inherit;font-size:12px;border:1px solid var(--panel-border);border-radius:4px;padding:2px 4px;">
+                <option value="1">1×</option>
+                <option value="2">2×</option>
+                <option value="4">4×</option>
+                <option value="8">8×</option>
+              </select>
             </div>
           </div>
         </div>
@@ -178,15 +187,15 @@
                 <label class="skal-row-label" for="lambda">λ</label>
                 <span class="skal-readout" id="lambdaVal">1e-4</span>
               </div>
-              <input type="range" id="lambda" min="-6" max="-2" step="0.25" value="-4">
+              <input type="range" id="lambda" min="-6" max="1" step="0.25" value="-4">
             </div>
             <div class="skal-row skal-row-toggle">
               <label class="skal-row-label" for="autoLambda">Auto-λ</label>
-              <input type="checkbox" id="autoLambda">
+              <input type="checkbox" id="autoLambda" checked>
             </div>
             <div class="skal-row skal-row-text">
               <label class="skal-row-label" for="targetBytes">Target (bytes)</label>
-              <input type="number" id="targetBytes" value="500" min="10">
+              <input type="number" id="targetBytes" value="256" min="10">
             </div>
             <div class="skal-row skal-row-text">
               <label class="skal-row-label" for="autoGain">Auto-λ gain</label>
@@ -276,10 +285,6 @@
               <label class="skal-row-label" for="borderEscape">Border escape %</label>
               <input type="number" id="borderEscape" value="5" min="0" max="100">
             </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="topoCadence">Topo every</label>
-              <input type="number" id="topoCadence" value="10" min="1" max="1000">
-            </div>
           </div>
         </div>
 
@@ -311,385 +316,403 @@
 <script src="triangle-ans-enc.js"></script>
 <script src="triangle-init.js"></script>
 <script src="triangle-cpu.js"></script>
-<script src="triangle-gpu.js"></script>
 <script src="triangle-optimizer.js"></script>
 <script>
 'use strict';
 
-// Folder toggle (mirrors controls.js behavior for manually-built panels).
-document.querySelectorAll('.skal-folder-title').forEach(t => {
-  t.addEventListener('click', () => t.closest('.skal-folder').classList.toggle('collapsed'));
-});
-document.getElementById('panel-title').addEventListener('click', () => {
-  document.querySelector('.skal-gui').classList.toggle('collapsed');
-});
+/**
+ * Main application object.
+ * Encapsulates all state, UI elements, and logic for the Triangle Optimizer.
+ */
+const app = {
+  // --- Constants ---
+  TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
+  PRESETS: {
+    obama:  { file: 'obama.webp' },
+    shell:  { file: 'shell-logo.webp' },
+    moon:   { file: 'moon.webp' },
+    claude: { file: 'claude.webp' },
+  },
 
-const logEl    = document.getElementById('log');
-const statusEl = document.getElementById('status');
-const cRef     = document.getElementById('cRef');
-const cOpt     = document.getElementById('cOpt');
-const b64out   = document.getElementById('b64out');
-const cmapEl   = document.getElementById('cmap');
-const showTri  = document.getElementById('showTri');
+  // --- UI Elements ---
+  ui: {},
 
-const lambdaSlider = document.getElementById('lambda');
-const lambdaVal    = document.getElementById('lambdaVal');
-const autoLambdaCb = document.getElementById('autoLambda');
+  // --- Application State ---
+  state: {
+    optimizer: null,
+    loadedImageData: null,
+    loadedOrigCanvas: null,
+    gridX: 64,
+    gridY: 64,
+    zoom: 1,
+    lastRenderedPreview: null,
+    lastRenderedColors: null,
+  },
 
-function getLambda() { return Math.pow(10, +lambdaSlider.value); }
-function updateLambdaDisplay() { lambdaVal.textContent = getLambda().toExponential(0); }
-function setLambda(v) {
-  const log = Math.max(-7, Math.min(-1, Math.log10(v)));
-  lambdaSlider.value = log;
-  const val = Math.pow(10, log);
-  lambdaVal.textContent = val.toExponential(2);
-  return val;
-}
-lambdaSlider.addEventListener('input', updateLambdaDisplay);
-autoLambdaCb.addEventListener('change', e => { lambdaSlider.disabled = e.target.checked; });
-updateLambdaDisplay();
-document.getElementById('copyBtn').addEventListener('click', () => navigator.clipboard.writeText(b64out.value));
+  // --- Initialization ---
+  init() {
+    this.cacheDOMElements();
+    this.initFolderToggles();
+    this.initEventListeners();
+    this.updateTargetPtsDisplay();
+    this.updateLambdaDisplay();
+    this.ui.lambda.disabled = this.ui.autoLambda.checked;
 
-const probSpans = {};
-for (const el of document.querySelectorAll('.prob')) {
-  const span = document.getElementById('v_' + el.id.slice(2));
-  probSpans[el.id] = span;
-  el.addEventListener('input', () => { span.textContent = el.value; });
-}
+    this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
+  },
 
-function getOptParams() {
-  const g = id => +document.getElementById(id).value;
-  return {
-    proba_vertex_move:      g('p_vm'),
-    proba_vertex_add:       g('p_va'),
-    proba_vertex_sub:       g('p_vs'),
-    proba_color_index_move: g('p_ci'),
-    proba_color_move:       g('p_cm'),
-    proba_color_add:        g('p_ca'),
-    proba_color_sub:        g('p_cs'),
-    vertex_amplitude:       g('vmAmp') || 1,
-    border_escape_prob:     g('borderEscape'),
-    topo_cadence:           g('topoCadence') || 10,
-    ...(!autoLambdaCb.checked && { lambda: getLambda() }),
-  };
-}
+  cacheDOMElements() {
+    const ids = [
+      'log', 'status', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
+      'lambdaVal', 'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn',
+      'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom', 'panel-title'
+    ];
+    ids.forEach(id => { this.ui[id] = document.getElementById(id); });
+    this.ui.probInputs = document.querySelectorAll('.prob');
+  },
 
-function addLog(s) { logEl.textContent += s + '\n'; logEl.scrollTop = logEl.scrollHeight; }
+  initFolderToggles() {
+    document.querySelectorAll('.skal-folder-title').forEach(t => {
+      t.addEventListener('click', () => t.closest('.skal-folder').classList.toggle('collapsed'));
+    });
+    this.ui['panel-title'].addEventListener('click', () => {
+      document.querySelector('.skal-gui').classList.toggle('collapsed');
+    });
+  },
 
-function drawRGBA(canvas, w, h, rgbaF32) {
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  const id = ctx.createImageData(w, h);
-  for (let i = 0; i < w*h; ++i) {
-    id.data[i*4]   = rgbaF32[i*4]   | 0;
-    id.data[i*4+1] = rgbaF32[i*4+1] | 0;
-    id.data[i*4+2] = rgbaF32[i*4+2] | 0;
-    id.data[i*4+3] = rgbaF32[i*4+3] | 0;
-  }
-  ctx.putImageData(id, 0, 0);
-}
+  initEventListeners() {
+    // Main actions
+    this.ui.btn.addEventListener('click', () => this.toggleRun());
+    this.ui.resetBtn.addEventListener('click', () => this.stopAndReset());
+    this.ui.copyBtn.addEventListener('click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
-async function readbackTexture(gx, gy) {
-  const rowPitch = Math.ceil(gx * 4 / 256) * 256;
-  const buf = gDevice.createBuffer({ size: rowPitch * gy,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc = gDevice.createCommandEncoder();
-  enc.copyTextureToBuffer({ texture: gGpu._renderTarget }, { buffer: buf, bytesPerRow: rowPitch }, [gx, gy]);
-  gDevice.queue.submit([enc.finish()]);
-  try {
-    await buf.mapAsync(GPUMapMode.READ);
-  } catch (e) {
-    buf.destroy();
-    return null;
-  }
-  const src = new Uint8Array(buf.getMappedRange());
-  const rgba = new Float32Array(gx * gy * 4);
-  for (let y = 0; y < gy; ++y) for (let x = 0; x < gx; ++x) {
-    const s = y*rowPitch + x*4, d = (y*gx+x)*4;
-    rgba[d] = src[s]; rgba[d+1] = src[s+1]; rgba[d+2] = src[s+2]; rgba[d+3] = src[s+3];
-  }
-  buf.unmap(); buf.destroy();
-  return rgba;
-}
+    // Image loading
+    this.ui.presetSelect.addEventListener('change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
+    this.ui.file.addEventListener('change', e => this.handleFileSelect(e));
 
-function renderColormap(color_data) {
-  cmapEl.innerHTML = '';
-  for (const c of color_data) {
-    const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
-    const div = document.createElement('div');
-    div.style.cssText = `width:16px;height:16px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
-                        `border:1px solid var(--panel-border);border-radius:2px;display:inline-block;`;
-    div.title = `Y=${c.y} Co=${c.co} Cg=${c.cg} a=${c.a} | R=${rgb.r} G=${rgb.g} B=${rgb.b} A=${rgb.a}`;
-    cmapEl.appendChild(div);
-  }
-}
+    // Parameters requiring a reset
+    this.ui.targetPts.addEventListener('change', () => this.handleGridParamChange());
+    this.ui.zoom.addEventListener('change', async e => {
+      this.state.zoom = +e.target.value;
+      if (this.state.loadedOrigCanvas) this.resampleFromOrig();
+      await this.stopAndReset();
+    });
+    ['nc', 'np', 'randomInit'].forEach(id => {
+      document.getElementById(id).addEventListener('change', () => this.stopAndReset());
+    });
 
-function overlayTriangles(canvas, del, zoom) {
-  if (!showTri.checked) return;
-  const ctx = canvas.getContext('2d');
-  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-  ctx.lineWidth = 0.5;
-  for (const t of del.getTriangles()) {
-    const [v0, v1, v2] = [del.vtx[t.vtx[0]], del.vtx[t.vtx[1]], del.vtx[t.vtx[2]]];
-    ctx.beginPath();
-    ctx.moveTo(v0.x * zoom + 0.5, v0.y * zoom + 0.5);
-    ctx.lineTo(v1.x * zoom + 0.5, v1.y * zoom + 0.5);
-    ctx.lineTo(v2.x * zoom + 0.5, v2.y * zoom + 0.5);
-    ctx.closePath();
-    ctx.stroke();
-  }
-}
+    // Live-updated parameters
+    this.ui.lambda.addEventListener('input', () => this.updateLambdaDisplay());
+    this.ui.autoLambda.addEventListener('change', e => { this.ui.lambda.disabled = e.target.checked; });
+    this.ui.showTri.addEventListener('change', () => {
+      if (this.state.lastRenderedPreview) {
+        this.renderPreview(this.ui.cOpt, this.state.lastRenderedPreview, this.state.lastRenderedColors);
+      }
+    });
 
-let lastRenderedPreview = null, lastRenderedColors = null;
+    // Mutation probabilities
+    this.ui.probInputs.forEach(el => {
+      const span = document.getElementById('v_' + el.id.slice(2));
+      el.addEventListener('input', () => { span.textContent = el.value; });
+      span.textContent = el.value; // Initial display
+    });
+  },
 
-async function renderPreview(canvas, preview, color_data) {
-  if (!gGpu) return;
-  const zx = preview.grid_x * GZ, zy = preview.grid_y * GZ;
-  const del = buildDel(preview);
-  const pal = buildPalRGB(color_data);
-  await gGpu.computeLoss(del, pal);
-  if (!gGpu) return;
-  const rgba = await readbackTexture(zx, zy);
-  if (!rgba) return;
-  drawRGBA(canvas, zx, zy, rgba);
-  overlayTriangles(canvas, del, GZ);
-  renderColormap(color_data);
-  b64out.value = encodePreview(preview, color_data);
-  document.getElementById('byteSize').textContent = encodeSize(preview, color_data) + ' B';
-  lastRenderedPreview = preview;
-  lastRenderedColors  = color_data;
-}
+  // --- State & Parameter Management ---
+  getParams() {
+    const g = id => +document.getElementById(id).value;
+    const optimizerParams = {
+      proba_vertex_move:      g('p_vm'),
+      proba_vertex_add:       g('p_va'),
+      proba_vertex_sub:       g('p_vs'),
+      proba_color_index_move: g('p_ci'),
+      proba_color_move:       g('p_cm'),
+      proba_color_add:        g('p_ca'),
+      proba_color_sub:        g('p_cs'),
+      vertex_amplitude:       g('vmAmp') || 1,
+      border_escape_prob:     g('borderEscape'),
+    };
+    if (!this.ui.autoLambda.checked) {
+      optimizerParams.lambda = this.getLambda();
+    }
 
-showTri.addEventListener('change', () => {
-  if (!gOpt && lastRenderedPreview)
-    renderPreview(cOpt, lastRenderedPreview, lastRenderedColors);
-});
+    return {
+      nc: g('nc'),
+      np: g('np'),
+      maxIter: g('iters') || 100000,
+      gpuBatch: g('gpuBatch') || 50,
+      targetBytes: g('targetBytes') || 500,
+      autoGain: g('autoGain') || 0.2,
+      randomInit: document.getElementById('randomInit').checked,
+      optimizer: optimizerParams,
+    };
+  },
 
-function makeSyntheticImage(w, h) {
-  const data = new Uint8ClampedArray(w*h*4);
-  for (let y = 0; y < h; ++y) for (let x = 0; x < w; ++x) {
-    const i = (y*w+x)*4;
-    data[i]   = Math.round(x/(w-1)*255);
-    data[i+1] = Math.round(y/(h-1)*255);
-    data[i+2] = Math.round((1-x/(w-1))*128+64);
-    data[i+3] = 255;
-  }
-  return { data, width:w, height:h };
-}
+  getLambda() { return Math.pow(10, +this.ui.lambda.value); },
+  setLambda(v) {
+    const log = Math.max(-7, Math.min(1, Math.log10(v)));
+    this.ui.lambda.value = log;
+    const val = Math.pow(10, log);
+    this.ui.lambdaVal.textContent = val.toExponential(2);
+    return val;
+  },
 
-let loadedImageData = null, loadedOrigCanvas = null;
-let gDevice = null, gGpu = null, gOpt = null;
-let GX = 64, GY = 64, GZ = 1;
+  // --- Core Actions ---
+  toggleRun() {
+    if (this.state.optimizer) {
+      this.state.optimizer.stop();
+    } else {
+      this.run();
+    }
+  },
 
-function computeGridDims(imgW, imgH, targetPts) {
-  const ar = imgW / imgH;
-  const gx = Math.max(4, Math.round(Math.sqrt(targetPts * ar)));
-  const gy = Math.max(4, Math.round(Math.sqrt(targetPts / ar)));
-  return { gx, gy };
-}
+  async run() {
+    if (this.state.optimizer) return;
+    this.ui.btn.textContent = 'Stop';
+    this.log('');
+    this.updateStatus('');
 
-function setCanvasDisplaySize(canvas, gx, gy) {
-  const maxDim = 256;
-  if (gx >= gy) {
-    canvas.style.width  = maxDim + 'px';
-    canvas.style.height = Math.round(maxDim * gy / gx) + 'px';
-  } else {
-    canvas.style.height = maxDim + 'px';
-    canvas.style.width  = Math.round(maxDim * gx / gy) + 'px';
-  }
-}
+    try {
+      const params = this.getParams();
+      const { zGrid, preview, color_data } = this.prepareGrid(params);
+      this.log(`Initial: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B`);
 
-const TARGET_PTS = [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000];
-const targetPtsEl  = document.getElementById('targetPts');
-const targetPtsVal = document.getElementById('targetPtsVal');
-function getTargetPts() { return TARGET_PTS[+targetPtsEl.value]; }
-function updateTargetPtsDisplay() { targetPtsVal.textContent = getTargetPts(); }
-targetPtsEl.addEventListener('input', updateTargetPtsDisplay);
-updateTargetPtsDisplay();
+      const opt = new TriangleOptimizer(preview, color_data, {
+        refGrid: zGrid,
+        zoom: this.state.zoom,
+        batch_size: params.gpuBatch,
+        ...params.optimizer,
+      });
+      this.state.optimizer = opt;
 
-function updateGridFromImage(imgW, imgH) {
-  const tp = getTargetPts();
-  const d = computeGridDims(imgW, imgH, tp);
-  GX = d.gx; GY = d.gy;
-  document.getElementById('gridSize').textContent = `${GX}×${GY} (${GX*GY} pts)`;
-  setCanvasDisplaySize(cRef, GX, GY);
-  setCanvasDisplaySize(cOpt, GX, GY);
-}
+      const initScore = opt.init();
+      this.log(`Initial score: ${initScore.toFixed(6)} (lambda=${opt.lambda.toExponential(0)})`);
 
-async function ensureGPU(gx, gy, zGrid, zoom) {
-  if (gGpu && gGpu._gx === gx && gGpu._gy === gy && gGpu._zoom === zoom) {
-    gGpu.setReference(zGrid);
-    return;
-  }
-  if (gGpu) { gGpu.destroy(); gGpu = null; }
-  if (gDevice) { gDevice.destroy(); gDevice = null; }
-  gDevice = await createWebGPUDevice();
-  gGpu = new TriangleGPU(gDevice, gx, gy, zoom);
-  gGpu._gx = gx; gGpu._gy = gy; gGpu._zoom = zoom;
-  gGpu.setReference(zGrid);
-}
+      const t0 = performance.now();
+      const result = await opt.run(params.maxIter, (iter, best, r) => {
+        Object.assign(opt, this.getParams().optimizer); // Update live params
+        const elapsedS = (performance.now() - t0) / 1000;
+        const evPerSec = elapsedS > 0 ? Math.round(iter / elapsedS).toLocaleString() : '—';
+        this.updateStatus(`iter=${iter} best=${best.toFixed(5)} ${elapsedS.toFixed(1)}s ${evPerSec} ev/s`);
 
-function resampleFromOrig() {
-  if (!loadedOrigCanvas) return;
-  // Sample at GX*GZ × GY*GZ so sampleGrid() can produce both grid and zoomed reference.
-  const cv = document.createElement('canvas');
-  cv.width = GX * GZ; cv.height = GY * GZ;
-  cv.getContext('2d').drawImage(loadedOrigCanvas, 0, 0, GX * GZ, GY * GZ);
-  loadedImageData = cv.getContext('2d').getImageData(0, 0, GX * GZ, GY * GZ);
-}
+        const sz = encodeSize(opt.preview, opt.color_data);
+        if (this.ui.autoLambda.checked) {
+          const p = this.getParams();
+          opt.lambda = this.setLambda(opt.lambda * Math.pow(sz / p.targetBytes, p.autoGain));
+        }
+        const dist = r.distortion ?? (r.score - opt.lambda * sz);
+        this.log(`[${iter}] dist=${dist.toFixed(5)} size=${sz}B(λ×sz=${(opt.lambda*sz).toExponential(2)}) λ=${opt.lambda.toExponential(2)} acc=${r.accepted?'Y':'N'}`);
+        this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
+      });
 
-async function stopAndReset() {
-  if (gOpt) { gOpt.stop(); gOpt = null; }
-  btn.textContent = 'Run';
-  await resetState();
-}
+      const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+      this.log(`Done ${elapsed}s (${Math.round(params.maxIter/elapsed)} iter/s)`);
+      this.log(`Final: nb_pts=${result.preview.nb_pts} nb_colors=${result.preview.nb_colors} size=${encodeSize(result.preview,result.color_data)}B loss=${result.loss.toFixed(6)}`);
+      this.updateStatus(`Done — best loss=${result.loss.toFixed(6)}`);
+      this.renderPreview(this.ui.cOpt, result.preview, result.color_data);
 
-const PRESETS = {
-  obama: { file: 'obama.webp',      base64: 'ADnSx4P84u1tUQ4Mp3Gv9o/28HmOm5ej6Y9A0ATrg2hAPsBTk8Sx993NjXetC4azmM1LpZovj4h7rBld16qyNoy4CsJsumpSDWSRgxAdMwBG55ktTbGGGtFjH+SHFS4+tTIC/pTImvM48mLcSSHM/27SGwvPygvJpeIrkMtj2NBWB5f08SjZxwGaUVWR3dhAmYn6zQJ2cawIRYT0u7EsfBYwOejz/+WXnxB0u5hQ' },
-  shell: { file: 'shell-logo.webp', base64: 'CfkGMnDJOBYfsO8xJ+GduyqbA+WsHRb8ab1FqTAA' },
-  moon: { file: 'moon.webp',        base64: 'ACQkMOXlP3xld9tgfHoOHTwAJ6jH2Y6DU4rYlDoRSCD0oTiSEGa2TMgtdwePjCcqlIHgt+BL4dQC5RDN/cdq7faGkfHpYTXUPa2HDbsaFtIUzxUVZFg=' },
-  claude: { file: 'claude.webp',    base64: 'ApUEm7Zp/N6NhOGIz6xPpgB9XepgQJcbxbeEonqkQa4kvD1G3ys+boZpNFguP+20Nygxo0FkioKG+L3DYORleiPXjBZJfJ2Kgl3F4t5Pyvq7gHxBEoLAlQyndz4=' },
+    } catch (err) {
+      this.log(`\n--- ERROR ---\n${err.message}`);
+      this.updateStatus('Error!');
+      console.error(err);
+    } finally {
+      this.state.optimizer = null;
+      this.ui.btn.textContent = 'Run';
+    }
+  },
+
+  async reset() {
+    this.log('');
+    this.updateStatus('');
+    const params = this.getParams();
+    const { preview, color_data } = this.prepareGrid(params);
+    this.log(`Reset: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B has_alpha=${preview.has_alpha}`);
+    this.renderPreview(this.ui.cOpt, preview, color_data);
+  },
+
+  async stopAndReset() {
+    if (this.state.optimizer) {
+      this.state.optimizer.stop();
+      // The 'run' method's finally block will handle cleanup.
+    }
+    await this.reset();
+  },
+
+  // --- Image & Grid Handling ---
+  async loadImageFromUrl(url) {
+    this.updateStatus(`Loading ${url}...`);
+    try {
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      this.state.loadedOrigCanvas = document.createElement('canvas');
+      this.state.loadedOrigCanvas.width = img.naturalWidth;
+      this.state.loadedOrigCanvas.height = img.naturalHeight;
+      this.state.loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
+
+      this.updateGridFromImage(img.naturalWidth, img.naturalHeight);
+      this.resampleFromOrig();
+      await this.stopAndReset();
+    } catch (err) {
+      this.log(`Error loading image: ${url}`);
+      this.updateStatus('Error!');
+      console.error(err);
+    }
+  },
+
+  async handleFileSelect(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    this.updateStatus(`Loading ${f.name}...`);
+    try {
+      const img = new Image();
+      const url = URL.createObjectURL(f);
+      img.onload = async () => {
+        this.state.loadedOrigCanvas = document.createElement('canvas');
+        this.state.loadedOrigCanvas.width = img.naturalWidth;
+        this.state.loadedOrigCanvas.height = img.naturalHeight;
+        this.state.loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
+        this.updateGridFromImage(img.naturalWidth, img.naturalHeight);
+        this.resampleFromOrig();
+        URL.revokeObjectURL(url);
+        await this.stopAndReset();
+      };
+      img.src = url;
+    } catch (err) {
+      this.log(`Error loading file: ${f.name}`);
+      this.updateStatus('Error!');
+      console.error(err);
+    }
+  },
+
+  handleGridParamChange() {
+    if (this.state.loadedOrigCanvas) {
+      this.updateGridFromImage(this.state.loadedOrigCanvas.width, this.state.loadedOrigCanvas.height);
+    } else {
+      this.updateGridFromImage(1, 1); // Fallback for synthetic image
+    }
+    this.resampleFromOrig();
+    this.stopAndReset();
+  },
+
+  updateGridFromImage(imgW, imgH) {
+    const targetPts = this.TARGET_PTS[+this.ui.targetPts.value];
+    const ar = imgW / imgH;
+    this.state.gridX = Math.max(4, Math.round(Math.sqrt(targetPts * ar)));
+    this.state.gridY = Math.max(4, Math.round(Math.sqrt(targetPts / ar)));
+
+    this.ui.gridSize.textContent = `${this.state.gridX}×${this.state.gridY} (${this.state.gridX * this.state.gridY} pts)`;
+    this.setCanvasDisplaySize(this.ui.cRef, this.state.gridX, this.state.gridY);
+    this.setCanvasDisplaySize(this.ui.cOpt, this.state.gridX, this.state.gridY);
+    this.updateTargetPtsDisplay();
+  },
+
+  resampleFromOrig() {
+    if (!this.state.loadedOrigCanvas) return;
+    const { gridX, gridY, zoom } = this.state;
+    const cv = document.createElement('canvas');
+    cv.width = gridX * zoom; cv.height = gridY * zoom;
+    cv.getContext('2d').drawImage(this.state.loadedOrigCanvas, 0, 0, gridX * zoom, gridY * zoom);
+    this.state.loadedImageData = cv.getContext('2d').getImageData(0, 0, gridX * zoom, gridY * zoom);
+  },
+
+  prepareGrid(params) {
+    const { gridX, gridY, zoom } = this.state;
+    const np = Math.min(Math.round(gridX * gridY * params.np / 100), kPreviewMaxNumVertices);
+    const imgData = this.state.loadedImageData || this.makeSyntheticImage(gridX * zoom, gridY * zoom);
+    const zGrid = sampleGrid(imgData, gridX * zoom, gridY * zoom);
+    const { preview, color_data } = buildInitialState(imgData,
+        { grid_x: gridX, grid_y: gridY, nb_colors: params.nc, nb_pts: np, random_init: params.randomInit });
+    this.drawRGBA(this.ui.cRef, gridX * zoom, gridY * zoom, zGrid);
+    return { zGrid, preview, color_data };
+  },
+
+  makeSyntheticImage(w, h) {
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; ++y) for (let x = 0; x < w; ++x) {
+      const i = (y * w + x) * 4;
+      data[i]   = Math.round(x / (w - 1) * 255);
+      data[i+1] = Math.round(y / (h - 1) * 255);
+      data[i+2] = Math.round((1 - x / (w - 1)) * 128 + 64);
+      data[i+3] = 255;
+    }
+    return { data, width: w, height: h };
+  },
+
+  // --- Rendering & UI Updates ---
+  log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
+  updateStatus(s) { this.ui.status.textContent = s; },
+  updateLambdaDisplay() { this.ui.lambdaVal.textContent = this.getLambda().toExponential(0); },
+  updateTargetPtsDisplay() { this.ui.targetPtsVal.textContent = this.TARGET_PTS[+this.ui.targetPts.value]; },
+
+  drawRGBA(canvas, w, h, rgbaF32) {
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const id = ctx.createImageData(w, h);
+    const data = new Uint8ClampedArray(rgbaF32);
+    id.data.set(data);
+    ctx.putImageData(id, 0, 0);
+  },
+
+  renderPreview(canvas, preview, color_data) {
+    const { zoom } = this.state;
+    const zx = preview.grid_x * zoom, zy = preview.grid_y * zoom;
+    const del = buildDel(preview);
+    const pal = buildPalRGB(color_data);
+    const scaledVtx = zoom > 1 ? del.vtx.map(v => ({ x: v.x * zoom, y: v.y * zoom, idx: v.idx })) : del.vtx;
+    const rgba = rasterizeGrid(zx, zy, scaledVtx, del.getTriangles(), pal);
+    this.drawRGBA(canvas, zx, zy, rgba);
+    this.overlayTriangles(canvas, del, zoom);
+    this.renderColormap(color_data);
+    this.ui.b64out.value = encodePreview(preview, color_data);
+    document.getElementById('byteSize').textContent = encodeSize(preview, color_data) + ' B';
+    this.state.lastRenderedPreview = preview;
+    this.state.lastRenderedColors = color_data;
+  },
+
+  renderColormap(color_data) {
+    this.ui.cmap.innerHTML = '';
+    for (const c of color_data) {
+      const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
+      const div = document.createElement('div');
+      div.style.cssText = `width:16px;height:16px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
+                          `border:1px solid var(--panel-border);border-radius:2px;display:inline-block;`;
+      div.title = `Y=${c.y} Co=${c.co} Cg=${c.cg} a=${c.a} | R=${rgb.r} G=${rgb.g} B=${rgb.b} A=${rgb.a}`;
+      this.ui.cmap.appendChild(div);
+    }
+  },
+
+  overlayTriangles(canvas, del, zoom) {
+    if (!this.ui.showTri.checked) return;
+    const ctx = canvas.getContext('2d');
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 0.5;
+    for (const t of del.getTriangles()) {
+      const [v0, v1, v2] = [del.vtx[t.vtx[0]], del.vtx[t.vtx[1]], del.vtx[t.vtx[2]]];
+      ctx.beginPath();
+      ctx.moveTo(v0.x * zoom + 0.5, v0.y * zoom + 0.5);
+      ctx.lineTo(v1.x * zoom + 0.5, v1.y * zoom + 0.5);
+      ctx.lineTo(v2.x * zoom + 0.5, v2.y * zoom + 0.5);
+      ctx.closePath();
+      ctx.stroke();
+    }
+  },
+
+  setCanvasDisplaySize(canvas, gx, gy) {
+    const maxDim = 256;
+    if (gx >= gy) {
+      canvas.style.width = maxDim + 'px';
+      canvas.style.height = Math.round(maxDim * gy / gx) + 'px';
+    } else {
+      canvas.style.height = maxDim + 'px';
+      canvas.style.width = Math.round(maxDim * gx / gy) + 'px';
+    }
+  },
 };
 
-async function loadImageFromUrl(url) {
-  const img = new Image();
-  img.src = url;
-  await img.decode();
-  loadedOrigCanvas = document.createElement('canvas');
-  loadedOrigCanvas.width = img.naturalWidth;
-  loadedOrigCanvas.height = img.naturalHeight;
-  loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
-  updateGridFromImage(img.naturalWidth, img.naturalHeight);
-  resampleFromOrig();
-  await stopAndReset();
-}
+// Defer initialization until all scripts are loaded and the DOM is ready.
+window.addEventListener('DOMContentLoaded', () => app.init());
 
-const presetSelect = document.getElementById('presetSelect');
-presetSelect.addEventListener('change', () => loadImageFromUrl(PRESETS[presetSelect.value].file));
-loadImageFromUrl(PRESETS['obama'].file);
-
-document.getElementById('file').addEventListener('change', async e => {
-  const f = e.target.files[0]; if (!f) return;
-  const img = new Image();
-  img.onload = async () => {
-    loadedOrigCanvas = document.createElement('canvas');
-    loadedOrigCanvas.width = img.naturalWidth;
-    loadedOrigCanvas.height = img.naturalHeight;
-    loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
-    updateGridFromImage(img.naturalWidth, img.naturalHeight);
-    resampleFromOrig();
-    URL.revokeObjectURL(img.src);
-    await stopAndReset();
-  };
-  img.src = URL.createObjectURL(f);
-});
-
-document.getElementById('targetPts').addEventListener('change', async () => {
-  if (loadedOrigCanvas) {
-    updateGridFromImage(loadedOrigCanvas.width, loadedOrigCanvas.height);
-  } else {
-    updateGridFromImage(1, 1);
-  }
-  resampleFromOrig();
-  await stopAndReset();
-});
-
-for (const id of ['nc', 'np']) {
-  document.getElementById(id).addEventListener('change', stopAndReset);
-}
-document.getElementById('randomInit').addEventListener('change', stopAndReset);
-document.getElementById('zoom').addEventListener('change', async e => {
-  GZ = +e.target.value;
-  if (loadedOrigCanvas) resampleFromOrig();
-  await stopAndReset();
-});
-
-const btn = document.getElementById('btn');
-
-btn.addEventListener('click', () => {
-  if (gOpt) { gOpt.stop(); return; }
-  runOptimizer();
-});
-
-document.getElementById('resetBtn').addEventListener('click', stopAndReset);
-
-function prepareGrid(nc, np) {
-  const imgData = loadedImageData || makeSyntheticImage(GX * GZ, GY * GZ);
-  const grid    = sampleGrid(imgData, GX, GY);             // GX×GY for init/palette
-  const zGrid   = GZ > 1 ? sampleGrid(imgData, GX*GZ, GY*GZ) : grid;  // zoomed GPU ref
-  const random_init = document.getElementById('randomInit').checked;
-  const { preview, color_data } =
-    buildInitialState(imgData, { grid_x:GX, grid_y:GY, nb_colors:nc, nb_pts:np, random_init });
-  drawRGBA(cRef, GX * GZ, GY * GZ, zGrid);
-  return { imgData, grid, zGrid, preview, color_data };
-}
-
-async function resetState() {
-  const nc = +document.getElementById('nc').value;
-  const np = +document.getElementById('np').value;
-  logEl.textContent = '';
-  statusEl.textContent = '';
-  const { zGrid, preview, color_data } = prepareGrid(nc, np);
-  addLog(`Reset: nb_pts=${preview.nb_pts}  nb_colors=${preview.nb_colors}  size=${encodeSize(preview,color_data)}B  has_alpha=${preview.has_alpha}`);
-  await ensureGPU(GX, GY, zGrid, GZ);
-  await renderPreview(cOpt, preview, color_data);
-}
-
-async function runOptimizer() {
-  btn.textContent = 'Stop';
-  logEl.textContent = '';
-  statusEl.textContent = '';
-
-  const nc       = +document.getElementById('nc').value;
-  const np       = +document.getElementById('np').value;
-  const maxIter  = +document.getElementById('iters').value || 100000;
-  const gpuBatch = +document.getElementById('gpuBatch').value || 500;
-
-  const { zGrid, preview: initPreview, color_data: initColors } = prepareGrid(nc, np);
-  addLog(`Initial: nb_pts=${initPreview.nb_pts}  nb_colors=${initPreview.nb_colors}  size=${encodeSize(initPreview,initColors)}B`);
-  await ensureGPU(GX, GY, zGrid, GZ);
-
-  const opt = new TriangleOptimizer(initPreview, initColors, {
-    refGrid: zGrid,
-    zoom: GZ,
-    batch_size: gpuBatch,
-    ...getOptParams(),
-  });
-  gOpt = opt;
-  const initScore = opt.init();
-  addLog(`Initial score: ${initScore.toFixed(6)}  (lambda=${opt.lambda.toExponential(0)})`);
-
-  const t0 = performance.now();
-  const result = await opt.run(maxIter, async (iter, best, r) => {
-    Object.assign(opt, getOptParams());
-    const elapsedS = (performance.now()-t0)/1000;
-    const elapsed = elapsedS.toFixed(1);
-    const evPerSec = elapsedS > 0 ? Math.round(iter / elapsedS).toLocaleString() : '—';
-    statusEl.textContent = `iter=${iter}  best=${best.toFixed(5)}  ${elapsed}s  ${evPerSec} ev/s`;
-    const sz   = encodeSize(opt.preview, opt.color_data);
-    const dist = r.distortion ?? (r.score - opt.lambda * sz);
-    if (autoLambdaCb.checked) {
-      const target = +document.getElementById('targetBytes').value || 500;
-      const gain   = +document.getElementById('autoGain').value   || 0.2;
-      opt.lambda   = setLambda(opt.lambda * Math.pow(sz / target, gain));
-    }
-    addLog(`[${iter}] dist=${dist.toFixed(5)}  size=${sz}B(λ×sz=${(opt.lambda*sz).toExponential(2)})  λ=${opt.lambda.toExponential(2)}  acc=${r.accepted?'Y':'N'}`);
-    await renderPreview(cOpt, opt.bestPreview, opt.bestColorData);
-  });
-
-  const elapsed = ((performance.now()-t0)/1000).toFixed(2);
-  addLog(`Done ${elapsed}s  (${Math.round(maxIter/elapsed)} iter/s)`);
-  addLog(`Final: nb_pts=${result.preview.nb_pts}  nb_colors=${result.preview.nb_colors}  size=${encodeSize(result.preview,result.color_data)}B  loss=${result.loss.toFixed(6)}`);
-  statusEl.textContent = `Done — best loss=${result.loss.toFixed(6)}`;
-
-  await renderPreview(cOpt, result.preview, result.color_data);
-
-  gOpt = null;
-  btn.textContent = 'Run';
-}
-
-updateGridFromImage(1, 1);
-resetState();
 </script>
 </body>
 </html>

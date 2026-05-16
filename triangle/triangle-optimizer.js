@@ -182,7 +182,6 @@ class TriangleOptimizer {
     border_escape_prob        = 5,
     batch_size                = 500,    // iterations between UI-yield / onProgress calls
     vertex_amplitude          = 1,
-    topo_cadence              = 10,     // kept for API compat, unused
   } = {}) {
     this.preview    = clonePreview(preview);
     this.color_data = color_data.map(c => ({ ...c }));
@@ -229,44 +228,31 @@ class TriangleOptimizer {
 
   step(iter, maxIter) {
     const rng = this._rng;
-    const chance = p => rng() * 100 < p;
 
     let np = clonePreview(this.preview);
     let nc = this.color_data.map(c => ({ ...c }));
 
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
-      let r;
-      if (np.qpts.length > 4 && chance(this.proba_vertex_move)) {
-        r = applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (chance(this.proba_vertex_add)) {
-        r = applyAddVertex(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (np.qpts.length > 4 && chance(this.proba_vertex_sub)) {
-        r = applyRemoveVertex(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (chance(this.proba_color_index_move)) {
-        r = applyMoveColorIndex(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (chance(this.proba_color_move)) {
-        r = applyMoveColor(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (chance(this.proba_color_add)) {
-        r = applyAddColor(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (np.nb_colors > kPreviewMinNumColors && chance(this.proba_color_sub)) {
-        r = applyRemoveColor(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
-      }
-      if (np.has_alpha && chance(this.proba_flip_alpha)) {
-        r = applyFlipAlpha(np, nc, rng);
-        if (r) { np = r.preview; nc = r.color_data; }
+      const mutations = [
+        [this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
+        [this.proba_vertex_add,  () => applyAddVertex(np, nc, rng)],
+        [this.proba_vertex_sub,  () => np.qpts.length > 4 ? applyRemoveVertex(np, nc, rng) : null],
+        [this.proba_color_index_move, () => applyMoveColorIndex(np, nc, rng)],
+        [this.proba_color_move,  () => applyMoveColor(np, nc, rng)],
+        [this.proba_color_add,   () => applyAddColor(np, nc, rng)],
+        [this.proba_color_sub,   () => np.nb_colors > kPreviewMinNumColors ? applyRemoveColor(np, nc, rng) : null],
+        [this.proba_flip_alpha,  () => np.has_alpha ? applyFlipAlpha(np, nc, rng) : null],
+      ];
+      const total = mutations.reduce((s, [p]) => s + p, 0);
+      if (total <= 0) break;
+      let pick = rng() * total;
+      for (const [p, fn] of mutations) {
+        pick -= p;
+        if (pick < 0) {
+          const r = fn();
+          if (r) { np = r.preview; nc = r.color_data; }
+          break;
+        }
       }
     }
 
