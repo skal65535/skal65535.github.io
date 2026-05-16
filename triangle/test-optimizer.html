@@ -917,6 +917,7 @@ ${err.message}`);
         preview = decoded.preview;
         color_data = decoded.color_data;
         this.log(`Loaded pre-computed preview for '${presetKey}'`);
+        this.updateZGrid();
       } catch (e) {
         this.log(`Error decoding preview for '${presetKey}', generating new one.`);
         console.error(e);
@@ -1029,14 +1030,20 @@ ${err.message}`);
     else this.state.roiMask.resize(gridX * zoom, gridY * zoom);
   },
 
-  prepareGrid(params) {
+  updateZGrid() {
     const { gridX, gridY, zoom } = this.state;
-    const np = Math.min(Math.round(gridX * gridY * params.np / 100), kPreviewMaxNumVertices);
     const imgData = this.state.loadedImageData || this.makeSyntheticImage(gridX * zoom, gridY * zoom);
     this.state.zGrid = sampleGrid(imgData, gridX * zoom, gridY * zoom);
+    this.redrawRef();
+    return imgData;
+  },
+
+  prepareGrid(params) {
+    const { gridX, gridY } = this.state;
+    const np = Math.min(Math.round(gridX * gridY * params.np / 100), kPreviewMaxNumVertices);
+    const imgData = this.updateZGrid();
     const { preview, color_data } = buildInitialState(imgData,
         { grid_x: gridX, grid_y: gridY, nb_colors: params.nc, nb_pts: np, random_init: params.randomInit });
-    this.redrawRef();
     return { preview, color_data };
   },
 
