@@ -174,10 +174,10 @@ class TriangleOptimizer {
   constructor(preview, color_data, {
     refGrid                   = null,   // Float32Array zGrid (gx*zoom × gy*zoom, RGBA [0,255])
     zoom                      = 1,
-    lambda_vtx                = 0.0001,
-    lambda_color              = 0.0001,
+    lambda                    = 0.0001,
     seed                      = 0x12345678,
     score_tolerance           = 0.0002,
+    color_change_penalty      = 0,
     num_mutations_per_iter    = 1,
     proba_vertex_move         = 50,
     proba_vertex_add          = 20,
@@ -190,14 +190,16 @@ class TriangleOptimizer {
     border_escape_prob        = 5,
     batch_size                = 500,    // iterations between UI-yield / onProgress calls
     vertex_amplitude          = 1,
+    maskWeights               = null,   // Float32Array per-pixel importance weights, or null
+    roiStrength               = 5,
   } = {}) {
     this.preview    = clonePreview(preview);
     this.color_data = color_data.map(c => ({ ...c }));
     this.refGrid    = refGrid;
     this.zoom       = zoom;
-    this.lambda_vtx   = lambda_vtx;
-    this.lambda_color = lambda_color;
+    this.lambda                 = lambda;
     this.score_tolerance        = score_tolerance;
+    this.color_change_penalty   = color_change_penalty;
     this.num_mutations_per_iter = num_mutations_per_iter;
     this.proba_vertex_move      = proba_vertex_move;
     this.proba_vertex_add       = proba_vertex_add;
@@ -210,6 +212,8 @@ class TriangleOptimizer {
     this.border_escape_prob     = border_escape_prob;
     this.batch_size        = batch_size;
     this.vertex_amplitude  = vertex_amplitude;
+    this.maskWeights  = maskWeights;
+    this.roiStrength  = roiStrength;
     this.iter     = 0;
     this.bestLoss = Infinity;
     this.bestPreview   = null;
@@ -221,10 +225,9 @@ class TriangleOptimizer {
   _score(preview, color_data) {
     const del    = buildDel(preview);
     const palRGB = buildPalRGB(color_data);
-    const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom);
-    const { total, vtx_bytes, color_bytes } = encodeSizeComponents(preview, color_data);
-    const score = distortion + this.lambda_vtx * vtx_bytes + this.lambda_color * color_bytes;
-    return { distortion, score, total, vtx_bytes, color_bytes };
+    const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom, this.maskWeights, this.roiStrength);
+    const size = encodeSize(preview, color_data);
+    return { distortion, score: distortion + this.lambda * size, size };
   }
 
   init() {
@@ -232,6 +235,8 @@ class TriangleOptimizer {
     this.currentScore       = score;
     this.currentDistortion  = distortion;
     this.bestLoss           = score;
+    this.vtxAccepted        = 0;
+    this.colorAccepted      = 0;
     this.bestPreview   = clonePreview(this.preview);
     this.bestColorData = this.color_data.map(c => ({ ...c }));
     return score;
@@ -243,7 +248,7 @@ class TriangleOptimizer {
     let np = clonePreview(this.preview);
     let nc = this.color_data.map(c => ({ ...c }));
 
-    let dbgLabel = null;
+    let moveLabel = null;
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
       const mutations = [
         ['v=', this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
@@ -262,19 +267,21 @@ class TriangleOptimizer {
         pick -= p;
         if (pick < 0) {
           const r = fn();
-          if (this.debug) dbgLabel = lbl + (r ? '' : '?');
+          moveLabel = lbl + (r ? '' : '?');
           if (r) { np = r.preview; nc = r.color_data; }
           break;
         }
       }
     }
 
-    const { distortion, score: newScore } = this._score(np, nc);
+    const { distortion, score: newScore, size } = this._score(np, nc);
     const tolerance = this.score_tolerance * (maxIter - iter) / maxIter;
-    const accept = newScore <= this.bestLoss + tolerance;
+    const isColorChange = moveLabel === 'c+' || moveLabel === 'c+?' || moveLabel === 'c-' || moveLabel === 'c-?';
+    const threshold = isColorChange ? -this.color_change_penalty * this.bestLoss : tolerance;
+    const accept = newScore <= this.bestLoss + threshold;
 
-    if (this.debug && dbgLabel !== null) {
-      console.log(`[${iter}] ${dbgLabel}${accept ? ' ACC' : ' N'} dist=${distortion.toFixed(6)} score=${newScore.toFixed(6)} cur=${this.currentScore.toFixed(6)} tol=${tolerance.toFixed(6)}`);
+    if (this.debug && moveLabel !== null) {
+      console.log(`[${iter}] ${moveLabel}${accept ? ' ACC' : ' N'} dist=${distortion.toFixed(6)} score=${newScore.toFixed(6)} cur=${this.currentScore.toFixed(6)} thr=${threshold.toFixed(6)}`);
     }
 
     if (accept) {
@@ -282,6 +289,8 @@ class TriangleOptimizer {
       this.color_data         = nc;
       this.currentScore       = newScore;
       this.currentDistortion  = distortion;
+      if (!isColorChange) this.vtxAccepted++;
+      else                this.colorAccepted++;
       if (newScore < this.bestLoss) {
         this.bestLoss      = newScore;
         this.bestPreview   = clonePreview(np);

@@ -45,12 +45,21 @@ function rasterizeGrid(w, h, vtx, triangles, palRGB) {
 
 // Weighted SAD matching GPU formula; normalized per pixel.
 // zoom: render at gx*zoom × gy*zoom against zGrid (Float32Array, same size, RGBA [0,255]).
-function computeCPULoss(gx, gy, del, palRGB, zGrid, zoom) {
+// maskWeights: optional Float32Array [zx*zy], per-pixel importance weights [0..1].
+// roiStrength: multiplier — pixel loss *= (1 + maskWeights[i] * roiStrength).
+function computeCPULoss(gx, gy, del, palRGB, zGrid, zoom, maskWeights, roiStrength) {
   zoom = zoom || 1;
   const zx = gx * zoom, zy = gy * zoom;
   // scale vtx grid coords → pixel coords in zoomed space
   const scaledVtx = del.vtx.map(v => ({ x: v.x * zoom, y: v.y * zoom, idx: v.idx }));
   const rendered = rasterizeGrid(zx, zy, scaledVtx, del.getTriangles(), palRGB);
+  // Normalize mask so sum(maskWeights) == n, keeping total extra weight constant.
+  let maskScale = 0;
+  if (maskWeights) {
+    let sum = 0;
+    for (let i = 0, n = zx * zy; i < n; ++i) sum += maskWeights[i];
+    maskScale = sum > 0 ? (zx * zy) / sum : 0;
+  }
   let sad = 0;
   const inv255 = 1 / 255;
   for (let i = 0, n = zx * zy; i < n; ++i) {
@@ -60,8 +69,9 @@ function computeCPULoss(gx, gy, del, palRGB, zGrid, zoom) {
     const dg = (rendered[b+1] - zGrid[b+1]) * inv255;
     const db = (rendered[b+2] - zGrid[b+2]) * inv255;
     const da = (rendered[b+3] - zGrid[b+3]) * inv255;
-    sad += ref_a * (0.3 * Math.abs(dr) + 0.6 * Math.abs(dg) + 0.1 * Math.abs(db))
-         + Math.abs(da);
+    const pix = ref_a * (0.3 * Math.abs(dr) + 0.6 * Math.abs(dg) + 0.1 * Math.abs(db))
+              + Math.abs(da);
+    sad += maskScale > 0 ? pix * (1 + maskWeights[i] * maskScale * roiStrength) : pix;
   }
   return sad / (zx * zy);
 }

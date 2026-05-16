@@ -206,6 +206,21 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
 }
 
 // ---------------------------------------------------------------------------
+// Sort palette by (cg, co, y, a) as required by the encoder.
+// Returns { sortedPalette, remap } where remap[oldIdx] = newIdx.
+function sortPalette(palette) {
+  const order = palette.map((_, i) => i).sort((a, b) => {
+    const pa = palette[a], pb = palette[b];
+    return pa.cg !== pb.cg ? pa.cg-pb.cg : pa.co !== pb.co ? pa.co-pb.co :
+           pa.y  !== pb.y  ? pa.y -pb.y  : pa.a - pb.a;
+  });
+  const sortedPalette = order.map(i => palette[i]);
+  const remap = new Int32Array(palette.length);
+  order.forEach((oldIdx, newIdx) => { remap[oldIdx] = newIdx; });
+  return { sortedPalette, remap };
+}
+
+// ---------------------------------------------------------------------------
 // Top-level: build a Preview + color_data from an ImageData-like object.
 // options: { grid_x, grid_y, nb_colors, nb_pts, has_alpha, use_noise }
 function buildInitialState(imageData, options = {}) {
@@ -221,15 +236,7 @@ function buildInitialState(imageData, options = {}) {
   const palette = buildPalette(grid, nb_colors);
   const qpts = placeVertices(grid, grid_x, grid_y, palette, nb_pts, undefined, random_init);
 
-  // Sort palette by (cg, co, y, a) as required by the encoder.
-  const order = palette.map((_, i) => i).sort((a, b) => {
-    const pa = palette[a], pb = palette[b];
-    return pa.cg !== pb.cg ? pa.cg-pb.cg : pa.co !== pb.co ? pa.co-pb.co :
-           pa.y  !== pb.y  ? pa.y -pb.y  : pa.a - pb.a;
-  });
-  const sortedPalette = order.map(i => palette[i]);
-  const remap = new Int32Array(nb_colors);
-  order.forEach((oldIdx, newIdx) => { remap[oldIdx] = newIdx; });
+  const { sortedPalette, remap } = sortPalette(palette);
 
   const corners = qpts.slice(0, 4).map(v => ({...v, idx: remap[v.idx]}));
   const nonCorners = qpts.slice(4)
@@ -245,7 +252,24 @@ function buildInitialState(imageData, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Rebuild palette from imageData and re-assign vertex color indices in preview.
+// Keeps vertex positions; only colors change. Returns { preview, color_data }.
+function rebuildColormap(preview, imageData, gx, gy, nb_colors) {
+  const grid = sampleGrid(imageData, gx, gy);
+  const palette = buildPalette(grid, nb_colors);
+  const { sortedPalette, remap } = sortPalette(palette);
+  const newQpts = preview.qpts.map(v => {
+    const x = Math.max(0, Math.min(gx - 1, Math.round(v.x)));
+    const y = Math.max(0, Math.min(gy - 1, Math.round(v.y)));
+    const ycocg = RGBtoYCoCg(grid[(y*gx+x)*4], grid[(y*gx+x)*4+1],
+                              grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
+    return { ...v, idx: remap[findClosestPalette(ycocg, palette)] };
+  });
+  return { preview: { ...preview, nb_colors, qpts: newQpts }, color_data: sortedPalette };
+}
+
+// ---------------------------------------------------------------------------
 if (typeof module !== 'undefined') {
   // For Node.js testing: require triangle-core.js first to get Delaunay, RGBtoYCoCg.
-  module.exports = { sampleGrid, buildPalette, rasterizeGrid, placeVertices, buildInitialState };
+  module.exports = { sampleGrid, buildPalette, rasterizeGrid, placeVertices, sortPalette, buildInitialState, rebuildColormap };
 }

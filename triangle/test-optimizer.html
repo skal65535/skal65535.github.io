@@ -34,20 +34,22 @@
   .tab-nav {
     display: flex;
     border-bottom: 1px solid var(--panel-border);
-    padding: 6px 6px 0;
-    gap: 2px;
+    padding: 6px 2px 0;
+    gap: 1px;
   }
   .tab-btn {
     background: none;
     border: 1px solid transparent;
     border-bottom: 2px solid transparent;
-    padding: 4px 9px 3px;
+    padding: 4px 5px 3px;
     font: inherit;
     font-size: 11px;
     cursor: pointer;
     color: var(--ink-dim);
     border-radius: 4px 4px 0 0;
     margin-bottom: -1px;
+    flex: 1;
+    text-align: center;
   }
   .tab-btn:hover { color: var(--ink); background: rgba(0,0,0,0.04); }
   .tab-btn.active {
@@ -161,6 +163,8 @@
   #iters, #batchSize { width: auto; flex: 1; }
   #iters { flex: 1.5; }
 
+  #cRef { cursor: crosshair; }
+
 </style>
 </head>
 <body>
@@ -189,6 +193,7 @@
         <button class="tab-btn" data-tab="lambda">λ</button>
         <button class="tab-btn" data-tab="mut">Mut</button>
         <button class="tab-btn" data-tab="disp">Disp</button>
+        <button class="tab-btn" data-tab="mask">Mask</button>
       </div>
       <div class="skal-gui-body" style="padding-top:4px;">
 
@@ -252,17 +257,10 @@
         <div class="tab-pane" id="tab-lambda">
           <div class="skal-row skal-row-slider">
             <div class="skal-row-header">
-              <label class="skal-row-label" for="lambdaVtx">λ vtx</label>
-              <span class="skal-readout" id="lambdaVtxVal">1e-4</span>
+              <label class="skal-row-label" for="lambda">λ</label>
+              <span class="skal-readout" id="lambdaVal">1e-4</span>
             </div>
-            <input type="range" id="lambdaVtx" min="-6" max="4" step="0.25" value="-4">
-          </div>
-          <div class="skal-row skal-row-slider">
-            <div class="skal-row-header">
-              <label class="skal-row-label" for="lambdaColor">λ color</label>
-              <span class="skal-readout" id="lambdaColorVal">1e-4</span>
-            </div>
-            <input type="range" id="lambdaColor" min="-6" max="4" step="0.25" value="-4">
+            <input type="range" id="lambda" min="-6" max="4" step="0.25" value="-4">
           </div>
           <div class="skal-row skal-row-toggle">
             <label class="skal-row-label" for="autoLambda">Auto-λ</label>
@@ -275,6 +273,13 @@
           <div class="skal-row skal-row-text">
             <label class="skal-row-label" for="autoGain">Auto-λ gain</label>
             <input type="number" id="autoGain" value="0.2" min="0.01" max="2" step="0.01">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Color Δ penalty</label>
+              <span class="skal-readout"><span id="colorPenaltyVal">7.0</span>%</span>
+            </div>
+            <input type="range" id="colorPenalty" min="0" max="10" step="0.1" value="7">
           </div>
         </div>
 
@@ -347,6 +352,33 @@
           </div>
         </div>
 
+        <!-- Mask tab -->
+        <div class="tab-pane" id="tab-mask">
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="roiBrush">Brush size</label>
+              <span class="skal-readout" id="roiBrushVal">30</span>
+            </div>
+            <input type="range" id="roiBrush" min="3" max="80" step="1" value="30">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="roiStrength">Strength</label>
+              <span class="skal-readout" id="roiStrengthVal">5</span>
+            </div>
+            <input type="range" id="roiStrength" min="0" max="20" step="0.5" value="5">
+          </div>
+          <div class="skal-row">
+            <button class="button" id="roiAutoBtn" style="width:100%">Auto-Mask</button>
+          </div>
+          <div class="skal-row">
+            <button class="button" id="roiResetBtn" style="width:100%">Reset Mask</button>
+          </div>
+          <div class="skal-row" style="font-size:11px;color:var(--ink-dim)">
+            Paint on Reference canvas to mark important areas.
+          </div>
+        </div>
+
       </div><!-- .skal-gui-body -->
     </div><!-- .skal-gui.opt-panel -->
 
@@ -375,6 +407,7 @@
           </select>
           <label class="button" for="file">Load image</label>
           <button class="button" id="resetBtn">Reset</button>
+          <button class="button" id="resetColorsBtn">Reset colors</button>
           <button class="button" id="btn">Run</button>
         </div>
       </div>
@@ -397,6 +430,81 @@
 <script>
 'use strict';
 
+class ROIMask {
+  constructor(w, h) {
+    this.w = w; this.h = h;
+    this.weights = new Float32Array(w * h);
+    this._offscreen = null;
+  }
+  resize(w, h) {
+    if (this.w === w && this.h === h) return;
+    this.w = w; this.h = h;
+    this.weights = new Float32Array(w * h);
+    this._offscreen = null;
+  }
+  isActive() { return this.weights.some(v => v > 0.005); }
+  paint(cx, cy, radius) {
+    const r = Math.ceil(radius), r2 = radius * radius;
+    const x0 = Math.max(0, (cx - r) | 0), x1 = Math.min(this.w - 1, (cx + r) | 0);
+    const y0 = Math.max(0, (cy - r) | 0), y1 = Math.min(this.h - 1, (cy + r) | 0);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const d2 = (x - cx) ** 2 + (y - cy) ** 2;
+        if (d2 <= r2) this.weights[y * this.w + x] = Math.min(1, this.weights[y * this.w + x] + (1 - d2 / r2) * 0.08);
+      }
+    }
+  }
+  clear() { this.weights.fill(0); }
+  autoMask(imageData) {
+    const { w, h } = this;
+    const lum = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const b = i * 4;
+      lum[i] = 0.2126 * imageData[b] + 0.7152 * imageData[b + 1] + 0.0722 * imageData[b + 2];
+    }
+    const R = 2;
+    const variance = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let sum = 0, sum2 = 0, n = 0;
+        for (let dy = -R; dy <= R; dy++) {
+          const yy = Math.max(0, Math.min(h - 1, y + dy));
+          for (let dx = -R; dx <= R; dx++) {
+            const xx = Math.max(0, Math.min(w - 1, x + dx));
+            const v = lum[yy * w + xx]; sum += v; sum2 += v * v; n++;
+          }
+        }
+        const mean = sum / n;
+        variance[y * w + x] = sum2 / n - mean * mean;
+      }
+    }
+    const sorted = variance.slice().sort();
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] || 1;
+    for (let i = 0; i < w * h; i++) {
+      const normVar = Math.min(variance[i] / p95, 1.0);
+      const normLum = lum[i] / 255;
+      this.weights[i] = Math.sqrt(0.75 * normVar + 0.25 * normLum);
+    }
+  }
+  drawOverlay(ctx) {
+    const { w, h } = this;
+    if (!this._offscreen || this._offscreen.width !== w || this._offscreen.height !== h) {
+      this._offscreen = new OffscreenCanvas(w, h);
+    }
+    const octx = this._offscreen.getContext('2d');
+    const id = octx.createImageData(w, h);
+    const d = id.data;
+    for (let i = 0; i < this.weights.length; i++) {
+      const a = this.weights[i];
+      if (a < 0.005) continue;
+      const b = i * 4;
+      d[b] = 255; d[b + 1] = 100; d[b + 2] = 0; d[b + 3] = (a * 180) | 0;
+    }
+    octx.putImageData(id, 0, 0);
+    ctx.drawImage(this._offscreen, 0, 0, w, h);
+  }
+}
+
 const app = {
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
@@ -417,26 +525,29 @@ const app = {
     zoom: 1,
     lastRenderedPreview: null,
     lastRenderedColors: null,
+    roiMask: null,
   },
 
   init() {
     this.cacheDOMElements();
     this.initTabs();
     this.initEventListeners();
+    this.initMaskEvents();
     this.updateTargetPtsDisplay();
     this.updateLambdaDisplay();
     this.updateToleranceDisplay();
-    this.ui.lambdaVtx.disabled = this.ui.lambdaColor.disabled = this.ui.autoLambda.checked;
+    this.ui.lambda.disabled = this.ui.autoLambda.checked;
     this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
   },
 
   cacheDOMElements() {
     const ids = [
       'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
-      'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn',
+      'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn', 'resetColorsBtn',
       'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom',
       'byteSize', 'statPts', 'statColors', 'statDist', 'debugOpt', 'tolerance', 'toleranceVal',
-      'lambdaVtx', 'lambdaVtxVal', 'lambdaColor', 'lambdaColorVal',
+      'lambda', 'lambdaVal', 'colorPenalty', 'colorPenaltyVal',
+      'roiBrush', 'roiBrushVal', 'roiStrength', 'roiStrengthVal', 'roiAutoBtn', 'roiResetBtn',
     ];
     ids.forEach(id => { this.ui[id] = document.getElementById(id); });
     this.ui.probInputs = document.querySelectorAll('.prob');
@@ -456,6 +567,7 @@ const app = {
   initEventListeners() {
     this.ui.btn.addEventListener('click', () => this.toggleRun());
     this.ui.resetBtn.addEventListener('click', () => this.stopAndReset());
+    this.ui.resetColorsBtn.addEventListener('click', () => this.resetColormap());
     this.ui.copyBtn.addEventListener('click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
     this.ui.presetSelect.addEventListener('change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
@@ -471,11 +583,11 @@ const app = {
       document.getElementById(id).addEventListener('change', () => this.stopAndReset());
     });
 
-    this.ui.autoLambda.addEventListener('change', e => {
-      this.ui.lambdaVtx.disabled = this.ui.lambdaColor.disabled = e.target.checked;
+    this.ui.autoLambda.addEventListener('change', e => { this.ui.lambda.disabled = e.target.checked; });
+    this.ui.lambda.addEventListener('input', () => this.updateLambdaDisplay());
+    this.ui.colorPenalty.addEventListener('input', () => {
+      this.ui.colorPenaltyVal.textContent = (+this.ui.colorPenalty.value).toFixed(1);
     });
-    this.ui.lambdaVtx.addEventListener('input', () => this.updateLambdaDisplay());
-    this.ui.lambdaColor.addEventListener('input', () => this.updateLambdaDisplay());
     this.ui.tolerance.addEventListener('input', () => this.updateToleranceDisplay());
     this.ui.showTri.addEventListener('change', () => {
       if (this.state.lastRenderedPreview) {
@@ -488,6 +600,88 @@ const app = {
       el.addEventListener('input', () => { span.textContent = el.value; });
       span.textContent = el.value;
     });
+
+    this.ui.roiBrush.addEventListener('input', () => {
+      this.ui.roiBrushVal.textContent = this.ui.roiBrush.value;
+    });
+    this.ui.roiStrength.addEventListener('input', () => {
+      this.ui.roiStrengthVal.textContent = (+this.ui.roiStrength.value).toFixed(1);
+      if (this.state.optimizer) this.state.optimizer.roiStrength = +this.ui.roiStrength.value;
+    });
+    this.ui.roiAutoBtn.addEventListener('click', () => this.applyAutoMask());
+    this.ui.roiResetBtn.addEventListener('click', () => this.resetMask());
+  },
+
+  initMaskEvents() {
+    const canvas = this.ui.cRef;
+    let painting = false;
+    const coords = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * canvas.width  / rect.width,
+        y: (e.clientY - rect.top)  * canvas.height / rect.height,
+      };
+    };
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      painting = true;
+      const { x, y } = coords(e);
+      this.paintMask(x, y);
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (!painting) return;
+      const { x, y } = coords(e);
+      this.paintMask(x, y);
+    });
+    window.addEventListener('mouseup', () => { painting = false; });
+  },
+
+  paintMask(x, y) {
+    const mask = this.state.roiMask;
+    if (!mask) return;
+    mask.paint(x, y, +this.ui.roiBrush.value);
+    this.syncMaskToOptimizer();
+    this.redrawRef();
+  },
+
+  redrawRef() {
+    if (!this.state.zGrid) return;
+    const { gridX, gridY, zoom } = this.state;
+    this.drawRGBA(this.ui.cRef, gridX * zoom, gridY * zoom, this.state.zGrid);
+    const mask = this.state.roiMask;
+    if (mask && mask.isActive()) mask.drawOverlay(this.ui.cRef.getContext('2d'));
+  },
+
+  syncMaskToOptimizer() {
+    const opt = this.state.optimizer;
+    if (!opt) return;
+    const mask = this.state.roiMask;
+    opt.maskWeights = (mask && mask.isActive()) ? mask.weights : null;
+    opt.roiStrength = +this.ui.roiStrength.value;
+  },
+
+  applyAutoMask() {
+    const { gridX, gridY, zoom } = this.state;
+    const imgData = this.state.loadedImageData;
+    if (!imgData) return;
+    if (!this.state.roiMask) this.state.roiMask = new ROIMask(gridX * zoom, gridY * zoom);
+    this.state.roiMask.autoMask(imgData.data);
+    this.syncMaskToOptimizer();
+    this.redrawRef();
+  },
+
+  resetMask() {
+    const mask = this.state.roiMask;
+    if (!mask) return;
+    mask.clear();
+    // Re-init optimizer so bestLoss is comparable with the now-unweighted score.
+    if (this.state.optimizer) {
+      const opt = this.state.optimizer;
+      opt.maskWeights = null;
+      opt.roiStrength = +this.ui.roiStrength.value;
+      opt.init();
+    }
+    this.redrawRef();
   },
 
   getParams() {
@@ -504,10 +698,8 @@ const app = {
       border_escape_prob:     g('borderEscape'),
       score_tolerance:        g('tolerance'),
     };
-    if (!this.ui.autoLambda.checked) {
-      optimizerParams.lambda_vtx   = this.getLambda('lambdaVtx');
-      optimizerParams.lambda_color = this.getLambda('lambdaColor');
-    }
+    if (!this.ui.autoLambda.checked) optimizerParams.lambda = this.getLambda('lambda');
+    optimizerParams.color_change_penalty = (+this.ui.colorPenalty.value || 7) / 100;
 
     return {
       nc: g('nc'),
@@ -526,7 +718,7 @@ const app = {
     const log = Math.max(-7, Math.min(4, Math.log10(v)));
     this.ui[id].value = log;
     const val = Math.pow(10, log);
-    this.ui[id + 'Val'].textContent = val.toExponential(2);
+    this.ui[id + 'Val'].textContent = val.toExponential(1);
     return val;
   },
 
@@ -546,20 +738,25 @@ const app = {
 
     try {
       const params = this.getParams();
-      const { zGrid, preview, color_data } = this.prepareGrid(params);
-      this.log(`Initial: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B`);
+      const preview    = this.state.lastRenderedPreview;
+      const color_data = this.state.lastRenderedColors;
+      const zGrid      = this.state.zGrid;
+      this.log(`Run: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B`);
 
+      const mask = this.state.roiMask;
       const opt = new TriangleOptimizer(preview, color_data, {
         refGrid: zGrid,
         zoom: this.state.zoom,
         batch_size: params.batchSize,
+        maskWeights: (mask && mask.isActive()) ? mask.weights : null,
+        roiStrength: +this.ui.roiStrength.value,
         ...params.optimizer,
       });
       opt.debug = this.ui.debugOpt.checked;
       this.state.optimizer = opt;
 
       const initScore = opt.init();
-      this.log(`Initial score: ${initScore.toFixed(6)} (λv=${opt.lambda_vtx.toExponential(0)} λc=${opt.lambda_color.toExponential(0)})`);
+      this.log(`Initial score: ${initScore.toFixed(6)} (λ=${opt.lambda.toExponential(1)})`);
 
       const t0 = performance.now();
       const result = await opt.run(params.maxIter, (iter, best, r) => {
@@ -567,20 +764,18 @@ const app = {
         const elapsedS = (performance.now() - t0) / 1000;
         const evPerSec = elapsedS > 0 ? Math.round(iter / elapsedS).toLocaleString() : '—';
 
-        const { total: sz, vtx_bytes, color_bytes } = encodeSizeComponents(opt.preview, opt.color_data);
+        const sz = encodeSize(opt.preview, opt.color_data);
         if (this.ui.autoLambda.checked) {
           const p = this.getParams();
-          const factor = Math.pow(sz / p.targetBytes, p.autoGain);
-          const oldV = opt.lambda_vtx, oldC = opt.lambda_color;
-          opt.lambda_vtx   = this.setLambda('lambdaVtx',   oldV * factor);
-          opt.lambda_color = this.setLambda('lambdaColor', oldC * factor);
-          const delta = (opt.lambda_vtx - oldV) * vtx_bytes + (opt.lambda_color - oldC) * color_bytes;
+          const oldL = opt.lambda;
+          opt.lambda = this.setLambda('lambda', oldL * Math.pow(sz / p.targetBytes, p.autoGain));
+          const delta = (opt.lambda - oldL) * sz;
           opt.currentScore += delta;
           opt.bestLoss     += delta;
         }
         const dist = r.distortion;
         this.ui.statDist.textContent = dist.toFixed(5);
-        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} vtx=${vtx_bytes}B col=${color_bytes}B λv=${opt.lambda_vtx.toExponential(1)} λc=${opt.lambda_color.toExponential(1)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
+        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
         this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
       });
 
@@ -606,7 +801,19 @@ const app = {
     const params = this.getParams();
     const { preview, color_data } = this.prepareGrid(params);
     this.log(`Reset: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B has_alpha=${preview.has_alpha}`);
-    this.renderPreview(this.ui.cOpt, preview, color_data);
+    this.renderPreview(this.ui.cOpt, preview, color_data);  // sets lastRenderedPreview
+  },
+
+  resetColormap() {
+    const opt = this.state.optimizer;
+    const preview = opt ? opt.preview : this.state.lastRenderedPreview;
+    const imgData = this.state.loadedImageData;
+    if (!preview || !imgData) return;
+    const nc = +document.getElementById('nc').value;
+    const { preview: newPreview, color_data } = rebuildColormap(preview, imgData, this.state.gridX, this.state.gridY, nc);
+    if (opt) { opt.preview = newPreview; opt.color_data = color_data; opt.init(); }
+    this.renderPreview(this.ui.cOpt, newPreview, color_data);
+    this.log(`Reset colors: nc=${nc}`);
   },
 
   async stopAndReset() {
@@ -687,17 +894,20 @@ const app = {
     cv.width = gridX * zoom; cv.height = gridY * zoom;
     cv.getContext('2d').drawImage(this.state.loadedOrigCanvas, 0, 0, gridX * zoom, gridY * zoom);
     this.state.loadedImageData = cv.getContext('2d').getImageData(0, 0, gridX * zoom, gridY * zoom);
+    // Resize mask to match new dimensions (clears it if dimensions changed).
+    if (!this.state.roiMask) this.state.roiMask = new ROIMask(gridX * zoom, gridY * zoom);
+    else this.state.roiMask.resize(gridX * zoom, gridY * zoom);
   },
 
   prepareGrid(params) {
     const { gridX, gridY, zoom } = this.state;
     const np = Math.min(Math.round(gridX * gridY * params.np / 100), kPreviewMaxNumVertices);
     const imgData = this.state.loadedImageData || this.makeSyntheticImage(gridX * zoom, gridY * zoom);
-    const zGrid = sampleGrid(imgData, gridX * zoom, gridY * zoom);
+    this.state.zGrid = sampleGrid(imgData, gridX * zoom, gridY * zoom);
     const { preview, color_data } = buildInitialState(imgData,
         { grid_x: gridX, grid_y: gridY, nb_colors: params.nc, nb_pts: np, random_init: params.randomInit });
-    this.drawRGBA(this.ui.cRef, gridX * zoom, gridY * zoom, zGrid);
-    return { zGrid, preview, color_data };
+    this.redrawRef();
+    return { preview, color_data };
   },
 
   makeSyntheticImage(w, h) {
@@ -715,8 +925,7 @@ const app = {
   log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
   updateStatus(s) { if (s) this.log(s); },
   updateLambdaDisplay() {
-    this.ui.lambdaVtxVal.textContent   = this.getLambda('lambdaVtx').toExponential(0);
-    this.ui.lambdaColorVal.textContent = this.getLambda('lambdaColor').toExponential(0);
+    this.ui.lambdaVal.textContent = this.getLambda('lambda').toExponential(1);
   },
   updateToleranceDisplay() {
     const v = +this.ui.tolerance.value;
