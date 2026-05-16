@@ -7,20 +7,17 @@
 <title>Triangle Optimizer</title>
 <link rel="stylesheet" href="../common/main.css">
 <style>
-  /* Two-column layout: params panel left, work area right. */
   .opt-layout {
     display: grid;
-    grid-template-columns: 280px 1fr;
+    grid-template-columns: 255px 1fr;
     gap: 16px;
     margin-top: 14px;
     align-items: start;
   }
   @media (max-width: 768px) { .opt-layout { grid-template-columns: 1fr; } }
 
-  /* Override .skal-gui absolute positioning so it flows in the grid. */
   .opt-panel { position: static; width: 100%; max-width: 100%; }
 
-  /* Number inputs inside panel rows (mirrors .skal-row-text for numbers). */
   .skal-row-text input[type=number] {
     font: inherit;
     font-family: var(--font-mono);
@@ -33,8 +30,87 @@
     box-sizing: border-box;
   }
 
-  /* Canvases row */
-  .cv-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 10px; }
+  /* Tabs */
+  .tab-nav {
+    display: flex;
+    border-bottom: 1px solid var(--panel-border);
+    padding: 6px 6px 0;
+    gap: 2px;
+  }
+  .tab-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-bottom: 2px solid transparent;
+    padding: 4px 9px 3px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--ink-dim);
+    border-radius: 4px 4px 0 0;
+    margin-bottom: -1px;
+  }
+  .tab-btn:hover { color: var(--ink); background: rgba(0,0,0,0.04); }
+  .tab-btn.active {
+    color: var(--ink);
+    border-color: var(--panel-border);
+    border-bottom-color: #fff;
+    background: #fff;
+    font-weight: 600;
+  }
+  .tab-pane { display: none; padding: 8px 2px 4px; }
+  .tab-pane.active { display: block; }
+  .tab-pane .skal-row { margin-bottom: 10px; }
+  .tab-pane .skal-row:last-child { margin-bottom: 4px; }
+  .tab-pane .skal-row-slider input[type=range] { margin-top: 4px; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 10px;
+    margin-bottom: 8px;
+    background: rgba(0,0,0,0.04);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius-small);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+  .stats-bar b { color: var(--ink); font-weight: 600; }
+  .stats-bar .sep { color: var(--panel-border); }
+  #cmap { display: flex; flex-wrap: wrap; gap: 3px; }
+
+  /* Action column (beside canvases) */
+  .action-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 130px;
+    flex-shrink: 0;
+  }
+  .action-col label.button,
+  .action-col button.button { width: 100%; min-width: unset; box-sizing: border-box; }
+  .action-col select {
+    width: 100%;
+    box-sizing: border-box;
+    height: 38px;
+    padding: 0 10px;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    background: var(--btn-bg);
+    color: var(--btn-fg);
+    border: 2px solid var(--btn-border);
+    border-radius: var(--radius-btn);
+    cursor: pointer;
+    appearance: auto;
+  }
+  .action-col select:hover { background: var(--btn-bg-hover); }
+
+  /* Canvases */
+  .cv-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; margin-bottom: 10px; }
   .cv { display: flex; flex-direction: column; align-items: center;
         gap: 4px; font-size: 12px; color: var(--ink-dim); }
   .cv canvas {
@@ -44,11 +120,8 @@
     background: var(--canvas-bg);
   }
 
-  /* Colormap swatches */
-  #cmap { display: flex; flex-wrap: wrap; gap: 3px; }
-
-  /* b64 output row */
-  .b64-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+  /* b64 + byte size */
+  .b64-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .b64-row textarea {
     flex: 1;
     font-family: var(--font-mono);
@@ -59,14 +132,21 @@
     border-radius: var(--radius-small);
     padding: 5px 7px;
     color: var(--ink);
-    min-height: 52px;
+    min-height: 46px;
+  }
+  #byteSize {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    white-space: nowrap;
   }
 
   /* Log */
   #log {
     font-family: var(--font-mono);
     font-size: 11px;
-    max-height: 220px;
+    max-height: 100px;
     overflow-y: auto;
     background: rgba(0,0,0,0.06);
     border: 1px solid var(--panel-border);
@@ -78,17 +158,9 @@
     word-break: break-all;
   }
 
-  /* Paired inputs sharing one row */
-  #iters, #gpuBatch { width: auto; flex: 1; }
+  #iters, #batchSize { width: auto; flex: 1; }
   #iters { flex: 1.5; }
 
-  /* Status line next to action buttons */
-  #status {
-    font-size: 12px;
-    font-family: var(--font-mono);
-    color: var(--ink-dim);
-    align-self: center;
-  }
 </style>
 </head>
 <body>
@@ -98,7 +170,7 @@
   <h2>Triangle Optimizer</h2>
 
   <p class="blurb">
-    Encode an image as a compact WebP2 triangle preview using a GPU-accelerated
+    Encode an image as a compact WebP2 triangle preview using a pure JS
     optimizer. Copy the output base64 string into the
     <a href="index.html">decoder</a> to render it.
   </p>
@@ -107,204 +179,191 @@
     <input type="file" id="file" style="display:none" accept="image/*">
   </form>
 
-  <div class="button-row">
-    <select id="presetSelect" style="font:inherit;font-size:13px;border:1px solid var(--panel-border);border-radius:4px;padding:2px 6px;">
-      <option value="obama">Obama</option>
-      <option value="shell">Shell logo</option>
-      <option value="moon">Moon-Earth</option>
-      <option value="claude">Claude Shannon</option>
-    </select>
-    <label class="button" for="file">Select image</label>
-    <button class="button" id="resetBtn">Reset</button>
-    <button class="button" id="btn">Run</button>
-    <span id="status"></span>
-  </div>
-
   <div class="opt-layout">
 
-    <!-- ── Left: parameter panel ─────────────────────────────────────── -->
+    <!-- ── Left: tabbed parameter panel ──────────────────────────── -->
     <div class="skal-gui opt-panel">
-      <div class="skal-gui-title" id="panel-title">Parameters</div>
-      <div class="skal-gui-body">
+      <div class="tab-nav">
+        <button class="tab-btn active" data-tab="grid">Grid</button>
+        <button class="tab-btn" data-tab="optim">Optim</button>
+        <button class="tab-btn" data-tab="lambda">λ</button>
+        <button class="tab-btn" data-tab="mut">Mut</button>
+        <button class="tab-btn" data-tab="disp">Disp</button>
+      </div>
+      <div class="skal-gui-body" style="padding-top:4px;">
 
-        <!-- Grid & Compression -->
-        <div class="skal-folder">
-          <div class="skal-folder-title">Grid &amp; Compression</div>
-          <div class="skal-folder-body">
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label" for="targetPts">Target points</label>
-                <span class="skal-readout" id="targetPtsVal"></span>
-              </div>
-              <input type="range" id="targetPts" min="0" max="9" step="1" value="4">
+        <!-- Grid tab -->
+        <div class="tab-pane active" id="tab-grid">
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="targetPts">Target points</label>
+              <span class="skal-readout" id="targetPtsVal"></span>
             </div>
-            <div class="skal-row">
-              <span class="skal-readout" id="gridSize"></span>
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="nc">Colors</label>
-              <input type="number" id="nc" value="6" min="2" max="32">
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="np">Init points %</label>
-              <input type="number" id="np" value="30" min="0" max="100">
-            </div>
-            <div class="skal-row skal-row-toggle">
-              <label class="skal-row-label" for="randomInit">Random init</label>
-              <input type="checkbox" id="randomInit">
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="zoom">Zoom</label>
-              <select id="zoom" style="font:inherit;font-size:12px;border:1px solid var(--panel-border);border-radius:4px;padding:2px 4px;">
-                <option value="1">1×</option>
-                <option value="2">2×</option>
-                <option value="4">4×</option>
-                <option value="8">8×</option>
-              </select>
-            </div>
+            <input type="range" id="targetPts" min="0" max="9" step="1" value="4">
+          </div>
+          <div class="skal-row">
+            <span class="skal-readout" id="gridSize"></span>
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="nc">Colors</label>
+            <input type="number" id="nc" value="6" min="2" max="32">
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="np">Init points %</label>
+            <input type="number" id="np" value="30" min="0" max="100">
+          </div>
+          <div class="skal-row skal-row-toggle">
+            <label class="skal-row-label" for="randomInit">Random init</label>
+            <input type="checkbox" id="randomInit">
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="zoom">Zoom</label>
+            <select id="zoom" style="font:inherit;font-size:12px;border:1px solid var(--panel-border);border-radius:4px;padding:2px 4px;">
+              <option value="1">1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+            </select>
           </div>
         </div>
 
-        <!-- Optimizer -->
-        <div class="skal-folder">
-          <div class="skal-folder-title">Optimizer</div>
-          <div class="skal-folder-body">
-            <div class="skal-row skal-row-text" style="gap:6px;">
-              <label class="skal-row-label" for="iters">Iters</label>
-              <input type="number" id="iters" value="100000" min="10">
-              <label class="skal-row-label" for="gpuBatch">Batch</label>
-              <input type="number" id="gpuBatch" value="500" min="1" max="10000">
-            </div>
+        <!-- Optim tab -->
+        <div class="tab-pane" id="tab-optim">
+          <div class="skal-row skal-row-text" style="gap:6px;">
+            <label class="skal-row-label" for="iters">Iters</label>
+            <input type="number" id="iters" value="100000" min="10">
+            <label class="skal-row-label" for="batchSize">Batch</label>
+            <input type="number" id="batchSize" value="20" min="1" max="10000">
           </div>
         </div>
 
-        <!-- Lambda -->
-        <div class="skal-folder">
-          <div class="skal-folder-title">Lambda (λ)</div>
-          <div class="skal-folder-body">
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label" for="lambda">λ</label>
-                <span class="skal-readout" id="lambdaVal">1e-4</span>
-              </div>
-              <input type="range" id="lambda" min="-6" max="1" step="0.25" value="-4">
+        <!-- Lambda tab -->
+        <div class="tab-pane" id="tab-lambda">
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label" for="lambda">λ</label>
+              <span class="skal-readout" id="lambdaVal">1e-4</span>
             </div>
-            <div class="skal-row skal-row-toggle">
-              <label class="skal-row-label" for="autoLambda">Auto-λ</label>
-              <input type="checkbox" id="autoLambda" checked>
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="targetBytes">Target (bytes)</label>
-              <input type="number" id="targetBytes" value="256" min="10">
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="autoGain">Auto-λ gain</label>
-              <input type="number" id="autoGain" value="0.2" min="0.01" max="2" step="0.01">
-            </div>
+            <input type="range" id="lambda" min="-6" max="1" step="0.25" value="-4">
+          </div>
+          <div class="skal-row skal-row-toggle">
+            <label class="skal-row-label" for="autoLambda">Auto-λ</label>
+            <input type="checkbox" id="autoLambda" checked>
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="targetBytes">Target (bytes)</label>
+            <input type="number" id="targetBytes" value="256" min="10">
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="autoGain">Auto-λ gain</label>
+            <input type="number" id="autoGain" value="0.2" min="0.01" max="2" step="0.01">
           </div>
         </div>
 
-        <!-- Mutations (collapsed by default) -->
-        <div class="skal-folder collapsed">
-          <div class="skal-folder-title">Mutations</div>
-          <div class="skal-folder-body">
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Vtx move</label>
-                <span class="skal-readout"><span id="v_vm">50</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_vm" min="0" max="100" value="50">
+        <!-- Mut tab -->
+        <div class="tab-pane" id="tab-mut">
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Vtx move</label>
+              <span class="skal-readout"><span id="v_vm">50</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Vtx add</label>
-                <span class="skal-readout"><span id="v_va">20</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_va" min="0" max="100" value="20">
+            <input class="prob" type="range" id="p_vm" min="0" max="100" value="50">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Vtx add</label>
+              <span class="skal-readout"><span id="v_va">20</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Vtx remove</label>
-                <span class="skal-readout"><span id="v_vs">25</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_vs" min="0" max="100" value="25">
+            <input class="prob" type="range" id="p_va" min="0" max="100" value="20">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Vtx remove</label>
+              <span class="skal-readout"><span id="v_vs">25</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Color index</label>
-                <span class="skal-readout"><span id="v_ci">25</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_ci" min="0" max="100" value="25">
+            <input class="prob" type="range" id="p_vs" min="0" max="100" value="25">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Color index</label>
+              <span class="skal-readout"><span id="v_ci">25</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Color move</label>
-                <span class="skal-readout"><span id="v_cm">20</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_cm" min="0" max="100" value="20">
+            <input class="prob" type="range" id="p_ci" min="0" max="100" value="25">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Color move</label>
+              <span class="skal-readout"><span id="v_cm">20</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Color add</label>
-                <span class="skal-readout"><span id="v_ca">1</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_ca" min="0" max="100" value="1">
+            <input class="prob" type="range" id="p_cm" min="0" max="100" value="20">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Color add</label>
+              <span class="skal-readout"><span id="v_ca">1</span>%</span>
             </div>
-            <div class="skal-row skal-row-slider">
-              <div class="skal-row-header">
-                <label class="skal-row-label">Color remove</label>
-                <span class="skal-readout"><span id="v_cs">3</span>%</span>
-              </div>
-              <input class="prob" type="range" id="p_cs" min="0" max="100" value="3">
+            <input class="prob" type="range" id="p_ca" min="0" max="100" value="1">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
+              <label class="skal-row-label">Color remove</label>
+              <span class="skal-readout"><span id="v_cs">3</span>%</span>
             </div>
+            <input class="prob" type="range" id="p_cs" min="0" max="100" value="3">
           </div>
         </div>
 
-        <!-- Display & advanced -->
-        <div class="skal-folder">
-          <div class="skal-folder-title">Display &amp; Advanced</div>
-          <div class="skal-folder-body">
-            <div class="skal-row skal-row-toggle">
-              <label class="skal-row-label" for="showTri">Show triangles</label>
-              <input type="checkbox" id="showTri">
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="zoom">Zoom</label>
-              <select id="zoom" style="font:inherit;font-size:12px;border:1px solid var(--panel-border);border-radius:4px;padding:2px 4px;">
-                <option value="1">1×</option>
-                <option value="2">2×</option>
-                <option value="4">4×</option>
-                <option value="8">8×</option>
-              </select>
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="vmAmp">Vtx amplitude</label>
-              <input type="number" id="vmAmp" value="1" min="1" max="32">
-            </div>
-            <div class="skal-row skal-row-text">
-              <label class="skal-row-label" for="borderEscape">Border escape %</label>
-              <input type="number" id="borderEscape" value="5" min="0" max="100">
-            </div>
+        <!-- Disp tab -->
+        <div class="tab-pane" id="tab-disp">
+          <div class="skal-row skal-row-toggle">
+            <label class="skal-row-label" for="showTri">Show triangles</label>
+            <input type="checkbox" id="showTri">
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="vmAmp">Vtx amplitude</label>
+            <input type="number" id="vmAmp" value="1" min="1" max="32">
+          </div>
+          <div class="skal-row skal-row-text">
+            <label class="skal-row-label" for="borderEscape">Border escape %</label>
+            <input type="number" id="borderEscape" value="5" min="0" max="100">
           </div>
         </div>
 
       </div><!-- .skal-gui-body -->
     </div><!-- .skal-gui.opt-panel -->
 
-    <!-- ── Right: work area ──────────────────────────────────────────── -->
+    <!-- ── Right: work area ──────────────────────────────────────── -->
     <div>
+      <!-- Stats bar: current state at a glance -->
+      <div class="stats-bar">
+        <span>pts: <b id="statPts">—</b></span>
+        <span class="sep">|</span>
+        <span>colors: <b id="statColors">—</b></span>
+        <span class="sep">|</span>
+        <span>dist: <b id="statDist">—</b></span>
+        <span class="sep">|</span>
+        <div id="cmap"></div>
+      </div>
+
       <div class="cv-row">
         <div class="cv"><canvas id="cRef"></canvas><span>Reference</span></div>
         <div class="cv"><canvas id="cOpt"></canvas><span>Optimized</span></div>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <div id="cmap" style="margin:0;"></div>
-        <span id="byteSize" style="font-size:20px;font-weight:700;color:var(--ink);font-family:var(--font-mono);"></span>
+        <div class="action-col">
+          <select id="presetSelect">
+            <option value="obama">Obama</option>
+            <option value="shell">Shell logo</option>
+            <option value="moon">Moon-Earth</option>
+            <option value="claude">Claude Shannon</option>
+          </select>
+          <label class="button" for="file">Load image</label>
+          <button class="button" id="resetBtn">Reset</button>
+          <button class="button" id="btn">Run</button>
+        </div>
       </div>
       <div class="b64-row">
-        <button class="button" id="copyBtn"
-                style="min-width:80px;height:38px;align-self:flex-start;">Copy</button>
+        <button class="button" id="copyBtn" style="min-width:60px;height:38px;flex-shrink:0;">Copy</button>
         <textarea id="b64out" readonly rows="3"></textarea>
+        <span id="byteSize"></span>
       </div>
       <pre id="log"></pre>
     </div>
@@ -320,12 +379,7 @@
 <script>
 'use strict';
 
-/**
- * Main application object.
- * Encapsulates all state, UI elements, and logic for the Triangle Optimizer.
- */
 const app = {
-  // --- Constants ---
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
     obama:  { file: 'obama.webp' },
@@ -334,10 +388,8 @@ const app = {
     claude: { file: 'claude.webp' },
   },
 
-  // --- UI Elements ---
   ui: {},
 
-  // --- Application State ---
   state: {
     optimizer: null,
     loadedImageData: null,
@@ -349,48 +401,46 @@ const app = {
     lastRenderedColors: null,
   },
 
-  // --- Initialization ---
   init() {
     this.cacheDOMElements();
-    this.initFolderToggles();
+    this.initTabs();
     this.initEventListeners();
     this.updateTargetPtsDisplay();
     this.updateLambdaDisplay();
     this.ui.lambda.disabled = this.ui.autoLambda.checked;
-
     this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
   },
 
   cacheDOMElements() {
     const ids = [
-      'log', 'status', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
+      'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'lambda',
       'lambdaVal', 'autoLambda', 'copyBtn', 'presetSelect', 'file', 'resetBtn',
-      'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom', 'panel-title'
+      'btn', 'targetPts', 'targetPtsVal', 'gridSize', 'zoom',
+      'byteSize', 'statPts', 'statColors', 'statDist',
     ];
     ids.forEach(id => { this.ui[id] = document.getElementById(id); });
     this.ui.probInputs = document.querySelectorAll('.prob');
   },
 
-  initFolderToggles() {
-    document.querySelectorAll('.skal-folder-title').forEach(t => {
-      t.addEventListener('click', () => t.closest('.skal-folder').classList.toggle('collapsed'));
-    });
-    this.ui['panel-title'].addEventListener('click', () => {
-      document.querySelector('.skal-gui').classList.toggle('collapsed');
+  initTabs() {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      });
     });
   },
 
   initEventListeners() {
-    // Main actions
     this.ui.btn.addEventListener('click', () => this.toggleRun());
     this.ui.resetBtn.addEventListener('click', () => this.stopAndReset());
     this.ui.copyBtn.addEventListener('click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
-    // Image loading
     this.ui.presetSelect.addEventListener('change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
     this.ui.file.addEventListener('change', e => this.handleFileSelect(e));
 
-    // Parameters requiring a reset
     this.ui.targetPts.addEventListener('change', () => this.handleGridParamChange());
     this.ui.zoom.addEventListener('change', async e => {
       this.state.zoom = +e.target.value;
@@ -401,7 +451,6 @@ const app = {
       document.getElementById(id).addEventListener('change', () => this.stopAndReset());
     });
 
-    // Live-updated parameters
     this.ui.lambda.addEventListener('input', () => this.updateLambdaDisplay());
     this.ui.autoLambda.addEventListener('change', e => { this.ui.lambda.disabled = e.target.checked; });
     this.ui.showTri.addEventListener('change', () => {
@@ -410,15 +459,13 @@ const app = {
       }
     });
 
-    // Mutation probabilities
     this.ui.probInputs.forEach(el => {
       const span = document.getElementById('v_' + el.id.slice(2));
       el.addEventListener('input', () => { span.textContent = el.value; });
-      span.textContent = el.value; // Initial display
+      span.textContent = el.value;
     });
   },
 
-  // --- State & Parameter Management ---
   getParams() {
     const g = id => +document.getElementById(id).value;
     const optimizerParams = {
@@ -432,15 +479,13 @@ const app = {
       vertex_amplitude:       g('vmAmp') || 1,
       border_escape_prob:     g('borderEscape'),
     };
-    if (!this.ui.autoLambda.checked) {
-      optimizerParams.lambda = this.getLambda();
-    }
+    if (!this.ui.autoLambda.checked) optimizerParams.lambda = this.getLambda();
 
     return {
       nc: g('nc'),
       np: g('np'),
       maxIter: g('iters') || 100000,
-      gpuBatch: g('gpuBatch') || 50,
+      batchSize: g('batchSize') || 20,
       targetBytes: g('targetBytes') || 500,
       autoGain: g('autoGain') || 0.2,
       randomInit: document.getElementById('randomInit').checked,
@@ -457,7 +502,6 @@ const app = {
     return val;
   },
 
-  // --- Core Actions ---
   toggleRun() {
     if (this.state.optimizer) {
       this.state.optimizer.stop();
@@ -480,7 +524,7 @@ const app = {
       const opt = new TriangleOptimizer(preview, color_data, {
         refGrid: zGrid,
         zoom: this.state.zoom,
-        batch_size: params.gpuBatch,
+        batch_size: params.batchSize,
         ...params.optimizer,
       });
       this.state.optimizer = opt;
@@ -490,10 +534,9 @@ const app = {
 
       const t0 = performance.now();
       const result = await opt.run(params.maxIter, (iter, best, r) => {
-        Object.assign(opt, this.getParams().optimizer); // Update live params
+        Object.assign(opt, this.getParams().optimizer);
         const elapsedS = (performance.now() - t0) / 1000;
         const evPerSec = elapsedS > 0 ? Math.round(iter / elapsedS).toLocaleString() : '—';
-        this.updateStatus(`iter=${iter} best=${best.toFixed(5)} ${elapsedS.toFixed(1)}s ${evPerSec} ev/s`);
 
         const sz = encodeSize(opt.preview, opt.color_data);
         if (this.ui.autoLambda.checked) {
@@ -501,7 +544,8 @@ const app = {
           opt.lambda = this.setLambda(opt.lambda * Math.pow(sz / p.targetBytes, p.autoGain));
         }
         const dist = r.distortion ?? (r.score - opt.lambda * sz);
-        this.log(`[${iter}] dist=${dist.toFixed(5)} size=${sz}B(λ×sz=${(opt.lambda*sz).toExponential(2)}) λ=${opt.lambda.toExponential(2)} acc=${r.accepted?'Y':'N'}`);
+        this.ui.statDist.textContent = dist.toFixed(5);
+        this.log(`[${iter}] best=${best.toFixed(5)} dist=${dist.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
         this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
       });
 
@@ -531,14 +575,10 @@ const app = {
   },
 
   async stopAndReset() {
-    if (this.state.optimizer) {
-      this.state.optimizer.stop();
-      // The 'run' method's finally block will handle cleanup.
-    }
+    if (this.state.optimizer) this.state.optimizer.stop();
     await this.reset();
   },
 
-  // --- Image & Grid Handling ---
   async loadImageFromUrl(url) {
     this.updateStatus(`Loading ${url}...`);
     try {
@@ -549,7 +589,6 @@ const app = {
       this.state.loadedOrigCanvas.width = img.naturalWidth;
       this.state.loadedOrigCanvas.height = img.naturalHeight;
       this.state.loadedOrigCanvas.getContext('2d').drawImage(img, 0, 0);
-
       this.updateGridFromImage(img.naturalWidth, img.naturalHeight);
       this.resampleFromOrig();
       await this.stopAndReset();
@@ -589,7 +628,7 @@ const app = {
     if (this.state.loadedOrigCanvas) {
       this.updateGridFromImage(this.state.loadedOrigCanvas.width, this.state.loadedOrigCanvas.height);
     } else {
-      this.updateGridFromImage(1, 1); // Fallback for synthetic image
+      this.updateGridFromImage(1, 1);
     }
     this.resampleFromOrig();
     this.stopAndReset();
@@ -600,7 +639,6 @@ const app = {
     const ar = imgW / imgH;
     this.state.gridX = Math.max(4, Math.round(Math.sqrt(targetPts * ar)));
     this.state.gridY = Math.max(4, Math.round(Math.sqrt(targetPts / ar)));
-
     this.ui.gridSize.textContent = `${this.state.gridX}×${this.state.gridY} (${this.state.gridX * this.state.gridY} pts)`;
     this.setCanvasDisplaySize(this.ui.cRef, this.state.gridX, this.state.gridY);
     this.setCanvasDisplaySize(this.ui.cOpt, this.state.gridX, this.state.gridY);
@@ -639,9 +677,8 @@ const app = {
     return { data, width: w, height: h };
   },
 
-  // --- Rendering & UI Updates ---
   log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
-  updateStatus(s) { this.ui.status.textContent = s; },
+  updateStatus(s) { if (s) this.log(s); },
   updateLambdaDisplay() { this.ui.lambdaVal.textContent = this.getLambda().toExponential(0); },
   updateTargetPtsDisplay() { this.ui.targetPtsVal.textContent = this.TARGET_PTS[+this.ui.targetPts.value]; },
 
@@ -649,8 +686,7 @@ const app = {
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
     const id = ctx.createImageData(w, h);
-    const data = new Uint8ClampedArray(rgbaF32);
-    id.data.set(data);
+    id.data.set(new Uint8ClampedArray(rgbaF32));
     ctx.putImageData(id, 0, 0);
   },
 
@@ -664,8 +700,12 @@ const app = {
     this.drawRGBA(canvas, zx, zy, rgba);
     this.overlayTriangles(canvas, del, zoom);
     this.renderColormap(color_data);
-    this.ui.b64out.value = encodePreview(preview, color_data);
-    document.getElementById('byteSize').textContent = encodeSize(preview, color_data) + ' B';
+    const b64 = encodePreview(preview, color_data);
+    this.ui.b64out.value = b64;
+    const sz = encodeSize(preview, color_data);
+    this.ui.byteSize.textContent = sz + ' B';
+    this.ui.statPts.textContent = preview.nb_pts;
+    this.ui.statColors.textContent = preview.nb_colors;
     this.state.lastRenderedPreview = preview;
     this.state.lastRenderedColors = color_data;
   },
@@ -675,7 +715,7 @@ const app = {
     for (const c of color_data) {
       const rgb = YCoCg_to_RGB(c.y, c.co, c.cg, c.a);
       const div = document.createElement('div');
-      div.style.cssText = `width:16px;height:16px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
+      div.style.cssText = `width:14px;height:14px;background:rgba(${rgb.r},${rgb.g},${rgb.b},${rgb.a/255});` +
                           `border:1px solid var(--panel-border);border-radius:2px;display:inline-block;`;
       div.title = `Y=${c.y} Co=${c.co} Cg=${c.cg} a=${c.a} | R=${rgb.r} G=${rgb.g} B=${rgb.b} A=${rgb.a}`;
       this.ui.cmap.appendChild(div);
@@ -710,9 +750,7 @@ const app = {
   },
 };
 
-// Defer initialization until all scripts are loaded and the DOM is ready.
 window.addEventListener('DOMContentLoaded', () => app.init());
-
 </script>
 </body>
 </html>
