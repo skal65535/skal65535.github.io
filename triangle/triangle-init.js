@@ -156,9 +156,36 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
     if (!vtxSet.has(key)) { qpts.push(mkVtx(x, y)); vtxSet.add(key); }
   }
 
-  // Phase 2: place remaining points — randomly or greedily (SAD-residual).
+  // Phase 2: place remaining points — greedily up to MAX_GREEDY, then randomly.
+  // Greedy is O(n²): rebuilds Delaunay+rasterize each step, so cap it to stay responsive.
+  const MAX_GREEDY = 128;
   const nRemaining = nb_pts - (qpts.length - 4);
-  if (random_init) {
+  const n_greedy   = random_init ? 0 : Math.min(nRemaining, MAX_GREEDY);
+  const n_random   = nRemaining - n_greedy;
+
+  for (let k = 0; k < n_greedy; ++k) {
+    const del      = new Delaunay(gx, gy, qpts);
+    const rendered = rasterizeGrid(gx, gy, del.vtx, del.getTriangles(), palRGB);
+
+    let bestKey = -1, bestScore = -1;
+    for (let gy_i = 0; gy_i < gy; ++gy_i) {
+      for (let gx_i = 0; gx_i < gx; ++gx_i) {
+        if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
+        const key = gy_i*gx + gx_i;
+        if (vtxSet.has(key)) continue;
+        const i = key*4;
+        const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
+        const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
+        if (score > bestScore) { bestScore = score; bestKey = key; }
+      }
+    }
+    if (bestKey < 0) break;
+    const bx = bestKey % gx, by = Math.floor(bestKey / gx);
+    qpts.push(mkVtx(bx, by));
+    vtxSet.add(bestKey);
+  }
+
+  if (n_random > 0) {
     const candidates = [];
     for (let y = 0; y < gy; ++y) for (let x = 0; x < gx; ++x) {
       const key = y*gx + x;
@@ -168,34 +195,13 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
       const j = Math.floor(Math.random() * (i + 1));
       [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
     }
-    for (let k = 0; k < Math.min(nRemaining, candidates.length); ++k) {
+    for (let k = 0; k < Math.min(n_random, candidates.length); ++k) {
       const {x, y, key} = candidates[k];
       qpts.push(mkVtx(x, y));
       vtxSet.add(key);
     }
-  } else {
-    for (let k = 0; k < nRemaining; ++k) {
-      const del      = new Delaunay(gx, gy, qpts);
-      const rendered = rasterizeGrid(gx, gy, del.vtx, del.getTriangles(), palRGB);
-
-      let bestKey = -1, bestScore = -1;
-      for (let gy_i = 0; gy_i < gy; ++gy_i) {
-        for (let gx_i = 0; gx_i < gx; ++gx_i) {
-          if ((gx_i === 0 || gx_i === gx-1) && (gy_i === 0 || gy_i === gy-1)) continue;
-          const key = gy_i*gx + gx_i;
-          if (vtxSet.has(key)) continue;
-          const i = key*4;
-          const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
-          const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
-          if (score > bestScore) { bestScore = score; bestKey = key; }
-        }
-      }
-      if (bestKey < 0) break;
-      const bx = bestKey % gx, by = Math.floor(bestKey / gx);
-      qpts.push(mkVtx(bx, by));
-      vtxSet.add(bestKey);
-    }
   }
+
   return qpts;
 }
 

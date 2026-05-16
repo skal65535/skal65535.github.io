@@ -159,9 +159,10 @@ class Preview {
   GetCMapText(reader) {
     let cmap_txt = "<h5>Colormap (w/ use counts):<br/>";
     for (let i = 0; i < this.nb_colors; ++i) {
-      cmap_txt += "<div style='width:30px; height:20px; ";
-      cmap_txt += "background-color: rgb(" +
-        this.cmap[i].r + ", " + this.cmap[i].g + ", " + this.cmap[i].b + ");"
+      const c = this.cmap[i];
+      const tip = `Y=${c.y} Co=${c.co} Cg=${c.cg} a=${c.a > 0 ? 1 : 0} | R=${c.r} G=${c.g} B=${c.b} A=${c.a}`;
+      cmap_txt += `<div title="${tip}" style='width:30px; height:20px; `;
+      cmap_txt += `background-color: rgba(${c.r},${c.g},${c.b},${c.a > 0 ? 1 : 0});`;
       cmap_txt += " display: inline-block;'>";
       cmap_txt += "</div>(" + this.counts[i] + ")&nbsp;";
     }
@@ -179,11 +180,13 @@ class Preview {
     const stats_cg = new ValueStats;
     const pred = new Color(kYCoCgMax >> 1, kYCoCgMax >> 1, 0, 255);
     for (let i = 0; i < this.nb_colors; ++i) {
-      if (this.has_alpha && reader.NextAdaptiveBit(alpha)) pred.a = 1 - pred.a;
+      if (this.has_alpha && reader.NextAdaptiveBit(alpha)) pred.a = (pred.a > 0) ? 0 : 255;
       const y = pred.r = reader.ReadAValue(stats_yco, false, pred.r);
       const co = pred.g = reader.ReadAValue(stats_yco, false, pred.g);
       const cg = pred.b = reader.ReadAValue(stats_cg, true, pred.b);
-      this.cmap[i] = YCoCg_to_RGB(y, co, cg, pred.a);
+      const c = YCoCg_to_RGB(y, co, cg, pred.a);
+      c.y = y; c.co = co; c.cg = cg;
+      this.cmap[i] = c;
       this.txt += y + " " + co + " " + cg + " " + (pred.a > 0 ? 1 : 0) + "\n";
     }
   }

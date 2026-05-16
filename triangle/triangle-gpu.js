@@ -54,7 +54,7 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let db = pixel.b - reference[base + 2u] / 255.0;
   let da = pixel.a - ref_a;
   let sad = ref_a * (0.3 * abs(dr) + 0.6 * abs(dg) + 0.1 * abs(db))
-          + (1.0 - ref_a) * abs(da);
+          + abs(da);
   let fixed = u32(sad * 65536.0);
   atomicAdd(&accum, fixed);
 }
@@ -63,10 +63,11 @@ fn cs_main(@builtin(global_invocation_id) gid : vec3<u32>) {
 // ---------------------------------------------------------------------------
 
 class TriangleGPU {
-  constructor(device, gx, gy) {
+  constructor(device, gx, gy, zoom = 1) {
     this.device = device;
     this.gx = gx;
     this.gy = gy;
+    this.zoom = zoom;
     this._ref = null;   // GPUBuffer for reference grid
     this._buildRenderPipeline();
     this._buildSADPipeline();
@@ -78,7 +79,7 @@ class TriangleGPU {
     const mod = device.createShaderModule({ code: RENDER_WGSL });
 
     this._renderTarget = device.createTexture({
-      size: [gx, gy],
+      size: [gx * this.zoom, gy * this.zoom],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
@@ -125,9 +126,9 @@ class TriangleGPU {
 
     this._sadBGL = bgl;
 
-    // reference storage buffer (written by setReference)
+    // reference storage buffer (written by setReference), sized for zoomed resolution
     this._refBuffer = device.createBuffer({
-      size: gx * gy * 4 * 4,
+      size: gx * this.zoom * gy * this.zoom * 4 * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
   }
@@ -242,13 +243,19 @@ class TriangleGPU {
       posBuf.destroy(); idxBuf.destroy(); cidxBuf.destroy(); palBuf.destroy();
     });
 
-    await this._readBuffer.mapAsync(GPUMapMode.READ);
+    try {
+      await this._readBuffer.mapAsync(GPUMapMode.READ);
+    } catch (e) {
+      if (this._destroyed) return 0;
+      throw e;
+    }
     const raw = new Uint32Array(this._readBuffer.getMappedRange())[0];
     this._readBuffer.unmap();
-    return raw / 65536 / (gx * gy);   // normalized [0,1]
+    return raw / 65536 / (gx * gy);  // normalized per grid-point (zoom provides accuracy, not scale)
   }
 
   destroy() {
+    this._destroyed = true;
     this._renderTarget.destroy();
     this._uniBuffer.destroy();
     this._refBuffer.destroy();
@@ -278,6 +285,7 @@ struct OptUni {
   has_alpha : u32,
   vm_amp : u32,            // vertex move amplitude (max delta per axis)
   vm_border_escape : u32,  // probability (0-100) of leaving the boundary
+  zoom : u32,              // reference/render zoom (1,2,4,8): gx*zoom x gy*zoom pixels
 }
 
 @group(0) @binding(0) var<uniform>             uni  : OptUni;
@@ -313,9 +321,10 @@ fn ycog_to_rgb(y: u32, co: u32, cg: u32) -> vec3f {
 }
 
 fn pixel_sad(px: u32, py: u32) -> u32 {
-  let pfx  = f32(px) + 0.5;
-  let pfy  = f32(py) + 0.5;
-  let base = (py * uni.gx + px) * 4u;
+  // px,py are in zoomed pixel space; convert to grid-space for triangle coverage test
+  let pfx  = (f32(px) + 0.5) / f32(uni.zoom);
+  let pfy  = (f32(py) + 0.5) / f32(uni.zoom);
+  let base = (py * uni.gx * uni.zoom + px) * 4u;
   var col  = vec4f(0.0);
   for (var t = 0u; t < uni.nt; t += 1u) {
     let i0 = tri[t*3u]; let i1 = tri[t*3u+1u]; let i2 = tri[t*3u+2u];
@@ -342,18 +351,19 @@ fn pixel_sad(px: u32, py: u32) -> u32 {
   let dg = (col.g - ref_[base+1u])  / 255.0;
   let db = (col.b - ref_[base+2u])  / 255.0;
   let da = (col.a - ref_[base+3u])  / 255.0;
-  let s  = ra * (0.3*abs(dr) + 0.6*abs(dg) + 0.1*abs(db)) + (1.0 - ra)*abs(da);
+  let s  = ra * (0.3*abs(dr) + 0.6*abs(dg) + 0.1*abs(db)) + abs(da);
   return u32(s * 65536.0);
 }
 
 fn reduce_sad(tid: u32) -> u32 {
-  let npix = uni.gx * uni.gy;
+  let zx   = uni.gx * uni.zoom;
+  let npix = zx * uni.gy * uni.zoom;
   let ppt  = (npix + WG_SIZE - 1u) / WG_SIZE;
   let st   = tid * ppt;
   let en   = min(st + ppt, npix);
   var acc  = 0u;
   for (var p = st; p < en; p += 1u) {
-    acc += pixel_sad(p % uni.gx, p / uni.gx);
+    acc += pixel_sad(p % zx, p / zx);
   }
   wg_partial[tid] = acc;
   workgroupBarrier();
@@ -493,10 +503,11 @@ fn opt_main(@builtin(local_invocation_id) lid : vec3<u32>) {
 // ---------------------------------------------------------------------------
 
 class TriangleOptGPU {
-  constructor(device, gx, gy) {
+  constructor(device, gx, gy, zoom = 1) {
     this.device = device;
     this.gx = gx;
     this.gy = gy;
+    this.zoom = zoom;
     this._nv = 0;
     this._nt = 0;
     this._nc = 0;
@@ -527,7 +538,7 @@ class TriangleOptGPU {
     this._bgl = bgl;
 
     this._uniBuffer = device.createBuffer({
-      size: 64,
+      size: 80,  // 20 u32s: 16 original + zoom + 3 padding
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     this._scoreBuffer = device.createBuffer({
@@ -577,7 +588,7 @@ class TriangleOptGPU {
       this._cidxBuf = this._allocBuf(nv * 4,     STO);
       this._palBuf  = this._allocBuf(nc * 4 * 4, STO);
       this._triBuf  = this._allocBuf(nt * 3 * 4, RO);
-      this._refBuf  = this._allocBuf(this.gx * this.gy * 4 * 4, RO);
+      this._refBuf  = this._allocBuf(this.gx * this.zoom * this.gy * this.zoom * 4 * 4, RO);
       this._posReadBuf  = this._allocBuf(nv * 2 * 4, RB);
       this._cidxReadBuf = this._allocBuf(nv * 4,     RB);
       this._palReadBuf  = this._allocBuf(nc * 4 * 4, RB);
@@ -625,15 +636,19 @@ class TriangleOptGPU {
       rng_seed,
     } = opts;
 
+    // Scale down GPU iterations by zoom² to keep wall-clock time per dispatch constant.
+    const gpuIters = Math.max(1, Math.round(nIters / (this.zoom * this.zoom)));
+
     // Write uniforms
-    const uni = new Uint32Array(16);
+    const uni = new Uint32Array(20);
     uni[0] = gx; uni[1] = gy; uni[2] = nv; uni[3] = nt;
-    uni[4] = nc; uni[5] = nIters; uni[6] = iterOffset; uni[7] = maxIters;
+    uni[4] = nc; uni[5] = gpuIters; uni[6] = iterOffset; uni[7] = maxIters;
     uni[8] = p_vm; uni[9] = p_ci; uni[10] = p_cm; uni[11] = p_fa;
     uni[12] = Math.round(score_tolerance * 65536);
     uni[13] = has_alpha ? 1 : 0;
     uni[14] = Math.max(1, vm_amp | 0);
     uni[15] = Math.max(0, Math.min(100, vm_border_escape | 0));
+    uni[16] = Math.max(1, this.zoom | 0);
     device.queue.writeBuffer(this._uniBuffer, 0, uni);
 
     // Seed RNG once per batch (only on first call or when seed changes)
