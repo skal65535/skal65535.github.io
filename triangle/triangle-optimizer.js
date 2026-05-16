@@ -65,6 +65,61 @@ function applyMoveVertex(preview, color_data, rng, amplitude = 1, border_escape 
   return { preview: p, color_data };
 }
 
+function applyLaplaceSmooth(preview, color_data, rng) {
+  const nb = preview.qpts.length - 4;
+  if (nb <= 0) return null;
+
+  // 1. Pick a random non-corner vertex
+  const p = clonePreview(preview);
+  const v_idx_in_qpts = 4 + Math.floor(rng() * nb);
+  const v_to_move = p.qpts[v_idx_in_qpts];
+
+  // 2. Find its neighbors using Delaunay triangulation
+  const del = buildDel(p);
+  const v_idx_in_del = del.vtx.findIndex(dv => dv.x === v_to_move.x && dv.y === v_to_move.y);
+  if (v_idx_in_del === -1) return null;
+
+  const neighbors = new Set();
+  for (const t of del.getTriangles()) {
+    if (t.vtx.includes(v_idx_in_del)) {
+      for (const neighbor_vtx_idx of t.vtx) {
+        if (neighbor_vtx_idx !== v_idx_in_del) {
+          neighbors.add(del.vtx[neighbor_vtx_idx]);
+        }
+      }
+    }
+  }
+
+  if (neighbors.size === 0) return null;
+
+  // 3. Calculate barycenter
+  let sum_x = 0, sum_y = 0;
+  for (const neighbor of neighbors) {
+    sum_x += neighbor.x;
+    sum_y += neighbor.y;
+  }
+  const new_x = Math.round(sum_x / neighbors.size);
+  const new_y = Math.round(sum_y / neighbors.size);
+
+  const { grid_x: gx, grid_y: gy } = preview;
+
+  // 4. Validate new position
+  if (new_x === v_to_move.x && new_y === v_to_move.y) return null;
+  if (new_x < 0 || new_x >= gx || new_y < 0 || new_y >= gy) return null;
+  if ((new_x === 0 || new_x === gx - 1) && (new_y === 0 || new_y === gy - 1)) return null;
+  if (p.qpts.some((pt, i) => i !== v_idx_in_qpts && pt.x === new_x && pt.y === new_y)) return null;
+
+  // 5. Apply move and re-sort
+  const moved_vtx = p.qpts.splice(v_idx_in_qpts, 1)[0];
+  moved_vtx.x = new_x;
+  moved_vtx.y = new_y;
+
+  const pos = p.qpts.findIndex((v, i) => i >= 4 && (v.y > new_y || (v.y === new_y && v.x > new_x)));
+  p.qpts.splice(pos < 0 ? p.qpts.length : pos, 0, moved_vtx);
+
+  return { preview: p, color_data };
+}
+
 function applyAddVertex(preview, color_data, rng) {
   if (preview.nb_pts >= kPreviewMaxNumVertices) return null;
   const gx = preview.grid_x, gy = preview.grid_y;
@@ -180,6 +235,7 @@ class TriangleOptimizer {
     color_change_penalty      = 0,
     num_mutations_per_iter    = 1,
     proba_vertex_move         = 50,
+    proba_laplace_smooth      = 0,
     proba_vertex_add          = 20,
     proba_vertex_sub          = 25,
     proba_color_index_move    = 25,
@@ -202,6 +258,7 @@ class TriangleOptimizer {
     this.color_change_penalty   = color_change_penalty;
     this.num_mutations_per_iter = num_mutations_per_iter;
     this.proba_vertex_move      = proba_vertex_move;
+    this.proba_laplace_smooth   = proba_laplace_smooth;
     this.proba_vertex_add       = proba_vertex_add;
     this.proba_vertex_sub       = proba_vertex_sub;
     this.proba_color_index_move = proba_color_index_move;
@@ -252,6 +309,7 @@ class TriangleOptimizer {
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
       const mutations = [
         ['v=', this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
+        ['v~', this.proba_laplace_smooth, () => np.qpts.length > 4 ? applyLaplaceSmooth(np, nc, rng) : null],
         ['v+', this.proba_vertex_add,  () => applyAddVertex(np, nc, rng)],
         ['v-', this.proba_vertex_sub,  () => np.qpts.length > 4 ? applyRemoveVertex(np, nc, rng) : null],
         ['ci', this.proba_color_index_move, () => applyMoveColorIndex(np, nc, rng)],

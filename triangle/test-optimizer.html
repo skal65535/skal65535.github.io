@@ -431,12 +431,77 @@
 
 <script src="triangle-core.js"></script>
 <script src="triangle-ans-enc.js"></script>
-<script src="triangle-ans-dec.js"></script>
 <script src="triangle-init.js"></script>
 <script src="triangle-cpu.js"></script>
 <script src="triangle-optimizer.js"></script>
 <script>
 'use strict';
+
+function decodePreview(b64) {
+  const data = atob(b64);
+  const dec = new ANSDec(data);
+
+  const preview = {};
+  preview.grid_x = dec.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
+  preview.grid_y = dec.ReadRange(kPreviewMinGridSize, kPreviewMaxGridSize);
+  preview.use_noise = dec.NextBit(kPreviewNoiseProba) ? true : false;
+  preview.nb_colors = dec.ReadRange(kPreviewMinNumColors, kPreviewMaxNumColors);
+  preview.has_alpha = dec.NextBit(kPreviewOpaqueProba) ? true : false;
+
+  const color_data = new Array(preview.nb_colors);
+  const alpha_stats = new ANSBinSymbol(2, 2);
+  const syco = new ValueStats(), scg = new ValueStats();
+  let pa = 1, py = kYCoCgMax >> 1, pco = kYCoCgMax >> 1, pcg = 0;
+
+  for (let i = 0; i < preview.nb_colors; i++) {
+    if (preview.has_alpha) {
+      if (dec.NextAdaptiveBit(alpha_stats)) pa = 1 - pa;
+    }
+    const y  = py  = dec.ReadAValue(syco, false, py);
+    const co = pco = dec.ReadAValue(syco, false, pco);
+    const cg = pcg = dec.ReadAValue(scg,  true,  pcg);
+    color_data[i] = { y, co, cg, a: pa };
+  }
+
+  const nb_nc = preview.grid_x * preview.grid_y - 4;
+  const min_pts = Math.max(preview.nb_colors - 4, kPreviewMinNumVertices);
+  const max_pts = Math.min(nb_nc, kPreviewMaxNumVertices);
+  preview.nb_pts = dec.ReadRange(min_pts, max_pts);
+
+  preview.qpts = new Array(preview.nb_pts + 4);
+  const istats = new ANSBinSymbol(2, 2);
+  const decIdx = (pred) => {
+    if (dec.NextAdaptiveBit(istats)) {
+      const v = dec.ReadRange(0, preview.nb_colors - 2);
+      return v < pred ? v : v + 1;
+    }
+    return pred;
+  };
+
+  let pidx = 0;
+  pidx = decIdx(pidx); preview.qpts[0] = { x: 0, y: 0, idx: pidx };
+  pidx = decIdx(pidx); preview.qpts[1] = { x: preview.grid_x - 1, y: 0, idx: pidx };
+  pidx = decIdx(pidx); preview.qpts[2] = { x: 0, y: preview.grid_y - 1, idx: pidx };
+  pidx = decIdx(pidx); preview.qpts[3] = { x: preview.grid_x - 1, y: preview.grid_y - 1, idx: pidx };
+
+  let cells = nb_nc, pts = preview.nb_pts;
+  for (let y = 0, k = 4; y < preview.grid_y; ++y) {
+    for (let x = 0; x < preview.grid_x; ++x) {
+      if ((x === 0 || x === preview.grid_x - 1) && (y === 0 || y === preview.grid_y - 1)) continue;
+      if (pts > 0) {
+        const proba = kProbaMax - Math.floor((pts << 16) / cells);
+        if (dec.NextBit(proba)) {
+          pidx = decIdx(pidx);
+          preview.qpts[k++] = { x, y, idx: pidx };
+          --pts;
+        }
+      }
+      --cells;
+    }
+  }
+
+  return { preview, color_data };
+}
 
 class ROIMask {
   constructor(w, h) {
@@ -518,9 +583,9 @@ const app = {
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
     obama:  { file: 'obama.webp', preview_b64: 'l68K6Z9/ed4/wyeZGU8+QhYh4HviKTByP12L+fufo7mefZmBlbhPHHwy9SddlWc7GoUNkNj4RZsmjvzuJ1A22C9rhBSWEKunZs4Bg/a7gdQ/pbFuOEsaMXN1+gBonqycVdnXJ62XgVFtjclbG43yH8/10zIkiKRzUCnP2iAekbTxQZpOwixSiq7b9H3wrO+SntpNos4PHofkp8dfTjZ6jRXj/swzPvwClZqt+4Pa98QP9aHvbNaFwIxS8UwNv+qaxHr4bB4q93dajRZlBQc/mXk8nfdqL4EMWYN6NFEdTZAYwsUC5FVmmYoX+nc1QjhnuWSKck2pBkGSuEhvMKwCCASnVR6S6wgrDJg64x943Zy+SyvqqgM18Yrv/uk0MWgZqWfKsxa3R0A1AxYeAuTDHRF5zXvjo+jwiy1bDgMD+DqtvBwETFCMRR7tOD9rzaVCgtYxwTBndF8gkKBTeczIbZHBmarK+Bl+qpaSbWx9UTPns67W' },
-    shell:  { file: 'shell-logo.webp', preview_b64: '' },
-    moon:   { file: 'moon.webp', preview_b64: '' },
-    claude: { file: 'claude.webp', preview_b64: '' },
+    shell:  { file: 'shell-logo.webp', preview_b64: 'AHIwP2UEIpgo8REtobhDhQCnuoSO1ksLD6NC8GSEkLNphSFJp2tNfFxShEj75e7+LegewntaSZDeYNHnBnQzkpM399ZiXkiVMFdmZKwK3RLcsJYRviHtMVwHZnAmPdtujDgMuO+VDRHOmdMktefRCThv5ixJwIV8EcxlOOJ+Mv3NxaMk+bQJtNx6CNu9AVI9mgi3ReZU2KGE10Go2sWme/Wt+08QMZGlRY1PRtUj2BgzAPk4TGSMrxkCZwKUoaUyl3YtFGuJvzeNQUZOf6xouzbfWVXI5IIMREHIUKcgOrHUKB9xYO1e6XBs6EqLRDpBheNdEleI3t3E8QK9uc/lEVlWms/BJxI4DmWCxSHdFkRLZ38CCGq4SiRVyaOnbk2GJge0A+lGmnoQrT/Cv4Mixl3+' },
+    moon:   { file: 'moon.webp', preview_b64: 'AgQ9AW6LAsKtTkomw0tj2YEETXSlZxq12RdPom4BVIzx/6V4wDJ2VaRKeoNMUPu/F0v9pJxX+95AF/famIdk7a9APRoChgbvqp9Q/vpqSJET6xOuygigQitYreM2hnOPuUBw9WWMtho7ds1ADitW9JSMFRoTwlQN5afgVaL/dzma2T2MS0/yUXqgkGsfBppNkzJhaYKvlfT2r6sPqsXMywyLeMA9/j+ieMCnxrj7xP7J3dHMJAqhagejxgBtVZeUnxmIfEhA6lYDJxh6BmnHtQ9H438ckI+6W7xyp9ttWi/Gu6Ivz6LnAsfgR9DIIFNf6XTfxBTSf5sxa+Vlw1TQo/wa/BCDvmjytlGwkBPJeHL+x1GUyHff4Txa0OrSRGRyY+PqqKFNZKt7zXFN7DMfp1Xme1bUTpgMBxvHssWQYV4qLXuY1e341eu4QP9ZDzBUtXPSjQX2TsUlZ84j8bjbnxnl4s5TwjsgxpvQ4eFnBtvPyDhRquqg/yLDG8LpI1mxPg7zoddKMmW77Y60CuzjVsvAOdN9NOx0vnY2NaygwWBN6rzLDGeUDs5LtnMIgU3BoNi6eeKwriTuECvnHpTwtCkqu14eQ+7t06Zfz3iXrO0zscE4eFcK+mV7bE2X/9suj/WeYOpwnrht3SAmJLlgoWLHRIeX55h+FCnCIhkJa+dKlriRpph8ewZTNWF2wLO0Aox9BiPLBjM=' },
+    claude: { file: 'claude.webp', preview_b64: 'AAYxxR4cqDELv6bU6ETATXPCQ+xc3kqeVtjCk183GwLGmGOnyk9AJt8iV9GzA+1YXg0jR6gIPAH8aPS0uU+uaEpQlby+qVL0LAjJVWkEP0g21fk6yWmXE5PTqcrdRXsdr3hymh0v+riJ2m5JKVGmtby7tXwdB3mPor7Xbx9PmR3I9ymy1ohlp9zQpW7Fzo+JQLETDgQL1qp8MPmhnaRmFiCqsJ3pCTcz8o3pJV9nbRF5xUTow2suP6svsJ1EhOyo4huGKrqNuz/fiesw5CXPEhhLZNRONa69V3KkES/SWF00RMPV1on7SrE0NsQ5AJpw6RTHQDDDcE+NRWvjez3hFYI3lg6MpYKPiMx7LxYpyuPjvacWEf3laaHNcf72GVC5Dzlz6TagFpnFX2Pn1KppQvVVg4OWD8lXEs6Efj0+0cHgZ8W7N+KnxHzDkdI2+SIVA/7sYjvkCnAbbEqTa7K5FivgN0//it6bNrYJ8kMBWXwZeE+lvmRXjEpfQ125BRCXFneq+YxRwhTwrdIcfeZQxfLwJ7llVe2kEe1YkH3srs/Xlrb5WGgicHfQa2rPhtIDtpJ2jBsQjDZ9w0hufoO9zPJ6L6Olg+IjUxiviBXrPyTjr/GJDGdkEW0QVYANWO8NaYL8DK3ChUEhJPZHLAP4snDLUe4l0kF0R4tDcTYXkEcBZi/e8l4o4STwOhsapmjkvqBsjHi39udEkx3tuZuC9Z/xSjNPeUTwmSlGTRCCc/bHkBRIo4kPWREZbTemSHatGlhDYpCW79BgTznjmKJanszuMio1ZgRF' },
   },
 
   // --- State ---
