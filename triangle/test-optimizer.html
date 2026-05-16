@@ -294,6 +294,13 @@
           </div>
           <div class="skal-row skal-row-slider">
             <div class="skal-row-header">
+              <label class="skal-row-label">Laplace smooth</label>
+              <span class="skal-readout"><span id="v_vls">0</span>%</span>
+            </div>
+            <input class="prob" type="range" id="p_vls" min="0" max="100" value="0">
+          </div>
+          <div class="skal-row skal-row-slider">
+            <div class="skal-row-header">
               <label class="skal-row-label">Vtx add</label>
               <span class="skal-readout"><span id="v_va">20</span>%</span>
             </div>
@@ -424,6 +431,7 @@
 
 <script src="triangle-core.js"></script>
 <script src="triangle-ans-enc.js"></script>
+<script src="triangle-ans-dec.js"></script>
 <script src="triangle-init.js"></script>
 <script src="triangle-cpu.js"></script>
 <script src="triangle-optimizer.js"></script>
@@ -509,10 +517,10 @@ const app = {
   // --- Constants & Config ---
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
-    obama:  { file: 'obama.webp' },
-    shell:  { file: 'shell-logo.webp' },
-    moon:   { file: 'moon.webp' },
-    claude: { file: 'claude.webp' },
+    obama:  { file: 'obama.webp', preview_b64: 'l68K6Z9/ed4/wyeZGU8+QhYh4HviKTByP12L+fufo7mefZmBlbhPHHwy9SddlWc7GoUNkNj4RZsmjvzuJ1A22C9rhBSWEKunZs4Bg/a7gdQ/pbFuOEsaMXN1+gBonqycVdnXJ62XgVFtjclbG43yH8/10zIkiKRzUCnP2iAekbTxQZpOwixSiq7b9H3wrO+SntpNos4PHofkp8dfTjZ6jRXj/swzPvwClZqt+4Pa98QP9aHvbNaFwIxS8UwNv+qaxHr4bB4q93dajRZlBQc/mXk8nfdqL4EMWYN6NFEdTZAYwsUC5FVmmYoX+nc1QjhnuWSKck2pBkGSuEhvMKwCCASnVR6S6wgrDJg64x943Zy+SyvqqgM18Yrv/uk0MWgZqWfKsxa3R0A1AxYeAuTDHRF5zXvjo+jwiy1bDgMD+DqtvBwETFCMRR7tOD9rzaVCgtYxwTBndF8gkKBTeczIbZHBmarK+Bl+qpaSbWx9UTPns67W' },
+    shell:  { file: 'shell-logo.webp', preview_b64: '' },
+    moon:   { file: 'moon.webp', preview_b64: '' },
+    claude: { file: 'claude.webp', preview_b64: '' },
   },
 
   // --- State ---
@@ -537,7 +545,7 @@ const app = {
     this.bindEventListeners();
     this.updateAllDisplays();
     this.ui.lambda.disabled = this.ui.autoLambda.checked;
-    this.loadImageFromUrl(this.PRESETS[this.ui.presetSelect.value].file);
+    this.loadImageFromUrl(this.ui.presetSelect.value);
   },
 
   cacheDOMElements() {
@@ -573,7 +581,7 @@ const app = {
     this._bind('copyBtn', 'click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
     // Image loading
-    this._bind('presetSelect', 'change', e => this.loadImageFromUrl(this.PRESETS[e.target.value].file));
+    this._bind('presetSelect', 'change', e => this.loadImageFromUrl(e.target.value));
     this._bind('file', 'change', e => this.handleFileSelect(e));
 
     // Parameter tabs
@@ -719,6 +727,7 @@ const app = {
     const g = id => +document.getElementById(id).value;
     const optimizerParams = {
       proba_vertex_move:      g('p_vm'),
+      proba_laplace_smooth:   g('p_vls'),
       proba_vertex_add:       g('p_va'),
       proba_vertex_sub:       g('p_vs'),
       proba_color_index_move: g('p_ci'),
@@ -816,7 +825,9 @@ const app = {
       this.renderPreview(this.ui.cOpt, result.preview, result.color_data);
 
     } catch (err) {
-      this.log(`\n--- ERROR ---\n${err.message}`);
+      this.log(`
+--- ERROR ---
+${err.message}`);
       this.updateStatus('Error!');
       console.error(err);
     } finally {
@@ -830,7 +841,26 @@ const app = {
     this.updateStatus('');
     this.updateStats({ pts: null, colors: null, dist: null, byteSize: null });
     const params = this.getParams();
-    const { preview, color_data } = this.prepareGrid(params);
+
+    const presetKey = this.ui.presetSelect.value;
+    const preset = this.PRESETS[presetKey];
+
+    let preview, color_data;
+    if (preset && preset.preview_b64) {
+      try {
+        const decoded = decodePreview(preset.preview_b64);
+        preview = decoded.preview;
+        color_data = decoded.color_data;
+        this.log(`Loaded pre-computed preview for '${presetKey}'`);
+      } catch (e) {
+        this.log(`Error decoding preview for '${presetKey}', generating new one.`);
+        console.error(e);
+        ({ preview, color_data } = this.prepareGrid(params));
+      }
+    } else {
+      ({ preview, color_data } = this.prepareGrid(params));
+    }
+
     this.log(`Reset: nb_pts=${preview.nb_pts} nb_colors=${preview.nb_colors} size=${encodeSize(preview,color_data)}B has_alpha=${preview.has_alpha}`);
     this.renderPreview(this.ui.cOpt, preview, color_data);  // sets lastRenderedPreview
   },
@@ -852,7 +882,11 @@ const app = {
     await this.reset();
   },
 
-  async loadImageFromUrl(url) {
+  async loadImageFromUrl(presetKey) {
+    const preset = this.PRESETS[presetKey];
+    if (!preset || !preset.file) return;
+
+    const url = preset.file;
     this.updateStatus(`Loading ${url}...`);
     try {
       const img = new Image();
