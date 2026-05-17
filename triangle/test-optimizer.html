@@ -238,7 +238,7 @@
             <label class="skal-row-label" for="iters">Iters</label>
             <input type="number" id="iters" value="100000" min="10">
             <label class="skal-row-label" for="batchSize">Batch</label>
-            <input type="number" id="batchSize" value="20" min="1" max="10000">
+            <input type="number" id="batchSize" value="100" min="1" max="10000">
           </div>
           <div class="skal-row skal-row-slider">
             <div class="skal-row-header">
@@ -246,10 +246,6 @@
               <span class="skal-readout" id="toleranceVal">2e-4</span>
             </div>
             <input type="range" id="tolerance" min="0" max="0.002" step="0.0001" value="0.0002">
-          </div>
-          <div class="skal-row skal-row-toggle">
-            <label class="skal-row-label" for="debugOpt">Debug moves</label>
-            <input type="checkbox" id="debugOpt">
           </div>
         </div>
 
@@ -397,8 +393,6 @@
         <span class="sep">|</span>
         <span>colors: <b id="statColors">—</b></span>
         <span class="sep">|</span>
-        <span>dist: <b id="statDist">—</b></span>
-        <span class="sep">|</span>
         <div id="cmap"></div>
       </div>
 
@@ -415,7 +409,7 @@
           <label class="button" for="file">Load image</label>
           <button class="button" id="resetBtn">Reset</button>
           <button class="button" id="resetColorsBtn">Reset colors</button>
-          <button class="button" id="btn">Run</button>
+          <button class="button" id="btn" style="background:#8a93c0;border-color:#1a2248;">Run</button>
         </div>
       </div>
       <div class="b64-row">
@@ -583,7 +577,7 @@ const app = {
   TARGET_PTS: [500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000],
   PRESETS: {
     obama:  { file: 'obama.webp', preview_b64: 'l68K6Z9/ed4/wyeZGU8+QhYh4HviKTByP12L+fufo7mefZmBlbhPHHwy9SddlWc7GoUNkNj4RZsmjvzuJ1A22C9rhBSWEKunZs4Bg/a7gdQ/pbFuOEsaMXN1+gBonqycVdnXJ62XgVFtjclbG43yH8/10zIkiKRzUCnP2iAekbTxQZpOwixSiq7b9H3wrO+SntpNos4PHofkp8dfTjZ6jRXj/swzPvwClZqt+4Pa98QP9aHvbNaFwIxS8UwNv+qaxHr4bB4q93dajRZlBQc/mXk8nfdqL4EMWYN6NFEdTZAYwsUC5FVmmYoX+nc1QjhnuWSKck2pBkGSuEhvMKwCCASnVR6S6wgrDJg64x943Zy+SyvqqgM18Yrv/uk0MWgZqWfKsxa3R0A1AxYeAuTDHRF5zXvjo+jwiy1bDgMD+DqtvBwETFCMRR7tOD9rzaVCgtYxwTBndF8gkKBTeczIbZHBmarK+Bl+qpaSbWx9UTPns67W' },
-    shell:  { file: 'shell-logo.webp', preview_b64: 'AHIwP2UEIpgo8REtobhDhQCnuoSO1ksLD6NC8GSEkLNphSFJp2tNfFxShEj75e7+LegewntaSZDeYNHnBnQzkpM399ZiXkiVMFdmZKwK3RLcsJYRviHtMVwHZnAmPdtujDgMuO+VDRHOmdMktefRCThv5ixJwIV8EcxlOOJ+Mv3NxaMk+bQJtNx6CNu9AVI9mgi3ReZU2KGE10Go2sWme/Wt+08QMZGlRY1PRtUj2BgzAPk4TGSMrxkCZwKUoaUyl3YtFGuJvzeNQUZOf6xouzbfWVXI5IIMREHIUKcgOrHUKB9xYO1e6XBs6EqLRDpBheNdEleI3t3E8QK9uc/lEVlWms/BJxI4DmWCxSHdFkRLZ38CCGq4SiRVyaOnbk2GJge0A+lGmnoQrT/Cv4Mixl3+' },
+    shell:  { file: 'shell-logo.webp', preview_b64: 'AAv+zHn6z/2yiRpL4vm7Hihuj5d2YOCs3HuYt0A6osH+w9zeaqkQ/v/YsmCquV2FIc7huNh12wJlc5EeV4U3cN8UFvDtTiU0DvXcnHTt1eMH5AOjjWzLB1DSR22M03V4nvyMGPgXjGq8Qsnh2x/bbu/7MTyR9rBxE+CivNZfP+nIf79ryBe6TZIBpSvW0N1lIe7QWiWu07dlor8Y83ZOAPcFfVKqSYQKEEEn5XKgCJ2oF6mQ' },
     moon:   { file: 'moon.webp', preview_b64: 'AgQ9AW6LAsKtTkomw0tj2YEETXSlZxq12RdPom4BVIzx/6V4wDJ2VaRKeoNMUPu/F0v9pJxX+95AF/famIdk7a9APRoChgbvqp9Q/vpqSJET6xOuygigQitYreM2hnOPuUBw9WWMtho7ds1ADitW9JSMFRoTwlQN5afgVaL/dzma2T2MS0/yUXqgkGsfBppNkzJhaYKvlfT2r6sPqsXMywyLeMA9/j+ieMCnxrj7xP7J3dHMJAqhagejxgBtVZeUnxmIfEhA6lYDJxh6BmnHtQ9H438ckI+6W7xyp9ttWi/Gu6Ivz6LnAsfgR9DIIFNf6XTfxBTSf5sxa+Vlw1TQo/wa/BCDvmjytlGwkBPJeHL+x1GUyHff4Txa0OrSRGRyY+PqqKFNZKt7zXFN7DMfp1Xme1bUTpgMBxvHssWQYV4qLXuY1e341eu4QP9ZDzBUtXPSjQX2TsUlZ84j8bjbnxnl4s5TwjsgxpvQ4eFnBtvPyDhRquqg/yLDG8LpI1mxPg7zoddKMmW77Y60CuzjVsvAOdN9NOx0vnY2NaygwWBN6rzLDGeUDs5LtnMIgU3BoNi6eeKwriTuECvnHpTwtCkqu14eQ+7t06Zfz3iXrO0zscE4eFcK+mV7bE2X/9suj/WeYOpwnrht3SAmJLlgoWLHRIeX55h+FCnCIhkJa+dKlriRpph8ewZTNWF2wLO0Aox9BiPLBjM=' },
     claude: { file: 'claude.webp', preview_b64: 'AAYxxR4cqDELv6bU6ETATXPCQ+xc3kqeVtjCk183GwLGmGOnyk9AJt8iV9GzA+1YXg0jR6gIPAH8aPS0uU+uaEpQlby+qVL0LAjJVWkEP0g21fk6yWmXE5PTqcrdRXsdr3hymh0v+riJ2m5JKVGmtby7tXwdB3mPor7Xbx9PmR3I9ymy1ohlp9zQpW7Fzo+JQLETDgQL1qp8MPmhnaRmFiCqsJ3pCTcz8o3pJV9nbRF5xUTow2suP6svsJ1EhOyo4huGKrqNuz/fiesw5CXPEhhLZNRONa69V3KkES/SWF00RMPV1on7SrE0NsQ5AJpw6RTHQDDDcE+NRWvjez3hFYI3lg6MpYKPiMx7LxYpyuPjvacWEf3laaHNcf72GVC5Dzlz6TagFpnFX2Pn1KppQvVVg4OWD8lXEs6Efj0+0cHgZ8W7N+KnxHzDkdI2+SIVA/7sYjvkCnAbbEqTa7K5FivgN0//it6bNrYJ8kMBWXwZeE+lvmRXjEpfQ125BRCXFneq+YxRwhTwrdIcfeZQxfLwJ7llVe2kEe1YkH3srs/Xlrb5WGgicHfQa2rPhtIDtpJ2jBsQjDZ9w0hufoO9zPJ6L6Olg+IjUxiviBXrPyTjr/GJDGdkEW0QVYANWO8NaYL8DK3ChUEhJPZHLAP4snDLUe4l0kF0R4tDcTYXkEcBZi/e8l4o4STwOhsapmjkvqBsjHi39udEkx3tuZuC9Z/xSjNPeUTwmSlGTRCCc/bHkBRIo4kPWREZbTemSHatGlhDYpCW79BgTznjmKJanszuMio1ZgRF' },
   },
@@ -600,7 +594,7 @@ const app = {
     lastRenderedPreview: null,
     lastRenderedColors: null,
     roiMask: null,
-    stats: { pts: null, colors: null, dist: null, byteSize: null },
+    stats: { pts: null, colors: null, byteSize: null },
   },
 
   // --- Initialization ---
@@ -618,7 +612,7 @@ const app = {
       'log', 'cRef', 'cOpt', 'b64out', 'cmap', 'showTri', 'autoLambda', 'copyBtn',
       'presetSelect', 'file', 'resetBtn', 'resetColorsBtn', 'btn', 'targetPts',
       'targetPtsVal', 'gridSize', 'zoom', 'byteSize', 'statPts', 'statColors',
-      'statDist', 'debugOpt', 'tolerance', 'toleranceVal', 'lambda', 'lambdaVal',
+      'tolerance', 'toleranceVal', 'lambda', 'lambdaVal',
       'colorPenalty', 'colorPenaltyVal', 'roiBrush', 'roiBrushVal', 'roiStrength',
       'roiStrengthVal', 'roiAutoBtn', 'roiResetBtn',
     ];
@@ -641,7 +635,7 @@ const app = {
   bindEventListeners() {
     // Main actions
     this._bind('btn', 'click', () => this.toggleRun());
-    this._bind('resetBtn', 'click', () => this.stopAndReset());
+    this._bind('resetBtn', 'click', () => this.stopAndReset(true));
     this._bind('resetColorsBtn', 'click', () => this.resetColormap());
     this._bind('copyBtn', 'click', () => navigator.clipboard.writeText(this.ui.b64out.value));
 
@@ -657,7 +651,7 @@ const app = {
       await this.stopAndReset();
     });
     ['nc', 'np', 'randomInit'].forEach(id => {
-      this._bind(id, 'change', () => this.stopAndReset());
+      this._bind(id, 'change', () => this.stopAndReset(true));
     });
 
     this._bind('autoLambda', 'change', e => { this.ui.lambda.disabled = e.target.checked; });
@@ -810,8 +804,8 @@ const app = {
       nc: g('nc'),
       np: g('np'),
       maxIter: g('iters') || 100000,
-      batchSize: g('batchSize') || 20,
-      targetBytes: g('targetBytes') || 500,
+      batchSize: g('batchSize') || 100,
+      targetBytes: g('targetBytes') || 256,
       autoGain: g('autoGain') || 0.2,
       randomInit: document.getElementById('randomInit').checked,
       optimizer: optimizerParams,
@@ -857,7 +851,6 @@ const app = {
         roiStrength: +this.ui.roiStrength.value,
         ...params.optimizer,
       });
-      opt.debug = this.ui.debugOpt.checked;
       this.state.optimizer = opt;
 
       const initScore = opt.init();
@@ -878,8 +871,8 @@ const app = {
           opt.currentScore += delta;
           opt.bestLoss     += delta;
         }
-        this.updateStats({ dist: r.distortion });
-        this.log(`[${iter}] best=${best.toFixed(5)} dist=${r.distortion.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${elapsedS.toFixed(1)}s ${evPerSec}ev/s acc=${r.accepted?'Y':'N'}`);
+        this.updateStats({});
+        this.log(`[${iter}] best=${best.toFixed(5)} size=${sz}B λ=${opt.lambda.toExponential(2)} ${evPerSec}ev/s`);
         this.renderPreview(this.ui.cOpt, opt.bestPreview, opt.bestColorData);
       });
 
@@ -901,17 +894,17 @@ ${err.message}`);
     }
   },
 
-  async reset() {
+  async reset(forceRebuild = false) {
     this.log('');
     this.updateStatus('');
-    this.updateStats({ pts: null, colors: null, dist: null, byteSize: null });
+    this.updateStats({ pts: null, colors: null, byteSize: null });
     const params = this.getParams();
 
     const presetKey = this.ui.presetSelect.value;
     const preset = this.PRESETS[presetKey];
 
     let preview, color_data;
-    if (preset && preset.preview_b64) {
+    if (!forceRebuild && preset && preset.preview_b64) {
       try {
         const decoded = decodePreview(preset.preview_b64);
         preview = decoded.preview;
@@ -943,9 +936,9 @@ ${err.message}`);
     this.log(`Reset colors: nc=${nc}`);
   },
 
-  async stopAndReset() {
+  async stopAndReset(forceRebuild = false) {
     if (this.state.optimizer) this.state.optimizer.stop();
-    await this.reset();
+    await this.reset(forceRebuild);
   },
 
   async loadImageFromUrl(presetKey) {
@@ -1059,7 +1052,7 @@ ${err.message}`);
     return { data, width: w, height: h };
   },
 
-  log(s) { this.ui.log.textContent += s + '\n'; this.ui.log.scrollTop = this.ui.log.scrollHeight; },
+  log(s) { this.ui.log.append(s + '\n'); this.ui.log.scrollTop = 1e9; },
   updateStatus(s) { if (s) this.log(s); },
 
   updateLambdaDisplay() { this.ui.lambdaVal.textContent = this.getLambda('lambda').toExponential(1); },
@@ -1075,10 +1068,9 @@ ${err.message}`);
   },
 
   renderStats() {
-    const { pts, colors, dist, byteSize } = this.state.stats;
+    const { pts, colors, byteSize } = this.state.stats;
     this.ui.statPts.textContent = pts ?? '—';
     this.ui.statColors.textContent = colors ?? '—';
-    this.ui.statDist.textContent = typeof dist === 'number' ? dist.toFixed(5) : '—';
     this.ui.byteSize.textContent = byteSize != null ? `${byteSize} B` : '';
   },
 

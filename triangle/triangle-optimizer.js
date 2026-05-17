@@ -338,10 +338,6 @@ class TriangleOptimizer {
     const threshold = isColorChange ? -this.color_change_penalty * this.bestLoss : tolerance;
     const accept = newScore <= this.bestLoss + threshold;
 
-    if (this.debug && moveLabel !== null) {
-      console.log(`[${iter}] ${moveLabel}${accept ? ' ACC' : ' N'} dist=${distortion.toFixed(6)} score=${newScore.toFixed(6)} cur=${this.currentScore.toFixed(6)} thr=${threshold.toFixed(6)}`);
-    }
-
     if (accept) {
       this.preview            = np;
       this.color_data         = nc;
@@ -357,7 +353,7 @@ class TriangleOptimizer {
     }
 
     this.iter++;
-    return { accepted: accept, score: this.currentScore, distortion };
+    return { score: this.currentScore, distortion };
   }
 
   stop() { this._stop = true; }
@@ -366,7 +362,7 @@ class TriangleOptimizer {
     this._stop = false;
     for (let i = 0; i < maxIter && !this._stop; i += this.batch_size) {
       const bsz = Math.min(this.batch_size, maxIter - i);
-      let r = { accepted: false, score: this.currentScore, distortion: 0 };
+      let r = { score: this.currentScore, distortion: 0 };
       for (let j = 0; j < bsz && !this._stop; ++j) {
         r = this.step(i + j, maxIter);
       }
