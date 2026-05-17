@@ -13,6 +13,9 @@ const kProbaMax = 1 << 16;
 const kPreviewOpaqueProba = 3 * kProbaMax / 4;
 const kPreviewNoiseProba = kProbaMax / 2;
 const kMaxSum = 256;
+const kBaryEps = 1e-4;       // inside-triangle tolerance
+const kDegenerateEps = 1e-8; // degenerate-triangle threshold
+const kLumaR = 0.3, kLumaG = 0.6, kLumaB = 0.1;  // perceptual RGB weights
 
 ////////////////////////////////////////////////////////////////////////////////
 // ANS
@@ -146,8 +149,8 @@ class Preview {
     this.qpts = null;
     this.counts = null;
   }
-  GetBinText(reader) { return this.txt; }
-  GetInfoText(reader) {
+  GetBinText() { return this.txt; }
+  GetInfoText() {
     let info = "[";
     info += " grid = " + this.grid_x + " x " + this.grid_y;
     info += ", nb_colors = " + this.nb_colors;
@@ -156,7 +159,7 @@ class Preview {
     info += "]";
     return info;
   }
-  GetCMapText(reader) {
+  GetCMapText() {
     let cmap_txt = "<h5>Colormap (w/ use counts):<br/>";
     for (let i = 0; i < this.nb_colors; ++i) {
       const c = this.cmap[i];
@@ -263,7 +266,7 @@ const Delaunay = (function() {
   function Triangle(P0, P1, P2, vtx) {
     this.vtx = [P0, P1, P2];
     this.edges = [new Edge(P0, P1), new Edge(P1, P2), new Edge(P2, P0)];
-    const circle = this.circle = new Object();
+    const circle = this.circle = {};
     const p0 = vtx[P0], p1 = vtx[P1], p2 = vtx[P2];
     const ax = p1.x - p0.x, ay = p1.y - p0.y;
     const bx = p2.x - p0.x, by = p2.y - p0.y;
@@ -368,6 +371,24 @@ function RGBtoYCoCg(r, g, b, a) {
   };
 }
 
+// Canonical palette sort order: (cg, co, y, a).
+function comparePaletteEntries(pa, pb) {
+  return pa.cg !== pb.cg ? pa.cg - pb.cg :
+         pa.co !== pb.co ? pa.co - pb.co :
+         pa.y  !== pb.y  ? pa.y  - pb.y  : pa.a - pb.a;
+}
+
+// Barycentric coordinates of (px,py) in triangle (x0,y0)-(x1,y1)-(x2,y2).
+// Returns [u,v,w] (all >= -kBaryEps if inside) or null if degenerate/outside.
+function computeBary(px, py, x0, y0, x1, y1, x2, y2) {
+  const d = (y1-y2)*(x0-x2) + (x2-x1)*(y0-y2);
+  if (Math.abs(d) < kDegenerateEps) return null;
+  const u = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) / d;
+  const v = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) / d;
+  const w = 1 - u - v;
+  return (u >= -kBaryEps && v >= -kBaryEps && w >= -kBaryEps) ? [u, v, w] : null;
+}
+
 if (typeof module !== 'undefined') {
   module.exports = {
     kProbaMax, kYCoCgBitDepth, kYCoCgMax, kMaxSum,
@@ -375,8 +396,9 @@ if (typeof module !== 'undefined') {
     kPreviewMinNumColors, kPreviewMaxNumColors,
     kPreviewMinGridSize, kPreviewMaxGridSize,
     kPreviewOpaqueProba, kPreviewNoiseProba,
+    kBaryEps, kDegenerateEps, kLumaR, kLumaG, kLumaB,
     ANSBinSymbol, ValueStats, ANSDec,
     Vtx, Color, clip8b, YCoCg_to_RGB, RGBtoYCoCg,
-    Preview, Delaunay,
+    Preview, Delaunay, comparePaletteEntries, computeBary,
   };
 }

@@ -85,18 +85,6 @@ function buildPalette(grid, nb_colors) {
 }
 
 // ---------------------------------------------------------------------------
-// Barycentric coordinates of (px,py) in triangle (x0,y0)-(x1,y1)-(x2,y2).
-// Returns [u,v,w] (all >= 0 if inside) or null if degenerate/outside.
-function computeBary(px, py, x0, y0, x1, y1, x2, y2) {
-  const d = (y1-y2)*(x0-x2) + (x2-x1)*(y0-y2);
-  if (Math.abs(d) < 1e-8) return null;
-  const u = ((y1-y2)*(px-x2) + (x2-x1)*(py-y2)) / d;
-  const v = ((y2-y0)*(px-x2) + (x0-x2)*(py-y2)) / d;
-  const w = 1 - u - v;
-  return (u >= -1e-4 && v >= -1e-4 && w >= -1e-4) ? [u, v, w] : null;
-}
-
-// ---------------------------------------------------------------------------
 // CPU Gouraud rasterizer onto gx×gy grid.
 // vtx: array of Vtx; triangles: from Delaunay.getTriangles(); palRGB: [{r,g,b}].
 // Returns Float32Array [gx*gy*4] RGBA.
@@ -175,7 +163,7 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
         if (vtxSet.has(key)) continue;
         const i = key*4;
         const dr = rendered[i]-grid[i], dg = rendered[i+1]-grid[i+1], db = rendered[i+2]-grid[i+2];
-        const score = 0.3*dr*dr + 0.6*dg*dg + 0.1*db*db;
+        const score = kLumaR*dr*dr + kLumaG*dg*dg + kLumaB*db*db;
         if (score > bestScore) { bestScore = score; bestKey = key; }
       }
     }
@@ -211,11 +199,7 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
 // Sort palette by (cg, co, y, a) as required by the encoder.
 // Returns { sortedPalette, remap } where remap[oldIdx] = newIdx.
 function sortPalette(palette) {
-  const order = palette.map((_, i) => i).sort((a, b) => {
-    const pa = palette[a], pb = palette[b];
-    return pa.cg !== pb.cg ? pa.cg-pb.cg : pa.co !== pb.co ? pa.co-pb.co :
-           pa.y  !== pb.y  ? pa.y -pb.y  : pa.a - pb.a;
-  });
+  const order = palette.map((_, i) => i).sort((a, b) => comparePaletteEntries(palette[a], palette[b]));
   const sortedPalette = order.map(i => palette[i]);
   const remap = new Int32Array(palette.length);
   order.forEach((oldIdx, newIdx) => { remap[oldIdx] = newIdx; });

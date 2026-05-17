@@ -10,6 +10,7 @@ const {
   kPreviewMinNumColors, kPreviewMaxNumColors,
   kPreviewMinGridSize, kPreviewMaxGridSize,
   kPreviewOpaqueProba, kPreviewNoiseProba,
+  comparePaletteEntries,
 } = require('./triangle-core.js');
 
 // ---- Load ANSEnc from triangle-ans-enc.js ----
@@ -25,7 +26,7 @@ const {
     'kPreviewMinNumColors', 'kPreviewMaxNumColors',
     'kPreviewMinGridSize', 'kPreviewMaxGridSize',
     'kPreviewOpaqueProba', 'kPreviewNoiseProba',
-    'ANSBinSymbol', 'ValueStats',
+    'ANSBinSymbol', 'ValueStats', 'comparePaletteEntries',
     trimmed
   );
   const fakeModule = { exports: {} };
@@ -36,7 +37,7 @@ const {
     kPreviewMinNumColors, kPreviewMaxNumColors,
     kPreviewMinGridSize, kPreviewMaxGridSize,
     kPreviewOpaqueProba, kPreviewNoiseProba,
-    ANSBinSymbol, ValueStats
+    ANSBinSymbol, ValueStats, comparePaletteEntries
   );
   Object.assign(global, fakeModule.exports);
 }

@@ -238,7 +238,7 @@
             <label class="skal-row-label" for="iters">Iters</label>
             <input type="number" id="iters" value="100000" min="10">
             <label class="skal-row-label" for="batchSize">Batch</label>
-            <input type="number" id="batchSize" value="100" min="1" max="10000">
+            <input type="number" id="batchSize" value="500" min="1" max="10000">
           </div>
           <div class="skal-row skal-row-slider">
             <div class="skal-row-header">
@@ -804,7 +804,7 @@ const app = {
       nc: g('nc'),
       np: g('np'),
       maxIter: g('iters') || 100000,
-      batchSize: g('batchSize') || 100,
+      batchSize: g('batchSize') || 500,
       targetBytes: g('targetBytes') || 256,
       autoGain: g('autoGain') || 0.2,
       randomInit: document.getElementById('randomInit').checked,

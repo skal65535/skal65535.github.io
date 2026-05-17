@@ -94,12 +94,7 @@ class ANSEncCount extends ANSEnc {
 
 function _fillEncoder(enc, preview, color_data) {
   // Sort palette by (cg, co, y, a) — required by is_positive=true encoding of cg.
-  const order = color_data.map((_, i) => i).sort((a, b) => {
-    const ca = color_data[a], cb = color_data[b];
-    return ca.cg !== cb.cg ? ca.cg - cb.cg :
-           ca.co !== cb.co ? ca.co - cb.co :
-           ca.y  !== cb.y  ? ca.y  - cb.y  : ca.a - cb.a;
-  });
+  const order = color_data.map((_, i) => i).sort((a, b) => comparePaletteEntries(color_data[a], color_data[b]));
   color_data = order.map(i => color_data[i]);
   const remap = new Int32Array(order.length);
   order.forEach((o, ni) => { remap[o] = ni; });
@@ -133,9 +128,9 @@ function _fillEncoder(enc, preview, color_data) {
   const max_pts = Math.min(nb_nc, kPreviewMaxNumVertices);
   enc.PutRange(nb_pts, min_pts, max_pts);
 
-  const vtx_map = new Map();
+  const vtx_map = new Uint8Array(gx * gy);
   for (let k = 4; k < nb_pts + 4; ++k) {
-    vtx_map.set(preview.qpts[k*3+1] * gx + preview.qpts[k*3], preview.qpts[k*3+2]);
+    vtx_map[preview.qpts[k*3+1] * gx + preview.qpts[k*3]] = preview.qpts[k*3+2] + 1;
   }
 
   const istats = new ANSBinSymbol(2, 2);
@@ -154,9 +149,9 @@ function _fillEncoder(enc, preview, color_data) {
     for (let x = 0; x < gx; ++x) {
       if ((x === 0 || x === gx-1) && (y === 0 || y === gy-1)) continue;
       if (pts > 0) {
-        const key = y * gx + x, has = vtx_map.has(key) ? 1 : 0;
+        const key = y * gx + x, v = vtx_map[key], has = v ? 1 : 0;
         enc.PutBit(has, kProbaMax - Math.floor((pts << 16) / cells));
-        if (has) { pidx = encIdx(vtx_map.get(key), pidx); --pts; }
+        if (has) { pidx = encIdx(v - 1, pidx); --pts; }
       }
       --cells;
     }

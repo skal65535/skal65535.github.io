@@ -10,12 +10,7 @@ function clonePreview(p) {
 function clampI(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 function sortColors(preview, color_data) {
-  const order = color_data.map((_, i) => i).sort((a, b) => {
-    const ca = color_data[a], cb = color_data[b];
-    return ca.cg !== cb.cg ? ca.cg - cb.cg :
-           ca.co !== cb.co ? ca.co - cb.co :
-           ca.y  !== cb.y  ? ca.y  - cb.y  : ca.a - cb.a;
-  });
+  const order = color_data.map((_, i) => i).sort((a, b) => comparePaletteEntries(color_data[a], color_data[b]));
   if (order.every((o, i) => o === i)) return { preview, color_data };
   const sorted = order.map(i => color_data[i]);
   const remap = new Int32Array(color_data.length);
