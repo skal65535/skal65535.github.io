@@ -132,13 +132,7 @@ for (const [value, pred, pos] of [
   ];
   const preview = {
     grid_x, grid_y, use_noise: false, nb_colors, has_alpha: false, nb_pts: 1,
-    qpts: [
-      { x: 0,        y: 0,        idx: 0 },
-      { x: grid_x-1, y: 0,        idx: 1 },
-      { x: 0,        y: grid_y-1, idx: 0 },
-      { x: grid_x-1, y: grid_y-1, idx: 1 },
-      { x: 1,        y: 1,        idx: 0 },
-    ],
+    qpts: new Int16Array([0,0,0,  grid_x-1,0,1,  0,grid_y-1,0,  grid_x-1,grid_y-1,1,  1,1,0]),
   };
 
   const b64 = encodePreview(preview, color_data);  // eslint-disable-line no-undef
@@ -180,10 +174,10 @@ for (const [value, pred, pos] of [
     return pred;
   };
   let ci = 0;
-  ci = decodeColorIdx(ci); check('corner TL', ci, preview.qpts[0].idx);
-  ci = decodeColorIdx(ci); check('corner TR', ci, preview.qpts[1].idx);
-  ci = decodeColorIdx(ci); check('corner BL', ci, preview.qpts[2].idx);
-  ci = decodeColorIdx(ci); check('corner BR', ci, preview.qpts[3].idx);
+  ci = decodeColorIdx(ci); check('corner TL', ci, preview.qpts[0*3+2]);
+  ci = decodeColorIdx(ci); check('corner TR', ci, preview.qpts[1*3+2]);
+  ci = decodeColorIdx(ci); check('corner BL', ci, preview.qpts[2*3+2]);
+  ci = decodeColorIdx(ci); check('corner BR', ci, preview.qpts[3*3+2]);
 
   let pts_left = 1, cells_left = nb_non_corner, found_vtx = false;
   for (let y = 0; y < grid_y && pts_left > 0; ++y) {
@@ -192,7 +186,7 @@ for (const [value, pred, pos] of [
       const bit = dec.NextBit(kProbaMax - Math.floor((pts_left << 16) / cells_left));
       if (bit) {
         ci = decodeColorIdx(ci);
-        if (x === 1 && y === 1) { check('vtx(1,1).idx', ci, preview.qpts[4].idx); found_vtx = true; }
+        if (x === 1 && y === 1) { check('vtx(1,1).idx', ci, preview.qpts[4*3+2]); found_vtx = true; }
         --pts_left;
       }
       --cells_left;

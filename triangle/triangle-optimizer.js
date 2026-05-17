@@ -4,7 +4,7 @@
 // Depends on: triangle-core.js, triangle-ans-enc.js, triangle-cpu.js.
 
 function clonePreview(p) {
-  return { ...p, qpts: p.qpts.map(v => ({ ...v })) };
+  return { ...p, qpts: p.qpts.slice() };
 }
 
 function clampI(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -21,11 +21,11 @@ function sortColors(preview, color_data) {
   const remap = new Int32Array(color_data.length);
   order.forEach((o, ni) => { remap[o] = ni; });
   const p = clonePreview(preview);
-  for (const v of p.qpts) v.idx = remap[v.idx];
+  for (let i = 2, n = p.qpts.length; i < n; i += 3) p.qpts[i] = remap[p.qpts[i]];
   return { preview: p, color_data: sorted };
 }
 
-function buildDel(preview) {
+function buildDelaunay(preview) {
   return new Delaunay(preview.grid_x, preview.grid_y, preview.qpts);
 }
 function buildPalRGB(color_data) {
@@ -33,50 +33,49 @@ function buildPalRGB(color_data) {
 }
 
 function encodeSize(preview, color_data) {
-  return Math.ceil(encodePreview(preview, color_data).length * 3 / 4);
-}
-
-function encodeSizeComponents(preview, color_data) {
-  const total      = encodeSize(preview, color_data);
-  const noVtx      = { ...preview, nb_pts: 0, qpts: preview.qpts.slice(0, 4) };
-  const color_bytes = encodeSize(noVtx, color_data);
-  return { total, color_bytes, vtx_bytes: total - color_bytes };
+  const enc = new ANSEncCount();
+  _fillEncoder(enc, preview, color_data);
+  return enc.byteSize();
 }
 
 // ---------------------------------------------------------------------------
 // Mutation helpers
 
 function applyMoveVertex(preview, color_data, rng, amplitude = 1, border_escape = 5) {
-  const nb = preview.qpts.length - 4;
+  const nb = preview.qpts.length / 3 - 4;
   if (nb <= 0) return null;
   const { grid_x: gx, grid_y: gy } = preview;
   const p = clonePreview(preview);
-  const v = p.qpts[4 + Math.floor(rng() * nb)];
+  const vi = 4 + Math.floor(rng() * nb);
+  const pq = p.qpts;
   const delta = () => (Math.floor(rng() * amplitude) + 1) * (rng() < 0.5 ? -1 : 1);
-  const onBorder = v.x === 0 || v.x === gx-1 || v.y === 0 || v.y === gy-1;
+  const vx = pq[vi*3], vy = pq[vi*3+1];
+  const onBorder = vx === 0 || vx === gx-1 || vy === 0 || vy === gy-1;
   if (onBorder && rng() * 100 >= border_escape) {
-    if (v.x === 0 || v.x === gx-1) v.y = clampI(v.y + delta(), 1, gy-2);
-    else                             v.x = clampI(v.x + delta(), 1, gx-2);
+    if (vx === 0 || vx === gx-1) pq[vi*3+1] = clampI(vy + delta(), 1, gy-2);
+    else                          pq[vi*3]   = clampI(vx + delta(), 1, gx-2);
   } else {
-    if (rng() < 0.5) v.x = clampI(v.x + delta(), 0, gx-1);
-    else              v.y = clampI(v.y + delta(), 0, gy-1);
-    if ((v.x === 0 || v.x === gx-1) && (v.y === 0 || v.y === gy-1)) return null;
+    if (rng() < 0.5) pq[vi*3]   = clampI(vx + delta(), 0, gx-1);
+    else              pq[vi*3+1] = clampI(vy + delta(), 0, gy-1);
+    if ((pq[vi*3] === 0 || pq[vi*3] === gx-1) && (pq[vi*3+1] === 0 || pq[vi*3+1] === gy-1)) return null;
   }
   return { preview: p, color_data };
 }
 
 function applyLaplaceSmooth(preview, color_data, rng) {
-  const nb = preview.qpts.length - 4;
+  const n = preview.qpts.length / 3;
+  const nb = n - 4;
   if (nb <= 0) return null;
 
   // 1. Pick a random non-corner vertex
   const p = clonePreview(preview);
-  const v_idx_in_qpts = 4 + Math.floor(rng() * nb);
-  const v_to_move = p.qpts[v_idx_in_qpts];
+  const pq = p.qpts;
+  const vi = 4 + Math.floor(rng() * nb);
+  const vx = pq[vi*3], vy = pq[vi*3+1];
 
   // 2. Find its neighbors using Delaunay triangulation
-  const del = buildDel(p);
-  const v_idx_in_del = del.vtx.findIndex(dv => dv.x === v_to_move.x && dv.y === v_to_move.y);
+  const del = buildDelaunay(p);
+  const v_idx_in_del = del.vtx.findIndex(dv => dv.x === vx && dv.y === vy);
   if (v_idx_in_del === -1) return null;
 
   const neighbors = new Set();
@@ -104,18 +103,25 @@ function applyLaplaceSmooth(preview, color_data, rng) {
   const { grid_x: gx, grid_y: gy } = preview;
 
   // 4. Validate new position
-  if (new_x === v_to_move.x && new_y === v_to_move.y) return null;
+  if (new_x === vx && new_y === vy) return null;
   if (new_x < 0 || new_x >= gx || new_y < 0 || new_y >= gy) return null;
   if ((new_x === 0 || new_x === gx - 1) && (new_y === 0 || new_y === gy - 1)) return null;
-  if (p.qpts.some((pt, i) => i !== v_idx_in_qpts && pt.x === new_x && pt.y === new_y)) return null;
+  // collision check (flat loop)
+  for (let i = 0; i < n; ++i) {
+    if (i !== vi && pq[i*3] === new_x && pq[i*3+1] === new_y) return null;
+  }
 
-  // 5. Apply move and re-sort
-  const moved_vtx = p.qpts.splice(v_idx_in_qpts, 1)[0];
-  moved_vtx.x = new_x;
-  moved_vtx.y = new_y;
+  // 5. Apply move and re-sort (remove vi, find insert position, insert)
+  const vidx = pq[vi*3+2];
+  pq.copyWithin(vi*3, vi*3+3, n*3);  // remove slot vi
 
-  const pos = p.qpts.findIndex((v, i) => i >= 4 && (v.y > new_y || (v.y === new_y && v.x > new_x)));
-  p.qpts.splice(pos < 0 ? p.qpts.length : pos, 0, moved_vtx);
+  // find insert position in the now-(n-1)-length array (corners stay at 0..3)
+  let ins = n - 1;  // default: append at end
+  for (let i = 4; i < n - 1; ++i) {
+    if (pq[i*3+1] > new_y || (pq[i*3+1] === new_y && pq[i*3] > new_x)) { ins = i; break; }
+  }
+  pq.copyWithin((ins+1)*3, ins*3, (n-1)*3);  // shift right from ins
+  pq[ins*3] = new_x; pq[ins*3+1] = new_y; pq[ins*3+2] = vidx;
 
   return { preview: p, color_data };
 }
@@ -126,32 +132,41 @@ function applyAddVertex(preview, color_data, rng) {
   const x = Math.floor(rng() * gx);
   const y = Math.floor(rng() * gy);
   if ((x === 0 || x === gx - 1) && (y === 0 || y === gy - 1)) return null;
-  const p = clonePreview(preview);
-  if (p.qpts.some(v => v.x === x && v.y === y)) return null;
+  const q = preview.qpts;
+  const n = q.length / 3;
+  // collision check
+  for (let i = 0; i < n; ++i) { if (q[i*3] === x && q[i*3+1] === y) return null; }
   const idx = Math.floor(rng() * preview.nb_colors);
-  const pos = p.qpts.findIndex((v, i) => i >= 4 && (v.y > y || (v.y === y && v.x > x)));
-  p.qpts.splice(pos < 0 ? p.qpts.length : pos, 0, { x, y, idx });
-  p.nb_pts = p.qpts.length - 4;
-  return { preview: p, color_data };
+  // find insert position
+  let ins = n;
+  for (let i = 4; i < n; ++i) {
+    if (q[i*3+1] > y || (q[i*3+1] === y && q[i*3] > x)) { ins = i; break; }
+  }
+  const newQ = new Int16Array(q.length + 3);
+  newQ.set(q.subarray(0, ins*3));
+  newQ[ins*3] = x; newQ[ins*3+1] = y; newQ[ins*3+2] = idx;
+  newQ.set(q.subarray(ins*3), ins*3+3);
+  return { preview: { ...preview, qpts: newQ, nb_pts: newQ.length / 3 - 4 }, color_data };
 }
 
 function applyRemoveVertex(preview, color_data, rng) {
-  const nb = preview.qpts.length - 4;
+  const q = preview.qpts;
+  const n = q.length / 3;
+  const nb = n - 4;
   if (nb <= 0) return null;
-  const p = clonePreview(preview);
   const k = 4 + Math.floor(rng() * nb);
-  p.qpts.splice(k, 1);
-  p.nb_pts = p.qpts.length - 4;
-  return { preview: p, color_data };
+  const newQ = new Int16Array(q.length - 3);
+  newQ.set(q.subarray(0, k*3));
+  newQ.set(q.subarray(k*3+3), k*3);
+  return { preview: { ...preview, qpts: newQ, nb_pts: newQ.length / 3 - 4 }, color_data };
 }
 
 function applyMoveColorIndex(preview, color_data, rng) {
-  const total = preview.qpts.length + 4;
-  const k = Math.floor(rng() * total) - 4;
+  const nv = preview.qpts.length / 3;
+  const vi = Math.floor(rng() * nv);
   const newIdx = Math.floor(rng() * preview.nb_colors);
   const p = clonePreview(preview);
-  if (k < 0) p.qpts[k + 4].idx = newIdx;
-  else        p.qpts[k].idx = newIdx;
+  p.qpts[vi*3+2] = newIdx;
   return { preview: p, color_data };
 }
 
@@ -200,8 +215,9 @@ function applyFlipAlpha(preview, color_data, rng) {
 
 function applyRemoveColor(preview, color_data, rng) {
   if (preview.nb_colors <= kPreviewMinNumColors) return null;
+  const q = preview.qpts;
   const counts = new Array(preview.nb_colors).fill(0);
-  for (const v of preview.qpts) counts[v.idx]++;
+  for (let i = 2, n = q.length; i < n; i += 3) counts[q[i]]++;
   let minK = 0;
   for (let i = 1; i < preview.nb_colors; i++) if (counts[i] < counts[minK]) minK = i;
   const removed = color_data[minK];
@@ -216,9 +232,9 @@ function applyRemoveColor(preview, color_data, rng) {
   const p = clonePreview(preview);
   p.nb_colors = nc.length;
   const adjRepIdx = repIdx < minK ? repIdx : repIdx - 1;
-  for (const v of p.qpts) {
-    if (v.idx === minK)    v.idx = adjRepIdx;
-    else if (v.idx > minK) v.idx -= 1;
+  for (let i = 2, n = p.qpts.length; i < n; i += 3) {
+    if (p.qpts[i] === minK)    p.qpts[i] = adjRepIdx;
+    else if (p.qpts[i] > minK) p.qpts[i] -= 1;
   }
   return { preview: p, color_data: nc };
 }
@@ -250,7 +266,7 @@ class TriangleOptimizer {
     roiStrength               = 5,
   } = {}) {
     this.preview    = clonePreview(preview);
-    this.color_data = color_data.map(c => ({ ...c }));
+    this.color_data = color_data.map(c => ({ y: c.y, co: c.co, cg: c.cg, a: c.a }));
     this.refGrid    = refGrid;
     this.zoom       = zoom;
     this.lambda                 = lambda;
@@ -277,10 +293,17 @@ class TriangleOptimizer {
     this.bestColorData = null;
     let s = seed >>> 0;
     this._rng = () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000; };
+    this._pos2idx = new Int16Array(256 * 256);
   }
 
-  _score(preview, color_data) {
-    const del    = buildDel(preview);
+  _syncDelIdx(qpts) {
+    const p = this._pos2idx;
+    for (let i = 0; i < qpts.length; i += 3) p[qpts[i] + qpts[i+1] * 256] = qpts[i+2];
+    for (const v of this._cachedDel.vtx) v.idx = p[v.x + v.y * 256];
+    for (let i = 0; i < qpts.length; i += 3) p[qpts[i] + qpts[i+1] * 256] = 0;
+  }
+
+  _score(preview, color_data, del) {
     const palRGB = buildPalRGB(color_data);
     const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom, this.maskWeights, this.roiStrength);
     const size = encodeSize(preview, color_data);
@@ -288,59 +311,77 @@ class TriangleOptimizer {
   }
 
   init() {
-    const { distortion, score } = this._score(this.preview, this.color_data);
+    this._cachedDel = buildDelaunay(this.preview);
+    const { distortion, score } = this._score(this.preview, this.color_data, this._cachedDel);
     this.currentScore       = score;
     this.currentDistortion  = distortion;
     this.bestLoss           = score;
     this.vtxAccepted        = 0;
     this.colorAccepted      = 0;
     this.bestPreview   = clonePreview(this.preview);
-    this.bestColorData = this.color_data.map(c => ({ ...c }));
+    this.bestColorData = this.color_data.map(c => ({ y: c.y, co: c.co, cg: c.cg, a: c.a }));
     return score;
   }
 
-  step(iter, maxIter) {
+  _buildMutationTable() {
+    const probas = [
+      this.proba_vertex_move, this.proba_laplace_smooth,
+      this.proba_vertex_add,  this.proba_vertex_sub,
+      this.proba_color_index_move, this.proba_color_move,
+      this.proba_color_add,   this.proba_color_sub,
+      this.proba_flip_alpha,
+    ];
+    let total = 0;
+    for (let i = 0; i < probas.length; i++) total += probas[i];
+    const cdf = new Float64Array(probas.length);
+    let acc = 0;
+    for (let i = 0; i < probas.length; i++) { acc += probas[i]; cdf[i] = acc / total; }
+    return { total, cdf };
+  }
+
+  step(iter, maxIter, mutTable) {
     const rng = this._rng;
+    const { total, cdf } = mutTable;
 
-    let np = clonePreview(this.preview);
-    let nc = this.color_data.map(c => ({ ...c }));
+    let np = this.preview;
+    let nc = this.color_data;
 
-    let moveLabel = null;
+    let isColorChange = false;
+    let topologyChanged = false;
     for (let m = 0; m < this.num_mutations_per_iter; ++m) {
-      const mutations = [
-        ['v=', this.proba_vertex_move, () => np.qpts.length > 4 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null],
-        ['v~', this.proba_laplace_smooth, () => np.qpts.length > 4 ? applyLaplaceSmooth(np, nc, rng) : null],
-        ['v+', this.proba_vertex_add,  () => applyAddVertex(np, nc, rng)],
-        ['v-', this.proba_vertex_sub,  () => np.qpts.length > 4 ? applyRemoveVertex(np, nc, rng) : null],
-        ['ci', this.proba_color_index_move, () => applyMoveColorIndex(np, nc, rng)],
-        ['c=', this.proba_color_move,  () => applyMoveColor(np, nc, rng)],
-        ['c+', this.proba_color_add,   () => applyAddColor(np, nc, rng)],
-        ['c-', this.proba_color_sub,   () => np.nb_colors > kPreviewMinNumColors ? applyRemoveColor(np, nc, rng) : null],
-        ['a=', this.proba_flip_alpha,  () => np.has_alpha ? applyFlipAlpha(np, nc, rng) : null],
-      ];
-      const total = mutations.reduce((s, [, p]) => s + p, 0);
       if (total <= 0) break;
-      let pick = rng() * total;
-      for (const [lbl, p, fn] of mutations) {
-        pick -= p;
-        if (pick < 0) {
-          const r = fn();
-          moveLabel = lbl + (r ? '' : '?');
-          if (r) { np = r.preview; nc = r.color_data; }
-          break;
-        }
+      const pick = rng();
+      let idx = 0;
+      while (idx < cdf.length - 1 && pick > cdf[idx]) idx++;
+      let r = null;
+      if      (idx === 0) r = np.qpts.length > 12 ? applyMoveVertex(np, nc, rng, this.vertex_amplitude, this.border_escape_prob) : null;
+      else if (idx === 1) r = np.qpts.length > 12 ? applyLaplaceSmooth(np, nc, rng) : null;
+      else if (idx === 2) r = applyAddVertex(np, nc, rng);
+      else if (idx === 3) r = np.qpts.length > 12 ? applyRemoveVertex(np, nc, rng) : null;
+      else if (idx === 4) r = applyMoveColorIndex(np, nc, rng);
+      else if (idx === 5) r = applyMoveColor(np, nc, rng);
+      else if (idx === 6) r = applyAddColor(np, nc, rng);
+      else if (idx === 7) r = np.nb_colors > kPreviewMinNumColors ? applyRemoveColor(np, nc, rng) : null;
+      else if (idx === 8) r = np.has_alpha ? applyFlipAlpha(np, nc, rng) : null;
+      if (r) {
+        isColorChange = (idx === 6 || idx === 7);
+        if (idx < 4) topologyChanged = true;
+        np = r.preview; nc = r.color_data;
       }
     }
 
-    const { distortion, score: newScore, size } = this._score(np, nc);
+    const del = topologyChanged ? buildDelaunay(np) : this._cachedDel;
+    if (!topologyChanged) this._syncDelIdx(np.qpts);
+    const { distortion, score: newScore, size } = this._score(np, nc, del);
     const tolerance = this.score_tolerance * (maxIter - iter) / maxIter;
-    const isColorChange = moveLabel === 'c+' || moveLabel === 'c+?' || moveLabel === 'c-' || moveLabel === 'c-?';
     const threshold = isColorChange ? -this.color_change_penalty * this.bestLoss : tolerance;
     const accept = newScore <= this.bestLoss + threshold;
 
     if (accept) {
       this.preview            = np;
       this.color_data         = nc;
+      if (topologyChanged) this._cachedDel = del;
+      // else: _cachedDel.vtx.idx already synced to np.qpts (now this.preview.qpts)
       this.currentScore       = newScore;
       this.currentDistortion  = distortion;
       if (!isColorChange) this.vtxAccepted++;
@@ -348,8 +389,10 @@ class TriangleOptimizer {
       if (newScore < this.bestLoss) {
         this.bestLoss      = newScore;
         this.bestPreview   = clonePreview(np);
-        this.bestColorData = nc.map(c => ({ ...c }));
+        this.bestColorData = nc.map(c => ({ y: c.y, co: c.co, cg: c.cg, a: c.a }));
       }
+    } else if (!topologyChanged) {
+      this._syncDelIdx(this.preview.qpts);  // restore cached del to accepted state
     }
 
     this.iter++;
@@ -363,8 +406,9 @@ class TriangleOptimizer {
     for (let i = 0; i < maxIter && !this._stop; i += this.batch_size) {
       const bsz = Math.min(this.batch_size, maxIter - i);
       let r = { score: this.currentScore, distortion: 0 };
+      const mutTable = this._buildMutationTable();
       for (let j = 0; j < bsz && !this._stop; ++j) {
-        r = this.step(i + j, maxIter);
+        r = this.step(i + j, maxIter, mutTable);
       }
       await new Promise(res => setTimeout(res, 0));  // yield to event loop
       if (onProgress) await onProgress(Math.min(i + bsz, maxIter), this.bestLoss, r);

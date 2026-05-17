@@ -462,7 +462,7 @@ function decodePreview(b64) {
   const max_pts = Math.min(nb_nc, kPreviewMaxNumVertices);
   preview.nb_pts = dec.ReadRange(min_pts, max_pts);
 
-  preview.qpts = new Array(preview.nb_pts + 4);
+  preview.qpts = new Int16Array((preview.nb_pts + 4) * 3);
   const istats = new ANSBinSymbol(2, 2);
   const decIdx = (pred) => {
     if (dec.NextAdaptiveBit(istats)) {
@@ -473,10 +473,10 @@ function decodePreview(b64) {
   };
 
   let pidx = 0;
-  pidx = decIdx(pidx); preview.qpts[0] = { x: 0, y: 0, idx: pidx };
-  pidx = decIdx(pidx); preview.qpts[1] = { x: preview.grid_x - 1, y: 0, idx: pidx };
-  pidx = decIdx(pidx); preview.qpts[2] = { x: 0, y: preview.grid_y - 1, idx: pidx };
-  pidx = decIdx(pidx); preview.qpts[3] = { x: preview.grid_x - 1, y: preview.grid_y - 1, idx: pidx };
+  pidx = decIdx(pidx); preview.qpts[0]=0; preview.qpts[1]=0; preview.qpts[2]=pidx;
+  pidx = decIdx(pidx); preview.qpts[3]=preview.grid_x - 1; preview.qpts[4]=0; preview.qpts[5]=pidx;
+  pidx = decIdx(pidx); preview.qpts[6]=0; preview.qpts[7]=preview.grid_y - 1; preview.qpts[8]=pidx;
+  pidx = decIdx(pidx); preview.qpts[9]=preview.grid_x - 1; preview.qpts[10]=preview.grid_y - 1; preview.qpts[11]=pidx;
 
   let cells = nb_nc, pts = preview.nb_pts;
   for (let y = 0, k = 4; y < preview.grid_y; ++y) {
@@ -486,7 +486,7 @@ function decodePreview(b64) {
         const proba = kProbaMax - Math.floor((pts << 16) / cells);
         if (dec.NextBit(proba)) {
           pidx = decIdx(pidx);
-          preview.qpts[k++] = { x, y, idx: pidx };
+          preview.qpts[k*3]=x; preview.qpts[k*3+1]=y; preview.qpts[k*3+2]=pidx; k++;
           --pts;
         }
       }
@@ -1085,7 +1085,7 @@ ${err.message}`);
   renderPreview(canvas, preview, color_data) {
     const { zoom } = this.state;
     const zx = preview.grid_x * zoom, zy = preview.grid_y * zoom;
-    const del = buildDel(preview);
+    const del = buildDelaunay(preview);
     const pal = buildPalRGB(color_data);
     const scaledVtx = zoom > 1 ? del.vtx.map(v => ({ x: v.x * zoom, y: v.y * zoom, idx: v.idx })) : del.vtx;
     const rgba = rasterizeGrid(zx, zy, scaledVtx, del.getTriangles(), pal);

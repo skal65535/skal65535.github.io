@@ -72,9 +72,27 @@ class ANSEnc {
   get numTokens() { return this._tok.length; }
 }
 
+class ANSEncCount extends ANSEnc {
+  constructor() { super(); this._bits = 0; }
+  PutBit(bit, p0) {
+    bit = bit ? 1 : 0;
+    if (p0 > 0 && p0 < kProbaMax) {
+      const p = bit ? kProbaMax - p0 : p0;
+      this._bits -= Math.log2(p / kProbaMax);
+    }
+    return bit;
+  }
+  PutRange(value, min, max) {
+    const R = max - min + 1;
+    if (R > 1) this._bits += Math.log2(R);
+    return value;
+  }
+  byteSize() { return Math.ceil(this._bits / 8) + 4; }
+}
+
 // ---------------------------------------------------------------------------
 
-function encodePreview(preview, color_data) {
+function _fillEncoder(enc, preview, color_data) {
   // Sort palette by (cg, co, y, a) — required by is_positive=true encoding of cg.
   const order = color_data.map((_, i) => i).sort((a, b) => {
     const ca = color_data[a], cb = color_data[b];
@@ -85,9 +103,10 @@ function encodePreview(preview, color_data) {
   color_data = order.map(i => color_data[i]);
   const remap = new Int32Array(order.length);
   order.forEach((o, ni) => { remap[o] = ni; });
-  preview = { ...preview, qpts: preview.qpts.map(v => ({ ...v, idx: remap[v.idx] })) };
+  const _q = preview.qpts, _remapQ = _q.slice();
+  for (let i = 2, _n = _remapQ.length; i < _n; i += 3) _remapQ[i] = remap[_remapQ[i]];
+  preview = { ...preview, qpts: _remapQ };
 
-  const enc = new ANSEnc();
   const {grid_x: gx, grid_y: gy, nb_colors: nc, nb_pts} = preview;
 
   enc.PutRange(gx, kPreviewMinGridSize, kPreviewMaxGridSize);
@@ -116,8 +135,7 @@ function encodePreview(preview, color_data) {
 
   const vtx_map = new Map();
   for (let k = 4; k < nb_pts + 4; ++k) {
-    const v = preview.qpts[k];
-    vtx_map.set(v.y * gx + v.x, v.idx);
+    vtx_map.set(preview.qpts[k*3+1] * gx + preview.qpts[k*3], preview.qpts[k*3+2]);
   }
 
   const istats = new ANSBinSymbol(2, 2);
@@ -129,7 +147,7 @@ function encodePreview(preview, color_data) {
   };
 
   let pidx = 0;
-  for (let k = 0; k < 4; ++k) pidx = encIdx(preview.qpts[k].idx, pidx);
+  for (let k = 0; k < 4; ++k) pidx = encIdx(preview.qpts[k*3+2], pidx);
 
   let cells = nb_nc, pts = nb_pts;
   for (let y = 0; y < gy; ++y) {
@@ -144,11 +162,23 @@ function encodePreview(preview, color_data) {
     }
   }
 
-  return enc.ToBase64();
+}
+
+function encodePreviewBytes(preview, color_data) {
+  const enc = new ANSEnc();
+  _fillEncoder(enc, preview, color_data);
+  return enc.Assemble();
+}
+
+function encodePreview(preview, color_data) {
+  const b = encodePreviewBytes(preview, color_data);
+  let s = '';
+  for (let i = 0; i < b.length; ++i) s += String.fromCharCode(b[i]);
+  return btoa(s);
 }
 
 // ---------------------------------------------------------------------------
 
 if (typeof module !== 'undefined') {
-  module.exports = { ANSEnc, encodePreview };
+  module.exports = { ANSEnc, ANSEncCount, encodePreviewBytes, encodePreview };
 }

@@ -202,7 +202,9 @@ function placeVertices(grid, gx, gy, palette, nb_pts, nb_border, random_init = f
     }
   }
 
-  return qpts;
+  const flat = new Int16Array(qpts.length * 3);
+  for (let i = 0; i < qpts.length; ++i) { flat[i*3]=qpts[i].x; flat[i*3+1]=qpts[i].y; flat[i*3+2]=qpts[i].idx; }
+  return flat;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,15 +240,22 @@ function buildInitialState(imageData, options = {}) {
 
   const { sortedPalette, remap } = sortPalette(palette);
 
-  const corners = qpts.slice(0, 4).map(v => ({...v, idx: remap[v.idx]}));
-  const nonCorners = qpts.slice(4)
-    .map(v => ({...v, idx: remap[v.idx]}))
-    .sort((a, b) => a.y !== b.y ? a.y-b.y : a.x-b.x);
+  const nQ = qpts.length / 3;
+  // remap corners
+  const corners = new Int16Array(12);
+  for (let i = 0; i < 4; ++i) { corners[i*3]=qpts[i*3]; corners[i*3+1]=qpts[i*3+1]; corners[i*3+2]=remap[qpts[i*3+2]]; }
+  // collect, remap, sort non-corners
+  const nc_arr = [];
+  for (let i = 4; i < nQ; ++i) nc_arr.push({x: qpts[i*3], y: qpts[i*3+1], idx: remap[qpts[i*3+2]]});
+  nc_arr.sort((a, b) => a.y !== b.y ? a.y-b.y : a.x-b.x);
+  const finalQ = new Int16Array(nQ * 3);
+  finalQ.set(corners);
+  for (let i = 0; i < nc_arr.length; ++i) { finalQ[(i+4)*3]=nc_arr[i].x; finalQ[(i+4)*3+1]=nc_arr[i].y; finalQ[(i+4)*3+2]=nc_arr[i].idx; }
 
   const preview = {
     grid_x, grid_y, use_noise, nb_colors, has_alpha: actualHasAlpha,
-    nb_pts: nonCorners.length,
-    qpts: [...corners, ...nonCorners],
+    nb_pts: nc_arr.length,
+    qpts: finalQ,
   };
   return { preview, color_data: sortedPalette };
 }
@@ -258,13 +267,17 @@ function rebuildColormap(preview, imageData, gx, gy, nb_colors) {
   const grid = sampleGrid(imageData, gx, gy);
   const palette = buildPalette(grid, nb_colors);
   const { sortedPalette, remap } = sortPalette(palette);
-  const newQpts = preview.qpts.map(v => {
-    const x = Math.max(0, Math.min(gx - 1, Math.round(v.x)));
-    const y = Math.max(0, Math.min(gy - 1, Math.round(v.y)));
+  const q = preview.qpts;
+  const nQ = q.length / 3;
+  const newQpts = new Int16Array(q.length);
+  for (let i = 0; i < nQ; ++i) {
+    const x = Math.max(0, Math.min(gx - 1, Math.round(q[i*3])));
+    const y = Math.max(0, Math.min(gy - 1, Math.round(q[i*3+1])));
     const ycocg = RGBtoYCoCg(grid[(y*gx+x)*4], grid[(y*gx+x)*4+1],
                               grid[(y*gx+x)*4+2], grid[(y*gx+x)*4+3]);
-    return { ...v, idx: remap[findClosestPalette(ycocg, palette)] };
-  });
+    newQpts[i*3] = q[i*3]; newQpts[i*3+1] = q[i*3+1];
+    newQpts[i*3+2] = remap[findClosestPalette(ycocg, palette)];
+  }
   return { preview: { ...preview, nb_colors, qpts: newQpts }, color_data: sortedPalette };
 }
 

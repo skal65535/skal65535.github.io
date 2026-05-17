@@ -207,18 +207,18 @@ class Preview {
       kPreviewMinNumVertices);
     const max_num_pts = Math.min(pts_left, kPreviewMaxNumVertices);
     this.nb_pts = reader.ReadRange(min_num_pts, max_num_pts);
-    this.qpts = new Array(this.nb_pts + 4);
+    const q = this.qpts = new Int16Array((this.nb_pts + 4) * 3);
     this.counts = new Array(this.nb_colors).fill(0);
     const stats_idx = new ANSBinSymbol(2, 2);
     let idx = 0;
     idx = this.DecodeColorIdx(reader, stats_idx, idx);
-    this.qpts[0] = new Vtx(0, 0, idx);
+    q[0]=0; q[1]=0; q[2]=idx;
     idx = this.DecodeColorIdx(reader, stats_idx, idx);
-    this.qpts[1] = new Vtx(this.grid_x - 1, 0, idx);
+    q[3]=this.grid_x - 1; q[4]=0; q[5]=idx;
     idx = this.DecodeColorIdx(reader, stats_idx, idx);
-    this.qpts[2] = new Vtx(0, this.grid_y - 1, idx);
+    q[6]=0; q[7]=this.grid_y - 1; q[8]=idx;
     idx = this.DecodeColorIdx(reader, stats_idx, idx);
-    this.qpts[3] = new Vtx(this.grid_x - 1, this.grid_y - 1, idx);
+    q[9]=this.grid_x - 1; q[10]=this.grid_y - 1; q[11]=idx;
     let k = 0;
     let den = pts_left;
     let num = this.nb_pts;
@@ -226,14 +226,14 @@ class Preview {
       for (let x = 0; x < this.grid_x; ++x) {
         let letter = '.';
         if (this.IsCorner(x, y)) {
-          const c = this.qpts[(x != 0 ? 1 : 0) + (y != 0 ? 2 : 0)].idx;
+          const c = q[((x != 0 ? 1 : 0) + (y != 0 ? 2 : 0)) * 3 + 2];
           letter = String.fromCharCode(c + 97);
         } else if (k < this.nb_pts) {
           const proba = kProbaMax - Math.floor((num << 16) / den);
           const bit = reader.NextBit(proba);
           if (bit) {
             idx = this.DecodeColorIdx(reader, stats_idx, idx);
-            this.qpts[k + 4] = new Vtx(x, y, idx);
+            q[(k + 4)*3]=x; q[(k + 4)*3+1]=y; q[(k + 4)*3+2]=idx;
             letter = String.fromCharCode(idx + 97);
             --num;
             ++k;
@@ -293,7 +293,11 @@ const Delaunay = (function() {
     this.vtx = new Array();
     this.Init(width, height);
     if (pts != null) {
-      for (const pt of pts) this.Insert(pt);
+      if (pts instanceof Int16Array) {
+        for (let i = 0; i < pts.length; i += 3) this.Insert({x: pts[i], y: pts[i+1], idx: pts[i+2]});
+      } else {
+        for (const pt of pts) this.Insert(pt);
+      }
     }
   }
   Delaunay.prototype = {
@@ -346,24 +350,6 @@ const Delaunay = (function() {
     },
     getTriangles: function() {
       return this.triangles.slice();
-    },
-    // Returns flat typed arrays ready for GPU upload.
-    // positions: Float32Array [vtx*2] (x,y per vertex)
-    // indices:   Uint32Array  [tri*3] (vertex indices per triangle)
-    // colorIdx:  Uint32Array  [vtx]   (palette index per vertex)
-    getFlatBuffers: function() {
-      const verts = this.vtx, tris = this.triangles;
-      const positions = new Float32Array(verts.length * 2);
-      const colorIdx  = new Uint32Array(verts.length);
-      for (let i = 0; i < verts.length; ++i) {
-        positions[i*2] = verts[i].x; positions[i*2+1] = verts[i].y;
-        colorIdx[i] = verts[i].idx;
-      }
-      const indices = new Uint32Array(tris.length * 3);
-      for (let i = 0; i < tris.length; ++i) {
-        indices[i*3] = tris[i].vtx[0]; indices[i*3+1] = tris[i].vtx[1]; indices[i*3+2] = tris[i].vtx[2];
-      }
-      return { positions, indices, colorIdx };
     },
   }
   return Delaunay;
