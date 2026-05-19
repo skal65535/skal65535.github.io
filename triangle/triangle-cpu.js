@@ -5,32 +5,39 @@ if (typeof module !== 'undefined' && typeof kBaryEps === 'undefined') {
   Object.assign(global, require('./triangle-core.js'));
 }
 
-// vtx: array of {x,y,idx} in pixel coords; triangles: from Delaunay.getTriangles().
+// vtx: array of {x,y,idx} in grid coords; zoom scales vtx coords to pixel coords.
 // palRGB: [{r,g,b,a}]. Returns Float32Array [w*h*4] RGBA.
-function rasterizeGrid(w, h, vtx, triangles, palRGB) {
+function rasterizeGrid(w, h, vtx, triangles, palRGB, zoom = 1) {
   const out = new Float32Array(w * h * 4);
   for (const tri of triangles) {
     const v0 = vtx[tri.vtx[0]], v1 = vtx[tri.vtx[1]], v2 = vtx[tri.vtx[2]];
-    const x0 = v0.x, y0 = v0.y, x1 = v1.x, y1 = v1.y, x2 = v2.x, y2 = v2.y;
+    const x0 = v0.x * zoom, y0 = v0.y * zoom, x1 = v1.x * zoom, y1 = v1.y * zoom, x2 = v2.x * zoom, y2 = v2.y * zoom;
     const d = (y1-y2)*(x0-x2) + (x2-x1)*(y0-y2);
     if (Math.abs(d) < kDegenerateEps) continue;
     const inv_d = 1 / d;
     const c0 = palRGB[v0.idx], c1 = palRGB[v1.idx], c2 = palRGB[v2.idx];
+    const r2=c2.r, g2=c2.g, b2=c2.b, a2=c2.a;
+    const r0=c0.r - r2, g0=c0.g - g2, b0=c0.b - b2, a0=c0.a - a2;
+    const r1=c1.r - r2, g1=c1.g - g2, b1=c1.b - b2, a1=c1.a - a2;
+
     const minX = Math.max(0,   Math.floor(Math.min(x0, x1, x2)));
     const maxX = Math.min(w-1, Math.ceil (Math.max(x0, x1, x2)));
     const minY = Math.max(0,   Math.floor(Math.min(y0, y1, y2)));
     const maxY = Math.min(h-1, Math.ceil (Math.max(y0, y1, y2)));
-    for (let y = minY; y <= maxY; ++y) {
-      for (let x = minX; x <= maxX; ++x) {
-        const u = ((y1-y2)*(x-x2) + (x2-x1)*(y-y2)) * inv_d;
-        const v = ((y2-y0)*(x-x2) + (x0-x2)*(y-y2)) * inv_d;
+    const A00 = (y1 - y2) * inv_d, A01 = (x2 - x1) * inv_d;
+    const A10 = (y2 - y0) * inv_d, A11 = (x0 - x2) * inv_d;
+    let ru = A00 * (minX - x2) + A01 * (minY - y2);
+    let rv = A10 * (minX - x2) + A11 * (minY - y2);
+    for (let y = minY; y <= maxY; ++y, ru += A01, rv += A11) {
+      let p = y*w + minX;
+      let u = ru, v = rv;
+      for (let x = minX; x <= maxX; ++x, u += A00, v += A10, p += 1) {
         const w_ = 1 - u - v;
         if (u < -kBaryEps || v < -kBaryEps || w_ < -kBaryEps) continue;
-        const p = (y*w + x)*4;
-        out[p]   = u*c0.r + v*c1.r + w_*c2.r;
-        out[p+1] = u*c0.g + v*c1.g + w_*c2.g;
-        out[p+2] = u*c0.b + v*c1.b + w_*c2.b;
-        out[p+3] = u*c0.a + v*c1.a + w_*c2.a;
+        out[4*p+0] = u*r0 + v*r1 + r2;
+        out[4*p+1] = u*g0 + v*g1 + g2;
+        out[4*p+2] = u*b0 + v*b1 + b2;
+        out[4*p+3] = u*a0 + v*a1 + a2;
       }
     }
   }
@@ -44,7 +51,6 @@ function rasterizeGrid(w, h, vtx, triangles, palRGB) {
 function computeCPULoss(gx, gy, del, palRGB, zGrid, zoom, maskWeights, roiStrength) {
   zoom = zoom || 1;
   const zx = gx * zoom, zy = gy * zoom, n = zx * zy;
-  const scaledVtx = del.vtx.map(v => ({ x: v.x * zoom, y: v.y * zoom, idx: v.idx }));
 
   let maskScale = 0;
   if (maskWeights) {
@@ -57,37 +63,37 @@ function computeCPULoss(gx, gy, del, palRGB, zGrid, zoom, maskWeights, roiStreng
   let sad = 0;
 
   for (const tri of del.getTriangles()) {
-    const v0 = scaledVtx[tri.vtx[0]], v1 = scaledVtx[tri.vtx[1]], v2 = scaledVtx[tri.vtx[2]];
-    const x0 = v0.x, y0 = v0.y, x1 = v1.x, y1 = v1.y, x2 = v2.x, y2 = v2.y;
+    const v0 = del.vtx[tri.vtx[0]], v1 = del.vtx[tri.vtx[1]], v2 = del.vtx[tri.vtx[2]];
+    const x0 = v0.x * zoom, y0 = v0.y * zoom, x1 = v1.x * zoom, y1 = v1.y * zoom, x2 = v2.x * zoom, y2 = v2.y * zoom;
     const d = (y1-y2)*(x0-x2) + (x2-x1)*(y0-y2);
     if (Math.abs(d) < kDegenerateEps) continue;
     const inv_d = 1 / d;
     const c0 = palRGB[v0.idx], c1 = palRGB[v1.idx], c2 = palRGB[v2.idx];
-    const r0=c0.r, g0=c0.g, b0=c0.b, a0=c0.a;
-    const r1=c1.r, g1=c1.g, b1=c1.b, a1=c1.a;
     const r2=c2.r, g2=c2.g, b2=c2.b, a2=c2.a;
+    const dr0=c0.r - r2, dg0=c0.g - g2, db0=c0.b - b2, da0=c0.a - a2;
+    const dr1=c1.r - r2, dg1=c1.g - g2, db1=c1.b - b2, da1=c1.a - a2;
+
     const minX = Math.max(0,    Math.floor(Math.min(x0, x1, x2)));
     const maxX = Math.min(zx-1, Math.ceil (Math.max(x0, x1, x2)));
     const minY = Math.max(0,    Math.floor(Math.min(y0, y1, y2)));
     const maxY = Math.min(zy-1, Math.ceil (Math.max(y0, y1, y2)));
-    // incremental barycentric: du/dx = A00, dv/dx = A10
     const A00 = (y1-y2)*inv_d, A01 = (x2-x1)*inv_d;
     const A10 = (y2-y0)*inv_d, A11 = (x0-x2)*inv_d;
-    for (let y = minY; y <= maxY; ++y) {
-      const py = y - y2;
-      let u = A00*(minX-x2) + A01*py;
-      let v = A10*(minX-x2) + A11*py;
-      let p = (y*zx + minX)*4;
-      for (let x = minX; x <= maxX; ++x, u += A00, v += A10, p += 4) {
+    let ru = A00*(minX-x2) + A01*(minY-y2);
+    let rv = A10*(minX-x2) + A11*(minY-y2);
+    for (let y = minY; y <= maxY; ++y, ru += A01, rv += A11) {
+      let u = ru, v = rv;
+      let p = y*zx + minX;
+      for (let x = minX; x <= maxX; ++x, u += A00, v += A10, ++p) {
         const w_ = 1 - u - v;
         if (u < -kBaryEps || v < -kBaryEps || w_ < -kBaryEps) continue;
-        const ref_a = zGrid[p+3];
-        const dr = u*r0 + v*r1 + w_*r2 - zGrid[p];
-        const dg = u*g0 + v*g1 + w_*g2 - zGrid[p+1];
-        const db = u*b0 + v*b1 + w_*b2 - zGrid[p+2];
-        const da = u*a0 + v*a1 + w_*a2 - zGrid[p+3];
+        const ref_a = zGrid[4*p+3];
+        const dr = u*dr0 + v*dr1 + r2 - zGrid[4*p+0];
+        const dg = u*dg0 + v*dg1 + g2 - zGrid[4*p+1];
+        const db = u*db0 + v*db1 + b2 - zGrid[4*p+2];
+        const da = u*da0 + v*da1 + a2 - zGrid[4*p+3];
         const pix = ref_a * (kLumaR*Math.abs(dr) + kLumaG*Math.abs(dg) + kLumaB*Math.abs(db)) * inv255 + Math.abs(da);
-        sad += maskScale > 0 ? pix * (1 + maskWeights[y*zx+x] * maskScale * roiStrength) : pix;
+        sad += maskScale > 0 ? pix * (1 + maskWeights[p] * maskScale * roiStrength) : pix;
       }
     }
   }
