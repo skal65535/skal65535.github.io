@@ -282,6 +282,8 @@ class TriangleOptimizer {
     this.vertex_amplitude  = vertex_amplitude;
     this.maskWeights  = maskWeights;
     this.roiStrength  = roiStrength;
+    const zx = preview.grid_x * zoom, zy = preview.grid_y * zoom;
+    this.maskScale = computeMaskScale(maskWeights, zx * zy);
     this.iter     = 0;
     this.bestLoss = Infinity;
     this.bestPreview   = null;
@@ -300,7 +302,7 @@ class TriangleOptimizer {
 
   _score(preview, color_data, del) {
     const palRGB = buildPalRGB(color_data);
-    const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom, this.maskWeights, this.roiStrength);
+    const distortion = computeCPULoss(preview.grid_x, preview.grid_y, del, palRGB, this.refGrid, this.zoom, this.maskWeights, this.roiStrength, this.maskScale);
     const size = encodeSize(preview, color_data);
     return { distortion, score: distortion + this.lambda * size, size };
   }
