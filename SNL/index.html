@@ -1,0 +1,1035 @@
+<!-- skal/ (pascal.massimino@gmail.com) 2026 -->
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sensor Network Localization</title>
+<link rel="stylesheet" href="../common/main.css">
+<style>
+  /* ── Per-page tweaks ───────────────────────────────────────────── */
+
+  /* Side-by-side: controls on the left, canvas + readouts on the right. */
+  .layout {
+    display: flex; gap: 22px; flex-wrap: wrap;
+    align-items: flex-start; justify-content: center;
+  }
+  .controls   { flex: 1 1 260px; min-width: 240px; max-width: 360px; }
+  .canvas-col { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
+
+  #main-canvas {
+    width: 600px; max-width: 100%; height: auto;
+    aspect-ratio: 1 / 1; margin: 0;
+  }
+
+  /* Sweep plot, hidden until a sweep is run. */
+  #sweep-canvas {
+    display: none;
+    width: 600px; max-width: 100%; height: auto;
+    aspect-ratio: 600 / 280; margin-top: 14px;
+    background: var(--panel-bg);
+    border-radius: var(--radius-small);
+  }
+
+  /* Compact slider rows: keep label, track and value on one tight line. */
+  .controls .slider-row { margin: 4px 0; gap: 8px; }
+  .controls .slider-row label { font-size: 0.85em; flex: 1 1 100%; }
+  .controls .slider-row input[type=range] { min-width: 0; max-width: none; }
+
+  /* Slider readout, matching the mkGui readout look. */
+  .val-display {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    min-width: 2.6em;
+    text-align: right;
+  }
+  .hint { font-size: 0.78em; color: var(--ink-dim); margin: 4px 0 10px; }
+
+  /* Active (running) state for the Animate toggle. */
+  .button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* Checkbox option row, aligned with the slider rows. */
+  .check-row {
+    display: flex; align-items: center; gap: 8px; margin: 8px 0 4px;
+  }
+  .check-row label { font-size: 0.85em; color: var(--ink-dim); cursor: pointer; }
+  .check-row input[type=checkbox] { cursor: pointer; }
+
+  .description { line-height: 1.6; margin-top: 18px; }
+  .description h3 {
+    margin: 0 0 10px; color: var(--ink);
+    border-bottom: 1px solid var(--card-border);
+    padding-bottom: 8px;
+  }
+  .description ul { margin: 0; padding-left: 20px; }
+  .description li { margin-bottom: 10px; }
+
+  /* ── Mobile: stack columns, let canvas + readouts span full width ── */
+  @media (max-width: 768px) {
+    .layout { gap: 16px; }
+    .controls, .canvas-col { flex: 1 1 100%; max-width: 100%; width: 100%; }
+    .canvas-col { align-self: stretch; }
+    #main-canvas { width: 100%; }
+    #sweep-canvas { width: 100%; }
+    .controls .button-row .button { flex: 1 1 auto; }
+  }
+</style>
+</head>
+
+<body>
+
+<div id="main-area">
+  <a id="skal-back" href="https://skal65535.github.io/">‹ Home</a>
+  <h2>Sensor Network Localization</h2>
+  <p class="blurb">
+    This demo visualizes the robustness of <strong>Sensor Network
+    Localization</strong> under noisy conditions. It demonstrates how algorithms
+    can deduce absolute geometry purely from relative distance measurements.
+    On screen, the black rings are the true sensor positions drifting in real
+    time, while the red clouds and crosses show where the algorithm believes
+    each one is — their size and smear reveal how confidently it can be pinned down.
+  </p>
+
+  <div class="layout">
+    <div class="controls">
+      <div class="slider-row">
+        <label for="n-input">Number of Points (N)</label>
+        <input type="range" id="n-input" min="3" max="100" value="50">
+        <span id="n-val" class="val-display">50</span>
+      </div>
+
+      <div class="slider-row">
+        <label for="noise-input">Noise Amplitude (σ)</label>
+        <input type="range" id="noise-input" min="0" max="50" step="0.5" value="25">
+        <span id="noise-val" class="val-display">25.0</span>
+      </div>
+
+      <div class="slider-row">
+        <label for="m-input">Measurements per pair (M)</label>
+        <input type="range" id="m-input" min="1" max="20" value="1">
+        <span id="m-val" class="val-display">1</span>
+      </div>
+
+      <div class="slider-row">
+        <label for="p-input">Fraction of distance pairs measured (P)</label>
+        <input type="range" id="p-input" min="1" max="100" value="100">
+        <span id="p-val" class="val-display">100%</span>
+      </div>
+
+      <div class="check-row">
+        <input type="checkbox" id="freeze-input">
+        <label for="freeze-input">Freeze missing pairs across all trials</label>
+      </div>
+
+      <div class="slider-row">
+        <label for="k-input">Monte Carlo Samples (K)</label>
+        <input type="range" id="k-input" min="10" max="300" value="75">
+        <span id="k-val" class="val-display">75</span>
+      </div>
+
+      <p class="hint">While <em>Animate</em> runs, each frame warm-starts from
+        the previous estimate, so the solver converges in just a few iterations.</p>
+
+      <div class="button-row" style="justify-content:flex-start">
+        <button class="button" id="shuffle-btn" onclick="shufflePoints()">Shuffle Points</button>
+        <button class="button" id="animate-btn" onclick="toggleAnimate()">Animate</button>
+        <button class="button" id="sweep-btn" onclick="toggleSweep()">Sweep P</button>
+        <button class="button" id="run-btn" onclick="runSimulation()">Force Run</button>
+      </div>
+    </div>
+
+    <div class="canvas-col">
+      <canvas id="main-canvas" width="600" height="600"></canvas>
+      <canvas id="sweep-canvas" width="600" height="280"></canvas>
+      <div class="check-row" id="scale-toggle" style="display:none; justify-content:center;">
+        <input type="checkbox" id="scale-input">
+        <label for="scale-input">Log error scale (full range)</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="description">
+    <h3>About This Simulation</h3>
+    <ul>
+      <li><strong>Measurement:</strong> We simulate <a href="https://en.wikipedia.org/wiki/Time_of_flight" target="_blank">Time-of-Flight</a> distance measurements between every pair of points. Real-world sensors are imperfect, so normally-distributed noise (σ) is added. By applying the <a href="https://en.wikipedia.org/wiki/Central_limit_theorem" target="_blank">Central Limit Theorem</a>, taking <em>M</em> multiple measurements reduces the effective noise by a factor of <strong>√M</strong>.</li>
+      <li><strong>Geometry Recovery:</strong> To reconstruct the topography from just a distance matrix, the system uses <a href="https://en.wikipedia.org/wiki/Gradient_descent" target="_blank">Gradient Descent</a>. It acts like a physics spring system, iteratively pushing and pulling points to minimize the "stress" between the guessed coordinates and the measured distances. This approach is closely related to <a href="https://en.wikipedia.org/wiki/Multidimensional_scaling" target="_blank">Multidimensional Scaling (MDS)</a>.</li>
+      <li><strong>Alignment:</strong> Because relative distance matrices contain no absolute orientation data, the recovered geometry might be shifted, rotated, scaled, or mirrored. We use <a href="https://en.wikipedia.org/wiki/Procrustes_analysis" target="_blank">Ordinary Procrustes Analysis</a> to calculate the optimal mathematical transformation to superimpose the recovered points flawlessly onto the original ground truth.</li>
+      <li><strong>Uncertainty Mapping:</strong> The red scatter clouds are generated using a <a href="https://en.wikipedia.org/wiki/Monte_Carlo_method" target="_blank">Monte Carlo simulation</a>. By repeatedly adding random noise and solving the matrix, we can visually map the anisotropic (directional) spatial uncertainty of each point in the network. The red crosses mark the mathematical center (mean) of these point clouds.</li>
+      <li><strong>Partial Connectivity:</strong> In practice a sensor rarely hears <em>every</em> other sensor. The <strong>Fraction of distance pairs measured (P)</strong> slider keeps only a random fraction of the pairwise measurements when solving. By default a different random subset is drawn for each Monte&nbsp;Carlo trial, blurring out which links happen to be missing. Tick <strong>Freeze missing pairs across all trials</strong> to instead fix one sparse topology for the whole run — revealing the directional uncertainty caused by that <em>specific</em> set of missing links. Either way, every trial is solved <em>only</em> from the pairs it can actually see — there is no full-data shortcut. As P drops, the network becomes <a href="https://en.wikipedia.org/wiki/Structural_rigidity" target="_blank">less rigid</a>: points with too few measurements are genuinely unrecoverable and drift far from the truth, producing large, smeared, or multi-lobed clouds. If a location can't be pinned down, the simulation shows exactly that.</li>
+      <li><strong>Phase Transition:</strong> The <strong>Sweep P</strong> button holds the geometry fixed and plots the average recovery error (red) across the whole range of P, using <em>K</em> Monte-Carlo trials per point. The error axis is linear and spans the full error range, so the <a href="https://en.wikipedia.org/wiki/Rigidity_percolation" target="_blank">rigidity-percolation</a> transition shows as a sharp drop from the floppy-regime spike down to the noise floor (tick <em>Log error scale</em> to instead expand that floor across orders of magnitude). Below a critical fraction of measured pairs the network is floppy and the error is huge, above it the structure becomes rigid and the error collapses to the measurement-noise floor. The green dashed line marks where it leaves that floor. The blue curve overlays the probability that some node has <em>no</em> measurements at all; comparing the two shows that the robustness threshold sits well <em>above</em> the point where isolated nodes disappear — losing isolated nodes is necessary but not sufficient, the whole framework must also become rigid. The top axis re-labels P as the average connectivity <em>z</em> (mean number of measurements per node), and the purple line marks the <a href="https://en.wikipedia.org/wiki/Maxwell%27s_theorem_(geometry)" target="_blank">Maxwell</a> isostatic point <em>z</em> = 4, where 2D <a href="https://en.wikipedia.org/wiki/Rigidity_(mathematics)" target="_blank">constraint counting</a> (2<em>N</em> degrees of freedom vs. one constraint per measured distance) predicts the onset of rigidity. It typically lands a bit <em>below</em> the observed knee, since generic/global rigidity needs somewhat more than the bare counting bound.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+    let currentTruth = [];
+    let isSimulating = false;
+    let warmSeed = null;   // previous frame's estimate, reused to warm-start animation
+
+    const $ = id => document.getElementById(id);
+    const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+    const TAU = Math.PI * 2;
+    const FONT_SANS = 'ui-sans-serif, system-ui, sans-serif';
+    const FONT_MONO = 'ui-monospace, "SF Mono", Menlo, monospace';
+
+    const MARGIN = 60;   // keep generated/animated points this far from the canvas edge
+    const TOL = 0.1;     // solver convergence threshold (px/step) — fixed, not worth exposing
+
+    // An N×N array prefilled with `v` (used for distance matrices and pair masks).
+    const square = (n, v) => Array.from({ length: n }, () => Array(n).fill(v));
+
+    // Mean position of a list of {x, y} points.
+    const centroid = pts => {
+        let x = 0, y = 0;
+        for (const p of pts) { x += p.x; y += p.y; }
+        const n = pts.length || 1;
+        return { x: x / n, y: y / n };
+    };
+
+    // ── Canvas primitives ──────────────────────────────────────────────
+    const fillCircle   = (ctx, x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); };
+    const strokeCircle = (ctx, x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke(); };
+
+    // A cross with a white halo for contrast, then a bold red stroke on top.
+    function strokeCross(ctx, cx, cy, size) {
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy);
+        ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'; ctx.lineWidth = size * 0.5;  ctx.stroke();
+        ctx.strokeStyle = 'rgba(210, 0, 0, 1)';       ctx.lineWidth = size * 0.25; ctx.stroke();
+        ctx.lineCap = 'butt';
+    }
+
+    // A big slanted ✕ marking an irrecoverable point (no measurements at all).
+    function strokeX(ctx, cx, cy, size) {
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx - size, cy - size); ctx.lineTo(cx + size, cy + size);
+        ctx.moveTo(cx - size, cy + size); ctx.lineTo(cx + size, cy - size);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'; ctx.lineWidth = size * 0.55; ctx.stroke();
+        ctx.strokeStyle = 'rgba(30, 30, 30, 0.92)';   ctx.lineWidth = size * 0.30; ctx.stroke();
+        ctx.lineCap = 'butt';
+    }
+
+    // Trace a rounded-rectangle path (caller fills/strokes).
+    function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+    }
+
+    const readControls = () => ({
+        N: parseInt($('n-input').value),
+        noiseAmp: parseFloat($('noise-input').value),
+        M: parseInt($('m-input').value),
+        K: parseInt($('k-input').value),
+        P: parseInt($('p-input').value),
+        freeze: $('freeze-input').checked,
+    });
+
+    function debounce(func, wait) {
+        let timeout;
+        return function(...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(this, args), wait);
+        };
+    }
+
+    const debouncedRun = debounce(runSimulation, 100);
+
+    ['n', 'noise', 'm', 'k', 'p'].forEach(prefix => {
+        $(`${prefix}-input`).addEventListener('input', () => {
+            const v = $(`${prefix}-input`).value;
+            $(`${prefix}-val`).innerText = prefix === 'p' ? `${v}%` : v;
+            debouncedRun();
+        });
+    });
+
+    $('freeze-input').addEventListener('change', debouncedRun);
+
+    function randomGaussian() {
+        let u = 0, v = 0;
+        while(u === 0) u = Math.random();
+        while(v === 0) v = Math.random();
+        return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+    }
+
+    function generateGroundTruth(N, width, height) {
+        return Array.from({ length: N }, () => ({
+            x: MARGIN + Math.random() * (width - 2 * MARGIN),
+            y: MARGIN + Math.random() * (height - 2 * MARGIN),
+        }));
+    }
+
+    function simulateMeasurements(truth, N, noiseAmp, M) {
+        const matrix = square(N, 0);
+        for(let i=0; i<N; i++) {
+            for(let j=i+1; j<N; j++) {
+                const trueDist = dist(truth[i], truth[j]);
+
+                let measuredSum = 0;
+                for(let m=0; m<M; m++) {
+                    measuredSum += Math.max(0.1, trueDist + randomGaussian() * noiseAmp);
+                }
+                const avgDist = measuredSum / M;
+                matrix[i][j] = avgDist;
+                matrix[j][i] = avgDist;
+            }
+        }
+        return matrix;
+    }
+
+    // Pick a random subset of the N*(N-1)/2 unordered pairs to "measure".
+    // Returns a symmetric NxN boolean mask (diagonal false). `frac` in (0,1].
+    function selectPairs(N, frac) {
+        const pairs = [];
+        for(let i=0; i<N; i++) {
+            for(let j=i+1; j<N; j++) pairs.push([i, j]);
+        }
+        for(let i=pairs.length-1; i>0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pairs[i], pairs[j]] = [pairs[j], pairs[i]];
+        }
+        const count = Math.max(1, Math.round(pairs.length * frac));
+        const mask = square(N, false);
+        for(let k=0; k<count; k++) {
+            const [i, j] = pairs[k];
+            mask[i][j] = true;
+            mask[j][i] = true;
+        }
+        return mask;
+    }
+
+    function recoverGeometry(N, measuredMatrix, width, height, startPts = null, attempts = 10, maxIter = 1000, mask = null, tol = 0) {
+        // Flatten the measured pairs into a flat edge list once. The descent then
+        // loops over edges instead of scanning the full N×N matrix: each pair's
+        // force is computed a single time (one sqrt) and applied antisymmetrically
+        // to both endpoints, and masked-out pairs are simply absent (no per-step
+        // branch). Typed arrays keep positions/gradients out of the GC's way.
+        const maxE = (N * (N - 1)) / 2;
+        const ei = new Int32Array(maxE), ej = new Int32Array(maxE), ed = new Float64Array(maxE);
+        let E = 0;
+        for (let i = 0; i < N; i++) {
+            for (let j = i + 1; j < N; j++) {
+                if (mask && !mask[i][j]) continue;
+                ei[E] = i; ej[E] = j; ed[E] = measuredMatrix[i][j]; E++;
+            }
+        }
+
+        const px = new Float64Array(N), py = new Float64Array(N);
+        const gx = new Float64Array(N), gy = new Float64Array(N);
+        let bestX = null, bestY = null, minStress = Infinity;
+
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            if (startPts) {
+                for (let i = 0; i < N; i++) { px[i] = startPts[i].x; py[i] = startPts[i].y; }
+            } else {
+                for (let i = 0; i < N; i++) { px[i] = Math.random() * width; py[i] = Math.random() * height; }
+            }
+
+            let lr = 0.5;
+            for (let iter = 0; iter < maxIter; iter++) {
+                gx.fill(0); gy.fill(0);
+
+                for (let e = 0; e < E; e++) {
+                    const i = ei[e], j = ej[e];
+                    const dx = px[i] - px[j], dy = py[i] - py[j];
+                    const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
+                    const f = (d - ed[e]) / d;           // (error / dist), shared by both ends
+                    const fx = f * dx, fy = f * dy;
+                    gx[i] += fx; gy[i] += fy;
+                    gx[j] -= fx; gy[j] -= fy;
+                }
+
+                // Step, tracking the largest point displacement for the exit test.
+                let maxStep = 0;
+                const k = lr / N;
+                for (let i = 0; i < N; i++) {
+                    const sx = k * gx[i], sy = k * gy[i];
+                    px[i] -= sx; py[i] -= sy;
+                    const ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+                    const s = ax > ay ? ax : ay;
+                    if (s > maxStep) maxStep = s;
+                }
+                lr *= 0.995;
+                // Converged: nothing is moving meaningfully any more.
+                if (tol > 0 && iter >= 5 && maxStep < tol) break;
+            }
+
+            let stress = 0;
+            for (let e = 0; e < E; e++) {
+                const dx = px[ei[e]] - px[ej[e]], dy = py[ei[e]] - py[ej[e]];
+                const diff = Math.sqrt(dx * dx + dy * dy) - ed[e];
+                stress += diff * diff;
+            }
+
+            if (stress < minStress) {
+                minStress = stress;
+                bestX = px.slice(); bestY = py.slice();
+            }
+        }
+
+        if (!bestX) return null;
+        const out = new Array(N);
+        for (let i = 0; i < N; i++) out[i] = { x: bestX[i], y: bestY[i] };
+        return out;
+    }
+
+    // Best similarity transform (rotation + scale, optional reflection) of the
+    // recovered cloud onto the ground truth, à la Procrustes. Points in `exclude`
+    // are still transformed and returned, but don't influence the fit — so a
+    // wandering irrecoverable point can't distort everyone else's alignment.
+    function alignPoints(truth, recovered, exclude = null) {
+        const N = truth.length;
+        const use = i => !exclude || !exclude.has(i);
+
+        let txs = 0, tys = 0, rxs = 0, rys = 0, m = 0;
+        for(let i = 0; i < N; i++) {
+            if (!use(i)) continue;
+            txs += truth[i].x; tys += truth[i].y;
+            rxs += recovered[i].x; rys += recovered[i].y; m++;
+        }
+        m = m || 1;
+        const tc = {x: txs / m, y: tys / m}, rc = {x: rxs / m, y: rys / m};
+        const tC = truth.map(p => ({x: p.x - tc.x, y: p.y - tc.y}));
+        const rC = recovered.map(p => ({x: p.x - rc.x, y: p.y - rc.y}));
+
+        const evaluate = (reflectY) => {
+            const r = rC.map(p => ({x: p.x, y: reflectY ? -p.y : p.y}));
+
+            let num = 0, den = 0, varRec = 0;
+            for(let i = 0; i < N; i++) {
+                if (!use(i)) continue;
+                num += r[i].x * tC[i].y - r[i].y * tC[i].x;
+                den += r[i].x * tC[i].x + r[i].y * tC[i].y;
+                varRec += r[i].x * r[i].x + r[i].y * r[i].y;
+            }
+
+            const angle = Math.atan2(num, den);
+            const cosA = Math.cos(angle), sinA = Math.sin(angle);
+
+            let cov = 0;
+            for(let i = 0; i < N; i++) {
+                if (!use(i)) continue;
+                cov += (r[i].x * cosA - r[i].y * sinA) * tC[i].x
+                     + (r[i].x * sinA + r[i].y * cosA) * tC[i].y;
+            }
+            const scale = varRec > 0 ? (cov / varRec) : 1;
+
+            const points = [];
+            let err = 0, c = 0;
+            for(let i = 0; i < N; i++) {
+                const ax = (r[i].x * cosA - r[i].y * sinA) * scale + tc.x;
+                const ay = (r[i].x * sinA + r[i].y * cosA) * scale + tc.y;
+                points.push({x: ax, y: ay});
+                if (use(i)) {
+                    const ex = truth[i].x - ax, ey = truth[i].y - ay;
+                    err += ex * ex + ey * ey; c++;
+                }
+            }
+            return { points, error: err / (c || 1) };
+        };
+
+        const normal = evaluate(false), reflected = evaluate(true);
+        return normal.error < reflected.error ? normal : reflected;
+    }
+
+    // Delaunay triangulation (Bowyer-Watson). Returns a list of unique edges
+    // {a, b} as indices into `points`. N is modest (<=100), so the simple
+    // incremental algorithm is plenty fast.
+    function triangulate(points) {
+        const N = points.length;
+        if (N < 3) {
+            return N === 2 ? [{a: 0, b: 1}] : [];
+        }
+
+        // Vertices: the real points followed by a big enclosing "super triangle".
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const p of points) {
+            minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+        }
+        const dmax = Math.max(maxX - minX, maxY - minY) * 10 + 1;
+        const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
+
+        const verts = points.map(p => ({x: p.x, y: p.y}));
+        verts.push({x: midX - dmax, y: midY - dmax});  // N
+        verts.push({x: midX + dmax, y: midY - dmax});  // N+1
+        verts.push({x: midX,        y: midY + dmax});  // N+2
+        let triangles = [[N, N + 1, N + 2]];
+
+        const inCircumcircle = (tri, p) => {
+            const a = verts[tri[0]], b = verts[tri[1]], c = verts[tri[2]];
+            const ax = a.x - p.x, ay = a.y - p.y;
+            const bx = b.x - p.x, by = b.y - p.y;
+            const cx = c.x - p.x, cy = c.y - p.y;
+            const det = (ax * ax + ay * ay) * (bx * cy - cx * by)
+                      - (bx * bx + by * by) * (ax * cy - cx * ay)
+                      + (cx * cx + cy * cy) * (ax * by - bx * ay);
+            const orient = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+            return orient > 0 ? det > 0 : det < 0;
+        };
+        const triEdges = tri => [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]];
+        const triHasEdge = (tri, u, v) => tri.includes(u) && tri.includes(v);
+
+        for (let i = 0; i < N; i++) {
+            const p = verts[i];
+            const bad = triangles.filter(t => inCircumcircle(t, p));
+
+            // Boundary of the polygonal hole = edges not shared by two bad triangles.
+            const boundary = [];
+            for (const tri of bad) {
+                for (const e of triEdges(tri)) {
+                    const shared = bad.some(o =>
+                        o !== tri && triHasEdge(o, e[0], e[1]));
+                    if (!shared) boundary.push(e);
+                }
+            }
+
+            triangles = triangles.filter(t => !bad.includes(t));
+            for (const e of boundary) triangles.push([e[0], e[1], i]);
+        }
+
+        // Collect unique edges, dropping anything touching the super triangle.
+        const seen = new Set();
+        const edges = [];
+        for (const tri of triangles) {
+            if (tri.some(v => v >= N)) continue;
+            for (let [a, b] of triEdges(tri)) {
+                if (a > b) [a, b] = [b, a];
+                const key = a + ',' + b;
+                if (!seen.has(key)) { seen.add(key); edges.push({a, b}); }
+            }
+        }
+        return edges;
+    }
+
+    function draw(ctx, truth, scatterClouds, stats, irrecoverable = new Set()) {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        const N = truth.length;
+
+        // 0. Draw Delaunay triangulation of the ground-truth points (underlay)
+        const edges = triangulate(truth);
+        ctx.strokeStyle = 'rgba(70, 110, 160, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const e of edges) {
+            ctx.moveTo(truth[e.a].x, truth[e.a].y);
+            ctx.lineTo(truth[e.b].x, truth[e.b].y);
+        }
+        ctx.stroke();
+
+        // 1. Draw uncertainty scatter clouds (skip irrecoverable points: their
+        //    "cloud" is pure random-init noise and would just be misleading)
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.2)';
+        for(let i=0; i<N; i++) {
+            if (irrecoverable.has(i)) continue;
+            for(const pt of scatterClouds[i]) fillCircle(ctx, pt.x, pt.y, 2.5);
+        }
+
+        // 2. Draw a cross at the mean position of each cloud
+        for(let i=0; i<N; i++) {
+            if (irrecoverable.has(i) || scatterClouds[i].length === 0) continue;
+            const c = centroid(scatterClouds[i]);
+            strokeCross(ctx, c.x, c.y, 10);
+        }
+
+        // 3. Draw Ground Truth Hollow Target
+        for(let i=0; i<N; i++) {
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.lineWidth = 2;
+            strokeCircle(ctx, truth[i].x, truth[i].y, 6);
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            fillCircle(ctx, truth[i].x, truth[i].y, 1.5);
+        }
+
+        // 4. Mark irrecoverable points (no measurements) over their true spot
+        for(const i of irrecoverable) strokeX(ctx, truth[i].x, truth[i].y, 13);
+
+        // 5. Legend (top-left, inside the canvas)
+        drawLegend(ctx, irrecoverable.size > 0);
+
+        // 6. Results readout (bottom strip, inside the canvas)
+        if (stats) drawStats(ctx, stats);
+    }
+
+    // Each legend icon draws itself centred at (cx, cy).
+    const LEGEND = [
+        { text: 'Ground Truth',      icon: (ctx, cx, cy) => {
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)'; ctx.lineWidth = 2; strokeCircle(ctx, cx, cy, 6); } },
+        { text: 'Triangulation',     icon: (ctx, cx, cy) => {
+            ctx.strokeStyle = 'rgba(70, 110, 160, 0.7)'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(cx - 9, cy); ctx.lineTo(cx + 9, cy); ctx.stroke(); } },
+        { text: 'Uncertainty Cloud', icon: (ctx, cx, cy) => {
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.4)'; fillCircle(ctx, cx, cy, 5); } },
+        { text: 'Mean Estimate',     icon: (ctx, cx, cy) => strokeCross(ctx, cx, cy, 6) },
+    ];
+    const LEGEND_IRRECOVERABLE = {
+        text: 'Irrecoverable (no data)', icon: (ctx, cx, cy) => strokeX(ctx, cx, cy, 7),
+    };
+
+    function drawLegend(ctx, showIrrecoverable) {
+        const items = showIrrecoverable ? [...LEGEND, LEGEND_IRRECOVERABLE] : LEGEND;
+        const x = 12, y = 12, rowH = 20, iconCx = x + 22, pad = 8;
+
+        ctx.font = `12px ${FONT_SANS}`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+
+        let textW = 0;
+        for (const it of items) textW = Math.max(textW, ctx.measureText(it.text).width);
+        const w = (iconCx + 16 - x) + textW + pad;
+        const h = pad * 2 + items.length * rowH;
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+        ctx.lineWidth = 1;
+        roundRect(ctx, x, y, w, h, 8);
+        ctx.fill();
+        ctx.stroke();
+
+        items.forEach((item, i) => {
+            const cy = y + pad + rowH * i + rowH / 2;
+            item.icon(ctx, iconCx, cy);
+            ctx.fillStyle = 'rgba(20, 20, 20, 0.85)';
+            ctx.fillText(item.text, iconCx + 16, cy + 0.5);
+        });
+    }
+
+    function drawStats(ctx, stats) {
+        const W = ctx.canvas.width, H = ctx.canvas.height;
+        const h = 30, y = H - h, cy = y + h / 2;
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
+        ctx.fillRect(0, y, W, h);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(W, y + 0.5);
+        ctx.stroke();
+
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+
+        // Walk segments left to right, advancing the cursor by each one's width.
+        let cx = 14;
+        const segment = (text, font, color) => {
+            ctx.font = font; ctx.fillStyle = color;
+            ctx.fillText(text, cx, cy);
+            cx += ctx.measureText(text).width;
+        };
+
+        segment('Results:', `bold 13px ${FONT_SANS}`, 'rgba(20, 20, 20, 0.9)');
+        cx += 16;
+        for (const [label, value] of [
+            ['Expected Noise (σ/√M): ', `${stats.effNoise} px`],
+            ['Avg Scatter Radius: ',    `${stats.avgErr} px`],
+        ]) {
+            segment(label, `12.5px ${FONT_SANS}`, 'rgba(60, 60, 60, 0.9)');
+            segment(value, `12.5px ${FONT_MONO}`, 'rgba(20, 20, 20, 0.95)');
+            cx += 20;
+        }
+    }
+
+    function shufflePoints() {
+        const N = readControls().N;
+        const canvas = $('main-canvas');
+        currentTruth = generateGroundTruth(N, canvas.width, canvas.height);
+        warmSeed = null;   // jumped to a new layout — don't warm-start from the old one
+        runSimulation();
+    }
+
+    // ── Animation: drift the ground-truth points and re-solve each frame ──
+    let animating = false;
+    let velocities = [];
+
+    function toggleAnimate() {
+        animating = !animating;
+        const btn = $('animate-btn');
+        btn.textContent = animating ? 'Stop' : 'Animate';
+        btn.classList.toggle('active', animating);
+        if (animating) animationLoop();
+    }
+
+    // A damped random walk: each point keeps a velocity that's gently nudged
+    // every frame and bounces off the canvas margins, so motion stays smooth
+    // and within reasonable reach rather than teleporting around.
+    function stepGroundTruth(width, height) {
+        const N = currentTruth.length, margin = MARGIN;
+        if (velocities.length !== N) velocities = currentTruth.map(() => ({x: 0, y: 0}));
+        for (let i = 0; i < N; i++) {
+            const v = velocities[i], p = currentTruth[i];
+            v.x = v.x * 0.9 + (Math.random() - 0.5) * 1.6;
+            v.y = v.y * 0.9 + (Math.random() - 0.5) * 1.6;
+            p.x += v.x; p.y += v.y;
+            if (p.x < margin)          { p.x = margin;          v.x = -v.x; }
+            if (p.x > width - margin)  { p.x = width - margin;  v.x = -v.x; }
+            if (p.y < margin)          { p.y = margin;          v.y = -v.y; }
+            if (p.y > height - margin) { p.y = height - margin; v.y = -v.y; }
+        }
+    }
+
+    async function animationLoop() {
+        const canvas = $('main-canvas');
+        while (animating) {
+            if (currentTruth.length) stepGroundTruth(canvas.width, canvas.height);
+            await runSimulation({ warm: true });
+        }
+    }
+
+    // ── Sweep: mean localization error as a function of P ────────────────
+    // Holds the ground truth fixed and measures the average recovery error
+    // over many trials at each P, revealing the rigidity-percolation threshold.
+    let sweeping = false;
+    let lastSweep = null;   // { data, N } of the most recent sweep, for rescaling
+
+    // Re-render the last sweep when the log/linear scale is toggled.
+    $('scale-input').addEventListener('change', () => {
+        if (lastSweep) drawSweepPlot($('sweep-canvas').getContext('2d'), lastSweep.data, lastSweep.N);
+    });
+
+    function toggleSweep() {
+        if (sweeping) { sweeping = false; return; }   // cancel an in-flight sweep
+        if (animating) toggleAnimate();               // don't fight for the CPU
+        runSweep();
+    }
+
+    async function runSweep() {
+        sweeping = true;
+        const btn = $('sweep-btn');
+        btn.classList.add('active');
+
+        const { N, noiseAmp, M, K } = readControls();
+        const canvas = $('main-canvas');
+        const W = canvas.width, H = canvas.height;
+        if (currentTruth.length !== N) currentTruth = generateGroundTruth(N, W, H);
+
+        const plot = $('sweep-canvas');
+        plot.style.display = 'block';
+        $('scale-toggle').style.display = 'flex';
+        const pctx = plot.getContext('2d');
+
+        // P values to probe (percent of pairs kept), ascending.
+        const ps = [];
+        for (let p = 2; p < 100; p += 3) ps.push(p);
+        ps.push(100);
+
+        const TRIALS = K, ATTEMPTS = 6, MAX_ITER = 600;   // K controls MC count
+        const data = [];
+
+        for (let s = 0; s < ps.length; s++) {
+            if (!sweeping) break;
+            const p = ps[s], frac = p / 100;
+
+            let sum = 0, isoTrials = 0;
+            for (let t = 0; t < TRIALS; t++) {
+                const matrix = simulateMeasurements(currentTruth, N, noiseAmp, M);
+                const mask = frac < 1 ? selectPairs(N, frac) : null;
+                // Points with no measurements this trial: exclude from the fit
+                // (so a wanderer can't wreck the frame), but still count their error.
+                const iso = new Set();
+                if (mask) for (let i = 0; i < N; i++) if (!mask[i].some(Boolean)) iso.add(i);
+                if (iso.size > 0) isoTrials++;
+                const recovered = recoverGeometry(N, matrix, W, H, null, ATTEMPTS, MAX_ITER, mask, TOL);
+                const al = alignPoints(currentTruth, recovered, iso);
+                let se = 0;
+                for (let i = 0; i < N; i++) {
+                    const ex = currentTruth[i].x - al.points[i].x;
+                    const ey = currentTruth[i].y - al.points[i].y;
+                    se += ex * ex + ey * ey;
+                }
+                sum += Math.sqrt(se / N);
+            }
+            data.push({ p, err: sum / TRIALS, isoFrac: isoTrials / TRIALS });
+            lastSweep = { data, N };
+
+            btn.textContent = `Cancel (${Math.round((s + 1) / ps.length * 100)}%)`;
+            drawSweepPlot(pctx, data, N);
+            await new Promise(r => setTimeout(r, 0));   // yield to UI / cancel
+        }
+
+        sweeping = false;
+        btn.classList.remove('active');
+        btn.textContent = 'Sweep P';
+        if (data.length) drawSweepPlot(pctx, data, N);
+    }
+
+    const fmtErr = e => e === 0 ? '0' : e >= 10 ? e.toFixed(0) : e >= 1 ? e.toFixed(1) : e.toFixed(2);
+
+    // Round up to a "nice" axis bound (1/2/2.5/5 × 10^k).
+    const niceCeil = v => {
+        if (v <= 0) return 1;
+        const exp = Math.pow(10, Math.floor(Math.log10(v)));
+        const f = v / exp;
+        return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * exp;
+    };
+
+    // The transition is where the error climbs off the high-P noise floor.
+    // Scanning down from P=100%, find where it first exceeds 3× the floor —
+    // that knee, not the catastrophic low-P spike, is the robustness threshold.
+    function findTransition(data) {
+        if (data.length < 4) return null;
+        const floor = data[data.length - 1].err;          // error at P = 100%
+        const thresh = Math.max(floor * 3, floor + 1);
+        const emax = Math.max(...data.map(d => d.err));
+        if (emax < thresh * 1.5) return null;             // no real transition
+        for (let i = data.length - 1; i >= 1; i--) {
+            if (data[i].err <= thresh && data[i - 1].err > thresh) {
+                const a = data[i - 1], b = data[i];
+                const f = (thresh - a.err) / (b.err - a.err);   // a.err > thresh > b.err
+                return Math.round(a.p + (b.p - a.p) * f);
+            }
+        }
+        return null;
+    }
+
+    // Error y-axis builder: returns a value→pixel map, gridline ticks and a
+    // label suffix. Linear (default) spans 0..niceCeil(emax) — the full error
+    // range — so the whole transition stays on-screen and the bound is stable as
+    // points stream in during a sweep (the worst error is at the lowest P, which
+    // is computed first, so emax barely moves). Log (opt-in) spans emin..emax to
+    // expose the noise floor's fine structure across orders of magnitude.
+    function errorAxis(data, logScale, T, B) {
+        const errs = data.map(d => d.err);
+        const emax = Math.max(...errs);
+        if (logScale) {
+            const pos = errs.filter(e => e > 0);
+            const emin = pos.length ? Math.min(...pos) : 1;
+            const lo = Math.floor(Math.log10(Math.max(emin, 0.1)));
+            const hi = Math.max(lo + 1, Math.ceil(Math.log10(Math.max(emax, 1))));
+            const ticks = [];
+            for (let k = lo; k <= hi; k++) ticks.push(Math.pow(10, k));
+            return {
+                map: e => B - (B - T) * (Math.log10(Math.max(e, Math.pow(10, lo))) - lo) / (hi - lo),
+                ticks, label: ' (log)',
+            };
+        }
+        const cap = niceCeil(emax);   // full range, stable across incremental draws
+        return {
+            map: e => B - (B - T) * Math.min(e, cap) / cap,
+            ticks: [0, 0.25, 0.5, 0.75, 1].map(f => f * cap),
+            label: ' (px)',
+        };
+    }
+
+    function drawSweepPlot(ctx, data, N) {
+        const W = 600, H = 280;
+        ctx.clearRect(0, 0, W, H);
+
+        const L = 54, R = W - 46, T = 58, B = H - 36;     // plot rectangle
+        const x2px = p => L + (R - L) * (p / 100);
+        const prob2y = pr => B - (B - T) * pr;            // right axis: 0..1
+        const zmax = N - 1;                               // mean degree at P = 100%
+        const z2x = z => L + (R - L) * (zmax > 0 ? z / zmax : 0);
+
+        // Error y-axis (see errorAxis): linear-capped by default, log on demand.
+        const logScale = $('scale-input').checked;
+        const { map: err2y, ticks: yTicks, label: errLabel } = errorAxis(data, logScale, T, B);
+
+        // A dashed vertical reference line with a label hugging whichever side
+        // keeps it inside the plot. `atTop` puts the label at the top, else bottom.
+        const vMarker = (x, { line, fill, dash, label, atTop }) => {
+            const right = x > (L + R) / 2;
+            ctx.strokeStyle = line; ctx.setLineDash(dash); ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, B); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = fill; ctx.font = `bold 11px ${FONT_SANS}`;
+            ctx.textAlign = right ? 'right' : 'left';
+            ctx.textBaseline = atTop ? 'top' : 'bottom';
+            ctx.fillText(label, x + (right ? -5 : 5), atTop ? T + 2 : B - 4);
+        };
+        // A data polyline, x from P and y from `yOf(d)`.
+        const polyline = (color, yOf) => {
+            ctx.strokeStyle = color; ctx.lineWidth = 2;
+            ctx.beginPath();
+            data.forEach((d, i) => {
+                const x = x2px(d.p), y = yOf(d);
+                i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+            });
+            ctx.stroke();
+        };
+
+        // Title + legend
+        ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(20, 20, 20, 0.9)';
+        ctx.font = `bold 13px ${FONT_SANS}`;
+        ctx.fillText('Localization error & isolation vs. pairs used', L, 14);
+        ctx.font = `11px ${FONT_SANS}`;
+        ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(120, 80, 160, 0.95)';
+        ctx.fillText('top axis: mean degree z', R, 14);
+        ctx.textAlign = 'left';
+        const legend = (lx, color, text) => {
+            ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+            ctx.beginPath(); ctx.moveTo(lx, 30); ctx.lineTo(lx + 16, 30); ctx.stroke();
+            ctx.fillStyle = 'rgba(40, 40, 40, 0.85)'; ctx.textBaseline = 'middle';
+            ctx.fillText(text, lx + 20, 30);
+            return lx + 20 + ctx.measureText(text).width + 16;
+        };
+        let lx = L;
+        lx = legend(lx, 'rgba(210, 0, 0, 0.9)', `mean error${errLabel}`);
+        legend(lx, 'rgba(70, 110, 160, 0.9)', 'P(node with no data)');
+
+        // Error gridlines + left labels
+        ctx.font = `11px ${FONT_SANS}`;
+        ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+        for (const yv of yTicks) {
+            const y = err2y(yv);
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(R, y); ctx.stroke();
+            ctx.fillStyle = 'rgba(210, 0, 0, 0.85)';
+            ctx.fillText(fmtErr(yv), L - 6, y);
+        }
+        // Right axis (probability 0 / 0.5 / 1)
+        ctx.textAlign = 'left';
+        for (const pr of [0, 0.5, 1]) {
+            ctx.fillStyle = 'rgba(70, 110, 160, 0.85)';
+            ctx.fillText(pr.toFixed(1), R + 6, prob2y(pr));
+        }
+        // X ticks + labels
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        for (let p = 0; p <= 100; p += 20) {
+            const x = x2px(p);
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)';
+            ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, B); ctx.stroke();
+            ctx.fillStyle = 'rgba(60, 60, 60, 0.9)';
+            ctx.fillText(p + '%', x, B + 6);
+        }
+
+        // Axes box
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(L, T); ctx.lineTo(L, B); ctx.lineTo(R, B); ctx.lineTo(R, T); ctx.stroke();
+
+        // Top axis: mean degree z = 2E/N (a linear rescale of P)
+        ctx.font = `11px ${FONT_SANS}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        const zStep = zmax <= 12 ? 2 : zmax <= 30 ? 5 : 10;
+        for (let z = 0; z <= zmax + 1e-9; z += zStep) {
+            const x = z2x(z);
+            ctx.strokeStyle = 'rgba(120, 80, 160, 0.5)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T - 5); ctx.stroke();
+            ctx.fillStyle = 'rgba(120, 80, 160, 0.95)';
+            ctx.fillText(String(z), x, T - 5);
+        }
+
+        // Axis title (x)
+        ctx.fillStyle = 'rgba(40, 40, 40, 0.8)';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText('fraction of pairs measured (P)', (L + R) / 2, H - 2);
+
+        // Transition marker (robustness knee)
+        const tr = findTransition(data);
+        if (tr != null) vMarker(x2px(tr), {
+            line: 'rgba(40, 140, 80, 0.9)', fill: 'rgba(30, 110, 60, 0.95)',
+            dash: [5, 4], label: `robust above ≈ ${tr}%`, atTop: true,
+        });
+
+        // Maxwell isostatic point: z = 4 (2D constraint counting predicts the
+        // rigidity transition here — a necessary lower bound on the real one).
+        if (zmax >= 4) vMarker(z2x(4), {
+            line: 'rgba(120, 80, 160, 0.85)', fill: 'rgba(110, 70, 150, 0.95)',
+            dash: [3, 3], label: 'Maxwell z = 4', atTop: false,
+        });
+
+        // Isolation curve (blue, right axis) and error curve (red, left axis) + points
+        polyline('rgba(70, 110, 160, 0.9)', d => prob2y(d.isoFrac));
+        polyline('rgba(210, 0, 0, 0.9)', d => err2y(d.err));
+        ctx.fillStyle = 'rgba(210, 0, 0, 0.9)';
+        for (const d of data) fillCircle(ctx, x2px(d.p), err2y(d.err), 2.5);
+    }
+
+    async function runSimulation(opts) {
+        const warm = opts && opts.warm === true;
+        if (isSimulating) return;
+        isSimulating = true;
+
+        await new Promise(r => setTimeout(r, 10));
+
+        const { N, noiseAmp, M, K, P, freeze } = readControls();
+        const frac = P / 100;
+        // When frozen, the same missing pairs are used for every trial; otherwise
+        // a fresh random subset is drawn each Monte-Carlo iteration.
+        const frozenMask = (freeze && frac < 1) ? selectPairs(N, frac) : null;
+
+        // With a frozen topology, a point with no measured pairs at all is
+        // genuinely irrecoverable — flag it instead of plotting random noise.
+        // (Without freezing, the missing pairs change every trial, so isolation
+        // isn't a stable property and nothing is marked.)
+        const irrecoverable = new Set();
+        if (frozenMask) {
+            for(let i=0; i<N; i++) {
+                if (!frozenMask[i].some(Boolean)) irrecoverable.add(i);
+            }
+        }
+
+        const canvas = $('main-canvas');
+        const ctx = canvas.getContext('2d');
+
+        if (currentTruth.length !== N) {
+            currentTruth = generateGroundTruth(N, canvas.width, canvas.height);
+            warmSeed = null;   // geometry changed — old estimate no longer valid
+        }
+
+        let scatterClouds = Array(N).fill(0).map(() => []);
+        let totalError = 0;
+
+        // Honest solving: every trial is solved from scratch using ONLY the
+        // measured (masked) pairs — no full-data warm start. A point that lacks
+        // enough constraints is genuinely unrecoverable and will wander freely,
+        // producing a large or multi-lobed cloud. That ambiguity is the point.
+        //
+        // EXCEPTION — during animation the geometry barely moves between frames,
+        // so we warm-start every trial from the previous frame's estimate and
+        // run a single, quick gradient descent. Tracking, not re-discovery.
+        const ATTEMPTS = 8, MAX_ITER = 700;
+        const seed = (warm && warmSeed && warmSeed.length === N) ? warmSeed : null;
+        const attempts = seed ? 1 : ATTEMPTS;
+
+        for(let k = 0; k < K; k++) {
+            let measuredMatrix = simulateMeasurements(currentTruth, N, noiseAmp, M);
+            let mask = frac < 1 ? (frozenMask || selectPairs(N, frac)) : null;
+            let recovered = recoverGeometry(N, measuredMatrix, canvas.width, canvas.height, seed, attempts, MAX_ITER, mask, TOL);
+            let alignment = alignPoints(currentTruth, recovered, irrecoverable);
+
+            // Scatter radius over recoverable points only (irrecoverable ones
+            // would otherwise dominate the average with meaningless distances).
+            let se = 0, cnt = 0;
+            for(let i=0; i<N; i++) {
+                scatterClouds[i].push(alignment.points[i]);
+                if (irrecoverable.has(i)) continue;
+                const ex = currentTruth[i].x - alignment.points[i].x;
+                const ey = currentTruth[i].y - alignment.points[i].y;
+                se += ex * ex + ey * ey; cnt++;
+            }
+            totalError += Math.sqrt(se / (cnt || 1));
+        }
+
+        // Remember this frame's per-point mean as the warm start for the next.
+        warmSeed = scatterClouds.map(c => centroid(c));
+
+        const stats = {
+            effNoise: (noiseAmp / Math.sqrt(M)).toFixed(2),
+            avgErr: (totalError / K).toFixed(2),
+        };
+        draw(ctx, currentTruth, scatterClouds, stats, irrecoverable);
+
+        isSimulating = false;
+    }
+
+    toggleAnimate();   // start with the animation running
+</script>
+</body>
+</html>
