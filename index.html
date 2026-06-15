@@ -1,0 +1,218 @@
+<!-- skal/ (pascal.massimino@gmail.com) — landing page.
+     GitHub Pages serves this in preference to README.md, so browser
+     visitors get a responsive gallery while the repo page keeps README.md. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skal's corner — code snippets &amp; demos</title>
+<link rel="stylesheet" href="common/main.css">
+<style>
+  .wrap {
+    max-width: 1100px;
+    margin: 12px auto;
+    padding: 16px 18px 28px;
+    border: 3px dashed var(--card-border);
+    border-radius: var(--radius-card);
+    background: var(--card-bg);
+    box-sizing: border-box;
+  }
+  header { text-align: center; }
+  header h1 { margin: 4px 0 6px; color: var(--ink); }
+  header p  { margin: 6px auto; max-width: 720px; }
+  header p.small { font-size: .9em; color: var(--ink-dim); }
+
+  h2.section {
+    margin: 28px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--card-border);
+    color: var(--ink);
+  }
+
+  .grid { display: grid; gap: 14px; }
+  .grid.recent { grid-template-columns: repeat(auto-fit,  minmax(260px, 1fr)); }
+  .grid.demos  { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+  .card {
+    display: flex; flex-direction: column;
+    text-decoration: none; color: var(--ink);
+    background: var(--canvas-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-small);
+    overflow: hidden;
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .card:hover { transform: translateY(-3px); box-shadow: 0 6px 16px var(--panel-shadow); }
+  .card img { width: 100%; height: auto; display: block; background: #0c0c15; }
+  .card .body  { padding: 8px 10px 10px; }
+  .card .title { font-weight: 600; color: var(--ink); }
+  .card .desc  { font-size: .86em; color: var(--ink-dim); margin-top: 3px; }
+
+  ul.shadertoy { columns: 2; margin: 8px 0 0; padding-left: 18px; font-size: .92em; }
+  ul.shadertoy li { margin: 2px 0; break-inside: avoid; }
+
+  footer { margin-top: 26px; font-size: .92em; color: var(--ink-dim); }
+  footer a { font-weight: 600; }
+
+  /* ── Phone: 2-up grid, drop the descriptions to save vertical space ── */
+  @media (max-width: 600px) {
+    .wrap { margin: 6px; padding: 12px 12px 20px; }
+    .grid { gap: 10px; }
+    .grid.recent { grid-template-columns: 1fr; }
+    .grid.demos  { grid-template-columns: repeat(2, 1fr); }
+    .card .desc  { display: none; }
+    .card .body  { padding: 6px 8px 8px; }
+    .card .title { font-size: .92em; }
+    h2.section { margin: 20px 0 10px; }
+    ul.shadertoy { columns: 1; }
+  }
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <header>
+    <h1><a href="MASSIMINO_Pascal_Resume.pdf">Skal</a>'s corner — code snippets &amp; demos</h1>
+    <p>My day-job is — amongst other things — writing open-sourced code (like
+       <a href="https://github.com/webmproject/libwebp">webp</a> or
+       <a href="https://github.com/webmproject/sjpeg">sjpeg</a>).
+       But I also write open-sourced code <i>for fun</i> :) &nbsp;
+       Here are some side-project demos.</p>
+  </header>
+
+  <h2 class="section">Recent</h2>
+  <div class="grid recent">
+    <a class="card" href="NNC/index.html">
+      <img src="common/cards/NNC.thumb.webp" alt="Instant-NGP" loading="lazy">
+      <div class="body">
+        <div class="title">Instant-NGP — in-browser training</div>
+        <div class="desc">Neural-net compression: an online Adam trainer for embeddings + MLP that learns an image's representation and reconstruction.</div>
+      </div>
+    </a>
+    <a class="card" href="splats/index.html">
+      <img src="common/cards/splats.thumb.webp" alt="Gaussian splats" loading="lazy">
+      <div class="body">
+        <div class="title">Gaussian splats (3DGS)</div>
+        <div class="desc">The new cool in scene rendering — my WebGPU version, and a good excuse to play with GPU compute passes.</div>
+      </div>
+    </a>
+    <a class="card" href="SNL/index.html">
+      <img src="common/cards/SNL.thumb.webp" alt="Sensor Network Localization" loading="lazy">
+      <div class="body">
+        <div class="title">Sensor Network Localization</div>
+        <div class="desc">Recover a network's geometry from noisy pairwise distances (MDS / gradient descent), with Monte-Carlo uncertainty and a rigidity phase transition.</div>
+      </div>
+    </a>
+  </div>
+
+  <h2 class="section">Demos &amp; experiments</h2>
+  <div class="grid demos">
+    <a class="card" href="trisoup/index.html">
+      <img src="common/cards/trisoup.thumb.webp" alt="Triangle splats" loading="lazy">
+      <div class="body"><div class="title">Triangle splats</div>
+        <div class="desc">The triangle cousin of 3DGS, in WebGPU.</div></div>
+    </a>
+    <a class="card" href="BVH/index.html">
+      <img src="common/cards/BVH.thumb.webp" alt="Bounding Volume Hierarchy" loading="lazy">
+      <div class="body"><div class="title">Bounding Volume Hierarchy</div>
+        <div class="desc">Pre-sort a mesh's triangles nicely and get a BVH at zero memory cost.</div></div>
+    </a>
+    <a class="card" href="ising/index.html">
+      <img src="common/cards/ising.thumb.webp" alt="Ising model" loading="lazy">
+      <div class="body"><div class="title">Ising model</div>
+        <div class="desc">3D cubic Ising spins via WebGPU compute — Metropolis Monte-Carlo at interactive framerate.</div></div>
+    </a>
+    <a class="card" href="curl/index.html?funky">
+      <img src="common/cards/curl.thumb.webp" alt="Curly thing" loading="lazy">
+      <div class="body"><div class="title">Curly thing</div>
+        <div class="desc">Dynamic tessellation in a compute pass — demomaker-ish WebGPU fun.</div></div>
+    </a>
+    <a class="card" href="stipple/index.html">
+      <img src="common/cards/stipple.thumb.webp" alt="Stippling toy" loading="lazy">
+      <div class="body"><div class="title">Stippling toy</div>
+        <div class="desc">LBG / Lloyd algorithm in live action, with lots of knobs to play with.</div></div>
+    </a>
+    <a class="card" href="dog/dog.html">
+      <img src="common/cards/dog.thumb.webp" alt="Difference of Gaussian" loading="lazy">
+      <div class="body"><div class="title">Difference of Gaussian</div>
+        <div class="desc">Play with all the DoG parameters, in WebGL.</div></div>
+    </a>
+    <a class="card" href="tree/index.html">
+      <img src="common/cards/tree.thumb.webp" alt="Tree roots" loading="lazy">
+      <div class="body"><div class="title">Tree roots</div>
+        <div class="desc">The root of a tree isn't <i>that</i> special — pick any node as the root.</div></div>
+    </a>
+    <a class="card" href="thinning/index.html">
+      <img src="common/cards/thinning.thumb.webp" alt="Thinning" loading="lazy">
+      <div class="body"><div class="title">Thinning</div>
+        <div class="desc">Two algorithms that extract skeletons from binarized images.</div></div>
+    </a>
+    <a class="card" href="QR/">
+      <img src="common/cards/QR.thumb.webp" alt="QR code generator" loading="lazy">
+      <div class="body"><div class="title">QR code generator</div>
+        <div class="desc">Embed pictures inside QR codes.</div></div>
+    </a>
+    <a class="card" href="CVM/">
+      <img src="common/cards/CVM.thumb.webp" alt="CVM algorithm" loading="lazy">
+      <div class="body"><div class="title">CVM algorithm</div>
+        <div class="desc">Animated online estimate of the number of distinct elements in a stream.</div></div>
+    </a>
+    <a class="card" href="triangle/index.html">
+      <img src="common/cards/triangle.thumb.webp" alt="Triangle compression" loading="lazy">
+      <div class="body"><div class="title">Triangle compression</div>
+        <div class="desc">Triangulation + colormap → a tiny base64 image preview (ICIP 2018).</div></div>
+    </a>
+    <a class="card" href="triangle/encoder.html">
+      <img src="common/cards/triangle_enc.thumb.webp" alt="Triangle encoder" loading="lazy">
+      <div class="body"><div class="title">Triangle encoder</div>
+        <div class="desc">The pure-JS optimizer behind it — paste its base64 output into the decoder.</div></div>
+    </a>
+    <a class="card" href="convex_hull/index.html">
+      <img src="common/cards/convex_hull.thumb.webp" alt="Welzl's algorithm" loading="lazy">
+      <div class="body"><div class="title">Welzl's algorithm</div>
+        <div class="desc">Convex hull + smallest enclosing circle (2D). The interest is the code.</div></div>
+    </a>
+    <a class="card" href="network/kruskal.html">
+      <img src="common/cards/network.thumb.webp" alt="Kruskal's algorithm" loading="lazy">
+      <div class="body"><div class="title">Kruskal's algorithm</div>
+        <div class="desc">A simple, elegant Minimum-Spanning-Tree extraction from a point set.</div></div>
+    </a>
+    <a class="card" href="particle_life/#91651088029">
+      <img src="common/cards/particle_life.thumb.webp" alt="Particle Life" loading="lazy">
+      <div class="body"><div class="title">Particle Life</div>
+        <div class="desc">Randomly interacting particles — hit <i>Random exploration</i> for fun.</div></div>
+    </a>
+  </div>
+
+  <h2 class="section">Shaders &amp; tools</h2>
+  <p><a href="minishader/index.html"><b>Minishader</b></a> converts simple ShaderToy
+     code into a standalone HTML + WebGL page. A few shaders made along the way:</p>
+  <div class="grid demos">
+    <a class="card" href="minishader/index.html">
+      <img src="common/deluge.thumb.webp" alt="Minishader" loading="lazy">
+      <div class="body"><div class="title">Minishader</div>
+        <div class="desc">ShaderToy code → standalone HTML + WebGL page.</div></div>
+    </a>
+  </div>
+  <ul class="shadertoy">
+    <li><a href="https://www.shadertoy.com/view/ftByDD">Voronoi experiments</a></li>
+    <li><a href="https://www.shadertoy.com/view/ft2czK">Fluid flow simulation</a></li>
+    <li><a href="https://www.shadertoy.com/view/stcBDB">Group Velocity visualization</a></li>
+    <li><a href="https://www.shadertoy.com/view/slKfWR">Mach cone visualization</a></li>
+    <li><a href="https://www.shadertoy.com/view/stGBWh">Kelvin wake visualization</a></li>
+    <li><a href="https://www.shadertoy.com/view/NlyfRV">Rainbow visualization</a></li>
+    <li><a href="https://www.shadertoy.com/view/slKfWc">Deluge Simulator</a></li>
+  </ul>
+
+  <footer>
+    <b>Hardware:</b> a custom
+    <a href="https://github.com/skal65535/sklmpu9255">MPU9255 / AK8963 / MCP2221</a>
+    library — I couldn't find one for this IMU, so I rewrote it, plus some I2C
+    routines for the MCP2221 USB↔I2C micro, to drive the IMU straight from a MacBook.
+  </footer>
+
+</div>
+</body>
+</html>
