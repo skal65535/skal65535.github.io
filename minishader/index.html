@@ -1,8 +1,11 @@
 <!-- // https://www.shadertoy.com/view/ttVGRc -->
 <!DOCTYPE html>
 <html>
-<body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>minishader</title>
+</head>
 <script type='text/javascript' id='h'>
 //
 //  Exploring noise
@@ -175,9 +178,9 @@ function go() {
     u.mouse[0] = e.clientX * u.screen[0] / innerWidth;
     u.mouse[1] = u.screen[1] - e.clientY * u.screen[1] / innerHeight;
   }
-  ael('mousemove', e => { if (u.mouse[2] >= 0) updateMouse(e)});
-  ael('mousedown', e => { updateMouse(e); if (u.mouse[2] < 0) { u.mouse[2] = u.mouse[0]; u.mouse[3] = u.mouse[1]}});
-  ael('mouseup', e => { updateMouse(e); u.mouse[2]=-Math.abs(u.mouse[2]); u.mouse[3]=-Math.abs(u.mouse[3])});
+  ael('pointermove', e => { if (u.mouse[2] >= 0) updateMouse(e)});
+  ael('pointerdown', e => { updateMouse(e); if (u.mouse[2] < 0) { u.mouse[2] = u.mouse[0]; u.mouse[3] = u.mouse[1]}});
+  ael('pointerup', e => { updateMouse(e); u.mouse[2]=-Math.abs(u.mouse[2]); u.mouse[3]=-Math.abs(u.mouse[3])});
   ael('keydown', e => { });
 
   cvs = ge("CANVAS");
@@ -210,7 +213,7 @@ function go() {
 }
 </script>
 <style>
-#CANVAS { color:#000; top:0; left:0; position:absolute }
+#CANVAS { color:#000; top:0; left:0; position:absolute; touch-action:none }
 #FPS { color:#FFF; top:0; left:0; position:absolute; pointer-events:none }
 </style>
 <body onload="go()">

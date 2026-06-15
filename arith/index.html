@@ -4,6 +4,8 @@
 
 <head>
 <title>Arithmetic coding demo</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 #main-canvas {
   z-index:0;
@@ -12,6 +14,8 @@
   background: #000;
   box-shadow: 0 0 8px black;
   outline: 1px solid black;
+  max-width: 100%;
+  touch-action: none;
 }
 .button {
   display: inline-block;
@@ -32,7 +36,7 @@
 
 <body onload="main();">
 
-<div id="main-area" style='width: 1024px; height: 700px; font-size:28px;'>
+<div id="main-area" style='max-width: 1024px; width: 100%; box-sizing: border-box; font-size: 28px;'>
   <center>
   <div height='100px'>
     <h3>Arithmetic coding, visually</h3>
@@ -59,15 +63,16 @@ var s_bounds = [0., 1.];   // state bounds
 
 function EventToXY(canvas, e) {
   const bounds = canvas.getBoundingClientRect();
-  const x = (e.x - bounds.left) / canvas.width;
-  const y = (e.y - bounds.top) / canvas.height;
+  const x = (e.clientX - bounds.left) / canvas.width;
+  const y = (e.clientY - bounds.top) / canvas.height;
   return [x, y];
 }
 
 function main() {
   state = 0.;
   const canvas = document.querySelector("#main-canvas");
-  canvas.addEventListener('mousemove', (e) => {
+  canvas.addEventListener('pointermove', (e) => {
+    e.preventDefault();
     const canvas = document.querySelector("#main-canvas");
     const [x, y] = EventToXY(canvas, e);
     state = x;

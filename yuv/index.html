@@ -23,6 +23,9 @@ skal/ (pascal.massimino@gmail.com) 2025
   #ref-rgb {
     border: 2px solid var(--canvas-border); border-radius: 12px;
   }
+  @media (max-width: 768px) {   /* let the big canvases shrink in portrait */
+    #ref-rgb, #main-canvas { max-width: 100%; height: auto; }
+  }
   #yuv, #rgb, #err {
     border: 2px solid var(--canvas-border); border-radius: 8px;
     max-width: 100%; height: auto;

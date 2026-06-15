@@ -8,8 +8,6 @@
 <title>WebP2 Triangle Preview Demo</title>
 <link rel="stylesheet" href="../common/main.css">
 <style>
-  #main-canvas { max-width: 640px; width: 100%; }
-
   /* Two-column section below the image: [textarea | meta] */
   .tri-input {
     display: grid;
@@ -138,7 +136,7 @@
 import { mkGui } from '../common/controls.js';
 
 ////////////////////////////////////////////////////////////////////////////////
-const params = { show_tri: false, amp: 0.1, size: 320 };
+const params = { show_tri: false, amp: 0.1, size: 512 };
 
 function CreateShader(gl, type, src) {
   const shader = gl.createShader(type);

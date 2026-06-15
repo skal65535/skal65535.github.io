@@ -82,6 +82,8 @@ const App = {
         App.state.thumbCanvases.push(c);
         const idx = i;
         div.addEventListener('mouseenter', () => App.ui.showPreview(idx));
+        div.addEventListener('click', () => App.ui.showPreview(idx));  // tap on touch
+        div.style.cursor = 'pointer';
       }
       if (App.state.thumbCanvases.length) App.ui.showPreview(0);
     },
@@ -516,10 +518,12 @@ const App = {
       camera.lookAt(centroid);
     };
     const el = renderer.domElement;
-    el.onmousedown   = e => { dragging = true; prevX = e.clientX; prevY = e.clientY; };
-    el.onmouseup     = () => dragging = false;
-    el.onmouseleave  = () => dragging = false;
-    el.onmousemove   = e => {
+    el.style.touchAction = 'none';   // handle drag without the page scrolling
+    el.onpointerdown   = e => { dragging = true; prevX = e.clientX; prevY = e.clientY;
+                                el.setPointerCapture?.(e.pointerId); };
+    el.onpointerup     = () => dragging = false;
+    el.onpointercancel = () => dragging = false;
+    el.onpointermove   = e => {
       if (!dragging) return;
       yaw   += (e.clientX - prevX) * 0.005;
       pitch += (e.clientY - prevY) * 0.005;
