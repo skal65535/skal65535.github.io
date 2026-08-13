@@ -1,0 +1,15 @@
+# note: Coefficients of 1, 2, 3 and 4, the magnitudes with their own tree
+#   branches.
+# expect: ok
+# exercises: The v == 1 shortcut, then the p[4]/p[5] pair of GetLargeValue()
+#   that separates 2 from 3 and 4.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   1 -1 1 -1
+coeffs y[1]   2 -2
+coeffs y[2]   3 -3
+coeffs y[3]   4 -4

@@ -1,0 +1,18 @@
+# note: A chunk with a fourcc the format does not define, ahead of the frame.
+# expect: ok
+# roundtrip: no
+# exercises: The same skip path as the metadata chunks, but with a tag no
+#   version of libwebp knows. An unknown chunk must be stepped over, not
+#   refused: that is what makes the format extensible.
+chunks VP8X JUNK VP8
+payload JUNK deadbeefcafe
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

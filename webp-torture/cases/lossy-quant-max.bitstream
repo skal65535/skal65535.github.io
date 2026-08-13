@@ -1,0 +1,17 @@
+# note: The frame quantizer at 127, the coarsest.
+# expect: ok
+# exercises: The last entry of both quantizer tables, and the top of the
+#   clip() range that the delta cases push against.
+width 32
+height 32
+yac_qi 127
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20 4
+coeffs y[0]   1:3
+coeffs u[0]   5 -2
+coeffs v[3]   -4
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED

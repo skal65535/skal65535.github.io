@@ -1,0 +1,43 @@
+# note: Four partitions whose declared sizes leave nothing for the last one.
+# expect: reject
+# exercises: The last partition is not declared anywhere; it gets whatever is
+#   left, which the clamp on the third size has already reduced to nothing.
+#   ParsePartitions() notices that part_start is no longer inside the buffer
+#   and refuses the frame rather than handing out an empty reader.
+width 64
+height 64
+log2_nbr_of_DCT_partitions 2  # 4 partitions
+yac_qi 25
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     20
+coeffs y[0]   1:3
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     15
+coeffs y[1]   1:4
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     10
+coeffs y[2]   1:5
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     5
+coeffs y[3]   1:6
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+patch part_size 2 16777215

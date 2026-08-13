@@ -1,0 +1,20 @@
+# note: An odd-sized chunk whose header rounds its length up, taking the pad
+#   byte away.
+# expect: reject
+# roundtrip: no
+# exercises: The walk steps by (8 + size + 1) & ~1, so an even declared size
+#   means no pad byte, and everything after it is read one byte off. The
+#   partner of container-odd-chunk-payload: same chunk, one byte shorter.
+chunks VP8X JUNK VP8
+payload JUNK 010203
+chunk_size JUNK 4
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

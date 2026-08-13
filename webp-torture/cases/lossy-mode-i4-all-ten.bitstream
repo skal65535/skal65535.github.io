@@ -1,0 +1,18 @@
+# note: All ten 4x4 luma modes inside one macroblock, twice over.
+# expect: ok
+# exercises: Every leaf of the B_PRED tree, and every 4x4 predictor including
+#   the ones that need the four pixels above and to the right.
+width 16
+height 16
+yac_qi 20
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_TM_PRED B_VE_PRED B_HE_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0]   5 -3 2
+coeffs y[5]   -4 2
+coeffs y[10]  3
+coeffs y[15]  15:6

@@ -1,0 +1,37 @@
+# note: Four segments with four different absolute quantizers, one macroblock
+#   each.
+# expect: ok
+# exercises: The segment tree in ParseIntraMode() with all three
+#   probabilities used, and four distinct VP8QuantMatrix rows in
+#   VP8ParseQuant().
+width 32
+height 32
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 10 40 80 120
+lf_update_value - - - -
+segment_prob 128 128 128
+yac_qi 30
+macroblock
+segment_id 0
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20
+coeffs y[0]   1:4
+macroblock
+segment_id 1
+intra_y_mode V_PRED
+intra_chroma_mode V_PRED
+coeffs y2     15
+macroblock
+segment_id 2
+intra_y_mode H_PRED
+intra_chroma_mode H_PRED
+coeffs y2     -9
+macroblock
+segment_id 3
+intra_y_mode TM_PRED
+intra_chroma_mode TM_PRED
+coeffs y2     6

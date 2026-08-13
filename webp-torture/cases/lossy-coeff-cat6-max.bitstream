@@ -1,0 +1,14 @@
+# note: The largest coefficient the format can encode: 2114.
+# expect: ok
+# exercises: 3 + (8 << 3) + 2047, every one of kCat6's eleven extra bits set.
+#   One more would wrap round inside the same eleven bits.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   2114 -2114
+coeffs y[1]   2114
+coeffs y[2]   -2114
+coeffs y[3]   2114 -2114 2114 -2114

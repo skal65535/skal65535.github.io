@@ -1,0 +1,11 @@
+# note: Every one of the 25 blocks empty, but the macroblock not skipped.
+# expect: ok
+# exercises: An end-of-block at the very first position of every block.
+#   Without a skip probability in the frame there is no other way to say it,
+#   and ParseResiduals() still runs in full.
+width 16
+height 16
+yac_qi 40
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED

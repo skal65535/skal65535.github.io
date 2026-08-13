@@ -1,0 +1,41 @@
+# note: Four B_PRED macroblocks whose 4x4 modes walk the [above][left]
+#   probability table.
+# expect: ok
+# exercises: kBModesProba is indexed by the two neighbouring modes, so this
+#   is the only way to reach entries other than [B_DC][B_DC]. The top row of
+#   one macroblock is the context of the one below it.
+width 32
+height 32
+yac_qi 20
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_HU_PRED B_HD_PRED B_VL_PRED B_LD_PRED
+intra_b_mode B_VR_PRED B_RD_PRED B_HE_PRED B_VE_PRED
+intra_b_mode B_TM_PRED B_DC_PRED B_HU_PRED B_HD_PRED
+intra_b_mode B_VL_PRED B_LD_PRED B_VR_PRED B_RD_PRED
+coeffs y[0]   4 -2
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_TM_PRED B_VE_PRED B_HE_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[7]   3
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_VE_PRED B_VE_PRED B_VE_PRED B_VE_PRED
+intra_b_mode B_HE_PRED B_HE_PRED B_HE_PRED B_HE_PRED
+intra_b_mode B_TM_PRED B_TM_PRED B_TM_PRED B_TM_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+coeffs y[12]  -3
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_HU_PRED B_HU_PRED B_HU_PRED B_HU_PRED
+intra_b_mode B_HU_PRED B_HU_PRED B_HU_PRED B_HU_PRED
+intra_b_mode B_HU_PRED B_HU_PRED B_HU_PRED B_HU_PRED
+intra_b_mode B_HU_PRED B_HU_PRED B_HU_PRED B_HU_PRED
+coeffs y[15]  2

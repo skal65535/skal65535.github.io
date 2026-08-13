@@ -1,0 +1,23 @@
+# note: The four 16x16 luma modes, one per macroblock.
+# expect: ok
+# exercises: DC_PRED, V_PRED, H_PRED and TM_PRED through the hardcoded tree
+#   at probabilities 156, 128 and 163, and all four 16x16 reconstructions.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     14
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -10
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     8

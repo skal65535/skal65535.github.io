@@ -1,0 +1,19 @@
+# note: A VP8X chunk and some metadata, and no image chunk at all.
+# expect: reject
+# roundtrip: no
+# exercises: ParseOptionalChunks() walks to the end of the data without
+#   meeting VP8 or VP8L and runs out. A container that promises a picture and
+#   does not carry one.
+chunks VP8X ICCP
+icc_profile 1
+payload ICCP 0011223344556677
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

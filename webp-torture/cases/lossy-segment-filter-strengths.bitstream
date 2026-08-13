@@ -1,0 +1,38 @@
+# note: Per-segment loop-filter strengths, from 0 to 63, under a frame filter
+#   level of 40.
+# expect: ok
+# exercises: PrecomputeFilterStrengths() with use_segment: the per-segment
+#   base level replaces the frame level outright when the deltas are absolute.
+width 32
+height 32
+loop_filter_level 40
+sharpness_level 2
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 30 30 30 30
+lf_update_value 0 20 63 -20
+segment_prob 128 128 128
+yac_qi 30
+macroblock
+segment_id 0
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -22
+coeffs y[0]   1:6
+macroblock
+segment_id 1
+intra_y_mode V_PRED
+intra_chroma_mode V_PRED
+coeffs y2     18
+macroblock
+segment_id 2
+intra_y_mode H_PRED
+intra_chroma_mode H_PRED
+coeffs y2     -12
+macroblock
+segment_id 3
+intra_y_mode TM_PRED
+intra_chroma_mode TM_PRED
+coeffs y2     9

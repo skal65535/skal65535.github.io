@@ -1,0 +1,16 @@
+# note: The same plane with its last byte replaced.
+# expect: reject
+# roundtrip: no
+# exercises: One byte, not a truncation: the stream is the right length and
+#   stops making sense at the end. Together with alph-lossless-truncated this
+#   pins both ways the compressed plane can fail.
+chunks VP8X ALPH VP8
+alpha 1
+alph_compression 1
+alph_data b90a44f43f40a46d333634ff920f4f23262099a5ff
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

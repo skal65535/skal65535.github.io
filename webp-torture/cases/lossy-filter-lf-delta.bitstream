@@ -1,0 +1,36 @@
+# note: Loop-filter deltas: 63 and -63 on the reference deltas, and a delta
+#   on the 4x4 mode.
+# expect: ok
+# exercises: The mode_lf_delta[0] path for 4x4-coded macroblocks and the
+#   ref_lf_delta that only inter frames would use. cwebp writes four zero flags
+#   and one i4x4 delta (syntax_enc.c:226), never these.
+width 32
+height 32
+filter_type 0
+loop_filter_level 30
+sharpness_level 1
+loop_filter_adj_enable 1
+mode_ref_lf_delta_update 1
+ref_frame_delta 63 -63 0 -
+mb_mode_delta -20 - - 31
+yac_qi 25
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_TM_PRED B_VE_PRED B_HE_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0]   8 -4 2
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -24
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode TM_PRED
+coeffs y[3]   -9 5
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode V_PRED
+coeffs y2     17

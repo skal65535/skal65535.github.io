@@ -1,0 +1,14 @@
+# note: A horizontal upscaling hint of 2 and a vertical one of 1.
+# expect: ok
+# exercises: The two values the other two scale cases leave out, so all four
+#   are seen in each field. A decoder that started honouring the hint would
+#   resize the output and fail the hash rather than the verdict.
+horizontal_scale 2
+vertical_scale 1
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -18
+coeffs y[5] 1:3 -2
+macroblock count 3

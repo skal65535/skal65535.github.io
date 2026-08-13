@@ -1,0 +1,22 @@
+# note: The four still-image VP8X flags set, with none of the chunks they
+#   promise.
+# expect: ok
+# roundtrip: no
+# exercises: Alpha, ICC, EXIF and XMP together. Nothing checks that a flag is
+#   backed by its chunk, so this decodes as the plain lossy frame it is. The
+#   animation flag is the one exception, which container-vp8x-animation covers.
+chunks VP8X VP8
+alpha 1
+icc_profile 1
+exif_metadata 1
+xmp_metadata 1
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

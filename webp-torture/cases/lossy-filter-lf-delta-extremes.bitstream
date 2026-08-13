@@ -1,0 +1,29 @@
+# note: Loop-filter mode deltas at -63 and 63.
+# expect: ok
+# exercises: The mode deltas are applied per macroblock coding type, and only
+#   the first of the four is ever used by an intra frame. lossy-filter-lf-delta
+#   writes -20 and 31; this writes both ends of the 6-bit signed field, against
+#   a filter level that leaves room to move.
+width 32
+height 32
+loop_filter_level 32
+loop_filter_adj_enable 1
+mode_ref_lf_delta_update 1
+ref_frame_delta 0 - - -
+mb_mode_delta 63 -63 63 -63
+yac_qi 25
+macroblock
+intra_y_mode B_PRED
+intra_b_mode B_DC_PRED B_TM_PRED B_VE_PRED B_HE_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0] 7 -4 2
+macroblock
+coeffs y2 -22
+macroblock
+intra_y_mode B_PRED
+coeffs y[9] 5
+macroblock
+intra_y_mode V_PRED
+coeffs y2 16

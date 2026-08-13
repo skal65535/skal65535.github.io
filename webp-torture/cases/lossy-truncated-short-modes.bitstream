@@ -1,0 +1,19 @@
+# note: Mode data for 15 macroblocks in a frame whose dimensions call for 16.
+# expect: ok
+# roundtrip: no
+# exercises: The missing macroblock is decoded out of partition 0's padding
+#   without the reader ever running out, so the frame is accepted and the
+#   last macroblock decodes to whatever the padding happens to say. Nothing
+#   checks that the mode data is as long as the frame claims to be.
+#   Reading the file back gives 16 macroblocks, so it is the one case
+#   here that cannot be disassembled and reassembled unchanged.
+width 64
+height 64
+yac_qi 30
+mb_no_skip_coeff 1
+prob_skip_false 255
+macroblock count 15
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock_count 15

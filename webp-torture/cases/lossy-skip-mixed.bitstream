@@ -1,0 +1,45 @@
+# note: Skipped and coded macroblocks alternating, with a skip probability of
+#   1.
+# expect: ok
+# exercises: The most expensive coding of the skip flag: the probability says
+#   almost nothing is skipped while half of it is. Also checks that a skipped
+#   macroblock leaves its neighbours' contexts cleared.
+width 64
+height 32
+yac_qi 25
+mb_no_skip_coeff 1
+prob_skip_false 1
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20
+coeffs y[0]   1:5
+macroblock
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+coeffs y2     16
+coeffs u[0]   4
+macroblock
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode TM_PRED
+coeffs y2     -12
+macroblock
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode V_PRED
+coeffs y2     9

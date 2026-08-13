@@ -1,0 +1,19 @@
+# note: A RIFF size that stops in the middle of the chunks behind it.
+# expect: reject
+# roundtrip: no
+# exercises: The "total_size > riff_size" test in ParseOptionalChunks(): the
+#   walk adds up what it has skipped and refuses to walk past what the RIFF
+#   header said was there.
+chunks VP8X JUNK VP8
+payload JUNK 00112233445566778899aabbccddeeff
+riff_size 30
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

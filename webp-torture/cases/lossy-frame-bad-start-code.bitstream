@@ -1,0 +1,16 @@
+# note: The three-byte start code changed from 9d 01 2a to 9d 01 29.
+# expect: reject
+# exercises: VP8CheckSignature(). One bit away from valid, so it also checks
+#   that the signature is compared, not merely skipped over.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+start_code 9d0129

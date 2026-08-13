@@ -1,0 +1,15 @@
+# note: An uncompressed alpha plane under the none filter.
+# expect: ok
+# roundtrip: no
+# exercises: WebPUnfilters[0], stored as it is. The four filters have a
+#   routine each in dsp/filters.c and the same stored bytes come out as four
+#   different planes, so the pixel hash is what tells them apart. Nothing in
+#   the corpus reached any of them before.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

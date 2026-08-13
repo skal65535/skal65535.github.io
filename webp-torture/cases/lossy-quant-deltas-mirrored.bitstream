@@ -1,0 +1,16 @@
+# note: The five quantizer deltas at the ends lossy-quant-deltas does not
+#   use.
+# expect: ok
+# exercises: Each of the five 4-bit signed fields written at its other
+#   extreme, so between the two files every one of them is seen at both -15 and
+#   +15.
+yac_qi 60
+ydc_delta -15
+y2dc_delta 15
+y2ac_delta -15
+uvdc_delta 15
+uvac_delta -15
+macroblock
+coeffs y2 -18
+coeffs y[5] 1:3 -2
+macroblock count 3

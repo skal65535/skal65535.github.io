@@ -1,0 +1,17 @@
+# note: A key frame with the show_frame bit cleared.
+# expect: reject
+# exercises: VP8GetInfo() bails on "first frame is invisible"; the VP8 layer
+#   would have said UNSUPPORTED_FEATURE. Nothing else in the corpus reaches
+#   either.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+show_frame 0

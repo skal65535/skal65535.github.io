@@ -1,0 +1,22 @@
+# note: Segmentation on, quantizers given, but no segment map: every
+#   macroblock is segment 0.
+# expect: ok
+# exercises: use_segment without update_map. No per-macroblock segment bits
+#   are read, and only dqm[0] is ever selected, but the other three are still
+#   built.
+width 32
+height 32
+segmentation_enabled 1
+update_mb_segmentation_map 0
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 5 60 90 127
+lf_update_value - - - -
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -25
+macroblock count 3
+intra_y_mode TM_PRED
+intra_chroma_mode TM_PRED

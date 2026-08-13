@@ -1,0 +1,15 @@
+# note: A pre-processing value of 2, past level reduction.
+# expect: reject
+# roundtrip: no
+# exercises: The second undefined value in the header byte, refused by the
+#   same condition in ALPHInit(). All four filter values are legal, so the
+#   filter field has no partner to this.
+chunks VP8X ALPH VP8
+alpha 1
+alph_preprocessing 2
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

@@ -18,8 +18,9 @@ match anchors, and wrapping them would stop them matching.
 
 import sys
 
-HEADER = ('#include <assert.h>\n#include <stdio.h>\n'
-          '#define PROBE(t) fprintf(stderr, "PROBE:%s\\n", t)')
+MACROS = ('#include <stdio.h>\n'
+          '#define PROBE(t) fprintf(stderr, "PROBE:%s\\n", t)\n'
+          '#define PROBE1(f, v) fprintf(stderr, "PROBE:" f "\\n", v)\n')
 
 VP8L = [
     # simple codes
@@ -134,12 +135,23 @@ VP8L = [
      """    if (mapping != NULL && mapping[i] == -1) {
       PROBE("meta_unused_group");"""),
     # LZ77 and distances
-    ("""    if (code < NUM_LITERAL_CODES) {  // Literal""",
+    # Anchored on the line below it as well: the same "if (code <
+    # NUM_LITERAL_CODES)" opens DecodeAlphaData a hundred lines earlier, and
+    # matching that one put these three probes on a path no file here takes.
+    ("""    if (code < NUM_LITERAL_CODES) {  // Literal
+      if (htree_group->is_trivial_literal) {""",
      """    if (code >= NUM_LITERAL_CODES && code < NUM_LITERAL_CODES + NUM_LENGTH_CODES)
       PROBE("lz77_copy");
     if (code >= NUM_LITERAL_CODES + NUM_LENGTH_CODES) PROBE("cache_index");
     if (code == NUM_LITERAL_CODES + NUM_LENGTH_CODES - 1) PROBE("lz77_max_len_sym");
-    if (code < NUM_LITERAL_CODES) {  // Literal"""),
+    if (code < NUM_LITERAL_CODES) {  // Literal
+      if (htree_group->is_trivial_literal) {"""),
+    # The 8-bit path, which only an ALPH chunk with a compressed plane
+    # reaches: every VP8L file in the corpus goes through DecodeImageData.
+    ("""  assert(Is8bOptimizable(hdr));""",
+     """  assert(Is8bOptimizable(hdr));
+  PROBE("alpha_8b_data");
+  if (mask == ~0) PROBE("alpha_8b_no_blocks");"""),
     ("""  if (plane_code > CODE_TO_PLANE_CODES) {
     return plane_code - CODE_TO_PLANE_CODES;""",
      """  if (plane_code > CODE_TO_PLANE_CODES) {
@@ -203,8 +215,7 @@ VP8 = [
   if (size < 3 * last_part) {""",
      """  dec->num_parts_minus_one = (1 << VP8GetValue(br, 2, "global-header")) - 1;
   last_part = dec->num_parts_minus_one;
-  { static char b[32]; snprintf(b, sizeof(b), "parts_%d", (int)last_part + 1);
-    PROBE(b); }
+  PROBE1("parts_%d", (int)last_part + 1);
   if (size < 3 * last_part) {
     PROBE("parts_size_table_truncated");"""),
     ("""    if (psize > size_left) psize = size_left;""",
@@ -213,6 +224,143 @@ VP8 = [
     ("""  if (part_start < buf_end) return VP8_STATUS_OK;""",
      """  if (part_start < buf_end) return VP8_STATUS_OK;
   PROBE("parts_no_data_left");"""),
+    # Why a file was rejected. Every VP8-level failure goes through here, so
+    # one probe names the reason instead of leaving it to be guessed at.
+    ("""  if (dec->status == VP8_STATUS_OK) {
+    dec->status = error;""",
+     """  if (dec->status == VP8_STATUS_OK) {
+    { static char b[80]; int i;
+      snprintf(b, sizeof(b), "error:%s", msg);
+      for (i = 0; b[i] != 0; ++i) if (b[i] == ' ') b[i] = '-';
+      PROBE(b); }
+    dec->status = error;"""),
+    # The checks in VP8GetInfo() reject before any of that, by returning 0.
+    ("""  if (!VP8CheckSignature(data + 3, data_size - 3)) {
+    return 0;  // Wrong signature.""",
+     """  if (!VP8CheckSignature(data + 3, data_size - 3)) {
+    PROBE("info:bad-signature");
+    return 0;  // Wrong signature."""),
+    ("""    if (!key_frame) {  // Not a keyframe.
+      return 0;""",
+     """    if (!key_frame) {  // Not a keyframe.
+      PROBE("info:not-a-keyframe");
+      return 0;"""),
+    ("""      return 0;  // unknown profile""",
+     """      PROBE("info:unknown-profile");
+      return 0;  // unknown profile"""),
+    ("""      return 0;  // first frame is invisible!""",
+     """      PROBE("info:not-displayable");
+      return 0;  // first frame is invisible!"""),
+    ("""      return 0;                         // inconsistent size information.""",
+     """      PROBE("info:partition-length");
+      return 0;                         // inconsistent size information."""),
+    ("""      return 0;  // We don't support both width and height to be zero.""",
+     """      PROBE("info:zero-dimension");
+      return 0;  // We don't support both width and height to be zero."""),
+    # Coefficient magnitudes: which branch of section 13.2 each one took.
+    ("""    if (!VP8GetBit(br, p[4], "coeffs")) {
+      v = 2;""",
+     """    if (!VP8GetBit(br, p[4], "coeffs")) {
+      PROBE("coeff_v2");
+      v = 2;"""),
+    ("""      v = 3 + VP8GetBit(br, p[5], "coeffs");""",
+     """      v = 3 + VP8GetBit(br, p[5], "coeffs");
+      PROBE("coeff_v3_4");"""),
+    ("""        v = 5 + VP8GetBit(br, 159, "coeffs");""",
+     """        v = 5 + VP8GetBit(br, 159, "coeffs");
+        PROBE("coeff_v5_6");"""),
+    ("""        v = 7 + 2 * VP8GetBit(br, 165, "coeffs");
+        v += VP8GetBit(br, 145, "coeffs");""",
+     """        v = 7 + 2 * VP8GetBit(br, 165, "coeffs");
+        v += VP8GetBit(br, 145, "coeffs");
+        PROBE("coeff_v7_10");"""),
+    ("""      v += 3 + (8 << cat);""",
+     """      v += 3 + (8 << cat);
+      PROBE1("coeff_cat%d", cat + 3);
+      if (v == 2114) PROBE("coeff_max");"""),
+    # The Y2 block decides between the full inverse WHT and the shortcut.
+    ("""    if (nz > 1) {  // more than just the DC -> perform the full transform""",
+     """    if (nz == 0) PROBE("wht_empty");
+    if (nz == 1) PROBE("wht_dc_only");
+    if (nz > 1) PROBE("wht_full");
+    if (nz > 1) {  // more than just the DC -> perform the full transform"""),
+    # A skipped macroblock clears its neighbours' flags -- except the Y2 one,
+    # which it leaves alone when there is no Y2 block to clear.
+    ("""    left->nz = mb->nz = 0;
+    if (!block->is_i4x4) {
+      left->nz_dc = mb->nz_dc = 0;
+    }""",
+     """    PROBE("mb_skipped");
+    left->nz = mb->nz = 0;
+    if (!block->is_i4x4) {
+      left->nz_dc = mb->nz_dc = 0;
+    } else {
+      PROBE("skip_i4x4_keeps_nz_dc");
+    }"""),
+]
+
+TREE = [
+    # Segment id, skip flag, and the 16x16-or-4x4 decision, per macroblock.
+    ("""  block->is_i4x4 = !VP8GetBit(br, 145, "block-size");""",
+     """  block->is_i4x4 = !VP8GetBit(br, 145, "block-size");
+  if (dec->segment_hdr.update_map) {
+    PROBE1("segment_id_%d", block->segment);
+  }
+  if (dec->use_skip_proba && block->skip) PROBE("mb_skip_flag");
+  PROBE(block->is_i4x4 ? "mb_i4x4" : "mb_i16");"""),
+    ("""    block->imodes[0] = ymode;""",
+     """    PROBE1("ymode_%d", ymode);
+    block->imodes[0] = ymode;"""),
+    ("""        top[x] = ymode;""",
+     """        PROBE1("bmode_%d", ymode);
+        top[x] = ymode;"""),
+    ("""  block->uvmode = !VP8GetBit(br, 142, "pred-modes-uv")   ? DC_PRED
+                  : !VP8GetBit(br, 114, "pred-modes-uv") ? V_PRED
+                  : VP8GetBit(br, 183, "pred-modes-uv")  ? TM_PRED
+                                                         : H_PRED;""",
+     """  block->uvmode = !VP8GetBit(br, 142, "pred-modes-uv")   ? DC_PRED
+                  : !VP8GetBit(br, 114, "pred-modes-uv") ? V_PRED
+                  : VP8GetBit(br, 183, "pred-modes-uv")  ? TM_PRED
+                                                         : H_PRED;
+  PROBE1("uvmode_%d", block->uvmode);"""),
+    # Whether a coefficient probability was signalled, not merely different.
+    ("""          const int v =
+              VP8GetBit(br, CoeffsUpdateProba[t][b][c][p], "global-header")
+                  ? VP8GetValue(br, 8, "global-header")
+                  : CoeffsProba0[t][b][c][p];""",
+     """          const int updated =
+              VP8GetBit(br, CoeffsUpdateProba[t][b][c][p], "global-header");
+          const int v = updated ? VP8GetValue(br, 8, "global-header")
+                                : CoeffsProba0[t][b][c][p];
+          if (updated) PROBE("proba_update");
+          if (updated && v == 0) PROBE("proba_zero");
+          if (updated && v == 255) PROBE("proba_255");"""),
+    ("""  dec->use_skip_proba = VP8Get(br, "global-header");""",
+     """  dec->use_skip_proba = VP8Get(br, "global-header");
+  if (dec->use_skip_proba) PROBE("skip_proba");"""),
+]
+
+QUANT = [
+    ("""  for (i = 0; i < NUM_MB_SEGMENTS; ++i) {
+    int q;
+    if (hdr->use_segment) {""",
+     """  if (dqy1_dc | dqy2_dc | dqy2_ac | dquv_dc | dquv_ac) PROBE("quant_delta");
+  if (base_q0 == 0) PROBE("quant_min");
+  if (base_q0 == 127) PROBE("quant_max");
+  for (i = 0; i < NUM_MB_SEGMENTS; ++i) {
+    int q;
+    if (hdr->use_segment) {
+      PROBE(hdr->absolute_delta ? "quant_segment_absolute"
+                                : "quant_segment_delta");"""),
+    ("""      m->y1_mat[0] = kDcTable[clip(q + dqy1_dc, 127)];""",
+     """      if (q + dqy1_dc > 127 || q + dqy1_dc < 0) PROBE("quant_y1_dc_clipped");
+      m->y1_mat[0] = kDcTable[clip(q + dqy1_dc, 127)];"""),
+    ("""      if (m->y2_mat[1] < 8) m->y2_mat[1] = 8;""",
+     """      if (m->y2_mat[1] < 8) PROBE("quant_y2_ac_floor");
+      if (m->y2_mat[1] < 8) m->y2_mat[1] = 8;"""),
+    ("""      m->uv_mat[0] = kDcTable[clip(q + dquv_dc, 117)];""",
+     """      if (q + dquv_dc > 117) PROBE("quant_uv_dc_clamped_at_117");
+      m->uv_mat[0] = kDcTable[clip(q + dquv_dc, 117)];"""),
 ]
 
 DSP = [
@@ -221,15 +369,15 @@ DSP = [
      """        const int pred_mode = ((*pred_mode_src) >> 8) & 0xf;
         const VP8LPredictorAddSubFunc pred_func =
             VP8LPredictorsAdd[((*pred_mode_src++) >> 8) & 0xf];
-        { static char b[24]; snprintf(b, sizeof(b), "pred_mode_%d", pred_mode);
-          PROBE(b); }"""),
+        PROBE1("pred_mode_%d", pred_mode);"""),
     ("""  if (y_start == 0) {  // First Row follows the L (mode=1) mode.""",
      """  if (y_start == 0) PROBE("pred_first_row");
   if (y_start == 0) {  // First Row follows the L (mode=1) mode."""),
 ]
 
 FILES = [('src/dec/vp8l_dec.c', VP8L), ('src/utils/huffman_utils.c', HUFFMAN),
-         ('src/dec/vp8_dec.c', VP8), ('src/dsp/lossless.c', DSP)]
+         ('src/dec/vp8_dec.c', VP8), ('src/dec/tree_dec.c', TREE),
+         ('src/dec/quant_dec.c', QUANT), ('src/dsp/lossless.c', DSP)]
 
 
 def main():
@@ -238,15 +386,17 @@ def main():
     for rel, patches in FILES:
         path = '%s/%s' % (root, rel)
         s = open(path).read()
-        s = s.replace('#include <assert.h>', HEADER, 1)
-        if '#include <stdio.h>' not in s:            # lossless.c has no assert
-            s = s.replace('#include "src/dsp/lossless.h"',
-                          '#include <stdio.h>\n'
-                          '#define PROBE(t) fprintf(stderr, "PROBE:%s\\n", t)\n'
-                          '#include "src/dsp/lossless.h"', 1)
+        at = s.index('#include')
+        s = s[:at] + MACROS + s[at:]
         for old, new in patches:
-            if old not in s:
-                print('MISSING anchor in %s:\n  %s' % (rel, old.strip()[:70]))
+            # An anchor that matches twice is worse than one that matches
+            # never: replace() would take the first, and a probe planted on
+            # a path nothing runs looks exactly like a path nothing covers.
+            found = s.count(old)
+            if found != 1:
+                print('%s anchor in %s:\n  %s'
+                      % ('MISSING' if found == 0 else '%d MATCHES for' % found,
+                         rel, old.strip()[:70]))
                 missing += 1
                 continue
             s = s.replace(old, new, 1)

@@ -1,0 +1,27 @@
+# note: The same sweep for the two block kinds a 16x16 macroblock has: the Y2
+#   block and the luma blocks that follow it.
+# expect: ok
+# exercises: Types 1 (Y2) and 0 (luma after Y2). The luma blocks start at
+#   position 1, so band 0 is unreachable for them and band 1 is what their
+#   neighbour context selects. One Y2 block per macroblock means the four
+#   macroblocks are what give it contexts 0, 1, 1 and 2. The three token
+#   classes drive the context of the next position: a zero gives 0, a +-1 gives
+#   1, anything larger gives 2. A block of each, walked to position 15, reads
+#   every band at that class, and the blocks are placed so their neighbour
+#   contexts are 0, 1 and 2 in turn -- which is the only way to reach band 0,
+#   the one that is never a token's successor.
+width 32
+height 32
+yac_qi 8
+macroblock
+coeffs y2    15:1
+coeffs y[0]  15:1
+coeffs y[1]  0 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1
+coeffs y[4]  1:1
+coeffs y[5]  0 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4
+macroblock
+coeffs y2    1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1
+macroblock
+coeffs y2    1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1
+macroblock
+coeffs y2    3 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4

@@ -1,0 +1,14 @@
+# note: Category-4 coefficients: 19 to 34, four extra bits.
+# expect: ok
+# exercises: kCat4, and the p[9] branch that separates category 4 from
+#   category 3.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   19 -19
+coeffs y[1]   34 -34
+coeffs y[2]   20 33
+coeffs y[3]   -21 -32

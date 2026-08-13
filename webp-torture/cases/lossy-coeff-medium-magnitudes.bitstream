@@ -1,0 +1,18 @@
+# note: Coefficients of 5 through 10, coded with the fixed probabilities 159,
+#   165 and 145.
+# expect: ok
+# exercises: The two branches under p[6]: 5 and 6 through probability 159,
+#   then 7 to 10 through 165 and 145. Those three constants appear nowhere
+#   else.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   5 -5
+coeffs y[1]   6 -6
+coeffs y[2]   7 -7
+coeffs y[3]   8 -8
+coeffs y[4]   9 -9
+coeffs y[5]   10 -10

@@ -1,0 +1,13 @@
+# note: Profile 7, the largest the 3-bit field can hold.
+# expect: reject
+# exercises: The far end of the field, past the "profile > 3" test that
+#   lossy-frame-version-4 sits on. Same rejection, opposite end of the range,
+#   which is what pins the test as a comparison rather than an equality.
+version 7
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -18
+coeffs y[5] 1:3 -2
+macroblock count 3

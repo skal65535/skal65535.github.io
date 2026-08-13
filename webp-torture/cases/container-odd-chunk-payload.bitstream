@@ -1,0 +1,20 @@
+# note: An optional chunk with an odd-sized payload, and the pad byte that
+#   must follow it.
+# expect: ok
+# roundtrip: no
+# exercises: disk_chunk_size rounds a payload up to an even length. Every
+#   lossy file in the corpus has an odd image chunk and so pads incidentally,
+#   but this is the only one where the padded chunk has something after it,
+#   which is where getting the rounding wrong would show.
+chunks VP8X JUNK VP8
+payload JUNK 010203
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

@@ -1,0 +1,41 @@
+# note: Partition 0 intact, the token partition cut in half.
+# expect: reject
+# exercises: "Premature end-of-file encountered" out of VP8DecodeMB(), the
+#   other truncation path. The modes all parse, so the decoder gets several
+#   rows in before it fails.
+width 64
+height 64
+yac_qi 20
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     20
+coeffs y[0]   1:3
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     15
+coeffs y[1]   1:4
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     10
+coeffs y[2]   1:5
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     5
+coeffs y[3]   1:6
+macroblock count 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+patch truncate tokens 12

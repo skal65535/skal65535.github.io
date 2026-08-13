@@ -1,0 +1,18 @@
+# note: The VP8X animation flag set on a file with no animation chunks.
+# expect: reject
+# roundtrip: no
+# exercises: The flag alone is enough: WebPParseHeaders() turns any file
+#   claiming animation into UNSUPPORTED_FEATURE, since a still decoder cannot
+#   compose frames. Nothing looks for the ANIM chunk the flag implies.
+chunks VP8X VP8
+animation 1
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

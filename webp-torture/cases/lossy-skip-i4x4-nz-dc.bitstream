@@ -1,0 +1,27 @@
+# note: A skipped 4x4 macroblock between two 16x16 ones that both carry a Y2
+#   block.
+# expect: ok
+# exercises: VP8DecodeMB() clears nz_dc only when the skipped macroblock is
+#   not 4x4-coded, so the second 16x16 macroblock sees the Y2 context left
+#   behind by the first. Reproducing that quirk is the whole point.
+width 64
+height 16
+yac_qi 25
+mb_no_skip_coeff 1
+prob_skip_false 128
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     20 -6
+macroblock
+mb_skip_coeff 1
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18 4
+macroblock
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED

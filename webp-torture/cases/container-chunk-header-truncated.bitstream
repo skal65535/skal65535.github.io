@@ -1,0 +1,19 @@
+# note: The file cut four bytes into the last chunk header.
+# expect: reject
+# roundtrip: no
+# exercises: The "buf_size < CHUNK_HEADER_SIZE" test at the top of the walk:
+#   a tag with no size behind it. Four bytes is enough to read the fourcc and
+#   not the length.
+chunks VP8X VP8
+trailing 4a554e4b
+riff_size 40
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

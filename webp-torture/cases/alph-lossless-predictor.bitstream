@@ -1,0 +1,20 @@
+# note: A losslessly compressed alpha plane carrying a predictor transform,
+#   from a cwebp encode of a gradient.
+# expect: ok
+# roundtrip: no
+# exercises: Compression method 1 hands the payload to the lossless decoder.
+#   A predictor transform leaves the red, blue and alpha codes non-trivial, so
+#   Is8bOptimizable() says no and the plane is decoded through
+#   DecodeImageData() with ExtractAlphaRows() pulling the green channel out
+#   afterwards. The 21 payload bytes are cwebp -q 60 output; nothing here can
+#   write one yet.
+chunks VP8X ALPH VP8
+alpha 1
+alph_compression 1
+alph_data b90a44f43f40a46d333634ff920f4f23262099a5bb
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

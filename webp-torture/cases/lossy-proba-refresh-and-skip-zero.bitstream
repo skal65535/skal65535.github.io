@@ -1,0 +1,22 @@
+# note: The entropy-refresh bit set, and a skip probability of 0.
+# expect: ok
+# exercises: refresh_entropy_probs is read and dropped by libwebp, so no
+#   other file sets it. A prob_skip_false of 0 says no macroblock is skipped
+#   while two are, which is the most expensive way the flag can be coded and
+#   the bottom of its range.
+width 32
+height 32
+refresh_entropy_probs 1
+yac_qi 28
+mb_no_skip_coeff 1
+prob_skip_false 0
+macroblock
+coeffs y2 -20
+coeffs y[3] 1:5
+macroblock
+mb_skip_coeff 1
+macroblock
+intra_y_mode TM_PRED
+coeffs y2 12
+macroblock
+mb_skip_coeff 1

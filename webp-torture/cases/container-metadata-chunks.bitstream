@@ -1,0 +1,24 @@
+# note: ICCP, EXIF and XMP chunks around the frame.
+# expect: ok
+# roundtrip: no
+# exercises: ParseOptionalChunks() walks and skips anything that is not VP8
+#   or VP8L. The three metadata chunks the format defines are the ones a real
+#   file is most likely to carry, and the decoder must step over them by their
+#   declared size alone.
+chunks VP8X ICCP EXIF VP8 XMP
+icc_profile 1
+exif_metadata 1
+xmp_metadata 1
+payload ICCP 00112233445566778899
+payload EXIF 45786966000049492a00
+payload XMP 3c783a786d706d6574613e
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

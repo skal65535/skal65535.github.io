@@ -1,0 +1,15 @@
+# note: An ALPH chunk placed after the image chunk instead of before it.
+# expect: ok
+# roundtrip: no
+# exercises: ParseOptionalChunks() stops at the first VP8 chunk, so an ALPH
+#   behind it is never seen and the picture decodes fully opaque. Ordering is
+#   not diagnosed, it is silently obeyed -- which the all-255 alpha in the hash
+#   is what records.
+chunks VP8X VP8 ALPH
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

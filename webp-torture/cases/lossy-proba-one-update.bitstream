@@ -1,0 +1,18 @@
+# note: A single coefficient probability updated, the other 1055 left alone.
+# expect: ok
+# exercises: One 1 among the update flags of VP8ParseProba(), on the
+#   [i4-AC][band 0][ctx 0] EOB probability, which the coefficients below then
+#   use.
+width 32
+height 32
+coeff_prob 3 0 0 0 40
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20
+coeffs y[0]   1:5 -3 2
+coeffs u[1]   4
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED

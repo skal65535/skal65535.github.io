@@ -1,0 +1,18 @@
+# note: The reserved bits of the VP8X flags field all set.
+# expect: ok
+# roundtrip: no
+# exercises: Everything outside ALL_VALID_FLAGS (0x3e). The decoder reads the
+#   field as a whole and tests only the bits it knows, so the reserved ones
+#   ride through; the muxer is stricter than the decoder here.
+chunks VP8X VP8
+vp8x_reserved 0xffffff
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

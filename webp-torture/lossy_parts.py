@@ -15,31 +15,17 @@ and libwebp forces num_parts back to 1 whenever the token path is used
 """
 
 import os
-import struct
 import sys
+
+import vp8
 
 NUM_PARTS = 8  # what the patched cases below are built from
 
 
-def find_vp8_chunk(data):
-    """Returns the offset of the VP8 chunk payload inside a RIFF file."""
-    assert data[0:4] == b'RIFF' and data[8:12] == b'WEBP', 'not a RIFF/WEBP'
-    pos = 12
-    while pos + 8 <= len(data):
-        tag = data[pos:pos + 4]
-        size = struct.unpack('<I', data[pos + 4:pos + 8])[0]
-        if tag == b'VP8 ':
-            return pos + 8
-        pos += 8 + size + (size & 1)
-    raise ValueError('no VP8 chunk')
-
-
 def size_table_offset(data):
-    """Offset of the partition size table: past the 10-byte keyframe header
-    and past partition 0, whose length is in the frame tag."""
-    off = find_vp8_chunk(data)
-    bits = data[off] | (data[off + 1] << 8) | (data[off + 2] << 16)
-    return off + 10 + (bits >> 5)          # bits >> 5 is partition 0's size
+    """Offset of the partition size table inside a whole RIFF file."""
+    off = vp8.find_vp8_chunk(data)[0]
+    return off + vp8.size_table_offset(data[off:])
 
 
 def read_sizes(data, num_parts=NUM_PARTS):

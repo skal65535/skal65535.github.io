@@ -1,0 +1,15 @@
+# note: An uncompressed plane 44 bytes longer than the picture needs.
+# expect: ok
+# roundtrip: no
+# exercises: ALPHInit() tests "alpha_data_size >= alpha_decoded_size", so a
+#   plane may be longer than width by height and the tail is simply never read.
+#   The boundary partner of alph-raw-short.
+chunks VP8X ALPH VP8
+alpha 1
+alph_raw 300
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

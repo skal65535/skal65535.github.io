@@ -1,0 +1,56 @@
+# note: 16x16 and 4x4 macroblocks alternating, in both directions.
+# expect: ok
+# exercises: A 16x16 macroblock writes its mode into all four of its
+#   neighbours' 4x4 contexts, so this is what checks that the two mode paths
+#   agree on the context they leave behind.
+width 64
+height 32
+yac_qi 25
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode V_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_TM_PRED B_DC_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0]   6 -3
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode H_PRED
+coeffs y2     12
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode TM_PRED
+intra_b_mode B_HU_PRED B_HD_PRED B_VL_PRED B_LD_PRED
+intra_b_mode B_VR_PRED B_RD_PRED B_HE_PRED B_VE_PRED
+intra_b_mode B_TM_PRED B_DC_PRED B_HU_PRED B_HD_PRED
+intra_b_mode B_VL_PRED B_LD_PRED B_VR_PRED B_RD_PRED
+coeffs y[5]   -5
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+coeffs y[10]  4
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode V_PRED
+coeffs y2     -14
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_TM_PRED B_TM_PRED B_TM_PRED B_TM_PRED
+intra_b_mode B_TM_PRED B_TM_PRED B_TM_PRED B_TM_PRED
+intra_b_mode B_TM_PRED B_TM_PRED B_TM_PRED B_TM_PRED
+intra_b_mode B_TM_PRED B_TM_PRED B_TM_PRED B_TM_PRED
+coeffs y[15]  3
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode TM_PRED
+coeffs y2     10

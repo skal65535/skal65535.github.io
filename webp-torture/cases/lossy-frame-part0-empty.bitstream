@@ -1,0 +1,16 @@
+# note: The frame tag claims a zero-byte partition 0.
+# expect: reject
+# exercises: The boolean reader is handed no data at all: every header field
+#   reads past the end, and ParseSegmentHeader() returns on br->eof.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+patch partition0_size 0

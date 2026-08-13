@@ -1,0 +1,17 @@
+# note: A RIFF header claiming far more bytes than the file holds.
+# expect: reject
+# roundtrip: no
+# exercises: The "size > *data_size - CHUNK_HEADER_SIZE" test, which only
+#   fires when the whole file is in hand -- the same lie is tolerated while a
+#   stream is still arriving.
+riff_size 1000000
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

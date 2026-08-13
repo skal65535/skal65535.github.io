@@ -1,0 +1,13 @@
+# note: Category-6 coefficients: 67 upwards, eleven extra bits.
+# expect: ok
+# exercises: kCat6, the longest escape. 67 is the first value it can hold.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   67 -67
+coeffs y[1]   100 -500
+coeffs y[2]   1000 -2000
+coeffs y[3]   -2113 2113

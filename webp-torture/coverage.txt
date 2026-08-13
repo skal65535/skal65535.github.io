@@ -7,11 +7,29 @@
 #
 # libwebp revision: 0be8ddd1
 
+alph-after-image                         coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-compression-invalid                 coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-empty-payload                       coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-lossless-byte-flipped               build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Could-not-decode-alpha-data. lz77_copy mb_i16 parts_1 simple_1sym simple_2sym simple_sym_1bit tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-lossless-palette                    alpha_8b_data alpha_8b_no_blocks build_single_value codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code mb_i16 palette_2 parts_1 simple_1sym simple_2sym simple_sym_1bit tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-lossless-predictor                  build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code lz77_copy mb_i16 parts_1 pred_first_row pred_mode_2 simple_1sym simple_2sym simple_sym_1bit tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-lossless-truncated                  build_single_value codelen_17 coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Alpha-decoder-initialization-failed. mb_i16 parts_1 simple_1sym simple_sym_1bit tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-no-vp8x                             info:bad-signature 
+alph-preprocessing-invalid               coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-filter-gradient                 coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-filter-horizontal               coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-filter-none                     coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-filter-vertical                 coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-oversized                       coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-preprocessing                   coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-raw-short                           coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-reserved-set                        coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+alph-without-vp8x-flag                   coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 cache-bits-0-invalid                     reject_cache_bits 
 cache-bits-1                             build_single_value cache_bits_min simple_1sym 
 cache-bits-11                            build_single_value cache_bits_max simple_1sym 
 cache-bits-12-invalid                    reject_cache_bits 
-cache-index-literal                      build_single_value cache_bits_min codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
+cache-index-literal                      build_single_value cache_bits_min cache_index codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
 codelen-all-zero-lengths                 build_empty_code build_single_value codelen_18 complex_code num_codes_min simple_1sym 
 codelen-depth-15                         build_depth_15 build_single_value build_two_level codelen_18 codelen_18_max_run complex_code num_codes_max simple_1sym 
 codelen-incomplete                       build_single_value codelen_18 complex_code reject_incomplete simple_1sym 
@@ -27,25 +45,118 @@ codelen-repeat17-short-zeros             build_single_value codelen_17 codelen_1
 codelen-repeat18-138-zeros               build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
 codelen-single-symbol-complex-form       build_single_value codelen_18 complex_code num_codes_min simple_1sym 
 codelen-two-level-table                  build_single_value build_two_level codelen_18 codelen_18_max_run complex_code simple_1sym 
+container-chunk-header-truncated         
+container-duplicate-image-chunk          coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-metadata-chunks                coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-no-image-chunk                 
+container-odd-chunk-no-pad               
+container-odd-chunk-payload              coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-riff-size-past-end             
+container-riff-size-short                
+container-riff-size-truncates-chunks     
+container-trailing-bytes                 coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-unknown-chunk                  coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-vp8x-animation                 
+container-vp8x-area-overflow             
+container-vp8x-canvas-mismatch           
+container-vp8x-reserved-bits             coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-vp8x-still-flags               coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-vp8x-wrong-size                
+container-vp8x                           coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+container-zero-size-chunk                coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
 header-max-area-bomb                     build_single_value header_huge_area header_width_16384 simple_1sym 
 header-max-area-truncated                build_empty_code complex_code header_huge_area header_width_16384 num_codes_min 
 header-version-nonzero                   reject_signature_version 
 header-width-16384                       build_single_value header_width_16384 simple_1sym 
-lossy-1-partitions                       parts_1 
-lossy-2-partitions                       parts_2 
-lossy-4-partitions                       parts_4 
-lossy-8-partitions-size-overflow         parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
-lossy-8-partitions-sizes-sum-past-end    parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
-lossy-8-partitions-zero-sizes            parts_8 parts_psize_zero 
-lossy-8-partitions                       parts_8 
-lz77-distance-1-run                      build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
-lz77-distance-direct-121                 build_single_value codelen_18 codelen_18_max_run complex_code dist_direct num_codes_min simple_1sym 
-lz77-distance-past-start                 build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 num_codes_min simple_1sym 
-lz77-length-past-end                     build_single_value codelen_18 codelen_18_max_run complex_code dist_direct num_codes_min simple_1sym 
-lz77-max-length-symbol                   build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
-lz77-plane-code-1                        build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 num_codes_min simple_1sym 
-lz77-plane-code-120                      build_single_value codelen_17 codelen_17_max_run codelen_18 codelen_18_max_run complex_code dist_plane_code_120 num_codes_min simple_1sym 
-lz77-plane-code-clamped-to-1             build_single_value codelen_18 codelen_18_max_run complex_code dist_clamped_to_1 num_codes_min simple_1sym 
+lossy-1-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-2-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_2 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-4-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_4 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-8-partitions-size-overflow         error:cannot-parse-partitions parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
+lossy-8-partitions-sizes-sum-past-end    error:cannot-parse-partitions parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
+lossy-8-partitions-zero-sizes            bmode_0 bmode_1 bmode_3 bmode_4 bmode_6 bmode_8 bmode_9 error:Premature-end-of-file-encountered. mb_i16 mb_i4x4 parts_8 parts_psize_zero proba_update proba_zero quant_delta quant_segment_absolute segment_id_2 segment_id_3 uvmode_0 uvmode_3 wht_empty ymode_0 ymode_1 
+lossy-8-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_8 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-coeff-all-types                    bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 uvmode_0 uvmode_1 wht_full ymode_0 
+lossy-coeff-bands-chroma                 coeff_cat3 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+lossy-coeff-bands-i16                    coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_full ymode_0 
+lossy-coeff-bands-i4                     bmode_0 coeff_v3_4 mb_i4x4 parts_1 uvmode_0 
+lossy-coeff-cat3                         bmode_0 coeff_cat3 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-cat4                         bmode_0 coeff_cat4 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-cat5                         bmode_0 coeff_cat5 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-cat6-max                     bmode_0 coeff_cat6 coeff_max mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-cat6                         bmode_0 coeff_cat6 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-context                      bmode_0 coeff_v3_4 mb_i4x4 parts_1 uvmode_0 
+lossy-coeff-empty-blocks                 mb_i16 parts_1 uvmode_0 wht_empty ymode_0 
+lossy-coeff-full-block                   bmode_0 coeff_cat3 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-medium-magnitudes            bmode_0 coeff_v5_6 coeff_v7_10 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-small-magnitudes             bmode_0 coeff_v2 coeff_v3_4 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-coeff-wht-full                     coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_1 uvmode_0 wht_dc_only wht_full ymode_0 
+lossy-coeff-zero-runs                    bmode_0 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i4x4 parts_1 quant_min quant_y2_ac_floor uvmode_0 
+lossy-combo-all-features                 bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 mb_skip_flag mb_skipped parts_4 proba_update quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 skip_proba uvmode_0 uvmode_1 uvmode_3 wht_dc_only wht_empty wht_full ymode_0 ymode_1 ymode_2 
+lossy-filter-lf-delta-extremes           bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 uvmode_0 wht_dc_only ymode_0 ymode_2 
+lossy-filter-lf-delta                    bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 uvmode_0 uvmode_1 uvmode_2 wht_dc_only ymode_0 ymode_2 
+lossy-filter-normal-max                  coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_1 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-filter-sharpness-4                 coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-filter-sharpness-5                 coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-filter-simple-max                  coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_1 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-frame-bad-start-code               info:bad-signature 
+lossy-frame-colorspace-clamp             coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-frame-interframe                   info:not-a-keyframe 
+lossy-frame-not-shown                    info:not-displayable 
+lossy-frame-part0-empty                  error:cannot-parse-segment-header 
+lossy-frame-part0-past-end               info:partition-length 
+lossy-frame-scale-1                      coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-frame-scale-2                      coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-frame-scaled                       coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-frame-version-1                    coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-frame-version-2                    coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-frame-version-3                    coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-frame-version-4                    info:unknown-profile 
+lossy-frame-version-7                    info:unknown-profile 
+lossy-frame-width-16383                  coeff_cat4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-frame-zero-width                   info:zero-dimension 
+lossy-mode-i16-all-four                  coeff_cat3 coeff_cat4 coeff_v7_10 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-mode-i4-all-ten                    bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i4x4 parts_1 uvmode_0 
+lossy-mode-i4-context                    bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_v2 coeff_v3_4 mb_i4x4 parts_1 uvmode_0 
+lossy-mode-mixed                         bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-mode-uv-all-four                   coeff_v5_6 mb_i16 parts_1 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_empty ymode_0 
+lossy-parts-2-wrap                       coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_2 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-parts-8-rows                       coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_8 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-parts-last-empty                   error:cannot-parse-partitions parts_4 parts_no_data_left parts_psize_clamped 
+lossy-parts-size-past-end                error:cannot-parse-partitions parts_4 parts_no_data_left parts_psize_clamped parts_psize_zero 
+lossy-parts-table-too-small              error:cannot-parse-partitions parts_8 parts_size_table_truncated 
+lossy-proba-all-updated                  coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 proba_update uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-proba-one-update                   coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 proba_update uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-proba-refresh-and-skip-zero        coeff_cat3 coeff_cat4 coeff_v5_6 mb_i16 mb_skip_flag mb_skipped parts_1 skip_proba uvmode_0 wht_dc_only ymode_0 ymode_1 
+lossy-proba-skip-extremes                coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 skip_proba uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-proba-zero                         coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 proba_255 proba_update proba_zero uvmode_0 uvmode_3 wht_dc_only wht_empty ymode_0 ymode_2 
+lossy-quant-deltas-mirrored              coeff_cat3 coeff_v2 coeff_v3_4 mb_i16 parts_1 quant_delta uvmode_0 wht_dc_only ymode_0 
+lossy-quant-deltas                       coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 quant_delta uvmode_0 uvmode_3 wht_empty wht_full ymode_0 ymode_2 
+lossy-quant-dequant-overflow             bmode_0 coeff_cat6 coeff_max mb_i4x4 parts_1 quant_max quant_uv_dc_clamped_at_117 uvmode_0 
+lossy-quant-max                          coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 quant_max quant_uv_dc_clamped_at_117 uvmode_0 uvmode_3 wht_empty wht_full ymode_0 ymode_2 
+lossy-quant-min                          coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 quant_min quant_y2_ac_floor uvmode_0 uvmode_3 wht_empty wht_full ymode_0 ymode_2 
+lossy-quant-uv-dc-clamp                  coeff_cat4 coeff_v2 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 quant_delta quant_uv_dc_clamped_at_117 uvmode_0 uvmode_3 wht_empty wht_full ymode_0 ymode_2 
+lossy-segment-delta-quantizers           coeff_cat4 mb_i16 parts_1 quant_segment_delta segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 wht_dc_only ymode_0 
+lossy-segment-filter-strengths           coeff_cat3 coeff_cat4 coeff_v5_6 coeff_v7_10 mb_i16 parts_1 quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-segment-four-quantizers            coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 parts_1 quant_segment_absolute quant_uv_dc_clamped_at_117 segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-segment-map-only                   coeff_cat3 mb_i16 parts_1 quant_segment_absolute quant_y2_ac_floor segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 wht_dc_only wht_empty ymode_0 
+lossy-segment-no-map                     coeff_cat4 mb_i16 parts_1 quant_segment_absolute quant_uv_dc_clamped_at_117 uvmode_0 uvmode_1 wht_dc_only wht_empty ymode_0 ymode_1 
+lossy-segment-prob-extremes              coeff_cat3 coeff_cat4 coeff_v7_10 mb_i16 parts_1 quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-segment-quant-extremes             coeff_cat4 mb_i16 parts_1 quant_segment_absolute quant_uv_dc_clamped_at_117 quant_y1_dc_clipped quant_y2_ac_floor segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 wht_dc_only ymode_0 
+lossy-skip-all                           mb_i16 mb_skip_flag mb_skipped parts_1 skip_proba uvmode_0 ymode_0 
+lossy-skip-i4x4-nz-dc                    bmode_0 coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 mb_i4x4 mb_skip_flag mb_skipped parts_1 skip_i4x4_keeps_nz_dc skip_proba uvmode_0 wht_full ymode_0 
+lossy-skip-mixed                         coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_skip_flag mb_skipped parts_1 skip_proba uvmode_0 uvmode_1 uvmode_2 uvmode_3 wht_dc_only ymode_0 ymode_1 ymode_2 ymode_3 
+lossy-truncated-header                   error:cannot-parse-filter-header 
+lossy-truncated-modes                    bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 error:Premature-end-of-partition0-encountered. mb_i4x4 parts_1 uvmode_0 
+lossy-truncated-short-modes              bmode_0 mb_i16 mb_i4x4 mb_skip_flag mb_skipped parts_1 skip_proba uvmode_0 ymode_0 
+lossy-truncated-tokens                   coeff_cat3 coeff_cat4 coeff_v3_4 coeff_v7_10 error:Premature-end-of-file-encountered. mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty wht_full ymode_0 ymode_2 ymode_3 
+lz77-distance-1-run                      build_single_value codelen_18 codelen_18_max_run complex_code lz77_copy num_codes_min simple_1sym 
+lz77-distance-direct-121                 build_single_value codelen_18 codelen_18_max_run complex_code dist_direct lz77_copy num_codes_min simple_1sym 
+lz77-distance-past-start                 build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 lz77_copy num_codes_min simple_1sym 
+lz77-length-past-end                     build_single_value codelen_18 codelen_18_max_run complex_code dist_direct lz77_copy num_codes_min simple_1sym 
+lz77-max-length-symbol                   build_single_value codelen_18 codelen_18_max_run complex_code lz77_copy lz77_max_len_sym num_codes_min simple_1sym 
+lz77-plane-code-1                        build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 lz77_copy num_codes_min simple_1sym 
+lz77-plane-code-120                      build_single_value codelen_17 codelen_17_max_run codelen_18 codelen_18_max_run complex_code dist_plane_code_120 lz77_copy num_codes_min simple_1sym 
+lz77-plane-code-clamped-to-1             build_single_value codelen_18 codelen_18_max_run complex_code dist_clamped_to_1 lz77_copy num_codes_min simple_1sym 
 meta-huffman-1001-groups                 build_single_value meta_groups_over_1000 meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym 
 meta-huffman-precision-max               build_single_value meta_huffman meta_precision_max simple_1sym 
 meta-huffman-precision-min               build_single_value meta_huffman meta_precision_min simple_1sym 

@@ -1,0 +1,15 @@
+# note: Single coefficients at positions 15, 12, 8 and 1, each behind a run
+#   of zeros.
+# expect: ok
+# exercises: The inner "sequence of zero coeffs" loop of GetCoeffs(), which
+#   walks the band table without reading an end-of-block bit, and reaches
+#   position 15 in band 7.
+width 16
+height 16
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   15:7
+coeffs y[1]   12:-5
+coeffs y[2]   8:3
+coeffs y[3]   1:-2

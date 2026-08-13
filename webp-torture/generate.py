@@ -10,12 +10,15 @@ Each case() call registers one file plus the note that goes into README.md.
 'expect' is what the reference decoder is supposed to do: 'ok' or 'reject'.
 """
 
+import glob
 import os
 import re
 import sys
 import textwrap
 
 import lossy_parts
+import vp8_asm
+import webp_asm
 from vp8l import (BitWriter, Huffman, alphabet_size, plane_code_to_distance,
                   prefix_code, sub_sample_size, write_complex_code,
                   write_header, write_simple_code, wrap_webp,
@@ -1147,22 +1150,89 @@ GROUPS = [
      'values are reachable, but the format only defines 14 of them.'),
     ('header-', 'Frame header',
      'The 14-bit dimension fields and the version escape.'),
-    ('lossy-', 'Multiple token partitions (lossy VP8)',
-     'The only non-VP8L group. A lossy frame may carry 1, 2, 4 or 8 token '
-     'partitions, but cwebp does not expose config.partitions and libwebp '
-     'forces it back to 1 whenever the token path is used '
-     '(webp_enc.c:124), so these are hard to come by. The corrupted ones '
-     'rewrite the raw size table that follows partition 0.'),
+    ('container-', 'The RIFF container',
+     'The layer above the image: the RIFF header, the extended-format VP8X '
+     'chunk and its canvas size, the optional chunks a decoder must step '
+     'over by their declared length alone, and the padding rule that makes '
+     'an odd-sized one even on disk. Everything here is read by '
+     'webp_dec.c before the frame is looked at.'),
+    ('alph-', 'The alpha chunk',
+     'ALPH carries the alpha plane beside a lossy frame: a header byte of '
+     'four two-bit fields, then the plane itself, either stored as it is or '
+     'compressed with the lossless coder in its 8-bit mode. That mode is a '
+     'separate path through vp8l_dec.c from the one every VP8L file here '
+     'takes, and these are the only files that reach it.'),
+    ('lossy-frame-', 'Lossy: frame tag and picture header',
+     'The ten uncompressed bytes every lossy frame starts with: the profile, '
+     'the visibility and key-frame bits, the length of partition 0, the '
+     'start code and the two 14-bit dimensions.'),
+    ('lossy-segment-', 'Lossy: segmentation',
+     'Up to four segments, each with its own quantizer and loop-filter '
+     'strength, and a per-macroblock map saying which is which. cwebp uses '
+     'the feature but only ever writes absolute values, and always writes '
+     'the map and the data together.'),
+    ('lossy-filter-', 'Lossy: loop filter',
+     'The in-loop deblocking filter: simple or normal, its level and '
+     'sharpness, and the per-reference and per-mode deltas.'),
+    ('lossy-quant-', 'Lossy: quantizer',
+     'The frame quantizer index and the five deltas around it, one per plane '
+     'and coefficient kind, with clamps that are not all the same.'),
+    ('lossy-proba-', 'Lossy: coefficient probabilities',
+     'The 1056 probabilities that drive the coefficient coder, each one '
+     'optionally replaced in the frame header, plus the skip probability.'),
+    ('lossy-mode-', 'Lossy: prediction modes',
+     'The 16x16 and 4x4 luma modes and the chroma modes, and the '
+     'neighbour-indexed probability table the 4x4 modes are coded with.'),
+    ('lossy-coeff-', 'Lossy: coefficients',
+     'The token coder of section 13: magnitudes and their escape categories, '
+     'end-of-block, zero runs, and the four coefficient types.'),
+    ('lossy-skip-', 'Lossy: skipped macroblocks',
+     'The per-macroblock skip flag, which drops the residual entirely and '
+     'clears the neighbouring non-zero flags -- almost all of them.'),
+    ('lossy-parts-', 'Lossy: token partitions',
+     'A lossy frame may carry 1, 2, 4 or 8 token partitions, macroblock row '
+     'r being read from partition r & (n - 1). cwebp does not expose '
+     'config.partitions and libwebp forces it back to 1 whenever the token '
+     'path is used (webp_enc.c:124), so none of this is reachable through '
+     'the tools.'),
+    ('lossy-truncated-', 'Lossy: truncation',
+     'Frames that stop early, at each of the places the decoder can notice: '
+     'inside partition 0, inside the macroblock modes, and inside the token '
+     'data.'),
+    ('lossy-', 'Lossy: partition sizes, from real encodes',
+     'The four files behind these are genuine encoder output, made through '
+     'the encoder API rather than cwebp, and the broken ones rewrite the raw '
+     'size table that follows partition 0. They carry 256 macroblocks of '
+     'real coefficients, which the assembled cases do not.'),
 ]
 
 README_HEAD = """# WebP torture bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
-emits. %(vp8l)d of them are lossless (VP8L) streams written bit by bit by
-[`vp8l.py`](vp8l.py). The other %(lossy)d are lossy VP8 frames carrying
-multiple token partitions, which cwebp cannot produce at all: those start from
-an encoder-API call ([`make_partition_sources.c`](make_partition_sources.c))
-and are then patched by [`lossy_parts.py`](lossy_parts.py).
+emits, one layer of it at a time:
+
+* **%(vp8l)d lossless (VP8L) streams**, written bit by bit by
+  [`vp8l.py`](vp8l.py).
+* **%(lossy)d lossy VP8 frames**. All but seven are assembled by
+  [`vp8_asm.py`](vp8_asm.py) from a text description of the bitstream, one
+  file per case in [`cases/`](cases), under the field names
+  [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
+  other seven start from an encoder-API call
+  ([`make_partition_sources.c`](make_partition_sources.c)) and are patched
+  by [`lossy_parts.py`](lossy_parts.py).
+* **%(container)d RIFF containers**, wrapped by
+  [`webp_asm.py`](webp_asm.py) in
+  [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
+  extended-format VP8X chunk, the optional chunks a decoder must step over,
+  and sizes that lie about what is behind them.
+* **%(alpha)d alpha chunks**, where the plane is either stored one byte per
+  pixel or compressed with the lossless coder in its 8-bit mode -- a
+  different path through the decoder from the one every VP8L file here
+  takes.
+
+A case is a text file and the notes below are its own: each one carries what
+it is, what the decoder should do with it, and which path that answer comes
+from.
 
 Each entry says what the reference decoder is expected to do:
 
@@ -1176,10 +1246,27 @@ Each entry says what the reference decoder is expected to do:
 %(code)s
 ## Using them
 
-    ./check.sh           # verdict + decoded-pixel hash for every file
-    ./asan_sweep.sh      # 13 decode modes, under a sanitizer build
-    ./make_coverage.sh   # regenerate coverage.txt
-    python3 generate.py  # rebuild files/, expected.txt and this README
+    ./check.sh              # verdict + decoded-pixel hash for every file
+    ./asan_sweep.sh         # 14 decode modes, under a sanitizer build
+    ./vp8_selftest.py       # checks the lossy writer against libwebp
+    ./make_coverage.sh      # regenerate coverage.txt
+    ./make_hashes.sh        # regenerate hashes.txt, once the output is right
+    python3 generate.py     # rebuild files/, expected.txt and this README
+
+A case is a text file, one field per line under the name the specification
+gives it -- RFC 6386 for the frame, RFC 9649 for the container -- so a case
+reads against the format rather than against the decoder that happens to be
+under test. `webp_asm.py` assembles any of them and hands the frame part to
+`vp8_asm.py`; use either directly, or read an existing frame back out as
+text to start from:
+
+    ./webp_asm.py cases/alph-raw-filter-gradient.bitstream /tmp/out.webp
+    ./vp8_asm.py cases/lossy-coeff-cat6.bitstream /tmp/out.webp
+    ./vp8_dis.py some-photo.webp
+
+Each tool's docstring is the reference for the fields it owns:
+`vp8_asm.py` for the frame, `webp_asm.py` for the container and the alpha
+chunk.
 
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
 the multi-partition cases are patched from live in `sources/` --
@@ -1187,11 +1274,12 @@ the multi-partition cases are patched from live in `sources/` --
 [4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
 partitions -- and are themselves rebuilt by `make_partition_sources.c`.
 
-`check.sh` honours `$DWEBP` and `asan_sweep.sh` honours `$ASAN_DWEBP`, so both
-can be pointed at any build, or at another decoder implementation; both fall
-back to whatever `dwebp` is on `$PATH`. `make_coverage.sh` needs `$LIBWEBP`
-set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file that
-allocates a gigabyte.
+`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP` and
+`asan_sweep.sh` honours `$ASAN_DWEBP`, so all of them can be pointed at any
+build, or at another decoder implementation; they fall back to whatever
+`dwebp` is on `$PATH`. `make_coverage.sh` and `make_vp8_tables.py` need
+`$LIBWEBP` set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file
+that allocates a gigabyte.
 
 `hashes.txt` holds the SHA-256 of each decoding file's `-pam` output, so the
 suite catches a *silent* change in decoded pixels, not just a crash or a
@@ -1211,12 +1299,42 @@ meaningful against one revision of libwebp: the one recorded at the top of
 `coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
 disagree, trust `coverage.txt`.
 
+The lossy writer is checked a second way, against libwebp rather than against
+itself: `vp8_dis.py` reads a frame back into the same text `vp8_asm.py`
+assembles, so a real cwebp encode can be disassembled, reassembled and
+compared byte for byte. Every file in `sources/` survives that, as do encodes
+from 1x1 to 128x128 across the whole quality range -- 596 macroblocks, all
+four 16x16 modes, all ten 4x4 modes and coefficients in every escape
+category. `vp8_selftest.py` runs it, along with every coefficient magnitude
+up to the format's largest and a handful of frames that say the same thing
+two different ways and must decode alike.
+
+What the corpus reaches is measured rather than assumed, and the measurement
+is what says where to add files next. As it stands: every field of the lossy
+frame header is written at both ends of its range; all 93 reachable
+(coefficient type, band, context) probability cells are read, which is the
+whole grid bar the three that no bitstream can select; all 28 pairs of
+optional tools appear together in some frame; and one probe out of 88 is
+unreached, a version check that `VP8LCheckSignature()` has already made by
+the time it runs.
+
 ## What is not covered
 
-The lossy VP8 syntax, apart from the partition size table. Everything
-bool-coded -- segment header, filter header, quantizer deltas, intra modes,
-coefficient tokens -- would need a bool encoder and is untouched. There is
-also no ALPH-chunk case, since that needs a valid lossy frame to sit behind.
+Animation. There is no real ANIM or ANMF chunk, only the VP8X flag that
+claims one, and nothing here goes near the demux API that would be needed to
+walk a sequence of frames. No inter frames either, which libwebp refuses
+outright, so there is little to pin beyond the one file that checks it does.
+
+The two compressed alpha planes are cwebp output pasted in, so that path has
+two points in it rather than a swept range: one that reaches the lossless
+decoder's 8-bit loop and one that misses it. `vp8l.py` could generate them --
+an alpha plane is a VP8L image whose green channel carries the values -- and
+then they could be malformed like every other lossless case here.
+
+Within a lossy key frame, what is left is what the decoder does not read:
+the profile selects no reconstruction filter, and the entropy-refresh bit is
+parsed and dropped. Both are written anyway, so a decoder that started
+acting on either would fail a pixel hash rather than pass unnoticed.
 
 ## License
 
@@ -1287,14 +1405,29 @@ def write_files_index(outdir, rows):
 CODE = [
     ('vp8l.py', 'VP8L bitstream writer: bit packing, canonical Huffman codes, '
                 'prefix coding, RIFF wrapping.'),
-    ('generate.py', 'Every lossless case, plus `expected.txt`, '
+    ('generate.py', 'Writes the lossless cases, assembles the rest from '
+                    '`cases/`, and produces `expected.txt`, '
                     '`files/index.html` and this README.'),
+    ('vp8.py', 'VP8 lossy bitstream writer: the boolean coder, the frame '
+               'header, the mode trees, the coefficients.'),
+    ('vp8_asm.py', 'Assembles a lossy frame from a text case, in RFC 6386\'s '
+                   'field names. Its docstring is the format.'),
+    ('webp_asm.py', 'Wraps that frame in a RIFF container, in RFC 9649\'s '
+                    'field names, for the cases that need one.'),
+    ('vp8_dis.py', 'The other direction: a lossy .webp back into that text. '
+                   '`--check` round trips one against libwebp.'),
+    ('vp8_selftest.py', 'Round trips real encodes through both, and checks '
+                        'what cwebp cannot emit against dwebp.'),
+    ('vp8_tables.py', 'The VP8 constant tables, extracted from libwebp.'),
+    ('make_vp8_tables.py', 'Extracts them, so they are never retyped.'),
     ('lossy_parts.py', 'The multi-partition lossy cases, patched from '
                        '`sources/`.'),
     ('make_partition_sources.c', 'Rebuilds `sources/`: cwebp cannot emit more '
                                  'than one token partition.'),
     ('check.sh', 'Decodes every file; checks the verdict and the pixels.'),
-    ('asan_sweep.sh', 'Decodes every file in 13 modes, under a sanitizer '
+    ('make_hashes.sh', 'Rewrites `hashes.txt` when the new output is known '
+                       'to be right.'),
+    ('asan_sweep.sh', 'Decodes every file in 14 modes, under a sanitizer '
                       'build.'),
     ('probes.py', 'The `fprintf` probes `make_coverage.sh` patches in.'),
     ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
@@ -1312,6 +1445,24 @@ def build_code_list(outdir):
         assert os.path.exists(os.path.join(outdir, name)), name
         out.append('| [`%s`](%s) | %s |' % (name, name, what))
     return '\n'.join(out) + '\n'
+
+
+def build_cases(outdir):
+    """Assembles every cases/*.bitstream into files/, and returns its row."""
+    rows = []
+    for path in sorted(glob.glob(os.path.join(outdir, 'cases',
+                                              '*.bitstream'))):
+        name = os.path.basename(path)[:-len('.bitstream')]
+        with open(path) as f:
+            text = f.read()
+        fields = vp8_asm.parse_header(text, path)
+        data = webp_asm.assemble_text(text)
+        with open(os.path.join(outdir, 'files', name + '.webp'), 'wb') as f:
+            f.write(data)
+        rows.append((name, fields['expect'], fields['note'],
+                     fields['exercises'], len(data)))
+        print('%-40s %-7s %5d bytes' % (name, fields['expect'], len(data)))
+    return rows
 
 
 def build_file_list(rows, groups, index):
@@ -1342,40 +1493,49 @@ def build_file_list(rows, groups, index):
     return '\n'.join(out)
 
 
+def heading(outdir, name, expect):
+    """One file's heading, with a link to the case text when there is one."""
+    src = os.path.join('cases', name + '.bitstream')
+    out = '### [`%s.webp`](files/%s.webp) -- %s' % (name, name, expect)
+    if os.path.exists(os.path.join(outdir, src)):
+        out += ' -- from [`%s.bitstream`](%s)' % (name, src)
+    return out + '\n'
+
+
 def write_readme(outdir, rows):
-    by_name = {r[0]: r for r in rows}
     used = set()
-    n_lossy = sum(1 for r in rows if r[0].startswith('lossy-'))
+    kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'vp8l': 0}
+    for r in rows:
+        for prefix, kind in (('lossy-', 'lossy'), ('container-', 'container'),
+                             ('alph-', 'alpha')):
+            if r[0].startswith(prefix):
+                kinds[kind] += 1
+                break
+        else:
+            kinds['vp8l'] += 1
     index = build_index(rows, GROUPS)
-    lines = [README_HEAD % {'vp8l': len(rows) - n_lossy, 'lossy': n_lossy,
-                            'files': build_file_list(rows, GROUPS, index),
-                            'code': build_code_list(outdir)}]
-    for prefix, title, blurb in GROUPS:
-        group = [r for r in rows
-                 if r[0].startswith(prefix) and r[0] not in used]
+    lines = [README_HEAD % dict(kinds,
+                                files=build_file_list(rows, GROUPS, index),
+                                code=build_code_list(outdir))]
+    for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
+        group = [r for r in rows if r[0] not in used and
+                 (prefix is None or r[0].startswith(prefix))]
         if not group:
             continue
-        lines.append('## %s\n\n%s' % (title, wrap(blurb)))
+        lines.append('## %s\n\n%s' % (title, wrap(blurb)) if blurb
+                     else '## %s\n' % title)
         for name, expect, note, exercises, size in group:
             used.add(name)
-            lines.append('### [`%s.webp`](files/%s.webp) -- %s\n'
-                         % (name, name, expect))
-            lines.append(wrap(note))
-            lines.append(wrap(exercises))
-    rest = [r for r in rows if r[0] not in used]
-    if rest:
-        lines.append('## Other\n')
-        for name, expect, note, exercises, size in rest:
-            lines.append('### [`%s.webp`](files/%s.webp) -- %s\n'
-                         % (name, name, expect))
+            lines.append(heading(outdir, name, expect))
             lines.append(wrap(note))
             lines.append(wrap(exercises))
     total = sum(r[4] for r in rows)
     lines.append('---\n')
     lines.append(wrap(
-        '%d files, %d bytes total. Rebuild with `generate.py`; the VP8L '
-        'bitstream writer is `vp8l.py` and the lossy cases are in '
-        '`lossy_parts.py`.' % (len(rows), total)))
+        '%d files, %d bytes total. Rebuild with `generate.py`: it writes the '
+        'lossless cases itself with `vp8l.py`, and assembles everything in '
+        '`cases/` through `webp_asm.py`, which hands the frame to '
+        '`vp8_asm.py` and that to `vp8.py`.' % (len(rows), total)))
     write_files_index(outdir, rows)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
     with open(os.path.join(outdir, 'README.md'), 'w') as f:
@@ -1403,6 +1563,7 @@ def main():
         rows.append((name, expect, note, exercises, len(data)))
         print('%-40s %-7s %5d bytes' % (name, expect, len(data)))
     rows += lossy_parts.build(outdir)
+    rows += build_cases(outdir)
     with open(os.path.join(outdir, 'expected.txt'), 'w') as f:
         for name, expect, _, _, _ in rows:
             f.write('%s|%s|%s\n' % (name, expect,

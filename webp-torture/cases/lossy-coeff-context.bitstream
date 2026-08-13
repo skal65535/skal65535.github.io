@@ -1,0 +1,46 @@
+# note: Neighbouring blocks with and without coefficients, so that every
+#   context value from 0 to 2 is used.
+# expect: ok
+# exercises: The "ctx = left + top" that picks one of the three probability
+#   sets. Context 2 needs both neighbours non-empty, which only happens a few
+#   blocks into a macroblock.
+width 32
+height 32
+yac_qi 20
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+coeffs y[0]   4
+coeffs y[1]   4
+coeffs y[4]   4
+coeffs y[5]   4
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+coeffs y[10]  -4
+coeffs y[11]  -4
+coeffs y[14]  -4
+coeffs y[15]  -4
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+coeffs y[*]   3
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED
+intra_b_mode B_DC_PRED B_DC_PRED B_DC_PRED B_DC_PRED

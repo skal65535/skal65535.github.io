@@ -1,0 +1,17 @@
+# note: Two VP8 chunks, one after the other.
+# expect: ok
+# roundtrip: no
+# exercises: The walk stops at the first VP8 chunk, so the second is never
+#   looked at and whatever it holds is dead weight. Nothing rejects the
+#   duplicate.
+chunks VP8X VP8 VP8
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

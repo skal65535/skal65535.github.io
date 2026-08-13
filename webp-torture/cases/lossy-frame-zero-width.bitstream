@@ -1,0 +1,12 @@
+# note: A frame whose width field is zero, with a height of 32.
+# expect: reject
+# exercises: The "w == 0 || h == 0" check in VP8GetInfo(), which the comment
+#   above it describes as not supporting both being zero while the code
+#   refuses either. Nothing else in the corpus reaches it.
+width 0
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18

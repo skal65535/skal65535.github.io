@@ -1,0 +1,15 @@
+# note: An ALPH chunk holding its header byte and nothing else.
+# expect: reject
+# roundtrip: no
+# exercises: The "data_size <= ALPHA_HEADER_LEN" test at the top of
+#   ALPHInit(), which is what stops the header byte itself from being read out
+#   of an empty chunk.
+chunks VP8X ALPH VP8
+alpha 1
+alph_data
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

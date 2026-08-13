@@ -1,0 +1,15 @@
+# note: The two reserved bits of the ALPH header byte set.
+# expect: reject
+# roundtrip: no
+# exercises: The "rsrv != 0" arm of the same test. Unlike VP8X, whose
+#   reserved bits ride through untouched, ALPH refuses a header with anything
+#   in its top two bits.
+chunks VP8X ALPH VP8
+alpha 1
+alph_reserved 3
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

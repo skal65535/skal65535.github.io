@@ -1,0 +1,19 @@
+# note: Partition 0 cut to two bytes, which is enough for the segment header
+#   and not for the filter header.
+# expect: reject
+# exercises: The "cannot parse filter header" exit of VP8GetHeaders().
+#   ParseFilterHeader() returns !br->eof, and this is the only file that
+#   makes it the one to fail: one byte less and the segment header goes
+#   first, one more and the failure moves to the macroblock modes.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+patch part0_bytes 2

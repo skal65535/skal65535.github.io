@@ -1,0 +1,13 @@
+# note: A block with all sixteen coefficients non-zero, so the loop ends by
+#   running out of positions rather than on an end-of-block.
+# expect: ok
+# exercises: The "n == 16" exit of GetCoeffs(), which is the only way out
+#   that does not read an end-of-block bit, and every band from 0 to 7.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
+coeffs y[1]   -1 -2 -3 -4 -5 -6 -7 -8 -9 -10 -11 -12 -13 -14 -15 -16

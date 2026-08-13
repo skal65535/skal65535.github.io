@@ -1,0 +1,19 @@
+# note: Partition 0 long enough for the whole frame header and not for the
+#   macroblock modes that follow it.
+# expect: reject
+# exercises: "Premature end-of-partition0 encountered", out of the
+#   !dec->br.eof that VP8ParseIntraModeRow() checks once per macroblock row
+#   rather than once per macroblock. The token partitions are untouched, so
+#   this is the mode data failing on its own.
+width 128
+height 128
+yac_qi 30
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode TM_PRED
+intra_b_mode B_HU_PRED B_HD_PRED B_VL_PRED B_LD_PRED
+intra_b_mode B_VR_PRED B_RD_PRED B_HE_PRED B_VE_PRED
+intra_b_mode B_TM_PRED B_DC_PRED B_HU_PRED B_HD_PRED
+intra_b_mode B_VL_PRED B_LD_PRED B_VR_PRED B_RD_PRED
+coeffs y[0]   5 -3
+patch part0_bytes 12

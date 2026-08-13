@@ -1,0 +1,17 @@
+# note: The key-frame bit cleared, so the frame claims to be an inter frame.
+# expect: reject
+# exercises: libwebp decodes single key frames only, and VP8GetInfo() turns
+#   this away on the key-frame bit alone: the picture header behind it is never
+#   looked at, and VP8GetHeaders() never runs.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+frame_type 1

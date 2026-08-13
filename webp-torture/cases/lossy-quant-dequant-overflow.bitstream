@@ -1,0 +1,14 @@
+# note: A coefficient of 2114 at the coarsest quantizer, so the dequantized
+#   value does not fit the int16 it is stored in.
+# expect: ok
+# exercises: "out[kZigzag[n]] = VP8GetSigned(br, v) * dq[n > 0]" with v * dq
+#   of 600376 against an int16_t destination. Nothing an encoder can produce,
+#   and worth watching under a sanitizer.
+width 16
+height 16
+yac_qi 127
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   2114
+coeffs y[5]   -2114

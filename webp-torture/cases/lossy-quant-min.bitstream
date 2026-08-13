@@ -1,0 +1,17 @@
+# note: The frame quantizer at 0, the finest the format allows.
+# expect: ok
+# exercises: kDcTable[0] and kAcTable[0] are both 4, and the Y2 AC quantizer
+#   hits the "if (m->y2_mat[1] < 8) m->y2_mat[1] = 8" floor in VP8ParseQuant().
+width 32
+height 32
+yac_qi 0
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20 4
+coeffs y[0]   1:3
+coeffs u[0]   5 -2
+coeffs v[3]   -4
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED

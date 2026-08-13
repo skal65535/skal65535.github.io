@@ -1,0 +1,13 @@
+# note: An ALPH chunk with the VP8X alpha flag left clear.
+# expect: ok
+# roundtrip: no
+# exercises: The flag and the chunk are independent: the decoder walks to the
+#   ALPH chunk and uses it whatever VP8X claimed. A file the muxer would call
+#   inconsistent and the decoder does not.
+chunks VP8X ALPH VP8
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

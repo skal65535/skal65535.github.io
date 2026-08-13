@@ -1,0 +1,78 @@
+# note: Every optional tool switched on in one frame at once.
+# expect: ok
+# exercises: Segmentation with a map, the loop filter with per-segment
+#   strengths and mode deltas, four token partitions, the skip flag, a
+#   probability update, and both macroblock types. Each of those has a file of
+#   its own that isolates it; this is the one that makes them interact, and it
+#   is what covers the eight pairs of features that never met anywhere else.
+width 64
+height 64
+loop_filter_level 28
+sharpness_level 2
+filter_type 0
+loop_filter_adj_enable 1
+mode_ref_lf_delta_update 1
+ref_frame_delta 4 - - -
+mb_mode_delta -12 - - -
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 12 34 56 78
+lf_update_value 8 16 32 48
+segment_prob 96 128 160
+log2_nbr_of_DCT_partitions 2
+yac_qi 30
+coeff_prob 0 2 1 0 96
+coeff_prob 3 1 0 2 172
+mb_no_skip_coeff 1
+prob_skip_false 140
+macroblock
+segment_id 0
+coeffs y2 -24 6
+coeffs y[7] 1:4 -2
+coeffs u[0] 5
+macroblock
+segment_id 1
+intra_y_mode B_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_TM_PRED B_DC_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0] 9 -5 3 -1
+coeffs v[2] -6
+macroblock
+segment_id 2
+mb_skip_coeff 1
+macroblock
+segment_id 3
+intra_y_mode TM_PRED
+intra_chroma_mode H_PRED
+coeffs y2 18 -7
+macroblock
+segment_id 1
+intra_y_mode V_PRED
+coeffs y2 -15
+coeffs y[12] 1:3
+macroblock
+segment_id 0
+mb_skip_coeff 1
+macroblock count 2
+macroblock
+segment_id 2
+intra_y_mode B_PRED
+intra_b_mode B_HU_PRED B_HD_PRED B_VL_PRED B_LD_PRED
+intra_b_mode B_VR_PRED B_RD_PRED B_HE_PRED B_VE_PRED
+intra_b_mode B_TM_PRED B_DC_PRED B_HU_PRED B_HD_PRED
+intra_b_mode B_VL_PRED B_LD_PRED B_VR_PRED B_RD_PRED
+coeffs y[3] 6 -3
+macroblock
+segment_id 3
+mb_skip_coeff 1
+macroblock count 3
+macroblock
+segment_id 1
+intra_chroma_mode TM_PRED
+coeffs y2 -19
+coeffs u[3] 4 -2
+macroblock count 4

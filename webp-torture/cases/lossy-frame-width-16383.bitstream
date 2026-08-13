@@ -1,0 +1,11 @@
+# note: The widest frame the 14-bit field can describe, one macroblock tall.
+# expect: ok
+# exercises: 1024 macroblocks in a single row, so the whole frame goes
+#   through one partition and the per-column contexts are exercised 1024 wide.
+width 16383
+height 16
+yac_qi 40
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     20

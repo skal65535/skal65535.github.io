@@ -4,7 +4,7 @@
 # Use of this source code is governed by a BSD-style license
 # that can be found in the COPYING file in the root of the source
 # tree.
-# Decodes every file in 13 output/scaling modes. Point ASAN_DWEBP at a
+# Decodes every file in 14 output/scaling modes. Point ASAN_DWEBP at a
 # sanitizer build. The 'slow' file allocates ~1.8GB, so it is decoded once
 # rather than in every mode.
 D=${ASAN_DWEBP:-$(command -v dwebp)}
@@ -30,6 +30,7 @@ done <<'OPTS'
 -pgm
 -bmp
 -alpha
+-alpha_dither -pam
 -incremental -pam
 -incremental -mt -pam
 -mt -pam

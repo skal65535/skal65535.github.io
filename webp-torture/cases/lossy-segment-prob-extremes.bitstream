@@ -1,0 +1,33 @@
+# note: Segment probabilities of 0 and 255, and loop-filter updates at both
+#   ends of their range.
+# expect: ok
+# exercises: A tree probability of 0 or 255 makes one branch of the segment
+#   id free and the other maximally expensive; -63 and 63 are the ends of the
+#   6-bit signed loop-filter update. All four macroblocks carry a different
+#   segment id, so every branch of the tree is taken under those probabilities.
+width 32
+height 32
+loop_filter_level 24
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 20 40 60 80
+lf_update_value -63 63 0 -
+segment_prob 0 255 128
+yac_qi 30
+macroblock
+segment_id 0
+coeffs y2 -20
+macroblock
+segment_id 1
+intra_y_mode V_PRED
+coeffs y2 14
+macroblock
+segment_id 2
+intra_y_mode H_PRED
+coeffs y2 -11
+macroblock
+segment_id 3
+intra_y_mode TM_PRED
+coeffs y2 8

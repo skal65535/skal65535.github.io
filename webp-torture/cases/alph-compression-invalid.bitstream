@@ -1,0 +1,15 @@
+# note: A compression method of 2, past the lossless one.
+# expect: reject
+# roundtrip: no
+# exercises: The header byte packs four fields into two bits each, and only
+#   the method and the pre-processing have values the format does not define.
+#   This is the first of them.
+chunks VP8X ALPH VP8
+alpha 1
+alph_compression 2
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

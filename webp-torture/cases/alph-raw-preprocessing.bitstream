@@ -1,0 +1,17 @@
+# note: An uncompressed plane declaring the level-reduction pre-processing.
+# expect: ok
+# roundtrip: no
+# exercises: The one bit of ALPHA_PREPROCESSED_LEVELS: it makes the decoder
+#   take the "decode everything in one pass" branch and keeps alpha dithering
+#   alive instead of switching it off. The plane itself comes out the same as
+#   with no pre-processing, so this pins the control path rather than the
+#   pixels.
+chunks VP8X ALPH VP8
+alpha 1
+alph_preprocessing 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

@@ -1,0 +1,26 @@
+# note: All four coefficient types in one macroblock, and both luma types
+#   across two.
+# expect: ok
+# exercises: The Y2 block (type 1), luma after Y2 starting at position 1
+#   (type 0), chroma (type 2) and luma with its own DC (type 3). No single
+#   macroblock can reach all four, since types 0 and 3 are exclusive.
+width 32
+height 16
+yac_qi 20
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     9 -4 2
+coeffs y[0]   1:6 -3
+coeffs y[7]   1:4
+coeffs u[0]   5 -2
+coeffs v[3]   -7 3
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode TM_PRED
+intra_b_mode B_DC_PRED B_TM_PRED B_VE_PRED B_HE_PRED
+intra_b_mode B_RD_PRED B_VR_PRED B_LD_PRED B_VL_PRED
+intra_b_mode B_HD_PRED B_HU_PRED B_DC_PRED B_TM_PRED
+intra_b_mode B_VE_PRED B_HE_PRED B_RD_PRED B_VR_PRED
+coeffs y[0]   8 -5 3 -1
+coeffs u[2]   4

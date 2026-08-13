@@ -1,0 +1,29 @@
+# note: A segment map with no segment data behind it.
+# expect: ok
+# exercises: update_map without update_data: the ids are read and used to
+#   index dqm[], but every entry is the frame quantizer, so the map changes
+#   nothing. Pins that the two flags are independent.
+width 32
+height 32
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 0
+segment_prob 200 60 30
+yac_qi 35
+macroblock
+segment_id 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -14
+macroblock
+segment_id 2
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+segment_id 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+macroblock
+segment_id 0
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED

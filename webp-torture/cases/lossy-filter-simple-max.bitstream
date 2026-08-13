@@ -1,0 +1,31 @@
+# note: The simple loop filter at level 63 and sharpness 7.
+# expect: ok
+# exercises: filter_type 1, and the sharpness clamp on the interior limit.
+#   cwebp picks its own level and never gets near the top of the range.
+width 32
+height 32
+filter_type 1
+loop_filter_level 63
+sharpness_level 7
+yac_qi 25
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -28
+coeffs y[0]   1:9 -4
+coeffs y[5]   1:-7 3
+coeffs u[0]   6
+macroblock
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+coeffs y2     20
+coeffs y[10]  1:5
+macroblock
+intra_y_mode H_PRED
+intra_chroma_mode V_PRED
+coeffs y2     -15
+coeffs y[15]  1:-6
+macroblock
+intra_y_mode TM_PRED
+intra_chroma_mode TM_PRED
+coeffs y2     11

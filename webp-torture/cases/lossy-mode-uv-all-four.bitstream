@@ -1,0 +1,23 @@
+# note: The four chroma modes, one per macroblock.
+# expect: ok
+# exercises: The uvmode tree at probabilities 142, 114 and 183, and the 8x8
+#   chroma predictors.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs u[0]   6
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode V_PRED
+coeffs u[0]   6
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode H_PRED
+coeffs v[0]   -6
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode TM_PRED
+coeffs v[0]   -6

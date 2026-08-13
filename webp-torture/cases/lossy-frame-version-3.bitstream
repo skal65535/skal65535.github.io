@@ -1,0 +1,16 @@
+# note: Profile 3, the largest the decoder accepts.
+# expect: ok
+# exercises: Boundary partner of lossy-frame-version-4: "profile > 3" is the
+#   whole check in VP8GetHeaders().
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+version 3

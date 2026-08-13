@@ -1,0 +1,17 @@
+# note: Bytes after the last chunk that the RIFF size does not account for.
+# expect: ok
+# roundtrip: no
+# exercises: The decoder stops at the image chunk and never looks past it, so
+#   junk at the end of the file is ignored rather than refused.
+chunks VP8X VP8
+trailing 00112233445566778899aabbccddeeff
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[6] 1:4 -2
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12
+macroblock count 2

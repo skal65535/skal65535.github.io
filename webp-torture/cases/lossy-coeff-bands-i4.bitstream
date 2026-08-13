@@ -1,0 +1,18 @@
+# note: Three 4x4 luma blocks that sweep every coefficient band, one per
+#   context.
+# expect: ok
+# exercises: Type 3 (luma with its own DC). The three token classes drive the
+#   context of the next position: a zero gives 0, a +-1 gives 1, anything
+#   larger gives 2. A block of each, walked to position 15, reads every band at
+#   that class, and the blocks are placed so their neighbour contexts are 0, 1
+#   and 2 in turn -- which is the only way to reach band 0, the one that is
+#   never a token's successor.
+width 16
+height 16
+yac_qi 8
+macroblock
+intra_y_mode B_PRED
+coeffs y[0]  15:1
+coeffs y[1]  1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1 1 -1
+coeffs y[4]  1
+coeffs y[5]  3 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4 3 -4

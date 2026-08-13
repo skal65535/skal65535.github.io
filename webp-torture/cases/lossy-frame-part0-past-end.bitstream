@@ -1,0 +1,17 @@
+# note: The frame tag claims a partition 0 far larger than the file.
+# expect: reject
+# exercises: The 19-bit partition length. VP8GetInfo() catches
+#   "partition_length >= chunk_size" first; VP8GetHeaders() has its own "bad
+#   partition length" behind it.
+width 32
+height 32
+yac_qi 30
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -18
+coeffs y[5]   1:3 -2
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED
+patch partition0_size 100000

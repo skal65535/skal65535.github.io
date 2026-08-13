@@ -1,0 +1,35 @@
+# note: Segment quantizers at 127, -127, 0 and absent.
+# expect: ok
+# exercises: clip(q, 127) at both ends of VP8ParseQuant(), and the difference
+#   between a field written as zero and one left out, which libwebp's own
+#   encoder cannot express.
+width 32
+height 32
+segmentation_enabled 1
+update_mb_segmentation_map 1
+update_segment_feature_data 1
+segment_feature_mode 1
+quantizer_update_value 127 -127 0 -
+lf_update_value - - - -
+segment_prob 128 128 128
+yac_qi 30
+macroblock
+segment_id 0
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -30
+macroblock
+segment_id 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -30
+macroblock
+segment_id 2
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -30
+macroblock
+segment_id 3
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -30

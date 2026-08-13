@@ -1,0 +1,14 @@
+# note: Eight partitions declared in a frame with only ten bytes left for the
+#   twenty-one-byte size table.
+# expect: reject
+# exercises: The "size < 3 * last_part" test in ParsePartitions(), the one
+#   failure there that cannot be papered over: the sizes themselves are
+#   unreadable, so there is nothing to clamp. Confirmed to reach
+#   parts_size_table_truncated and no further.
+width 16
+height 16
+log2_nbr_of_DCT_partitions 3  # 8 partitions
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+patch truncate tokens 10

@@ -1,0 +1,15 @@
+# note: The colour-space and clamping-type bits both set.
+# expect: ok
+# exercises: The two bits at the very top of partition 0. libwebp stores both
+#   and acts on neither, so a decoder that started honouring either would fail
+#   this file's hash rather than its verdict. Nothing else in the corpus sets
+#   them.
+color_space 1
+clamping_type 1
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -18
+coeffs y[5] 1:3 -2
+macroblock count 3

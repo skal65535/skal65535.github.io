@@ -1,0 +1,14 @@
+# note: Category-5 coefficients: 35 to 66, five extra bits.
+# expect: ok
+# exercises: kCat5, reached through p[8] = 1 and p[10] = 0, which is a
+#   different pair of probabilities from the lower categories.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   35 -35
+coeffs y[1]   66 -66
+coeffs y[2]   36 65
+coeffs y[3]   -37 -64

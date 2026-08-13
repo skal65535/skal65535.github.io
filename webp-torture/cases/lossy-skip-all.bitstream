@@ -1,0 +1,14 @@
+# note: Every macroblock skipped.
+# expect: ok
+# exercises: The skip branch of VP8DecodeMB(), which clears the neighbour
+#   flags without reading a single coefficient. Every token partition holds
+#   nothing but its own padding.
+width 64
+height 64
+yac_qi 30
+mb_no_skip_coeff 1
+prob_skip_false 128
+macroblock count 16
+mb_skip_coeff 1
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED

@@ -1,0 +1,22 @@
+# note: All five quantizer deltas present, at the ends of their 4-bit range.
+# expect: ok
+# exercises: dqy1_dc, dqy2_dc, dqy2_ac, dquv_dc and dquv_ac at once. cwebp
+#   writes only the two chroma deltas, and only small ones.
+width 32
+height 32
+yac_qi 60
+ydc_delta 15
+y2dc_delta -15
+y2ac_delta 15
+uvdc_delta -15
+uvac_delta 15
+macroblock
+intra_y_mode DC_PRED
+intra_chroma_mode DC_PRED
+coeffs y2     -20 4
+coeffs y[0]   1:3
+coeffs u[0]   5 -2
+coeffs v[3]   -4
+macroblock count 3
+intra_y_mode V_PRED
+intra_chroma_mode H_PRED

@@ -1,0 +1,20 @@
+# note: A losslessly compressed alpha plane carrying a palette transform,
+#   from a cwebp encode of a two-valued plane.
+# expect: ok
+# roundtrip: no
+# exercises: The one shape that reaches DecodeAlphaData(): exactly one
+#   transform, that transform colour-indexing, no colour cache, and the red,
+#   blue and alpha codes each a single symbol. That is the lossless decoder's
+#   8-bit mode, a different loop from the one all 62 VP8L files here take, and
+#   this is the only file in the corpus that runs it. Its partner alph-
+#   lossless-predictor is the same feature failing the same test.
+chunks VP8X ALPH VP8
+alpha 1
+alph_compression 1
+alph_data 0f30ff111142209020ec6fb9440e11fdcf8909
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

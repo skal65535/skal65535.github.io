@@ -1,0 +1,12 @@
+# note: Profile 2, the value between the two the corpus already had.
+# expect: ok
+# exercises: Completes the four accepted values of the 3-bit version field: 0
+#   and 1 and 3 were covered, 2 was not.
+version 2
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -18
+coeffs y[5] 1:3 -2
+macroblock count 3

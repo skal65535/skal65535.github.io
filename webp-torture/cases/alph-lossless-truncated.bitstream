@@ -1,0 +1,16 @@
+# note: The predictor-transform plane cut to ten bytes.
+# expect: reject
+# roundtrip: no
+# exercises: The lossless decoder runs out part way through the alpha image.
+#   The failure comes back through ALPHInit() as a bitstream error rather than
+#   as a short read.
+chunks VP8X ALPH VP8
+alpha 1
+alph_compression 1
+alph_data b90a44f43f40a46d3336
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+coeffs y[2] 1:5 -3

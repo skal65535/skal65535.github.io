@@ -1,0 +1,14 @@
+# note: Category-3 coefficients: 11 to 18, three extra bits each.
+# expect: ok
+# exercises: The first escape category, kCat3 = {173, 148, 140}, at both ends
+#   of its range.
+width 16
+height 16
+yac_qi 0
+macroblock
+intra_y_mode B_PRED
+intra_chroma_mode DC_PRED
+coeffs y[0]   11 -11
+coeffs y[1]   18 -18
+coeffs y[2]   12 17
+coeffs y[3]   -13 -16
