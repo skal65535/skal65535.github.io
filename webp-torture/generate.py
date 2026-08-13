@@ -1220,6 +1220,7 @@ BSD 3-clause, the same as libwebp. See `COPYING`. That covers the generators,
 the scripts and the bitstreams in `files/` alike.
 
 %(index)s
+%(files)s
 """
 
 
@@ -1248,12 +1249,73 @@ def build_index(rows, groups):
     return '\n'.join(out) + '\n'
 
 
+FILES_INDEX_HEAD = """<!doctype html>
+<meta charset="utf-8">
+<title>webp-torture bitstreams</title>
+<style>
+ body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 54rem;
+        padding: 0 1rem; }
+ table { border-collapse: collapse; width: 100%%; }
+ th, td { text-align: left; padding: .25rem .6rem; border-bottom: 1px solid #ddd; }
+ td.n { text-align: right; font-variant-numeric: tabular-nums; }
+ .reject { color: #a33; }
+ code { font-size: 90%%; }
+</style>
+<h1>webp-torture bitstreams</h1>
+<p>%(count)d WebP files that exercise corners of the format a normal encoder
+never emits. See the <a href="../">notes</a> for what each one targets.
+<b>reject</b> means a conforming decoder must refuse the file.</p>
+<table>
+<tr><th>file</th><th>bytes</th><th>expected</th></tr>
+"""
+
+
+def write_files_index(outdir, rows):
+    """files/index.html -- GitHub Pages serves no directory listing."""
+    lines = [FILES_INDEX_HEAD % {'count': len(rows)}]
+    for name, expect, _note, _exercises, size in sorted(rows):
+        lines.append('<tr><td><a href="%s.webp"><code>%s.webp</code></a></td>'
+                     '<td class="n">%d</td><td class="%s">%s</td></tr>'
+                     % (name, name, size,
+                        'reject' if expect == 'reject' else 'ok', expect))
+    lines.append('</table>')
+    with open(os.path.join(outdir, 'files', 'index.html'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+def build_file_list(rows, groups):
+    """A linked list of every bitstream, grouped, for the top of the README."""
+    out = ['## The bitstreams\n',
+           'One `.webp` each, all under **[`files/`](files/)** --',
+           'that page lists them with sizes and expected verdicts.\n']
+    seen = set()
+    for prefix, title, _ in groups:
+        group = [r for r in rows if r[0].startswith(prefix) and r[0] not in seen]
+        seen.update(r[0] for r in group)
+        if not group:
+            continue
+        # pack the links by hand: textwrap would break them mid-URL
+        line, block = '**%s** —' % title, []
+        for r in group:
+            link = ' [%s](files/%s.webp)' % (r[0], r[0])
+            if len(line) + len(link) > 78 and line.strip():
+                block.append(line)
+                line = ' ' + link.lstrip()
+            else:
+                line += link
+            line += ' ·'
+        block.append(line.rstrip(' ·'))
+        out.append('\n'.join(block) + '\n')
+    return '\n'.join(out)
+
+
 def write_readme(outdir, rows):
     by_name = {r[0]: r for r in rows}
     used = set()
     n_lossy = sum(1 for r in rows if r[0].startswith('lossy-'))
     lines = [README_HEAD % {'vp8l': len(rows) - n_lossy, 'lossy': n_lossy,
-                            'index': build_index(rows, GROUPS)}]
+                            'index': build_index(rows, GROUPS),
+                            'files': build_file_list(rows, GROUPS)}]
     for prefix, title, blurb in GROUPS:
         group = [r for r in rows
                  if r[0].startswith(prefix) and r[0] not in used]
@@ -1262,14 +1324,16 @@ def write_readme(outdir, rows):
         lines.append('## %s\n\n%s' % (title, wrap(blurb)))
         for name, expect, note, exercises, size in group:
             used.add(name)
-            lines.append('### `%s.webp` -- %s\n' % (name, expect))
+            lines.append('### [`%s.webp`](files/%s.webp) -- %s\n'
+                         % (name, name, expect))
             lines.append(wrap(note))
             lines.append(wrap(exercises))
     rest = [r for r in rows if r[0] not in used]
     if rest:
         lines.append('## Other\n')
         for name, expect, note, exercises, size in rest:
-            lines.append('### `%s.webp` -- %s\n' % (name, expect))
+            lines.append('### [`%s.webp`](files/%s.webp) -- %s\n'
+                         % (name, name, expect))
             lines.append(wrap(note))
             lines.append(wrap(exercises))
     total = sum(r[4] for r in rows)
@@ -1278,6 +1342,7 @@ def write_readme(outdir, rows):
         '%d files, %d bytes total. Rebuild with `generate.py`; the VP8L '
         'bitstream writer is `vp8l.py` and the lossy cases are in '
         '`lossy_parts.py`.' % (len(rows), total)))
+    write_files_index(outdir, rows)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
     with open(os.path.join(outdir, 'README.md'), 'w') as f:
         f.write(text)
