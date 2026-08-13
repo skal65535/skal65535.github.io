@@ -7,7 +7,7 @@
 
 """Assembles a lossy VP8 .webp from a text description of the bitstream.
 
-    ./vp8_asm.py cases/lossy-coeff-cat3.bitstream files/lossy-coeff-cat3.webp
+    ./vp8_asm.py cases/lossy-coeff-cat3.txt files/lossy-coeff-cat3.webp
 
 A case is a list of fields, one per line, '#' starting a comment. The names
 are RFC 6386's, section by section, so a case reads against the spec rather
@@ -479,7 +479,7 @@ def assemble_text(text):
 def main(argv):
     if not 2 <= len(argv) <= 3:
         print(__doc__.strip().split('\n\n')[0], file=sys.stderr)
-        print('usage: %s <case.bitstream> [<out.webp>]'
+        print('usage: %s <case.txt> [<out.webp>]'
               % os.path.basename(argv[0]), file=sys.stderr)
         return 1
     src = argv[1]

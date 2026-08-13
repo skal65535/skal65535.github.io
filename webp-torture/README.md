@@ -325,8 +325,8 @@ under test. `webp_asm.py` assembles any of them and hands the frame part to
 `vp8_asm.py`; use either directly, or read an existing frame back out as
 text to start from:
 
-    ./webp_asm.py cases/alph-raw-filter-gradient.bitstream /tmp/out.webp
-    ./vp8_asm.py cases/lossy-coeff-cat6.bitstream /tmp/out.webp
+    ./webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
+    ./vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
     ./vp8_dis.py some-photo.webp
 
 Each tool's docstring is the reference for the fields it owns:
@@ -891,21 +891,21 @@ its canvas size, the optional chunks a decoder must step over by their declared
 length alone, and the padding rule that makes an odd-sized one even on disk.
 Everything here is read by webp_dec.c before the frame is looked at.
 
-### [`container-chunk-header-truncated.webp`](files/container-chunk-header-truncated.webp) -- reject -- from [`container-chunk-header-truncated.bitstream`](cases/container-chunk-header-truncated.bitstream)
+### [`container-chunk-header-truncated.webp`](files/container-chunk-header-truncated.webp) -- reject -- from [`container-chunk-header-truncated.txt`](cases/container-chunk-header-truncated.txt)
 
 The file cut four bytes into the last chunk header.
 
 The "buf_size < CHUNK_HEADER_SIZE" test at the top of the walk: a tag with no
 size behind it. Four bytes is enough to read the fourcc and not the length.
 
-### [`container-duplicate-image-chunk.webp`](files/container-duplicate-image-chunk.webp) -- ok -- from [`container-duplicate-image-chunk.bitstream`](cases/container-duplicate-image-chunk.bitstream)
+### [`container-duplicate-image-chunk.webp`](files/container-duplicate-image-chunk.webp) -- ok -- from [`container-duplicate-image-chunk.txt`](cases/container-duplicate-image-chunk.txt)
 
 Two VP8 chunks, one after the other.
 
 The walk stops at the first VP8 chunk, so the second is never looked at and
 whatever it holds is dead weight. Nothing rejects the duplicate.
 
-### [`container-metadata-chunks.webp`](files/container-metadata-chunks.webp) -- ok -- from [`container-metadata-chunks.bitstream`](cases/container-metadata-chunks.bitstream)
+### [`container-metadata-chunks.webp`](files/container-metadata-chunks.webp) -- ok -- from [`container-metadata-chunks.txt`](cases/container-metadata-chunks.txt)
 
 ICCP, EXIF and XMP chunks around the frame.
 
@@ -914,14 +914,14 @@ three metadata chunks the format defines are the ones a real file is most
 likely to carry, and the decoder must step over them by their declared size
 alone.
 
-### [`container-no-image-chunk.webp`](files/container-no-image-chunk.webp) -- reject -- from [`container-no-image-chunk.bitstream`](cases/container-no-image-chunk.bitstream)
+### [`container-no-image-chunk.webp`](files/container-no-image-chunk.webp) -- reject -- from [`container-no-image-chunk.txt`](cases/container-no-image-chunk.txt)
 
 A VP8X chunk and some metadata, and no image chunk at all.
 
 ParseOptionalChunks() walks to the end of the data without meeting VP8 or VP8L
 and runs out. A container that promises a picture and does not carry one.
 
-### [`container-odd-chunk-no-pad.webp`](files/container-odd-chunk-no-pad.webp) -- reject -- from [`container-odd-chunk-no-pad.bitstream`](cases/container-odd-chunk-no-pad.bitstream)
+### [`container-odd-chunk-no-pad.webp`](files/container-odd-chunk-no-pad.webp) -- reject -- from [`container-odd-chunk-no-pad.txt`](cases/container-odd-chunk-no-pad.txt)
 
 An odd-sized chunk whose header rounds its length up, taking the pad byte away.
 
@@ -929,7 +929,7 @@ The walk steps by (8 + size + 1) & ~1, so an even declared size means no pad
 byte, and everything after it is read one byte off. The partner of container-
 odd-chunk-payload: same chunk, one byte shorter.
 
-### [`container-odd-chunk-payload.webp`](files/container-odd-chunk-payload.webp) -- ok -- from [`container-odd-chunk-payload.bitstream`](cases/container-odd-chunk-payload.bitstream)
+### [`container-odd-chunk-payload.webp`](files/container-odd-chunk-payload.webp) -- ok -- from [`container-odd-chunk-payload.txt`](cases/container-odd-chunk-payload.txt)
 
 An optional chunk with an odd-sized payload, and the pad byte that must follow
 it.
@@ -939,7 +939,7 @@ corpus has an odd image chunk and so pads incidentally, but this is the only
 one where the padded chunk has something after it, which is where getting the
 rounding wrong would show.
 
-### [`container-riff-size-past-end.webp`](files/container-riff-size-past-end.webp) -- reject -- from [`container-riff-size-past-end.bitstream`](cases/container-riff-size-past-end.bitstream)
+### [`container-riff-size-past-end.webp`](files/container-riff-size-past-end.webp) -- reject -- from [`container-riff-size-past-end.txt`](cases/container-riff-size-past-end.txt)
 
 A RIFF header claiming far more bytes than the file holds.
 
@@ -947,14 +947,14 @@ The "size > *data_size - CHUNK_HEADER_SIZE" test, which only fires when the
 whole file is in hand -- the same lie is tolerated while a stream is still
 arriving.
 
-### [`container-riff-size-short.webp`](files/container-riff-size-short.webp) -- reject -- from [`container-riff-size-short.bitstream`](cases/container-riff-size-short.bitstream)
+### [`container-riff-size-short.webp`](files/container-riff-size-short.webp) -- reject -- from [`container-riff-size-short.txt`](cases/container-riff-size-short.txt)
 
 A RIFF header claiming 11 bytes, one less than the smallest legal value.
 
 The "size < TAG_SIZE + CHUNK_HEADER_SIZE" test in ParseRIFF(): a RIFF size must
 leave room for "WEBP" and one chunk header. 11 is the last value that does not.
 
-### [`container-riff-size-truncates-chunks.webp`](files/container-riff-size-truncates-chunks.webp) -- reject -- from [`container-riff-size-truncates-chunks.bitstream`](cases/container-riff-size-truncates-chunks.bitstream)
+### [`container-riff-size-truncates-chunks.webp`](files/container-riff-size-truncates-chunks.webp) -- reject -- from [`container-riff-size-truncates-chunks.txt`](cases/container-riff-size-truncates-chunks.txt)
 
 A RIFF size that stops in the middle of the chunks behind it.
 
@@ -962,14 +962,14 @@ The "total_size > riff_size" test in ParseOptionalChunks(): the walk adds up
 what it has skipped and refuses to walk past what the RIFF header said was
 there.
 
-### [`container-trailing-bytes.webp`](files/container-trailing-bytes.webp) -- ok -- from [`container-trailing-bytes.bitstream`](cases/container-trailing-bytes.bitstream)
+### [`container-trailing-bytes.webp`](files/container-trailing-bytes.webp) -- ok -- from [`container-trailing-bytes.txt`](cases/container-trailing-bytes.txt)
 
 Bytes after the last chunk that the RIFF size does not account for.
 
 The decoder stops at the image chunk and never looks past it, so junk at the
 end of the file is ignored rather than refused.
 
-### [`container-unknown-chunk.webp`](files/container-unknown-chunk.webp) -- ok -- from [`container-unknown-chunk.bitstream`](cases/container-unknown-chunk.bitstream)
+### [`container-unknown-chunk.webp`](files/container-unknown-chunk.webp) -- ok -- from [`container-unknown-chunk.txt`](cases/container-unknown-chunk.txt)
 
 A chunk with a fourcc the format does not define, ahead of the frame.
 
@@ -977,7 +977,7 @@ The same skip path as the metadata chunks, but with a tag no version of libwebp
 knows. An unknown chunk must be stepped over, not refused: that is what makes
 the format extensible.
 
-### [`container-vp8x-animation.webp`](files/container-vp8x-animation.webp) -- reject -- from [`container-vp8x-animation.bitstream`](cases/container-vp8x-animation.bitstream)
+### [`container-vp8x-animation.webp`](files/container-vp8x-animation.webp) -- reject -- from [`container-vp8x-animation.txt`](cases/container-vp8x-animation.txt)
 
 The VP8X animation flag set on a file with no animation chunks.
 
@@ -985,7 +985,7 @@ The flag alone is enough: WebPParseHeaders() turns any file claiming animation
 into UNSUPPORTED_FEATURE, since a still decoder cannot compose frames. Nothing
 looks for the ANIM chunk the flag implies.
 
-### [`container-vp8x-area-overflow.webp`](files/container-vp8x-area-overflow.webp) -- reject -- from [`container-vp8x-area-overflow.bitstream`](cases/container-vp8x-area-overflow.bitstream)
+### [`container-vp8x-area-overflow.webp`](files/container-vp8x-area-overflow.webp) -- reject -- from [`container-vp8x-area-overflow.txt`](cases/container-vp8x-area-overflow.txt)
 
 A VP8X canvas of 16777216 by 16777216, the largest the two 24-bit fields can
 describe.
@@ -994,7 +994,7 @@ The "width * height >= MAX_IMAGE_AREA" test in ParseVP8X(), computed in 64 bits
 precisely so this cannot wrap. Both fields are at their maximum, so the product
 is 2^48.
 
-### [`container-vp8x-canvas-mismatch.webp`](files/container-vp8x-canvas-mismatch.webp) -- reject -- from [`container-vp8x-canvas-mismatch.bitstream`](cases/container-vp8x-canvas-mismatch.bitstream)
+### [`container-vp8x-canvas-mismatch.webp`](files/container-vp8x-canvas-mismatch.webp) -- reject -- from [`container-vp8x-canvas-mismatch.txt`](cases/container-vp8x-canvas-mismatch.txt)
 
 A VP8X canvas of 64x64 in front of a 32x32 frame.
 
@@ -1003,7 +1003,7 @@ ParseHeadersInternal(): a VP8X chunk must agree with the frame behind it, in
 both dimensions. The container is the only place in the format where the
 picture size is stated twice.
 
-### [`container-vp8x-reserved-bits.webp`](files/container-vp8x-reserved-bits.webp) -- ok -- from [`container-vp8x-reserved-bits.bitstream`](cases/container-vp8x-reserved-bits.bitstream)
+### [`container-vp8x-reserved-bits.webp`](files/container-vp8x-reserved-bits.webp) -- ok -- from [`container-vp8x-reserved-bits.txt`](cases/container-vp8x-reserved-bits.txt)
 
 The reserved bits of the VP8X flags field all set.
 
@@ -1011,7 +1011,7 @@ Everything outside ALL_VALID_FLAGS (0x3e). The decoder reads the field as a
 whole and tests only the bits it knows, so the reserved ones ride through; the
 muxer is stricter than the decoder here.
 
-### [`container-vp8x-still-flags.webp`](files/container-vp8x-still-flags.webp) -- ok -- from [`container-vp8x-still-flags.bitstream`](cases/container-vp8x-still-flags.bitstream)
+### [`container-vp8x-still-flags.webp`](files/container-vp8x-still-flags.webp) -- ok -- from [`container-vp8x-still-flags.txt`](cases/container-vp8x-still-flags.txt)
 
 The four still-image VP8X flags set, with none of the chunks they promise.
 
@@ -1019,14 +1019,14 @@ Alpha, ICC, EXIF and XMP together. Nothing checks that a flag is backed by its
 chunk, so this decodes as the plain lossy frame it is. The animation flag is
 the one exception, which container-vp8x-animation covers.
 
-### [`container-vp8x-wrong-size.webp`](files/container-vp8x-wrong-size.webp) -- reject -- from [`container-vp8x-wrong-size.bitstream`](cases/container-vp8x-wrong-size.bitstream)
+### [`container-vp8x-wrong-size.webp`](files/container-vp8x-wrong-size.webp) -- reject -- from [`container-vp8x-wrong-size.txt`](cases/container-vp8x-wrong-size.txt)
 
 A VP8X chunk whose header claims 9 bytes rather than 10.
 
 The "chunk_size != VP8X_CHUNK_SIZE" test in ParseVP8X(), which is an equality:
 a VP8X chunk is 10 bytes and no other length is tolerated, in either direction.
 
-### [`container-vp8x.webp`](files/container-vp8x.webp) -- ok -- from [`container-vp8x.bitstream`](cases/container-vp8x.bitstream)
+### [`container-vp8x.webp`](files/container-vp8x.webp) -- ok -- from [`container-vp8x.txt`](cases/container-vp8x.txt)
 
 The extended format: a VP8X chunk ahead of the frame.
 
@@ -1034,7 +1034,7 @@ ParseVP8X(). The canvas size is written as width and height less one, and here
 it agrees with the frame behind it. No file in the corpus had a VP8X chunk at
 all before this one.
 
-### [`container-zero-size-chunk.webp`](files/container-zero-size-chunk.webp) -- ok -- from [`container-zero-size-chunk.bitstream`](cases/container-zero-size-chunk.bitstream)
+### [`container-zero-size-chunk.webp`](files/container-zero-size-chunk.webp) -- ok -- from [`container-zero-size-chunk.txt`](cases/container-zero-size-chunk.txt)
 
 An optional chunk declaring a zero-length payload.
 
@@ -1050,7 +1050,7 @@ the lossless coder in its 8-bit mode. That mode is a separate path through
 vp8l_dec.c from the one every VP8L file here takes, and these are the only
 files that reach it.
 
-### [`alph-after-image.webp`](files/alph-after-image.webp) -- ok -- from [`alph-after-image.bitstream`](cases/alph-after-image.bitstream)
+### [`alph-after-image.webp`](files/alph-after-image.webp) -- ok -- from [`alph-after-image.txt`](cases/alph-after-image.txt)
 
 An ALPH chunk placed after the image chunk instead of before it.
 
@@ -1058,7 +1058,7 @@ ParseOptionalChunks() stops at the first VP8 chunk, so an ALPH behind it is
 never seen and the picture decodes fully opaque. Ordering is not diagnosed, it
 is silently obeyed -- which the all-255 alpha in the hash is what records.
 
-### [`alph-compression-invalid.webp`](files/alph-compression-invalid.webp) -- reject -- from [`alph-compression-invalid.bitstream`](cases/alph-compression-invalid.bitstream)
+### [`alph-compression-invalid.webp`](files/alph-compression-invalid.webp) -- reject -- from [`alph-compression-invalid.txt`](cases/alph-compression-invalid.txt)
 
 A compression method of 2, past the lossless one.
 
@@ -1066,14 +1066,14 @@ The header byte packs four fields into two bits each, and only the method and
 the pre-processing have values the format does not define. This is the first of
 them.
 
-### [`alph-empty-payload.webp`](files/alph-empty-payload.webp) -- reject -- from [`alph-empty-payload.bitstream`](cases/alph-empty-payload.bitstream)
+### [`alph-empty-payload.webp`](files/alph-empty-payload.webp) -- reject -- from [`alph-empty-payload.txt`](cases/alph-empty-payload.txt)
 
 An ALPH chunk holding its header byte and nothing else.
 
 The "data_size <= ALPHA_HEADER_LEN" test at the top of ALPHInit(), which is
 what stops the header byte itself from being read out of an empty chunk.
 
-### [`alph-lossless-byte-flipped.webp`](files/alph-lossless-byte-flipped.webp) -- reject -- from [`alph-lossless-byte-flipped.bitstream`](cases/alph-lossless-byte-flipped.bitstream)
+### [`alph-lossless-byte-flipped.webp`](files/alph-lossless-byte-flipped.webp) -- reject -- from [`alph-lossless-byte-flipped.txt`](cases/alph-lossless-byte-flipped.txt)
 
 The same plane with its last byte replaced.
 
@@ -1081,7 +1081,7 @@ One byte, not a truncation: the stream is the right length and stops making
 sense at the end. Together with alph-lossless-truncated this pins both ways the
 compressed plane can fail.
 
-### [`alph-lossless-palette.webp`](files/alph-lossless-palette.webp) -- ok -- from [`alph-lossless-palette.bitstream`](cases/alph-lossless-palette.bitstream)
+### [`alph-lossless-palette.webp`](files/alph-lossless-palette.webp) -- ok -- from [`alph-lossless-palette.txt`](cases/alph-lossless-palette.txt)
 
 A losslessly compressed alpha plane carrying a palette transform, from a cwebp
 encode of a two-valued plane.
@@ -1093,7 +1093,7 @@ loop from the one all 62 VP8L files here take, and this is the only file in the
 corpus that runs it. Its partner alph- lossless-predictor is the same feature
 failing the same test.
 
-### [`alph-lossless-predictor.webp`](files/alph-lossless-predictor.webp) -- ok -- from [`alph-lossless-predictor.bitstream`](cases/alph-lossless-predictor.bitstream)
+### [`alph-lossless-predictor.webp`](files/alph-lossless-predictor.webp) -- ok -- from [`alph-lossless-predictor.txt`](cases/alph-lossless-predictor.txt)
 
 A losslessly compressed alpha plane carrying a predictor transform, from a
 cwebp encode of a gradient.
@@ -1104,14 +1104,14 @@ Is8bOptimizable() says no and the plane is decoded through DecodeImageData()
 with ExtractAlphaRows() pulling the green channel out afterwards. The 21
 payload bytes are cwebp -q 60 output; nothing here can write one yet.
 
-### [`alph-lossless-truncated.webp`](files/alph-lossless-truncated.webp) -- reject -- from [`alph-lossless-truncated.bitstream`](cases/alph-lossless-truncated.bitstream)
+### [`alph-lossless-truncated.webp`](files/alph-lossless-truncated.webp) -- reject -- from [`alph-lossless-truncated.txt`](cases/alph-lossless-truncated.txt)
 
 The predictor-transform plane cut to ten bytes.
 
 The lossless decoder runs out part way through the alpha image. The failure
 comes back through ALPHInit() as a bitstream error rather than as a short read.
 
-### [`alph-no-vp8x.webp`](files/alph-no-vp8x.webp) -- reject -- from [`alph-no-vp8x.bitstream`](cases/alph-no-vp8x.bitstream)
+### [`alph-no-vp8x.webp`](files/alph-no-vp8x.webp) -- reject -- from [`alph-no-vp8x.txt`](cases/alph-no-vp8x.txt)
 
 An ALPH chunk in a RIFF file with no VP8X ahead of it.
 
@@ -1119,7 +1119,7 @@ The extended format is what an ALPH chunk lives in: libwebp only accepts a
 leading ALPH when there is no RIFF header at all, the bare stream case. With
 RIFF and no VP8X it is refused.
 
-### [`alph-preprocessing-invalid.webp`](files/alph-preprocessing-invalid.webp) -- reject -- from [`alph-preprocessing-invalid.bitstream`](cases/alph-preprocessing-invalid.bitstream)
+### [`alph-preprocessing-invalid.webp`](files/alph-preprocessing-invalid.webp) -- reject -- from [`alph-preprocessing-invalid.txt`](cases/alph-preprocessing-invalid.txt)
 
 A pre-processing value of 2, past level reduction.
 
@@ -1127,7 +1127,7 @@ The second undefined value in the header byte, refused by the same condition in
 ALPHInit(). All four filter values are legal, so the filter field has no
 partner to this.
 
-### [`alph-raw-filter-gradient.webp`](files/alph-raw-filter-gradient.webp) -- ok -- from [`alph-raw-filter-gradient.bitstream`](cases/alph-raw-filter-gradient.bitstream)
+### [`alph-raw-filter-gradient.webp`](files/alph-raw-filter-gradient.webp) -- ok -- from [`alph-raw-filter-gradient.txt`](cases/alph-raw-filter-gradient.txt)
 
 An uncompressed alpha plane under the gradient filter.
 
@@ -1136,7 +1136,7 @@ a routine each in dsp/filters.c and the same stored bytes come out as four
 different planes, so the pixel hash is what tells them apart. Nothing in the
 corpus reached any of them before.
 
-### [`alph-raw-filter-horizontal.webp`](files/alph-raw-filter-horizontal.webp) -- ok -- from [`alph-raw-filter-horizontal.bitstream`](cases/alph-raw-filter-horizontal.bitstream)
+### [`alph-raw-filter-horizontal.webp`](files/alph-raw-filter-horizontal.webp) -- ok -- from [`alph-raw-filter-horizontal.txt`](cases/alph-raw-filter-horizontal.txt)
 
 An uncompressed alpha plane under the horizontal filter.
 
@@ -1145,7 +1145,7 @@ filters have a routine each in dsp/filters.c and the same stored bytes come out
 as four different planes, so the pixel hash is what tells them apart. Nothing
 in the corpus reached any of them before.
 
-### [`alph-raw-filter-none.webp`](files/alph-raw-filter-none.webp) -- ok -- from [`alph-raw-filter-none.bitstream`](cases/alph-raw-filter-none.bitstream)
+### [`alph-raw-filter-none.webp`](files/alph-raw-filter-none.webp) -- ok -- from [`alph-raw-filter-none.txt`](cases/alph-raw-filter-none.txt)
 
 An uncompressed alpha plane under the none filter.
 
@@ -1154,7 +1154,7 @@ dsp/filters.c and the same stored bytes come out as four different planes, so
 the pixel hash is what tells them apart. Nothing in the corpus reached any of
 them before.
 
-### [`alph-raw-filter-vertical.webp`](files/alph-raw-filter-vertical.webp) -- ok -- from [`alph-raw-filter-vertical.bitstream`](cases/alph-raw-filter-vertical.bitstream)
+### [`alph-raw-filter-vertical.webp`](files/alph-raw-filter-vertical.webp) -- ok -- from [`alph-raw-filter-vertical.txt`](cases/alph-raw-filter-vertical.txt)
 
 An uncompressed alpha plane under the vertical filter.
 
@@ -1163,7 +1163,7 @@ dsp/filters.c and the same stored bytes come out as four different planes, so
 the pixel hash is what tells them apart. Nothing in the corpus reached any of
 them before.
 
-### [`alph-raw-oversized.webp`](files/alph-raw-oversized.webp) -- ok -- from [`alph-raw-oversized.bitstream`](cases/alph-raw-oversized.bitstream)
+### [`alph-raw-oversized.webp`](files/alph-raw-oversized.webp) -- ok -- from [`alph-raw-oversized.txt`](cases/alph-raw-oversized.txt)
 
 An uncompressed plane 44 bytes longer than the picture needs.
 
@@ -1171,7 +1171,7 @@ ALPHInit() tests "alpha_data_size >= alpha_decoded_size", so a plane may be
 longer than width by height and the tail is simply never read. The boundary
 partner of alph-raw-short.
 
-### [`alph-raw-preprocessing.webp`](files/alph-raw-preprocessing.webp) -- ok -- from [`alph-raw-preprocessing.bitstream`](cases/alph-raw-preprocessing.bitstream)
+### [`alph-raw-preprocessing.webp`](files/alph-raw-preprocessing.webp) -- ok -- from [`alph-raw-preprocessing.txt`](cases/alph-raw-preprocessing.txt)
 
 An uncompressed plane declaring the level-reduction pre-processing.
 
@@ -1180,21 +1180,21 @@ everything in one pass" branch and keeps alpha dithering alive instead of
 switching it off. The plane itself comes out the same as with no pre-
 processing, so this pins the control path rather than the pixels.
 
-### [`alph-raw-short.webp`](files/alph-raw-short.webp) -- reject -- from [`alph-raw-short.bitstream`](cases/alph-raw-short.bitstream)
+### [`alph-raw-short.webp`](files/alph-raw-short.webp) -- reject -- from [`alph-raw-short.txt`](cases/alph-raw-short.txt)
 
 An uncompressed plane one byte short of the picture.
 
 The other side of that same test, one byte away: 255 bytes where a 16x16
 picture needs 256.
 
-### [`alph-reserved-set.webp`](files/alph-reserved-set.webp) -- reject -- from [`alph-reserved-set.bitstream`](cases/alph-reserved-set.bitstream)
+### [`alph-reserved-set.webp`](files/alph-reserved-set.webp) -- reject -- from [`alph-reserved-set.txt`](cases/alph-reserved-set.txt)
 
 The two reserved bits of the ALPH header byte set.
 
 The "rsrv != 0" arm of the same test. Unlike VP8X, whose reserved bits ride
 through untouched, ALPH refuses a header with anything in its top two bits.
 
-### [`alph-without-vp8x-flag.webp`](files/alph-without-vp8x-flag.webp) -- ok -- from [`alph-without-vp8x-flag.bitstream`](cases/alph-without-vp8x-flag.bitstream)
+### [`alph-without-vp8x-flag.webp`](files/alph-without-vp8x-flag.webp) -- ok -- from [`alph-without-vp8x-flag.txt`](cases/alph-without-vp8x-flag.txt)
 
 An ALPH chunk with the VP8X alpha flag left clear.
 
@@ -1208,14 +1208,14 @@ The ten uncompressed bytes every lossy frame starts with: the profile, the
 visibility and key-frame bits, the length of partition 0, the start code and
 the two 14-bit dimensions.
 
-### [`lossy-frame-bad-start-code.webp`](files/lossy-frame-bad-start-code.webp) -- reject -- from [`lossy-frame-bad-start-code.bitstream`](cases/lossy-frame-bad-start-code.bitstream)
+### [`lossy-frame-bad-start-code.webp`](files/lossy-frame-bad-start-code.webp) -- reject -- from [`lossy-frame-bad-start-code.txt`](cases/lossy-frame-bad-start-code.txt)
 
 The three-byte start code changed from 9d 01 2a to 9d 01 29.
 
 VP8CheckSignature(). One bit away from valid, so it also checks that the
 signature is compared, not merely skipped over.
 
-### [`lossy-frame-colorspace-clamp.webp`](files/lossy-frame-colorspace-clamp.webp) -- ok -- from [`lossy-frame-colorspace-clamp.bitstream`](cases/lossy-frame-colorspace-clamp.bitstream)
+### [`lossy-frame-colorspace-clamp.webp`](files/lossy-frame-colorspace-clamp.webp) -- ok -- from [`lossy-frame-colorspace-clamp.txt`](cases/lossy-frame-colorspace-clamp.txt)
 
 The colour-space and clamping-type bits both set.
 
@@ -1223,7 +1223,7 @@ The two bits at the very top of partition 0. libwebp stores both and acts on
 neither, so a decoder that started honouring either would fail this file's hash
 rather than its verdict. Nothing else in the corpus sets them.
 
-### [`lossy-frame-interframe.webp`](files/lossy-frame-interframe.webp) -- reject -- from [`lossy-frame-interframe.bitstream`](cases/lossy-frame-interframe.bitstream)
+### [`lossy-frame-interframe.webp`](files/lossy-frame-interframe.webp) -- reject -- from [`lossy-frame-interframe.txt`](cases/lossy-frame-interframe.txt)
 
 The key-frame bit cleared, so the frame claims to be an inter frame.
 
@@ -1231,21 +1231,21 @@ libwebp decodes single key frames only, and VP8GetInfo() turns this away on the
 key-frame bit alone: the picture header behind it is never looked at, and
 VP8GetHeaders() never runs.
 
-### [`lossy-frame-not-shown.webp`](files/lossy-frame-not-shown.webp) -- reject -- from [`lossy-frame-not-shown.bitstream`](cases/lossy-frame-not-shown.bitstream)
+### [`lossy-frame-not-shown.webp`](files/lossy-frame-not-shown.webp) -- reject -- from [`lossy-frame-not-shown.txt`](cases/lossy-frame-not-shown.txt)
 
 A key frame with the show_frame bit cleared.
 
 VP8GetInfo() bails on "first frame is invisible"; the VP8 layer would have said
 UNSUPPORTED_FEATURE. Nothing else in the corpus reaches either.
 
-### [`lossy-frame-part0-empty.webp`](files/lossy-frame-part0-empty.webp) -- reject -- from [`lossy-frame-part0-empty.bitstream`](cases/lossy-frame-part0-empty.bitstream)
+### [`lossy-frame-part0-empty.webp`](files/lossy-frame-part0-empty.webp) -- reject -- from [`lossy-frame-part0-empty.txt`](cases/lossy-frame-part0-empty.txt)
 
 The frame tag claims a zero-byte partition 0.
 
 The boolean reader is handed no data at all: every header field reads past the
 end, and ParseSegmentHeader() returns on br->eof.
 
-### [`lossy-frame-part0-past-end.webp`](files/lossy-frame-part0-past-end.webp) -- reject -- from [`lossy-frame-part0-past-end.bitstream`](cases/lossy-frame-part0-past-end.bitstream)
+### [`lossy-frame-part0-past-end.webp`](files/lossy-frame-part0-past-end.webp) -- reject -- from [`lossy-frame-part0-past-end.txt`](cases/lossy-frame-part0-past-end.txt)
 
 The frame tag claims a partition 0 far larger than the file.
 
@@ -1253,7 +1253,7 @@ The 19-bit partition length. VP8GetInfo() catches "partition_length >=
 chunk_size" first; VP8GetHeaders() has its own "bad partition length" behind
 it.
 
-### [`lossy-frame-scale-1.webp`](files/lossy-frame-scale-1.webp) -- ok -- from [`lossy-frame-scale-1.bitstream`](cases/lossy-frame-scale-1.bitstream)
+### [`lossy-frame-scale-1.webp`](files/lossy-frame-scale-1.webp) -- ok -- from [`lossy-frame-scale-1.txt`](cases/lossy-frame-scale-1.txt)
 
 A horizontal upscaling hint of 1 and a vertical one of 3.
 
@@ -1261,7 +1261,7 @@ Two of the four values of the two 2-bit scale fields; lossy- frame-scaled has 3
 and 2 and lossy-frame-scale-2 the rest, so between the three every value of
 both is written. libwebp reads them into pic_hdr and acts on neither.
 
-### [`lossy-frame-scale-2.webp`](files/lossy-frame-scale-2.webp) -- ok -- from [`lossy-frame-scale-2.bitstream`](cases/lossy-frame-scale-2.bitstream)
+### [`lossy-frame-scale-2.webp`](files/lossy-frame-scale-2.webp) -- ok -- from [`lossy-frame-scale-2.txt`](cases/lossy-frame-scale-2.txt)
 
 A horizontal upscaling hint of 2 and a vertical one of 1.
 
@@ -1269,7 +1269,7 @@ The two values the other two scale cases leave out, so all four are seen in
 each field. A decoder that started honouring the hint would resize the output
 and fail the hash rather than the verdict.
 
-### [`lossy-frame-scaled.webp`](files/lossy-frame-scaled.webp) -- ok -- from [`lossy-frame-scaled.bitstream`](cases/lossy-frame-scaled.bitstream)
+### [`lossy-frame-scaled.webp`](files/lossy-frame-scaled.webp) -- ok -- from [`lossy-frame-scaled.txt`](cases/lossy-frame-scaled.txt)
 
 Horizontal and vertical upscaling hints of 3 (2x) in the top bits of the
 dimension fields.
@@ -1277,7 +1277,7 @@ dimension fields.
 pic_hdr->xscale and yscale. libwebp parses and ignores them, so the output
 stays 32x32; a decoder that honoured them would fail the hash.
 
-### [`lossy-frame-version-1.webp`](files/lossy-frame-version-1.webp) -- ok -- from [`lossy-frame-version-1.bitstream`](cases/lossy-frame-version-1.bitstream)
+### [`lossy-frame-version-1.webp`](files/lossy-frame-version-1.webp) -- ok -- from [`lossy-frame-version-1.txt`](cases/lossy-frame-version-1.txt)
 
 A frame declaring profile 1 instead of 0.
 
@@ -1285,21 +1285,21 @@ The 3-bit version field of the frame tag. libwebp accepts 0 to 3 and
 reconstructs them all the same way, so this pins the acceptance, not the
 pixels.
 
-### [`lossy-frame-version-2.webp`](files/lossy-frame-version-2.webp) -- ok -- from [`lossy-frame-version-2.bitstream`](cases/lossy-frame-version-2.bitstream)
+### [`lossy-frame-version-2.webp`](files/lossy-frame-version-2.webp) -- ok -- from [`lossy-frame-version-2.txt`](cases/lossy-frame-version-2.txt)
 
 Profile 2, the value between the two the corpus already had.
 
 Completes the four accepted values of the 3-bit version field: 0 and 1 and 3
 were covered, 2 was not.
 
-### [`lossy-frame-version-3.webp`](files/lossy-frame-version-3.webp) -- ok -- from [`lossy-frame-version-3.bitstream`](cases/lossy-frame-version-3.bitstream)
+### [`lossy-frame-version-3.webp`](files/lossy-frame-version-3.webp) -- ok -- from [`lossy-frame-version-3.txt`](cases/lossy-frame-version-3.txt)
 
 Profile 3, the largest the decoder accepts.
 
 Boundary partner of lossy-frame-version-4: "profile > 3" is the whole check in
 VP8GetHeaders().
 
-### [`lossy-frame-version-4.webp`](files/lossy-frame-version-4.webp) -- reject -- from [`lossy-frame-version-4.bitstream`](cases/lossy-frame-version-4.bitstream)
+### [`lossy-frame-version-4.webp`](files/lossy-frame-version-4.webp) -- reject -- from [`lossy-frame-version-4.txt`](cases/lossy-frame-version-4.txt)
 
 Profile 4, one past the last valid value.
 
@@ -1307,7 +1307,7 @@ VP8GetInfo() rejects it before VP8GetHeaders() ever runs, so this comes back as
 BITSTREAM_ERROR rather than the "Incorrect keyframe parameters" message the VP8
 layer would give.
 
-### [`lossy-frame-version-7.webp`](files/lossy-frame-version-7.webp) -- reject -- from [`lossy-frame-version-7.bitstream`](cases/lossy-frame-version-7.bitstream)
+### [`lossy-frame-version-7.webp`](files/lossy-frame-version-7.webp) -- reject -- from [`lossy-frame-version-7.txt`](cases/lossy-frame-version-7.txt)
 
 Profile 7, the largest the 3-bit field can hold.
 
@@ -1315,14 +1315,14 @@ The far end of the field, past the "profile > 3" test that lossy-frame-
 version-4 sits on. Same rejection, opposite end of the range, which is what
 pins the test as a comparison rather than an equality.
 
-### [`lossy-frame-width-16383.webp`](files/lossy-frame-width-16383.webp) -- ok -- from [`lossy-frame-width-16383.bitstream`](cases/lossy-frame-width-16383.bitstream)
+### [`lossy-frame-width-16383.webp`](files/lossy-frame-width-16383.webp) -- ok -- from [`lossy-frame-width-16383.txt`](cases/lossy-frame-width-16383.txt)
 
 The widest frame the 14-bit field can describe, one macroblock tall.
 
 1024 macroblocks in a single row, so the whole frame goes through one partition
 and the per-column contexts are exercised 1024 wide.
 
-### [`lossy-frame-zero-width.webp`](files/lossy-frame-zero-width.webp) -- reject -- from [`lossy-frame-zero-width.bitstream`](cases/lossy-frame-zero-width.bitstream)
+### [`lossy-frame-zero-width.webp`](files/lossy-frame-zero-width.webp) -- reject -- from [`lossy-frame-zero-width.txt`](cases/lossy-frame-zero-width.txt)
 
 A frame whose width field is zero, with a height of 32.
 
@@ -1336,7 +1336,7 @@ Up to four segments, each with its own quantizer and loop-filter strength, and
 a per-macroblock map saying which is which. cwebp uses the feature but only
 ever writes absolute values, and always writes the map and the data together.
 
-### [`lossy-segment-delta-quantizers.webp`](files/lossy-segment-delta-quantizers.webp) -- ok -- from [`lossy-segment-delta-quantizers.bitstream`](cases/lossy-segment-delta-quantizers.bitstream)
+### [`lossy-segment-delta-quantizers.webp`](files/lossy-segment-delta-quantizers.webp) -- ok -- from [`lossy-segment-delta-quantizers.txt`](cases/lossy-segment-delta-quantizers.txt)
 
 Segment quantizers read as deltas on the frame quantizer instead of absolute
 values.
@@ -1344,7 +1344,7 @@ values.
 segment_feature_mode = 0, the "q += base_q0" branch of VP8ParseQuant(). cwebp
 always writes absolute values (syntax_enc.c:196), so nothing else reaches this.
 
-### [`lossy-segment-filter-strengths.webp`](files/lossy-segment-filter-strengths.webp) -- ok -- from [`lossy-segment-filter-strengths.bitstream`](cases/lossy-segment-filter-strengths.bitstream)
+### [`lossy-segment-filter-strengths.webp`](files/lossy-segment-filter-strengths.webp) -- ok -- from [`lossy-segment-filter-strengths.txt`](cases/lossy-segment-filter-strengths.txt)
 
 Per-segment loop-filter strengths, from 0 to 63, under a frame filter level of
 40.
@@ -1352,14 +1352,14 @@ Per-segment loop-filter strengths, from 0 to 63, under a frame filter level of
 PrecomputeFilterStrengths() with use_segment: the per-segment base level
 replaces the frame level outright when the deltas are absolute.
 
-### [`lossy-segment-four-quantizers.webp`](files/lossy-segment-four-quantizers.webp) -- ok -- from [`lossy-segment-four-quantizers.bitstream`](cases/lossy-segment-four-quantizers.bitstream)
+### [`lossy-segment-four-quantizers.webp`](files/lossy-segment-four-quantizers.webp) -- ok -- from [`lossy-segment-four-quantizers.txt`](cases/lossy-segment-four-quantizers.txt)
 
 Four segments with four different absolute quantizers, one macroblock each.
 
 The segment tree in ParseIntraMode() with all three probabilities used, and
 four distinct VP8QuantMatrix rows in VP8ParseQuant().
 
-### [`lossy-segment-map-only.webp`](files/lossy-segment-map-only.webp) -- ok -- from [`lossy-segment-map-only.bitstream`](cases/lossy-segment-map-only.bitstream)
+### [`lossy-segment-map-only.webp`](files/lossy-segment-map-only.webp) -- ok -- from [`lossy-segment-map-only.txt`](cases/lossy-segment-map-only.txt)
 
 A segment map with no segment data behind it.
 
@@ -1367,7 +1367,7 @@ update_map without update_data: the ids are read and used to index dqm[], but
 every entry is the frame quantizer, so the map changes nothing. Pins that the
 two flags are independent.
 
-### [`lossy-segment-no-map.webp`](files/lossy-segment-no-map.webp) -- ok -- from [`lossy-segment-no-map.bitstream`](cases/lossy-segment-no-map.bitstream)
+### [`lossy-segment-no-map.webp`](files/lossy-segment-no-map.webp) -- ok -- from [`lossy-segment-no-map.txt`](cases/lossy-segment-no-map.txt)
 
 Segmentation on, quantizers given, but no segment map: every macroblock is
 segment 0.
@@ -1375,7 +1375,7 @@ segment 0.
 use_segment without update_map. No per-macroblock segment bits are read, and
 only dqm[0] is ever selected, but the other three are still built.
 
-### [`lossy-segment-prob-extremes.webp`](files/lossy-segment-prob-extremes.webp) -- ok -- from [`lossy-segment-prob-extremes.bitstream`](cases/lossy-segment-prob-extremes.bitstream)
+### [`lossy-segment-prob-extremes.webp`](files/lossy-segment-prob-extremes.webp) -- ok -- from [`lossy-segment-prob-extremes.txt`](cases/lossy-segment-prob-extremes.txt)
 
 Segment probabilities of 0 and 255, and loop-filter updates at both ends of
 their range.
@@ -1385,7 +1385,7 @@ other maximally expensive; -63 and 63 are the ends of the 6-bit signed loop-
 filter update. All four macroblocks carry a different segment id, so every
 branch of the tree is taken under those probabilities.
 
-### [`lossy-segment-quant-extremes.webp`](files/lossy-segment-quant-extremes.webp) -- ok -- from [`lossy-segment-quant-extremes.bitstream`](cases/lossy-segment-quant-extremes.bitstream)
+### [`lossy-segment-quant-extremes.webp`](files/lossy-segment-quant-extremes.webp) -- ok -- from [`lossy-segment-quant-extremes.txt`](cases/lossy-segment-quant-extremes.txt)
 
 Segment quantizers at 127, -127, 0 and absent.
 
@@ -1398,7 +1398,7 @@ express.
 The in-loop deblocking filter: simple or normal, its level and sharpness, and
 the per-reference and per-mode deltas.
 
-### [`lossy-filter-lf-delta-extremes.webp`](files/lossy-filter-lf-delta-extremes.webp) -- ok -- from [`lossy-filter-lf-delta-extremes.bitstream`](cases/lossy-filter-lf-delta-extremes.bitstream)
+### [`lossy-filter-lf-delta-extremes.webp`](files/lossy-filter-lf-delta-extremes.webp) -- ok -- from [`lossy-filter-lf-delta-extremes.txt`](cases/lossy-filter-lf-delta-extremes.txt)
 
 Loop-filter mode deltas at -63 and 63.
 
@@ -1407,7 +1407,7 @@ the four is ever used by an intra frame. lossy-filter-lf-delta writes -20 and
 31; this writes both ends of the 6-bit signed field, against a filter level
 that leaves room to move.
 
-### [`lossy-filter-lf-delta.webp`](files/lossy-filter-lf-delta.webp) -- ok -- from [`lossy-filter-lf-delta.bitstream`](cases/lossy-filter-lf-delta.bitstream)
+### [`lossy-filter-lf-delta.webp`](files/lossy-filter-lf-delta.webp) -- ok -- from [`lossy-filter-lf-delta.txt`](cases/lossy-filter-lf-delta.txt)
 
 Loop-filter deltas: 63 and -63 on the reference deltas, and a delta on the 4x4
 mode.
@@ -1416,14 +1416,14 @@ The mode_lf_delta[0] path for 4x4-coded macroblocks and the ref_lf_delta that
 only inter frames would use. cwebp writes four zero flags and one i4x4 delta
 (syntax_enc.c:226), never these.
 
-### [`lossy-filter-normal-max.webp`](files/lossy-filter-normal-max.webp) -- ok -- from [`lossy-filter-normal-max.bitstream`](cases/lossy-filter-normal-max.bitstream)
+### [`lossy-filter-normal-max.webp`](files/lossy-filter-normal-max.webp) -- ok -- from [`lossy-filter-normal-max.txt`](cases/lossy-filter-normal-max.txt)
 
 The normal loop filter at level 63, sharpness 0.
 
 filter_type 2 with the widest possible filter, so both the 8-pixel and the
 4-pixel variants run at their limits.
 
-### [`lossy-filter-sharpness-4.webp`](files/lossy-filter-sharpness-4.webp) -- ok -- from [`lossy-filter-sharpness-4.bitstream`](cases/lossy-filter-sharpness-4.bitstream)
+### [`lossy-filter-sharpness-4.webp`](files/lossy-filter-sharpness-4.webp) -- ok -- from [`lossy-filter-sharpness-4.txt`](cases/lossy-filter-sharpness-4.txt)
 
 Sharpness 4, the last level that halves the interior limit.
 
@@ -1432,7 +1432,7 @@ sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - sharpness. These
 two files sit on either side of that boundary; 0, 1, 2, 3 and 7 were already
 covered.
 
-### [`lossy-filter-sharpness-5.webp`](files/lossy-filter-sharpness-5.webp) -- ok -- from [`lossy-filter-sharpness-5.bitstream`](cases/lossy-filter-sharpness-5.bitstream)
+### [`lossy-filter-sharpness-5.webp`](files/lossy-filter-sharpness-5.webp) -- ok -- from [`lossy-filter-sharpness-5.txt`](cases/lossy-filter-sharpness-5.txt)
 
 Sharpness 5, the first level that quarters it.
 
@@ -1441,7 +1441,7 @@ sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - sharpness. These
 two files sit on either side of that boundary; 0, 1, 2, 3 and 7 were already
 covered.
 
-### [`lossy-filter-simple-max.webp`](files/lossy-filter-simple-max.webp) -- ok -- from [`lossy-filter-simple-max.bitstream`](cases/lossy-filter-simple-max.bitstream)
+### [`lossy-filter-simple-max.webp`](files/lossy-filter-simple-max.webp) -- ok -- from [`lossy-filter-simple-max.txt`](cases/lossy-filter-simple-max.txt)
 
 The simple loop filter at level 63 and sharpness 7.
 
@@ -1453,21 +1453,21 @@ own level and never gets near the top of the range.
 The frame quantizer index and the five deltas around it, one per plane and
 coefficient kind, with clamps that are not all the same.
 
-### [`lossy-quant-deltas-mirrored.webp`](files/lossy-quant-deltas-mirrored.webp) -- ok -- from [`lossy-quant-deltas-mirrored.bitstream`](cases/lossy-quant-deltas-mirrored.bitstream)
+### [`lossy-quant-deltas-mirrored.webp`](files/lossy-quant-deltas-mirrored.webp) -- ok -- from [`lossy-quant-deltas-mirrored.txt`](cases/lossy-quant-deltas-mirrored.txt)
 
 The five quantizer deltas at the ends lossy-quant-deltas does not use.
 
 Each of the five 4-bit signed fields written at its other extreme, so between
 the two files every one of them is seen at both -15 and +15.
 
-### [`lossy-quant-deltas.webp`](files/lossy-quant-deltas.webp) -- ok -- from [`lossy-quant-deltas.bitstream`](cases/lossy-quant-deltas.bitstream)
+### [`lossy-quant-deltas.webp`](files/lossy-quant-deltas.webp) -- ok -- from [`lossy-quant-deltas.txt`](cases/lossy-quant-deltas.txt)
 
 All five quantizer deltas present, at the ends of their 4-bit range.
 
 dqy1_dc, dqy2_dc, dqy2_ac, dquv_dc and dquv_ac at once. cwebp writes only the
 two chroma deltas, and only small ones.
 
-### [`lossy-quant-dequant-overflow.webp`](files/lossy-quant-dequant-overflow.webp) -- ok -- from [`lossy-quant-dequant-overflow.bitstream`](cases/lossy-quant-dequant-overflow.bitstream)
+### [`lossy-quant-dequant-overflow.webp`](files/lossy-quant-dequant-overflow.webp) -- ok -- from [`lossy-quant-dequant-overflow.txt`](cases/lossy-quant-dequant-overflow.txt)
 
 A coefficient of 2114 at the coarsest quantizer, so the dequantized value does
 not fit the int16 it is stored in.
@@ -1476,21 +1476,21 @@ not fit the int16 it is stored in.
 against an int16_t destination. Nothing an encoder can produce, and worth
 watching under a sanitizer.
 
-### [`lossy-quant-max.webp`](files/lossy-quant-max.webp) -- ok -- from [`lossy-quant-max.bitstream`](cases/lossy-quant-max.bitstream)
+### [`lossy-quant-max.webp`](files/lossy-quant-max.webp) -- ok -- from [`lossy-quant-max.txt`](cases/lossy-quant-max.txt)
 
 The frame quantizer at 127, the coarsest.
 
 The last entry of both quantizer tables, and the top of the clip() range that
 the delta cases push against.
 
-### [`lossy-quant-min.webp`](files/lossy-quant-min.webp) -- ok -- from [`lossy-quant-min.bitstream`](cases/lossy-quant-min.bitstream)
+### [`lossy-quant-min.webp`](files/lossy-quant-min.webp) -- ok -- from [`lossy-quant-min.txt`](cases/lossy-quant-min.txt)
 
 The frame quantizer at 0, the finest the format allows.
 
 kDcTable[0] and kAcTable[0] are both 4, and the Y2 AC quantizer hits the "if
 (m->y2_mat[1] < 8) m->y2_mat[1] = 8" floor in VP8ParseQuant().
 
-### [`lossy-quant-uv-dc-clamp.webp`](files/lossy-quant-uv-dc-clamp.webp) -- ok -- from [`lossy-quant-uv-dc-clamp.bitstream`](cases/lossy-quant-uv-dc-clamp.bitstream)
+### [`lossy-quant-uv-dc-clamp.webp`](files/lossy-quant-uv-dc-clamp.webp) -- ok -- from [`lossy-quant-uv-dc-clamp.txt`](cases/lossy-quant-uv-dc-clamp.txt)
 
 A chroma DC quantizer index pushed past 117, where it is clamped rather than at
 127.
@@ -1504,21 +1504,21 @@ the difference.
 The 1056 probabilities that drive the coefficient coder, each one optionally
 replaced in the frame header, plus the skip probability.
 
-### [`lossy-proba-all-updated.webp`](files/lossy-proba-all-updated.webp) -- ok -- from [`lossy-proba-all-updated.bitstream`](cases/lossy-proba-all-updated.bitstream)
+### [`lossy-proba-all-updated.webp`](files/lossy-proba-all-updated.webp) -- ok -- from [`lossy-proba-all-updated.txt`](cases/lossy-proba-all-updated.txt)
 
 Every one of the 1056 coefficient probabilities updated.
 
 The largest partition 0 the corpus has: 1056 set flags, each followed by a raw
 byte. cwebp updates a handful at most.
 
-### [`lossy-proba-one-update.webp`](files/lossy-proba-one-update.webp) -- ok -- from [`lossy-proba-one-update.bitstream`](cases/lossy-proba-one-update.bitstream)
+### [`lossy-proba-one-update.webp`](files/lossy-proba-one-update.webp) -- ok -- from [`lossy-proba-one-update.txt`](cases/lossy-proba-one-update.txt)
 
 A single coefficient probability updated, the other 1055 left alone.
 
 One 1 among the update flags of VP8ParseProba(), on the [i4-AC][band 0][ctx 0]
 EOB probability, which the coefficients below then use.
 
-### [`lossy-proba-refresh-and-skip-zero.webp`](files/lossy-proba-refresh-and-skip-zero.webp) -- ok -- from [`lossy-proba-refresh-and-skip-zero.bitstream`](cases/lossy-proba-refresh-and-skip-zero.bitstream)
+### [`lossy-proba-refresh-and-skip-zero.webp`](files/lossy-proba-refresh-and-skip-zero.webp) -- ok -- from [`lossy-proba-refresh-and-skip-zero.txt`](cases/lossy-proba-refresh-and-skip-zero.txt)
 
 The entropy-refresh bit set, and a skip probability of 0.
 
@@ -1526,7 +1526,7 @@ refresh_entropy_probs is read and dropped by libwebp, so no other file sets it.
 A prob_skip_false of 0 says no macroblock is skipped while two are, which is
 the most expensive way the flag can be coded and the bottom of its range.
 
-### [`lossy-proba-skip-extremes.webp`](files/lossy-proba-skip-extremes.webp) -- ok -- from [`lossy-proba-skip-extremes.bitstream`](cases/lossy-proba-skip-extremes.bitstream)
+### [`lossy-proba-skip-extremes.webp`](files/lossy-proba-skip-extremes.webp) -- ok -- from [`lossy-proba-skip-extremes.txt`](cases/lossy-proba-skip-extremes.txt)
 
 A skip probability of 255 with nothing skipped, and the flag itself written
 out.
@@ -1534,7 +1534,7 @@ out.
 use_skip_proba with a probability that says every macroblock should be skipped
 while none is, which is the most expensive way to code it.
 
-### [`lossy-proba-zero.webp`](files/lossy-proba-zero.webp) -- ok -- from [`lossy-proba-zero.bitstream`](cases/lossy-proba-zero.bitstream)
+### [`lossy-proba-zero.webp`](files/lossy-proba-zero.webp) -- ok -- from [`lossy-proba-zero.txt`](cases/lossy-proba-zero.txt)
 
 Coefficient probabilities of 0 and of 255, the ends of the range.
 
@@ -1546,21 +1546,21 @@ renormalizes from an empty range. Legal, and never emitted.
 The 16x16 and 4x4 luma modes and the chroma modes, and the neighbour-indexed
 probability table the 4x4 modes are coded with.
 
-### [`lossy-mode-i16-all-four.webp`](files/lossy-mode-i16-all-four.webp) -- ok -- from [`lossy-mode-i16-all-four.bitstream`](cases/lossy-mode-i16-all-four.bitstream)
+### [`lossy-mode-i16-all-four.webp`](files/lossy-mode-i16-all-four.webp) -- ok -- from [`lossy-mode-i16-all-four.txt`](cases/lossy-mode-i16-all-four.txt)
 
 The four 16x16 luma modes, one per macroblock.
 
 DC_PRED, V_PRED, H_PRED and TM_PRED through the hardcoded tree at probabilities
 156, 128 and 163, and all four 16x16 reconstructions.
 
-### [`lossy-mode-i4-all-ten.webp`](files/lossy-mode-i4-all-ten.webp) -- ok -- from [`lossy-mode-i4-all-ten.bitstream`](cases/lossy-mode-i4-all-ten.bitstream)
+### [`lossy-mode-i4-all-ten.webp`](files/lossy-mode-i4-all-ten.webp) -- ok -- from [`lossy-mode-i4-all-ten.txt`](cases/lossy-mode-i4-all-ten.txt)
 
 All ten 4x4 luma modes inside one macroblock, twice over.
 
 Every leaf of the B_PRED tree, and every 4x4 predictor including the ones that
 need the four pixels above and to the right.
 
-### [`lossy-mode-i4-context.webp`](files/lossy-mode-i4-context.webp) -- ok -- from [`lossy-mode-i4-context.bitstream`](cases/lossy-mode-i4-context.bitstream)
+### [`lossy-mode-i4-context.webp`](files/lossy-mode-i4-context.webp) -- ok -- from [`lossy-mode-i4-context.txt`](cases/lossy-mode-i4-context.txt)
 
 Four B_PRED macroblocks whose 4x4 modes walk the [above][left] probability
 table.
@@ -1569,7 +1569,7 @@ kBModesProba is indexed by the two neighbouring modes, so this is the only way
 to reach entries other than [B_DC][B_DC]. The top row of one macroblock is the
 context of the one below it.
 
-### [`lossy-mode-mixed.webp`](files/lossy-mode-mixed.webp) -- ok -- from [`lossy-mode-mixed.bitstream`](cases/lossy-mode-mixed.bitstream)
+### [`lossy-mode-mixed.webp`](files/lossy-mode-mixed.webp) -- ok -- from [`lossy-mode-mixed.txt`](cases/lossy-mode-mixed.txt)
 
 16x16 and 4x4 macroblocks alternating, in both directions.
 
@@ -1577,7 +1577,7 @@ A 16x16 macroblock writes its mode into all four of its neighbours' 4x4
 contexts, so this is what checks that the two mode paths agree on the context
 they leave behind.
 
-### [`lossy-mode-uv-all-four.webp`](files/lossy-mode-uv-all-four.webp) -- ok -- from [`lossy-mode-uv-all-four.bitstream`](cases/lossy-mode-uv-all-four.bitstream)
+### [`lossy-mode-uv-all-four.webp`](files/lossy-mode-uv-all-four.webp) -- ok -- from [`lossy-mode-uv-all-four.txt`](cases/lossy-mode-uv-all-four.txt)
 
 The four chroma modes, one per macroblock.
 
@@ -1589,7 +1589,7 @@ predictors.
 The token coder of section 13: magnitudes and their escape categories, end-of-
 block, zero runs, and the four coefficient types.
 
-### [`lossy-coeff-all-types.webp`](files/lossy-coeff-all-types.webp) -- ok -- from [`lossy-coeff-all-types.bitstream`](cases/lossy-coeff-all-types.bitstream)
+### [`lossy-coeff-all-types.webp`](files/lossy-coeff-all-types.webp) -- ok -- from [`lossy-coeff-all-types.txt`](cases/lossy-coeff-all-types.txt)
 
 All four coefficient types in one macroblock, and both luma types across two.
 
@@ -1597,7 +1597,7 @@ The Y2 block (type 1), luma after Y2 starting at position 1 (type 0), chroma
 (type 2) and luma with its own DC (type 3). No single macroblock can reach all
 four, since types 0 and 3 are exclusive.
 
-### [`lossy-coeff-bands-chroma.webp`](files/lossy-coeff-bands-chroma.webp) -- ok -- from [`lossy-coeff-bands-chroma.bitstream`](cases/lossy-coeff-bands-chroma.bitstream)
+### [`lossy-coeff-bands-chroma.webp`](files/lossy-coeff-bands-chroma.webp) -- ok -- from [`lossy-coeff-bands-chroma.txt`](cases/lossy-coeff-bands-chroma.txt)
 
 The same sweep across the four blocks of a chroma plane.
 
@@ -1609,7 +1609,7 @@ to position 15, reads every band at that class, and the blocks are placed so
 their neighbour contexts are 0, 1 and 2 in turn -- which is the only way to
 reach band 0, the one that is never a token's successor.
 
-### [`lossy-coeff-bands-i16.webp`](files/lossy-coeff-bands-i16.webp) -- ok -- from [`lossy-coeff-bands-i16.bitstream`](cases/lossy-coeff-bands-i16.bitstream)
+### [`lossy-coeff-bands-i16.webp`](files/lossy-coeff-bands-i16.webp) -- ok -- from [`lossy-coeff-bands-i16.txt`](cases/lossy-coeff-bands-i16.txt)
 
 The same sweep for the two block kinds a 16x16 macroblock has: the Y2 block and
 the luma blocks that follow it.
@@ -1623,7 +1623,7 @@ of each, walked to position 15, reads every band at that class, and the blocks
 are placed so their neighbour contexts are 0, 1 and 2 in turn -- which is the
 only way to reach band 0, the one that is never a token's successor.
 
-### [`lossy-coeff-bands-i4.webp`](files/lossy-coeff-bands-i4.webp) -- ok -- from [`lossy-coeff-bands-i4.bitstream`](cases/lossy-coeff-bands-i4.bitstream)
+### [`lossy-coeff-bands-i4.webp`](files/lossy-coeff-bands-i4.webp) -- ok -- from [`lossy-coeff-bands-i4.txt`](cases/lossy-coeff-bands-i4.txt)
 
 Three 4x4 luma blocks that sweep every coefficient band, one per context.
 
@@ -1633,39 +1633,39 @@ of each, walked to position 15, reads every band at that class, and the blocks
 are placed so their neighbour contexts are 0, 1 and 2 in turn -- which is the
 only way to reach band 0, the one that is never a token's successor.
 
-### [`lossy-coeff-cat3.webp`](files/lossy-coeff-cat3.webp) -- ok -- from [`lossy-coeff-cat3.bitstream`](cases/lossy-coeff-cat3.bitstream)
+### [`lossy-coeff-cat3.webp`](files/lossy-coeff-cat3.webp) -- ok -- from [`lossy-coeff-cat3.txt`](cases/lossy-coeff-cat3.txt)
 
 Category-3 coefficients: 11 to 18, three extra bits each.
 
 The first escape category, kCat3 = {173, 148, 140}, at both ends of its range.
 
-### [`lossy-coeff-cat4.webp`](files/lossy-coeff-cat4.webp) -- ok -- from [`lossy-coeff-cat4.bitstream`](cases/lossy-coeff-cat4.bitstream)
+### [`lossy-coeff-cat4.webp`](files/lossy-coeff-cat4.webp) -- ok -- from [`lossy-coeff-cat4.txt`](cases/lossy-coeff-cat4.txt)
 
 Category-4 coefficients: 19 to 34, four extra bits.
 
 kCat4, and the p[9] branch that separates category 4 from category 3.
 
-### [`lossy-coeff-cat5.webp`](files/lossy-coeff-cat5.webp) -- ok -- from [`lossy-coeff-cat5.bitstream`](cases/lossy-coeff-cat5.bitstream)
+### [`lossy-coeff-cat5.webp`](files/lossy-coeff-cat5.webp) -- ok -- from [`lossy-coeff-cat5.txt`](cases/lossy-coeff-cat5.txt)
 
 Category-5 coefficients: 35 to 66, five extra bits.
 
 kCat5, reached through p[8] = 1 and p[10] = 0, which is a different pair of
 probabilities from the lower categories.
 
-### [`lossy-coeff-cat6-max.webp`](files/lossy-coeff-cat6-max.webp) -- ok -- from [`lossy-coeff-cat6-max.bitstream`](cases/lossy-coeff-cat6-max.bitstream)
+### [`lossy-coeff-cat6-max.webp`](files/lossy-coeff-cat6-max.webp) -- ok -- from [`lossy-coeff-cat6-max.txt`](cases/lossy-coeff-cat6-max.txt)
 
 The largest coefficient the format can encode: 2114.
 
 3 + (8 << 3) + 2047, every one of kCat6's eleven extra bits set. One more would
 wrap round inside the same eleven bits.
 
-### [`lossy-coeff-cat6.webp`](files/lossy-coeff-cat6.webp) -- ok -- from [`lossy-coeff-cat6.bitstream`](cases/lossy-coeff-cat6.bitstream)
+### [`lossy-coeff-cat6.webp`](files/lossy-coeff-cat6.webp) -- ok -- from [`lossy-coeff-cat6.txt`](cases/lossy-coeff-cat6.txt)
 
 Category-6 coefficients: 67 upwards, eleven extra bits.
 
 kCat6, the longest escape. 67 is the first value it can hold.
 
-### [`lossy-coeff-context.webp`](files/lossy-coeff-context.webp) -- ok -- from [`lossy-coeff-context.bitstream`](cases/lossy-coeff-context.bitstream)
+### [`lossy-coeff-context.webp`](files/lossy-coeff-context.webp) -- ok -- from [`lossy-coeff-context.txt`](cases/lossy-coeff-context.txt)
 
 Neighbouring blocks with and without coefficients, so that every context value
 from 0 to 2 is used.
@@ -1674,7 +1674,7 @@ The "ctx = left + top" that picks one of the three probability sets. Context 2
 needs both neighbours non-empty, which only happens a few blocks into a
 macroblock.
 
-### [`lossy-coeff-empty-blocks.webp`](files/lossy-coeff-empty-blocks.webp) -- ok -- from [`lossy-coeff-empty-blocks.bitstream`](cases/lossy-coeff-empty-blocks.bitstream)
+### [`lossy-coeff-empty-blocks.webp`](files/lossy-coeff-empty-blocks.webp) -- ok -- from [`lossy-coeff-empty-blocks.txt`](cases/lossy-coeff-empty-blocks.txt)
 
 Every one of the 25 blocks empty, but the macroblock not skipped.
 
@@ -1682,7 +1682,7 @@ An end-of-block at the very first position of every block. Without a skip
 probability in the frame there is no other way to say it, and ParseResiduals()
 still runs in full.
 
-### [`lossy-coeff-full-block.webp`](files/lossy-coeff-full-block.webp) -- ok -- from [`lossy-coeff-full-block.bitstream`](cases/lossy-coeff-full-block.bitstream)
+### [`lossy-coeff-full-block.webp`](files/lossy-coeff-full-block.webp) -- ok -- from [`lossy-coeff-full-block.txt`](cases/lossy-coeff-full-block.txt)
 
 A block with all sixteen coefficients non-zero, so the loop ends by running out
 of positions rather than on an end-of-block.
@@ -1690,7 +1690,7 @@ of positions rather than on an end-of-block.
 The "n == 16" exit of GetCoeffs(), which is the only way out that does not read
 an end-of-block bit, and every band from 0 to 7.
 
-### [`lossy-coeff-medium-magnitudes.webp`](files/lossy-coeff-medium-magnitudes.webp) -- ok -- from [`lossy-coeff-medium-magnitudes.bitstream`](cases/lossy-coeff-medium-magnitudes.bitstream)
+### [`lossy-coeff-medium-magnitudes.webp`](files/lossy-coeff-medium-magnitudes.webp) -- ok -- from [`lossy-coeff-medium-magnitudes.txt`](cases/lossy-coeff-medium-magnitudes.txt)
 
 Coefficients of 5 through 10, coded with the fixed probabilities 159, 165 and
 145.
@@ -1698,21 +1698,21 @@ Coefficients of 5 through 10, coded with the fixed probabilities 159, 165 and
 The two branches under p[6]: 5 and 6 through probability 159, then 7 to 10
 through 165 and 145. Those three constants appear nowhere else.
 
-### [`lossy-coeff-small-magnitudes.webp`](files/lossy-coeff-small-magnitudes.webp) -- ok -- from [`lossy-coeff-small-magnitudes.bitstream`](cases/lossy-coeff-small-magnitudes.bitstream)
+### [`lossy-coeff-small-magnitudes.webp`](files/lossy-coeff-small-magnitudes.webp) -- ok -- from [`lossy-coeff-small-magnitudes.txt`](cases/lossy-coeff-small-magnitudes.txt)
 
 Coefficients of 1, 2, 3 and 4, the magnitudes with their own tree branches.
 
 The v == 1 shortcut, then the p[4]/p[5] pair of GetLargeValue() that separates
 2 from 3 and 4.
 
-### [`lossy-coeff-wht-full.webp`](files/lossy-coeff-wht-full.webp) -- ok -- from [`lossy-coeff-wht-full.bitstream`](cases/lossy-coeff-wht-full.bitstream)
+### [`lossy-coeff-wht-full.webp`](files/lossy-coeff-wht-full.webp) -- ok -- from [`lossy-coeff-wht-full.txt`](cases/lossy-coeff-wht-full.txt)
 
 A Y2 block with more than one coefficient, next to one with only a DC.
 
 The two halves of the Y2 branch in ParseResiduals(): "nz > 1" runs the full
 VP8TransformWHT, while a lone DC takes the inlined "(dc[0] + 3) >> 3" shortcut.
 
-### [`lossy-coeff-zero-runs.webp`](files/lossy-coeff-zero-runs.webp) -- ok -- from [`lossy-coeff-zero-runs.bitstream`](cases/lossy-coeff-zero-runs.bitstream)
+### [`lossy-coeff-zero-runs.webp`](files/lossy-coeff-zero-runs.webp) -- ok -- from [`lossy-coeff-zero-runs.txt`](cases/lossy-coeff-zero-runs.txt)
 
 Single coefficients at positions 15, 12, 8 and 1, each behind a run of zeros.
 
@@ -1724,7 +1724,7 @@ table without reading an end-of-block bit, and reaches position 15 in band 7.
 The per-macroblock skip flag, which drops the residual entirely and clears the
 neighbouring non-zero flags -- almost all of them.
 
-### [`lossy-skip-all.webp`](files/lossy-skip-all.webp) -- ok -- from [`lossy-skip-all.bitstream`](cases/lossy-skip-all.bitstream)
+### [`lossy-skip-all.webp`](files/lossy-skip-all.webp) -- ok -- from [`lossy-skip-all.txt`](cases/lossy-skip-all.txt)
 
 Every macroblock skipped.
 
@@ -1732,7 +1732,7 @@ The skip branch of VP8DecodeMB(), which clears the neighbour flags without
 reading a single coefficient. Every token partition holds nothing but its own
 padding.
 
-### [`lossy-skip-i4x4-nz-dc.webp`](files/lossy-skip-i4x4-nz-dc.webp) -- ok -- from [`lossy-skip-i4x4-nz-dc.bitstream`](cases/lossy-skip-i4x4-nz-dc.bitstream)
+### [`lossy-skip-i4x4-nz-dc.webp`](files/lossy-skip-i4x4-nz-dc.webp) -- ok -- from [`lossy-skip-i4x4-nz-dc.txt`](cases/lossy-skip-i4x4-nz-dc.txt)
 
 A skipped 4x4 macroblock between two 16x16 ones that both carry a Y2 block.
 
@@ -1740,7 +1740,7 @@ VP8DecodeMB() clears nz_dc only when the skipped macroblock is not 4x4-coded,
 so the second 16x16 macroblock sees the Y2 context left behind by the first.
 Reproducing that quirk is the whole point.
 
-### [`lossy-skip-mixed.webp`](files/lossy-skip-mixed.webp) -- ok -- from [`lossy-skip-mixed.bitstream`](cases/lossy-skip-mixed.bitstream)
+### [`lossy-skip-mixed.webp`](files/lossy-skip-mixed.webp) -- ok -- from [`lossy-skip-mixed.txt`](cases/lossy-skip-mixed.txt)
 
 Skipped and coded macroblocks alternating, with a skip probability of 1.
 
@@ -1755,14 +1755,14 @@ read from partition r & (n - 1). cwebp does not expose config.partitions and
 libwebp forces it back to 1 whenever the token path is used (webp_enc.c:124),
 so none of this is reachable through the tools.
 
-### [`lossy-parts-2-wrap.webp`](files/lossy-parts-2-wrap.webp) -- ok -- from [`lossy-parts-2-wrap.bitstream`](cases/lossy-parts-2-wrap.bitstream)
+### [`lossy-parts-2-wrap.webp`](files/lossy-parts-2-wrap.webp) -- ok -- from [`lossy-parts-2-wrap.txt`](cases/lossy-parts-2-wrap.txt)
 
 Four rows over two partitions, so each partition holds two non- adjacent rows.
 
 The "mb_y & num_parts_minus_one" wrap. Each bit reader is left in the middle of
 a row and resumed two rows later.
 
-### [`lossy-parts-8-rows.webp`](files/lossy-parts-8-rows.webp) -- ok -- from [`lossy-parts-8-rows.bitstream`](cases/lossy-parts-8-rows.bitstream)
+### [`lossy-parts-8-rows.webp`](files/lossy-parts-8-rows.webp) -- ok -- from [`lossy-parts-8-rows.txt`](cases/lossy-parts-8-rows.txt)
 
 Eight macroblock rows over eight token partitions, one row each, every row
 different.
@@ -1771,7 +1771,7 @@ Row r is read from partition r & 7, so a decoder that got the mapping wrong
 would still parse but decode the rows in the wrong order. The pixel hash is
 what catches that.
 
-### [`lossy-parts-last-empty.webp`](files/lossy-parts-last-empty.webp) -- reject -- from [`lossy-parts-last-empty.bitstream`](cases/lossy-parts-last-empty.bitstream)
+### [`lossy-parts-last-empty.webp`](files/lossy-parts-last-empty.webp) -- reject -- from [`lossy-parts-last-empty.txt`](cases/lossy-parts-last-empty.txt)
 
 Four partitions whose declared sizes leave nothing for the last one.
 
@@ -1780,7 +1780,7 @@ the clamp on the third size has already reduced to nothing. ParsePartitions()
 notices that part_start is no longer inside the buffer and refuses the frame
 rather than handing out an empty reader.
 
-### [`lossy-parts-size-past-end.webp`](files/lossy-parts-size-past-end.webp) -- reject -- from [`lossy-parts-size-past-end.bitstream`](cases/lossy-parts-size-past-end.bitstream)
+### [`lossy-parts-size-past-end.webp`](files/lossy-parts-size-past-end.webp) -- reject -- from [`lossy-parts-size-past-end.txt`](cases/lossy-parts-size-past-end.txt)
 
 Four partitions, the first declaring 16 MB of data.
 
@@ -1789,7 +1789,7 @@ rest of the frame, so part_start reaches the end of the buffer and
 ParsePartitions() returns NOT_ENOUGH_DATA: the frame is refused there, before a
 single macroblock is decoded.
 
-### [`lossy-parts-table-too-small.webp`](files/lossy-parts-table-too-small.webp) -- reject -- from [`lossy-parts-table-too-small.bitstream`](cases/lossy-parts-table-too-small.bitstream)
+### [`lossy-parts-table-too-small.webp`](files/lossy-parts-table-too-small.webp) -- reject -- from [`lossy-parts-table-too-small.txt`](cases/lossy-parts-table-too-small.txt)
 
 Eight partitions declared in a frame with only ten bytes left for the twenty-
 one-byte size table.
@@ -1803,7 +1803,7 @@ nothing to clamp. Confirmed to reach parts_size_table_truncated and no further.
 Frames that stop early, at each of the places the decoder can notice: inside
 partition 0, inside the macroblock modes, and inside the token data.
 
-### [`lossy-truncated-header.webp`](files/lossy-truncated-header.webp) -- reject -- from [`lossy-truncated-header.bitstream`](cases/lossy-truncated-header.bitstream)
+### [`lossy-truncated-header.webp`](files/lossy-truncated-header.webp) -- reject -- from [`lossy-truncated-header.txt`](cases/lossy-truncated-header.txt)
 
 Partition 0 cut to two bytes, which is enough for the segment header and not
 for the filter header.
@@ -1813,7 +1813,7 @@ returns !br->eof, and this is the only file that makes it the one to fail: one
 byte less and the segment header goes first, one more and the failure moves to
 the macroblock modes.
 
-### [`lossy-truncated-modes.webp`](files/lossy-truncated-modes.webp) -- reject -- from [`lossy-truncated-modes.bitstream`](cases/lossy-truncated-modes.bitstream)
+### [`lossy-truncated-modes.webp`](files/lossy-truncated-modes.webp) -- reject -- from [`lossy-truncated-modes.txt`](cases/lossy-truncated-modes.txt)
 
 Partition 0 long enough for the whole frame header and not for the macroblock
 modes that follow it.
@@ -1823,7 +1823,7 @@ VP8ParseIntraModeRow() checks once per macroblock row rather than once per
 macroblock. The token partitions are untouched, so this is the mode data
 failing on its own.
 
-### [`lossy-truncated-short-modes.webp`](files/lossy-truncated-short-modes.webp) -- ok -- from [`lossy-truncated-short-modes.bitstream`](cases/lossy-truncated-short-modes.bitstream)
+### [`lossy-truncated-short-modes.webp`](files/lossy-truncated-short-modes.webp) -- ok -- from [`lossy-truncated-short-modes.txt`](cases/lossy-truncated-short-modes.txt)
 
 Mode data for 15 macroblocks in a frame whose dimensions call for 16.
 
@@ -1834,7 +1834,7 @@ data is as long as the frame claims to be. Reading the file back gives 16
 macroblocks, so it is the one case here that cannot be disassembled and
 reassembled unchanged.
 
-### [`lossy-truncated-tokens.webp`](files/lossy-truncated-tokens.webp) -- reject -- from [`lossy-truncated-tokens.bitstream`](cases/lossy-truncated-tokens.bitstream)
+### [`lossy-truncated-tokens.webp`](files/lossy-truncated-tokens.webp) -- reject -- from [`lossy-truncated-tokens.txt`](cases/lossy-truncated-tokens.txt)
 
 Partition 0 intact, the token partition cut in half.
 
@@ -1897,7 +1897,7 @@ Eight partitions whose declared sizes add up to more than the chunk holds.
 The clamp fires part-way through the loop, so later partitions get zero-length
 readers while earlier ones look valid.
 
-### [`lossy-combo-all-features.webp`](files/lossy-combo-all-features.webp) -- ok -- from [`lossy-combo-all-features.bitstream`](cases/lossy-combo-all-features.bitstream)
+### [`lossy-combo-all-features.webp`](files/lossy-combo-all-features.webp) -- ok -- from [`lossy-combo-all-features.txt`](cases/lossy-combo-all-features.txt)
 
 Every optional tool switched on in one frame at once.
 

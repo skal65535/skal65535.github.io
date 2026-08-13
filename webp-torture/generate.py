@@ -1260,8 +1260,8 @@ under test. `webp_asm.py` assembles any of them and hands the frame part to
 `vp8_asm.py`; use either directly, or read an existing frame back out as
 text to start from:
 
-    ./webp_asm.py cases/alph-raw-filter-gradient.bitstream /tmp/out.webp
-    ./vp8_asm.py cases/lossy-coeff-cat6.bitstream /tmp/out.webp
+    ./webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
+    ./vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
     ./vp8_dis.py some-photo.webp
 
 Each tool's docstring is the reference for the fields it owns:
@@ -1421,10 +1421,10 @@ def write_cases_index(outdir, rows):
     n = 0
     for name, expect, note, _exercises, _size in sorted(rows):
         if not os.path.exists(os.path.join(outdir, 'cases',
-                                           name + '.bitstream')):
+                                           name + '.txt')):
             continue                    # written by vp8l.py, not assembled
         n += 1
-        lines.append('<tr><td><a href="%s.bitstream"><code>%s</code></a></td>'
+        lines.append('<tr><td><a href="%s.txt"><code>%s</code></a></td>'
                      '<td class="%s">%s</td><td>%s</td></tr>'
                      % (name, name, 'reject' if expect == 'reject' else 'ok',
                         expect, html_escape(note)))
@@ -1484,11 +1484,11 @@ def build_code_list(outdir):
 
 
 def build_cases(outdir):
-    """Assembles every cases/*.bitstream into files/, and returns its row."""
+    """Assembles every cases/*.txt into files/, and returns its row."""
     rows = []
     for path in sorted(glob.glob(os.path.join(outdir, 'cases',
-                                              '*.bitstream'))):
-        name = os.path.basename(path)[:-len('.bitstream')]
+                                              '*.txt'))):
+        name = os.path.basename(path)[:-len('.txt')]
         with open(path) as f:
             text = f.read()
         fields = vp8_asm.parse_header(text, path)
@@ -1531,10 +1531,10 @@ def build_file_list(rows, groups, index):
 
 def heading(outdir, name, expect):
     """One file's heading, with a link to the case text when there is one."""
-    src = os.path.join('cases', name + '.bitstream')
+    src = os.path.join('cases', name + '.txt')
     out = '### [`%s.webp`](files/%s.webp) -- %s' % (name, name, expect)
     if os.path.exists(os.path.join(outdir, src)):
-        out += ' -- from [`%s.bitstream`](%s)' % (name, src)
+        out += ' -- from [`%s.txt`](%s)' % (name, src)
     return out + '\n'
 
 

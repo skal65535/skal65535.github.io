@@ -7,7 +7,7 @@
 
 """Wraps an assembled frame in a RIFF container, chunk by chunk.
 
-    ./webp_asm.py cases/container-vp8x.bitstream files/container-vp8x.webp
+    ./webp_asm.py cases/container-vp8x.txt files/container-vp8x.webp
 
 The layer above vp8_asm.py. A case that says nothing about the container
 gets the plain 'RIFF....WEBP' plus one image chunk that every lossy and
@@ -203,7 +203,7 @@ def assemble_text(text):
 
 def main(argv):
     if not 2 <= len(argv) <= 3:
-        print('usage: %s <case.bitstream> [<out.webp>]'
+        print('usage: %s <case.txt> [<out.webp>]'
               % os.path.basename(argv[0]), file=sys.stderr)
         return 1
     src = argv[1]

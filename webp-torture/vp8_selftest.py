@@ -65,7 +65,7 @@ def case_round_trip():
     pin is invisible to a reader. Everything else has to survive.
     """
     bad = broken = skipped = 0
-    paths = sorted(glob.glob('cases/*.bitstream'))
+    paths = sorted(glob.glob('cases/*.txt'))
     for path in paths:
         with open(path) as fp:
             text = fp.read()

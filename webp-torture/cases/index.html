@@ -19,115 +19,115 @@ full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
 <table>
 <tr><th>case</th><th>expected</th><th>what it is</th></tr>
 
-<tr><td><a href="alph-after-image.bitstream"><code>alph-after-image</code></a></td><td class="ok">ok</td><td>An ALPH chunk placed after the image chunk instead of before it.</td></tr>
-<tr><td><a href="alph-compression-invalid.bitstream"><code>alph-compression-invalid</code></a></td><td class="reject">reject</td><td>A compression method of 2, past the lossless one.</td></tr>
-<tr><td><a href="alph-empty-payload.bitstream"><code>alph-empty-payload</code></a></td><td class="reject">reject</td><td>An ALPH chunk holding its header byte and nothing else.</td></tr>
-<tr><td><a href="alph-lossless-byte-flipped.bitstream"><code>alph-lossless-byte-flipped</code></a></td><td class="reject">reject</td><td>The same plane with its last byte replaced.</td></tr>
-<tr><td><a href="alph-lossless-palette.bitstream"><code>alph-lossless-palette</code></a></td><td class="ok">ok</td><td>A losslessly compressed alpha plane carrying a palette transform, from a cwebp encode of a two-valued plane.</td></tr>
-<tr><td><a href="alph-lossless-predictor.bitstream"><code>alph-lossless-predictor</code></a></td><td class="ok">ok</td><td>A losslessly compressed alpha plane carrying a predictor transform, from a cwebp encode of a gradient.</td></tr>
-<tr><td><a href="alph-lossless-truncated.bitstream"><code>alph-lossless-truncated</code></a></td><td class="reject">reject</td><td>The predictor-transform plane cut to ten bytes.</td></tr>
-<tr><td><a href="alph-no-vp8x.bitstream"><code>alph-no-vp8x</code></a></td><td class="reject">reject</td><td>An ALPH chunk in a RIFF file with no VP8X ahead of it.</td></tr>
-<tr><td><a href="alph-preprocessing-invalid.bitstream"><code>alph-preprocessing-invalid</code></a></td><td class="reject">reject</td><td>A pre-processing value of 2, past level reduction.</td></tr>
-<tr><td><a href="alph-raw-filter-gradient.bitstream"><code>alph-raw-filter-gradient</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the gradient filter.</td></tr>
-<tr><td><a href="alph-raw-filter-horizontal.bitstream"><code>alph-raw-filter-horizontal</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the horizontal filter.</td></tr>
-<tr><td><a href="alph-raw-filter-none.bitstream"><code>alph-raw-filter-none</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the none filter.</td></tr>
-<tr><td><a href="alph-raw-filter-vertical.bitstream"><code>alph-raw-filter-vertical</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the vertical filter.</td></tr>
-<tr><td><a href="alph-raw-oversized.bitstream"><code>alph-raw-oversized</code></a></td><td class="ok">ok</td><td>An uncompressed plane 44 bytes longer than the picture needs.</td></tr>
-<tr><td><a href="alph-raw-preprocessing.bitstream"><code>alph-raw-preprocessing</code></a></td><td class="ok">ok</td><td>An uncompressed plane declaring the level-reduction pre-processing.</td></tr>
-<tr><td><a href="alph-raw-short.bitstream"><code>alph-raw-short</code></a></td><td class="reject">reject</td><td>An uncompressed plane one byte short of the picture.</td></tr>
-<tr><td><a href="alph-reserved-set.bitstream"><code>alph-reserved-set</code></a></td><td class="reject">reject</td><td>The two reserved bits of the ALPH header byte set.</td></tr>
-<tr><td><a href="alph-without-vp8x-flag.bitstream"><code>alph-without-vp8x-flag</code></a></td><td class="ok">ok</td><td>An ALPH chunk with the VP8X alpha flag left clear.</td></tr>
-<tr><td><a href="container-chunk-header-truncated.bitstream"><code>container-chunk-header-truncated</code></a></td><td class="reject">reject</td><td>The file cut four bytes into the last chunk header.</td></tr>
-<tr><td><a href="container-duplicate-image-chunk.bitstream"><code>container-duplicate-image-chunk</code></a></td><td class="ok">ok</td><td>Two VP8 chunks, one after the other.</td></tr>
-<tr><td><a href="container-metadata-chunks.bitstream"><code>container-metadata-chunks</code></a></td><td class="ok">ok</td><td>ICCP, EXIF and XMP chunks around the frame.</td></tr>
-<tr><td><a href="container-no-image-chunk.bitstream"><code>container-no-image-chunk</code></a></td><td class="reject">reject</td><td>A VP8X chunk and some metadata, and no image chunk at all.</td></tr>
-<tr><td><a href="container-odd-chunk-no-pad.bitstream"><code>container-odd-chunk-no-pad</code></a></td><td class="reject">reject</td><td>An odd-sized chunk whose header rounds its length up, taking the pad byte away.</td></tr>
-<tr><td><a href="container-odd-chunk-payload.bitstream"><code>container-odd-chunk-payload</code></a></td><td class="ok">ok</td><td>An optional chunk with an odd-sized payload, and the pad byte that must follow it.</td></tr>
-<tr><td><a href="container-riff-size-past-end.bitstream"><code>container-riff-size-past-end</code></a></td><td class="reject">reject</td><td>A RIFF header claiming far more bytes than the file holds.</td></tr>
-<tr><td><a href="container-riff-size-short.bitstream"><code>container-riff-size-short</code></a></td><td class="reject">reject</td><td>A RIFF header claiming 11 bytes, one less than the smallest legal value.</td></tr>
-<tr><td><a href="container-riff-size-truncates-chunks.bitstream"><code>container-riff-size-truncates-chunks</code></a></td><td class="reject">reject</td><td>A RIFF size that stops in the middle of the chunks behind it.</td></tr>
-<tr><td><a href="container-trailing-bytes.bitstream"><code>container-trailing-bytes</code></a></td><td class="ok">ok</td><td>Bytes after the last chunk that the RIFF size does not account for.</td></tr>
-<tr><td><a href="container-unknown-chunk.bitstream"><code>container-unknown-chunk</code></a></td><td class="ok">ok</td><td>A chunk with a fourcc the format does not define, ahead of the frame.</td></tr>
-<tr><td><a href="container-vp8x.bitstream"><code>container-vp8x</code></a></td><td class="ok">ok</td><td>The extended format: a VP8X chunk ahead of the frame.</td></tr>
-<tr><td><a href="container-vp8x-animation.bitstream"><code>container-vp8x-animation</code></a></td><td class="reject">reject</td><td>The VP8X animation flag set on a file with no animation chunks.</td></tr>
-<tr><td><a href="container-vp8x-area-overflow.bitstream"><code>container-vp8x-area-overflow</code></a></td><td class="reject">reject</td><td>A VP8X canvas of 16777216 by 16777216, the largest the two 24-bit fields can describe.</td></tr>
-<tr><td><a href="container-vp8x-canvas-mismatch.bitstream"><code>container-vp8x-canvas-mismatch</code></a></td><td class="reject">reject</td><td>A VP8X canvas of 64x64 in front of a 32x32 frame.</td></tr>
-<tr><td><a href="container-vp8x-reserved-bits.bitstream"><code>container-vp8x-reserved-bits</code></a></td><td class="ok">ok</td><td>The reserved bits of the VP8X flags field all set.</td></tr>
-<tr><td><a href="container-vp8x-still-flags.bitstream"><code>container-vp8x-still-flags</code></a></td><td class="ok">ok</td><td>The four still-image VP8X flags set, with none of the chunks they promise.</td></tr>
-<tr><td><a href="container-vp8x-wrong-size.bitstream"><code>container-vp8x-wrong-size</code></a></td><td class="reject">reject</td><td>A VP8X chunk whose header claims 9 bytes rather than 10.</td></tr>
-<tr><td><a href="container-zero-size-chunk.bitstream"><code>container-zero-size-chunk</code></a></td><td class="ok">ok</td><td>An optional chunk declaring a zero-length payload.</td></tr>
-<tr><td><a href="lossy-coeff-all-types.bitstream"><code>lossy-coeff-all-types</code></a></td><td class="ok">ok</td><td>All four coefficient types in one macroblock, and both luma types across two.</td></tr>
-<tr><td><a href="lossy-coeff-bands-chroma.bitstream"><code>lossy-coeff-bands-chroma</code></a></td><td class="ok">ok</td><td>The same sweep across the four blocks of a chroma plane.</td></tr>
-<tr><td><a href="lossy-coeff-bands-i16.bitstream"><code>lossy-coeff-bands-i16</code></a></td><td class="ok">ok</td><td>The same sweep for the two block kinds a 16x16 macroblock has: the Y2 block and the luma blocks that follow it.</td></tr>
-<tr><td><a href="lossy-coeff-bands-i4.bitstream"><code>lossy-coeff-bands-i4</code></a></td><td class="ok">ok</td><td>Three 4x4 luma blocks that sweep every coefficient band, one per context.</td></tr>
-<tr><td><a href="lossy-coeff-cat3.bitstream"><code>lossy-coeff-cat3</code></a></td><td class="ok">ok</td><td>Category-3 coefficients: 11 to 18, three extra bits each.</td></tr>
-<tr><td><a href="lossy-coeff-cat4.bitstream"><code>lossy-coeff-cat4</code></a></td><td class="ok">ok</td><td>Category-4 coefficients: 19 to 34, four extra bits.</td></tr>
-<tr><td><a href="lossy-coeff-cat5.bitstream"><code>lossy-coeff-cat5</code></a></td><td class="ok">ok</td><td>Category-5 coefficients: 35 to 66, five extra bits.</td></tr>
-<tr><td><a href="lossy-coeff-cat6.bitstream"><code>lossy-coeff-cat6</code></a></td><td class="ok">ok</td><td>Category-6 coefficients: 67 upwards, eleven extra bits.</td></tr>
-<tr><td><a href="lossy-coeff-cat6-max.bitstream"><code>lossy-coeff-cat6-max</code></a></td><td class="ok">ok</td><td>The largest coefficient the format can encode: 2114.</td></tr>
-<tr><td><a href="lossy-coeff-context.bitstream"><code>lossy-coeff-context</code></a></td><td class="ok">ok</td><td>Neighbouring blocks with and without coefficients, so that every context value from 0 to 2 is used.</td></tr>
-<tr><td><a href="lossy-coeff-empty-blocks.bitstream"><code>lossy-coeff-empty-blocks</code></a></td><td class="ok">ok</td><td>Every one of the 25 blocks empty, but the macroblock not skipped.</td></tr>
-<tr><td><a href="lossy-coeff-full-block.bitstream"><code>lossy-coeff-full-block</code></a></td><td class="ok">ok</td><td>A block with all sixteen coefficients non-zero, so the loop ends by running out of positions rather than on an end-of-block.</td></tr>
-<tr><td><a href="lossy-coeff-medium-magnitudes.bitstream"><code>lossy-coeff-medium-magnitudes</code></a></td><td class="ok">ok</td><td>Coefficients of 5 through 10, coded with the fixed probabilities 159, 165 and 145.</td></tr>
-<tr><td><a href="lossy-coeff-small-magnitudes.bitstream"><code>lossy-coeff-small-magnitudes</code></a></td><td class="ok">ok</td><td>Coefficients of 1, 2, 3 and 4, the magnitudes with their own tree branches.</td></tr>
-<tr><td><a href="lossy-coeff-wht-full.bitstream"><code>lossy-coeff-wht-full</code></a></td><td class="ok">ok</td><td>A Y2 block with more than one coefficient, next to one with only a DC.</td></tr>
-<tr><td><a href="lossy-coeff-zero-runs.bitstream"><code>lossy-coeff-zero-runs</code></a></td><td class="ok">ok</td><td>Single coefficients at positions 15, 12, 8 and 1, each behind a run of zeros.</td></tr>
-<tr><td><a href="lossy-combo-all-features.bitstream"><code>lossy-combo-all-features</code></a></td><td class="ok">ok</td><td>Every optional tool switched on in one frame at once.</td></tr>
-<tr><td><a href="lossy-filter-lf-delta.bitstream"><code>lossy-filter-lf-delta</code></a></td><td class="ok">ok</td><td>Loop-filter deltas: 63 and -63 on the reference deltas, and a delta on the 4x4 mode.</td></tr>
-<tr><td><a href="lossy-filter-lf-delta-extremes.bitstream"><code>lossy-filter-lf-delta-extremes</code></a></td><td class="ok">ok</td><td>Loop-filter mode deltas at -63 and 63.</td></tr>
-<tr><td><a href="lossy-filter-normal-max.bitstream"><code>lossy-filter-normal-max</code></a></td><td class="ok">ok</td><td>The normal loop filter at level 63, sharpness 0.</td></tr>
-<tr><td><a href="lossy-filter-sharpness-4.bitstream"><code>lossy-filter-sharpness-4</code></a></td><td class="ok">ok</td><td>Sharpness 4, the last level that halves the interior limit.</td></tr>
-<tr><td><a href="lossy-filter-sharpness-5.bitstream"><code>lossy-filter-sharpness-5</code></a></td><td class="ok">ok</td><td>Sharpness 5, the first level that quarters it.</td></tr>
-<tr><td><a href="lossy-filter-simple-max.bitstream"><code>lossy-filter-simple-max</code></a></td><td class="ok">ok</td><td>The simple loop filter at level 63 and sharpness 7.</td></tr>
-<tr><td><a href="lossy-frame-bad-start-code.bitstream"><code>lossy-frame-bad-start-code</code></a></td><td class="reject">reject</td><td>The three-byte start code changed from 9d 01 2a to 9d 01 29.</td></tr>
-<tr><td><a href="lossy-frame-colorspace-clamp.bitstream"><code>lossy-frame-colorspace-clamp</code></a></td><td class="ok">ok</td><td>The colour-space and clamping-type bits both set.</td></tr>
-<tr><td><a href="lossy-frame-interframe.bitstream"><code>lossy-frame-interframe</code></a></td><td class="reject">reject</td><td>The key-frame bit cleared, so the frame claims to be an inter frame.</td></tr>
-<tr><td><a href="lossy-frame-not-shown.bitstream"><code>lossy-frame-not-shown</code></a></td><td class="reject">reject</td><td>A key frame with the show_frame bit cleared.</td></tr>
-<tr><td><a href="lossy-frame-part0-empty.bitstream"><code>lossy-frame-part0-empty</code></a></td><td class="reject">reject</td><td>The frame tag claims a zero-byte partition 0.</td></tr>
-<tr><td><a href="lossy-frame-part0-past-end.bitstream"><code>lossy-frame-part0-past-end</code></a></td><td class="reject">reject</td><td>The frame tag claims a partition 0 far larger than the file.</td></tr>
-<tr><td><a href="lossy-frame-scale-1.bitstream"><code>lossy-frame-scale-1</code></a></td><td class="ok">ok</td><td>A horizontal upscaling hint of 1 and a vertical one of 3.</td></tr>
-<tr><td><a href="lossy-frame-scale-2.bitstream"><code>lossy-frame-scale-2</code></a></td><td class="ok">ok</td><td>A horizontal upscaling hint of 2 and a vertical one of 1.</td></tr>
-<tr><td><a href="lossy-frame-scaled.bitstream"><code>lossy-frame-scaled</code></a></td><td class="ok">ok</td><td>Horizontal and vertical upscaling hints of 3 (2x) in the top bits of the dimension fields.</td></tr>
-<tr><td><a href="lossy-frame-version-1.bitstream"><code>lossy-frame-version-1</code></a></td><td class="ok">ok</td><td>A frame declaring profile 1 instead of 0.</td></tr>
-<tr><td><a href="lossy-frame-version-2.bitstream"><code>lossy-frame-version-2</code></a></td><td class="ok">ok</td><td>Profile 2, the value between the two the corpus already had.</td></tr>
-<tr><td><a href="lossy-frame-version-3.bitstream"><code>lossy-frame-version-3</code></a></td><td class="ok">ok</td><td>Profile 3, the largest the decoder accepts.</td></tr>
-<tr><td><a href="lossy-frame-version-4.bitstream"><code>lossy-frame-version-4</code></a></td><td class="reject">reject</td><td>Profile 4, one past the last valid value.</td></tr>
-<tr><td><a href="lossy-frame-version-7.bitstream"><code>lossy-frame-version-7</code></a></td><td class="reject">reject</td><td>Profile 7, the largest the 3-bit field can hold.</td></tr>
-<tr><td><a href="lossy-frame-width-16383.bitstream"><code>lossy-frame-width-16383</code></a></td><td class="ok">ok</td><td>The widest frame the 14-bit field can describe, one macroblock tall.</td></tr>
-<tr><td><a href="lossy-frame-zero-width.bitstream"><code>lossy-frame-zero-width</code></a></td><td class="reject">reject</td><td>A frame whose width field is zero, with a height of 32.</td></tr>
-<tr><td><a href="lossy-mode-i16-all-four.bitstream"><code>lossy-mode-i16-all-four</code></a></td><td class="ok">ok</td><td>The four 16x16 luma modes, one per macroblock.</td></tr>
-<tr><td><a href="lossy-mode-i4-all-ten.bitstream"><code>lossy-mode-i4-all-ten</code></a></td><td class="ok">ok</td><td>All ten 4x4 luma modes inside one macroblock, twice over.</td></tr>
-<tr><td><a href="lossy-mode-i4-context.bitstream"><code>lossy-mode-i4-context</code></a></td><td class="ok">ok</td><td>Four B_PRED macroblocks whose 4x4 modes walk the [above][left] probability table.</td></tr>
-<tr><td><a href="lossy-mode-mixed.bitstream"><code>lossy-mode-mixed</code></a></td><td class="ok">ok</td><td>16x16 and 4x4 macroblocks alternating, in both directions.</td></tr>
-<tr><td><a href="lossy-mode-uv-all-four.bitstream"><code>lossy-mode-uv-all-four</code></a></td><td class="ok">ok</td><td>The four chroma modes, one per macroblock.</td></tr>
-<tr><td><a href="lossy-parts-2-wrap.bitstream"><code>lossy-parts-2-wrap</code></a></td><td class="ok">ok</td><td>Four rows over two partitions, so each partition holds two non- adjacent rows.</td></tr>
-<tr><td><a href="lossy-parts-8-rows.bitstream"><code>lossy-parts-8-rows</code></a></td><td class="ok">ok</td><td>Eight macroblock rows over eight token partitions, one row each, every row different.</td></tr>
-<tr><td><a href="lossy-parts-last-empty.bitstream"><code>lossy-parts-last-empty</code></a></td><td class="reject">reject</td><td>Four partitions whose declared sizes leave nothing for the last one.</td></tr>
-<tr><td><a href="lossy-parts-size-past-end.bitstream"><code>lossy-parts-size-past-end</code></a></td><td class="reject">reject</td><td>Four partitions, the first declaring 16 MB of data.</td></tr>
-<tr><td><a href="lossy-parts-table-too-small.bitstream"><code>lossy-parts-table-too-small</code></a></td><td class="reject">reject</td><td>Eight partitions declared in a frame with only ten bytes left for the twenty-one-byte size table.</td></tr>
-<tr><td><a href="lossy-proba-all-updated.bitstream"><code>lossy-proba-all-updated</code></a></td><td class="ok">ok</td><td>Every one of the 1056 coefficient probabilities updated.</td></tr>
-<tr><td><a href="lossy-proba-one-update.bitstream"><code>lossy-proba-one-update</code></a></td><td class="ok">ok</td><td>A single coefficient probability updated, the other 1055 left alone.</td></tr>
-<tr><td><a href="lossy-proba-refresh-and-skip-zero.bitstream"><code>lossy-proba-refresh-and-skip-zero</code></a></td><td class="ok">ok</td><td>The entropy-refresh bit set, and a skip probability of 0.</td></tr>
-<tr><td><a href="lossy-proba-skip-extremes.bitstream"><code>lossy-proba-skip-extremes</code></a></td><td class="ok">ok</td><td>A skip probability of 255 with nothing skipped, and the flag itself written out.</td></tr>
-<tr><td><a href="lossy-proba-zero.bitstream"><code>lossy-proba-zero</code></a></td><td class="ok">ok</td><td>Coefficient probabilities of 0 and of 255, the ends of the range.</td></tr>
-<tr><td><a href="lossy-quant-deltas.bitstream"><code>lossy-quant-deltas</code></a></td><td class="ok">ok</td><td>All five quantizer deltas present, at the ends of their 4-bit range.</td></tr>
-<tr><td><a href="lossy-quant-deltas-mirrored.bitstream"><code>lossy-quant-deltas-mirrored</code></a></td><td class="ok">ok</td><td>The five quantizer deltas at the ends lossy-quant-deltas does not use.</td></tr>
-<tr><td><a href="lossy-quant-dequant-overflow.bitstream"><code>lossy-quant-dequant-overflow</code></a></td><td class="ok">ok</td><td>A coefficient of 2114 at the coarsest quantizer, so the dequantized value does not fit the int16 it is stored in.</td></tr>
-<tr><td><a href="lossy-quant-max.bitstream"><code>lossy-quant-max</code></a></td><td class="ok">ok</td><td>The frame quantizer at 127, the coarsest.</td></tr>
-<tr><td><a href="lossy-quant-min.bitstream"><code>lossy-quant-min</code></a></td><td class="ok">ok</td><td>The frame quantizer at 0, the finest the format allows.</td></tr>
-<tr><td><a href="lossy-quant-uv-dc-clamp.bitstream"><code>lossy-quant-uv-dc-clamp</code></a></td><td class="ok">ok</td><td>A chroma DC quantizer index pushed past 117, where it is clamped rather than at 127.</td></tr>
-<tr><td><a href="lossy-segment-delta-quantizers.bitstream"><code>lossy-segment-delta-quantizers</code></a></td><td class="ok">ok</td><td>Segment quantizers read as deltas on the frame quantizer instead of absolute values.</td></tr>
-<tr><td><a href="lossy-segment-filter-strengths.bitstream"><code>lossy-segment-filter-strengths</code></a></td><td class="ok">ok</td><td>Per-segment loop-filter strengths, from 0 to 63, under a frame filter level of 40.</td></tr>
-<tr><td><a href="lossy-segment-four-quantizers.bitstream"><code>lossy-segment-four-quantizers</code></a></td><td class="ok">ok</td><td>Four segments with four different absolute quantizers, one macroblock each.</td></tr>
-<tr><td><a href="lossy-segment-map-only.bitstream"><code>lossy-segment-map-only</code></a></td><td class="ok">ok</td><td>A segment map with no segment data behind it.</td></tr>
-<tr><td><a href="lossy-segment-no-map.bitstream"><code>lossy-segment-no-map</code></a></td><td class="ok">ok</td><td>Segmentation on, quantizers given, but no segment map: every macroblock is segment 0.</td></tr>
-<tr><td><a href="lossy-segment-prob-extremes.bitstream"><code>lossy-segment-prob-extremes</code></a></td><td class="ok">ok</td><td>Segment probabilities of 0 and 255, and loop-filter updates at both ends of their range.</td></tr>
-<tr><td><a href="lossy-segment-quant-extremes.bitstream"><code>lossy-segment-quant-extremes</code></a></td><td class="ok">ok</td><td>Segment quantizers at 127, -127, 0 and absent.</td></tr>
-<tr><td><a href="lossy-skip-all.bitstream"><code>lossy-skip-all</code></a></td><td class="ok">ok</td><td>Every macroblock skipped.</td></tr>
-<tr><td><a href="lossy-skip-i4x4-nz-dc.bitstream"><code>lossy-skip-i4x4-nz-dc</code></a></td><td class="ok">ok</td><td>A skipped 4x4 macroblock between two 16x16 ones that both carry a Y2 block.</td></tr>
-<tr><td><a href="lossy-skip-mixed.bitstream"><code>lossy-skip-mixed</code></a></td><td class="ok">ok</td><td>Skipped and coded macroblocks alternating, with a skip probability of 1.</td></tr>
-<tr><td><a href="lossy-truncated-header.bitstream"><code>lossy-truncated-header</code></a></td><td class="reject">reject</td><td>Partition 0 cut to two bytes, which is enough for the segment header and not for the filter header.</td></tr>
-<tr><td><a href="lossy-truncated-modes.bitstream"><code>lossy-truncated-modes</code></a></td><td class="reject">reject</td><td>Partition 0 long enough for the whole frame header and not for the macroblock modes that follow it.</td></tr>
-<tr><td><a href="lossy-truncated-short-modes.bitstream"><code>lossy-truncated-short-modes</code></a></td><td class="ok">ok</td><td>Mode data for 15 macroblocks in a frame whose dimensions call for 16.</td></tr>
-<tr><td><a href="lossy-truncated-tokens.bitstream"><code>lossy-truncated-tokens</code></a></td><td class="reject">reject</td><td>Partition 0 intact, the token partition cut in half.</td></tr>
+<tr><td><a href="alph-after-image.txt"><code>alph-after-image</code></a></td><td class="ok">ok</td><td>An ALPH chunk placed after the image chunk instead of before it.</td></tr>
+<tr><td><a href="alph-compression-invalid.txt"><code>alph-compression-invalid</code></a></td><td class="reject">reject</td><td>A compression method of 2, past the lossless one.</td></tr>
+<tr><td><a href="alph-empty-payload.txt"><code>alph-empty-payload</code></a></td><td class="reject">reject</td><td>An ALPH chunk holding its header byte and nothing else.</td></tr>
+<tr><td><a href="alph-lossless-byte-flipped.txt"><code>alph-lossless-byte-flipped</code></a></td><td class="reject">reject</td><td>The same plane with its last byte replaced.</td></tr>
+<tr><td><a href="alph-lossless-palette.txt"><code>alph-lossless-palette</code></a></td><td class="ok">ok</td><td>A losslessly compressed alpha plane carrying a palette transform, from a cwebp encode of a two-valued plane.</td></tr>
+<tr><td><a href="alph-lossless-predictor.txt"><code>alph-lossless-predictor</code></a></td><td class="ok">ok</td><td>A losslessly compressed alpha plane carrying a predictor transform, from a cwebp encode of a gradient.</td></tr>
+<tr><td><a href="alph-lossless-truncated.txt"><code>alph-lossless-truncated</code></a></td><td class="reject">reject</td><td>The predictor-transform plane cut to ten bytes.</td></tr>
+<tr><td><a href="alph-no-vp8x.txt"><code>alph-no-vp8x</code></a></td><td class="reject">reject</td><td>An ALPH chunk in a RIFF file with no VP8X ahead of it.</td></tr>
+<tr><td><a href="alph-preprocessing-invalid.txt"><code>alph-preprocessing-invalid</code></a></td><td class="reject">reject</td><td>A pre-processing value of 2, past level reduction.</td></tr>
+<tr><td><a href="alph-raw-filter-gradient.txt"><code>alph-raw-filter-gradient</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the gradient filter.</td></tr>
+<tr><td><a href="alph-raw-filter-horizontal.txt"><code>alph-raw-filter-horizontal</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the horizontal filter.</td></tr>
+<tr><td><a href="alph-raw-filter-none.txt"><code>alph-raw-filter-none</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the none filter.</td></tr>
+<tr><td><a href="alph-raw-filter-vertical.txt"><code>alph-raw-filter-vertical</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the vertical filter.</td></tr>
+<tr><td><a href="alph-raw-oversized.txt"><code>alph-raw-oversized</code></a></td><td class="ok">ok</td><td>An uncompressed plane 44 bytes longer than the picture needs.</td></tr>
+<tr><td><a href="alph-raw-preprocessing.txt"><code>alph-raw-preprocessing</code></a></td><td class="ok">ok</td><td>An uncompressed plane declaring the level-reduction pre-processing.</td></tr>
+<tr><td><a href="alph-raw-short.txt"><code>alph-raw-short</code></a></td><td class="reject">reject</td><td>An uncompressed plane one byte short of the picture.</td></tr>
+<tr><td><a href="alph-reserved-set.txt"><code>alph-reserved-set</code></a></td><td class="reject">reject</td><td>The two reserved bits of the ALPH header byte set.</td></tr>
+<tr><td><a href="alph-without-vp8x-flag.txt"><code>alph-without-vp8x-flag</code></a></td><td class="ok">ok</td><td>An ALPH chunk with the VP8X alpha flag left clear.</td></tr>
+<tr><td><a href="container-chunk-header-truncated.txt"><code>container-chunk-header-truncated</code></a></td><td class="reject">reject</td><td>The file cut four bytes into the last chunk header.</td></tr>
+<tr><td><a href="container-duplicate-image-chunk.txt"><code>container-duplicate-image-chunk</code></a></td><td class="ok">ok</td><td>Two VP8 chunks, one after the other.</td></tr>
+<tr><td><a href="container-metadata-chunks.txt"><code>container-metadata-chunks</code></a></td><td class="ok">ok</td><td>ICCP, EXIF and XMP chunks around the frame.</td></tr>
+<tr><td><a href="container-no-image-chunk.txt"><code>container-no-image-chunk</code></a></td><td class="reject">reject</td><td>A VP8X chunk and some metadata, and no image chunk at all.</td></tr>
+<tr><td><a href="container-odd-chunk-no-pad.txt"><code>container-odd-chunk-no-pad</code></a></td><td class="reject">reject</td><td>An odd-sized chunk whose header rounds its length up, taking the pad byte away.</td></tr>
+<tr><td><a href="container-odd-chunk-payload.txt"><code>container-odd-chunk-payload</code></a></td><td class="ok">ok</td><td>An optional chunk with an odd-sized payload, and the pad byte that must follow it.</td></tr>
+<tr><td><a href="container-riff-size-past-end.txt"><code>container-riff-size-past-end</code></a></td><td class="reject">reject</td><td>A RIFF header claiming far more bytes than the file holds.</td></tr>
+<tr><td><a href="container-riff-size-short.txt"><code>container-riff-size-short</code></a></td><td class="reject">reject</td><td>A RIFF header claiming 11 bytes, one less than the smallest legal value.</td></tr>
+<tr><td><a href="container-riff-size-truncates-chunks.txt"><code>container-riff-size-truncates-chunks</code></a></td><td class="reject">reject</td><td>A RIFF size that stops in the middle of the chunks behind it.</td></tr>
+<tr><td><a href="container-trailing-bytes.txt"><code>container-trailing-bytes</code></a></td><td class="ok">ok</td><td>Bytes after the last chunk that the RIFF size does not account for.</td></tr>
+<tr><td><a href="container-unknown-chunk.txt"><code>container-unknown-chunk</code></a></td><td class="ok">ok</td><td>A chunk with a fourcc the format does not define, ahead of the frame.</td></tr>
+<tr><td><a href="container-vp8x.txt"><code>container-vp8x</code></a></td><td class="ok">ok</td><td>The extended format: a VP8X chunk ahead of the frame.</td></tr>
+<tr><td><a href="container-vp8x-animation.txt"><code>container-vp8x-animation</code></a></td><td class="reject">reject</td><td>The VP8X animation flag set on a file with no animation chunks.</td></tr>
+<tr><td><a href="container-vp8x-area-overflow.txt"><code>container-vp8x-area-overflow</code></a></td><td class="reject">reject</td><td>A VP8X canvas of 16777216 by 16777216, the largest the two 24-bit fields can describe.</td></tr>
+<tr><td><a href="container-vp8x-canvas-mismatch.txt"><code>container-vp8x-canvas-mismatch</code></a></td><td class="reject">reject</td><td>A VP8X canvas of 64x64 in front of a 32x32 frame.</td></tr>
+<tr><td><a href="container-vp8x-reserved-bits.txt"><code>container-vp8x-reserved-bits</code></a></td><td class="ok">ok</td><td>The reserved bits of the VP8X flags field all set.</td></tr>
+<tr><td><a href="container-vp8x-still-flags.txt"><code>container-vp8x-still-flags</code></a></td><td class="ok">ok</td><td>The four still-image VP8X flags set, with none of the chunks they promise.</td></tr>
+<tr><td><a href="container-vp8x-wrong-size.txt"><code>container-vp8x-wrong-size</code></a></td><td class="reject">reject</td><td>A VP8X chunk whose header claims 9 bytes rather than 10.</td></tr>
+<tr><td><a href="container-zero-size-chunk.txt"><code>container-zero-size-chunk</code></a></td><td class="ok">ok</td><td>An optional chunk declaring a zero-length payload.</td></tr>
+<tr><td><a href="lossy-coeff-all-types.txt"><code>lossy-coeff-all-types</code></a></td><td class="ok">ok</td><td>All four coefficient types in one macroblock, and both luma types across two.</td></tr>
+<tr><td><a href="lossy-coeff-bands-chroma.txt"><code>lossy-coeff-bands-chroma</code></a></td><td class="ok">ok</td><td>The same sweep across the four blocks of a chroma plane.</td></tr>
+<tr><td><a href="lossy-coeff-bands-i16.txt"><code>lossy-coeff-bands-i16</code></a></td><td class="ok">ok</td><td>The same sweep for the two block kinds a 16x16 macroblock has: the Y2 block and the luma blocks that follow it.</td></tr>
+<tr><td><a href="lossy-coeff-bands-i4.txt"><code>lossy-coeff-bands-i4</code></a></td><td class="ok">ok</td><td>Three 4x4 luma blocks that sweep every coefficient band, one per context.</td></tr>
+<tr><td><a href="lossy-coeff-cat3.txt"><code>lossy-coeff-cat3</code></a></td><td class="ok">ok</td><td>Category-3 coefficients: 11 to 18, three extra bits each.</td></tr>
+<tr><td><a href="lossy-coeff-cat4.txt"><code>lossy-coeff-cat4</code></a></td><td class="ok">ok</td><td>Category-4 coefficients: 19 to 34, four extra bits.</td></tr>
+<tr><td><a href="lossy-coeff-cat5.txt"><code>lossy-coeff-cat5</code></a></td><td class="ok">ok</td><td>Category-5 coefficients: 35 to 66, five extra bits.</td></tr>
+<tr><td><a href="lossy-coeff-cat6.txt"><code>lossy-coeff-cat6</code></a></td><td class="ok">ok</td><td>Category-6 coefficients: 67 upwards, eleven extra bits.</td></tr>
+<tr><td><a href="lossy-coeff-cat6-max.txt"><code>lossy-coeff-cat6-max</code></a></td><td class="ok">ok</td><td>The largest coefficient the format can encode: 2114.</td></tr>
+<tr><td><a href="lossy-coeff-context.txt"><code>lossy-coeff-context</code></a></td><td class="ok">ok</td><td>Neighbouring blocks with and without coefficients, so that every context value from 0 to 2 is used.</td></tr>
+<tr><td><a href="lossy-coeff-empty-blocks.txt"><code>lossy-coeff-empty-blocks</code></a></td><td class="ok">ok</td><td>Every one of the 25 blocks empty, but the macroblock not skipped.</td></tr>
+<tr><td><a href="lossy-coeff-full-block.txt"><code>lossy-coeff-full-block</code></a></td><td class="ok">ok</td><td>A block with all sixteen coefficients non-zero, so the loop ends by running out of positions rather than on an end-of-block.</td></tr>
+<tr><td><a href="lossy-coeff-medium-magnitudes.txt"><code>lossy-coeff-medium-magnitudes</code></a></td><td class="ok">ok</td><td>Coefficients of 5 through 10, coded with the fixed probabilities 159, 165 and 145.</td></tr>
+<tr><td><a href="lossy-coeff-small-magnitudes.txt"><code>lossy-coeff-small-magnitudes</code></a></td><td class="ok">ok</td><td>Coefficients of 1, 2, 3 and 4, the magnitudes with their own tree branches.</td></tr>
+<tr><td><a href="lossy-coeff-wht-full.txt"><code>lossy-coeff-wht-full</code></a></td><td class="ok">ok</td><td>A Y2 block with more than one coefficient, next to one with only a DC.</td></tr>
+<tr><td><a href="lossy-coeff-zero-runs.txt"><code>lossy-coeff-zero-runs</code></a></td><td class="ok">ok</td><td>Single coefficients at positions 15, 12, 8 and 1, each behind a run of zeros.</td></tr>
+<tr><td><a href="lossy-combo-all-features.txt"><code>lossy-combo-all-features</code></a></td><td class="ok">ok</td><td>Every optional tool switched on in one frame at once.</td></tr>
+<tr><td><a href="lossy-filter-lf-delta.txt"><code>lossy-filter-lf-delta</code></a></td><td class="ok">ok</td><td>Loop-filter deltas: 63 and -63 on the reference deltas, and a delta on the 4x4 mode.</td></tr>
+<tr><td><a href="lossy-filter-lf-delta-extremes.txt"><code>lossy-filter-lf-delta-extremes</code></a></td><td class="ok">ok</td><td>Loop-filter mode deltas at -63 and 63.</td></tr>
+<tr><td><a href="lossy-filter-normal-max.txt"><code>lossy-filter-normal-max</code></a></td><td class="ok">ok</td><td>The normal loop filter at level 63, sharpness 0.</td></tr>
+<tr><td><a href="lossy-filter-sharpness-4.txt"><code>lossy-filter-sharpness-4</code></a></td><td class="ok">ok</td><td>Sharpness 4, the last level that halves the interior limit.</td></tr>
+<tr><td><a href="lossy-filter-sharpness-5.txt"><code>lossy-filter-sharpness-5</code></a></td><td class="ok">ok</td><td>Sharpness 5, the first level that quarters it.</td></tr>
+<tr><td><a href="lossy-filter-simple-max.txt"><code>lossy-filter-simple-max</code></a></td><td class="ok">ok</td><td>The simple loop filter at level 63 and sharpness 7.</td></tr>
+<tr><td><a href="lossy-frame-bad-start-code.txt"><code>lossy-frame-bad-start-code</code></a></td><td class="reject">reject</td><td>The three-byte start code changed from 9d 01 2a to 9d 01 29.</td></tr>
+<tr><td><a href="lossy-frame-colorspace-clamp.txt"><code>lossy-frame-colorspace-clamp</code></a></td><td class="ok">ok</td><td>The colour-space and clamping-type bits both set.</td></tr>
+<tr><td><a href="lossy-frame-interframe.txt"><code>lossy-frame-interframe</code></a></td><td class="reject">reject</td><td>The key-frame bit cleared, so the frame claims to be an inter frame.</td></tr>
+<tr><td><a href="lossy-frame-not-shown.txt"><code>lossy-frame-not-shown</code></a></td><td class="reject">reject</td><td>A key frame with the show_frame bit cleared.</td></tr>
+<tr><td><a href="lossy-frame-part0-empty.txt"><code>lossy-frame-part0-empty</code></a></td><td class="reject">reject</td><td>The frame tag claims a zero-byte partition 0.</td></tr>
+<tr><td><a href="lossy-frame-part0-past-end.txt"><code>lossy-frame-part0-past-end</code></a></td><td class="reject">reject</td><td>The frame tag claims a partition 0 far larger than the file.</td></tr>
+<tr><td><a href="lossy-frame-scale-1.txt"><code>lossy-frame-scale-1</code></a></td><td class="ok">ok</td><td>A horizontal upscaling hint of 1 and a vertical one of 3.</td></tr>
+<tr><td><a href="lossy-frame-scale-2.txt"><code>lossy-frame-scale-2</code></a></td><td class="ok">ok</td><td>A horizontal upscaling hint of 2 and a vertical one of 1.</td></tr>
+<tr><td><a href="lossy-frame-scaled.txt"><code>lossy-frame-scaled</code></a></td><td class="ok">ok</td><td>Horizontal and vertical upscaling hints of 3 (2x) in the top bits of the dimension fields.</td></tr>
+<tr><td><a href="lossy-frame-version-1.txt"><code>lossy-frame-version-1</code></a></td><td class="ok">ok</td><td>A frame declaring profile 1 instead of 0.</td></tr>
+<tr><td><a href="lossy-frame-version-2.txt"><code>lossy-frame-version-2</code></a></td><td class="ok">ok</td><td>Profile 2, the value between the two the corpus already had.</td></tr>
+<tr><td><a href="lossy-frame-version-3.txt"><code>lossy-frame-version-3</code></a></td><td class="ok">ok</td><td>Profile 3, the largest the decoder accepts.</td></tr>
+<tr><td><a href="lossy-frame-version-4.txt"><code>lossy-frame-version-4</code></a></td><td class="reject">reject</td><td>Profile 4, one past the last valid value.</td></tr>
+<tr><td><a href="lossy-frame-version-7.txt"><code>lossy-frame-version-7</code></a></td><td class="reject">reject</td><td>Profile 7, the largest the 3-bit field can hold.</td></tr>
+<tr><td><a href="lossy-frame-width-16383.txt"><code>lossy-frame-width-16383</code></a></td><td class="ok">ok</td><td>The widest frame the 14-bit field can describe, one macroblock tall.</td></tr>
+<tr><td><a href="lossy-frame-zero-width.txt"><code>lossy-frame-zero-width</code></a></td><td class="reject">reject</td><td>A frame whose width field is zero, with a height of 32.</td></tr>
+<tr><td><a href="lossy-mode-i16-all-four.txt"><code>lossy-mode-i16-all-four</code></a></td><td class="ok">ok</td><td>The four 16x16 luma modes, one per macroblock.</td></tr>
+<tr><td><a href="lossy-mode-i4-all-ten.txt"><code>lossy-mode-i4-all-ten</code></a></td><td class="ok">ok</td><td>All ten 4x4 luma modes inside one macroblock, twice over.</td></tr>
+<tr><td><a href="lossy-mode-i4-context.txt"><code>lossy-mode-i4-context</code></a></td><td class="ok">ok</td><td>Four B_PRED macroblocks whose 4x4 modes walk the [above][left] probability table.</td></tr>
+<tr><td><a href="lossy-mode-mixed.txt"><code>lossy-mode-mixed</code></a></td><td class="ok">ok</td><td>16x16 and 4x4 macroblocks alternating, in both directions.</td></tr>
+<tr><td><a href="lossy-mode-uv-all-four.txt"><code>lossy-mode-uv-all-four</code></a></td><td class="ok">ok</td><td>The four chroma modes, one per macroblock.</td></tr>
+<tr><td><a href="lossy-parts-2-wrap.txt"><code>lossy-parts-2-wrap</code></a></td><td class="ok">ok</td><td>Four rows over two partitions, so each partition holds two non- adjacent rows.</td></tr>
+<tr><td><a href="lossy-parts-8-rows.txt"><code>lossy-parts-8-rows</code></a></td><td class="ok">ok</td><td>Eight macroblock rows over eight token partitions, one row each, every row different.</td></tr>
+<tr><td><a href="lossy-parts-last-empty.txt"><code>lossy-parts-last-empty</code></a></td><td class="reject">reject</td><td>Four partitions whose declared sizes leave nothing for the last one.</td></tr>
+<tr><td><a href="lossy-parts-size-past-end.txt"><code>lossy-parts-size-past-end</code></a></td><td class="reject">reject</td><td>Four partitions, the first declaring 16 MB of data.</td></tr>
+<tr><td><a href="lossy-parts-table-too-small.txt"><code>lossy-parts-table-too-small</code></a></td><td class="reject">reject</td><td>Eight partitions declared in a frame with only ten bytes left for the twenty-one-byte size table.</td></tr>
+<tr><td><a href="lossy-proba-all-updated.txt"><code>lossy-proba-all-updated</code></a></td><td class="ok">ok</td><td>Every one of the 1056 coefficient probabilities updated.</td></tr>
+<tr><td><a href="lossy-proba-one-update.txt"><code>lossy-proba-one-update</code></a></td><td class="ok">ok</td><td>A single coefficient probability updated, the other 1055 left alone.</td></tr>
+<tr><td><a href="lossy-proba-refresh-and-skip-zero.txt"><code>lossy-proba-refresh-and-skip-zero</code></a></td><td class="ok">ok</td><td>The entropy-refresh bit set, and a skip probability of 0.</td></tr>
+<tr><td><a href="lossy-proba-skip-extremes.txt"><code>lossy-proba-skip-extremes</code></a></td><td class="ok">ok</td><td>A skip probability of 255 with nothing skipped, and the flag itself written out.</td></tr>
+<tr><td><a href="lossy-proba-zero.txt"><code>lossy-proba-zero</code></a></td><td class="ok">ok</td><td>Coefficient probabilities of 0 and of 255, the ends of the range.</td></tr>
+<tr><td><a href="lossy-quant-deltas.txt"><code>lossy-quant-deltas</code></a></td><td class="ok">ok</td><td>All five quantizer deltas present, at the ends of their 4-bit range.</td></tr>
+<tr><td><a href="lossy-quant-deltas-mirrored.txt"><code>lossy-quant-deltas-mirrored</code></a></td><td class="ok">ok</td><td>The five quantizer deltas at the ends lossy-quant-deltas does not use.</td></tr>
+<tr><td><a href="lossy-quant-dequant-overflow.txt"><code>lossy-quant-dequant-overflow</code></a></td><td class="ok">ok</td><td>A coefficient of 2114 at the coarsest quantizer, so the dequantized value does not fit the int16 it is stored in.</td></tr>
+<tr><td><a href="lossy-quant-max.txt"><code>lossy-quant-max</code></a></td><td class="ok">ok</td><td>The frame quantizer at 127, the coarsest.</td></tr>
+<tr><td><a href="lossy-quant-min.txt"><code>lossy-quant-min</code></a></td><td class="ok">ok</td><td>The frame quantizer at 0, the finest the format allows.</td></tr>
+<tr><td><a href="lossy-quant-uv-dc-clamp.txt"><code>lossy-quant-uv-dc-clamp</code></a></td><td class="ok">ok</td><td>A chroma DC quantizer index pushed past 117, where it is clamped rather than at 127.</td></tr>
+<tr><td><a href="lossy-segment-delta-quantizers.txt"><code>lossy-segment-delta-quantizers</code></a></td><td class="ok">ok</td><td>Segment quantizers read as deltas on the frame quantizer instead of absolute values.</td></tr>
+<tr><td><a href="lossy-segment-filter-strengths.txt"><code>lossy-segment-filter-strengths</code></a></td><td class="ok">ok</td><td>Per-segment loop-filter strengths, from 0 to 63, under a frame filter level of 40.</td></tr>
+<tr><td><a href="lossy-segment-four-quantizers.txt"><code>lossy-segment-four-quantizers</code></a></td><td class="ok">ok</td><td>Four segments with four different absolute quantizers, one macroblock each.</td></tr>
+<tr><td><a href="lossy-segment-map-only.txt"><code>lossy-segment-map-only</code></a></td><td class="ok">ok</td><td>A segment map with no segment data behind it.</td></tr>
+<tr><td><a href="lossy-segment-no-map.txt"><code>lossy-segment-no-map</code></a></td><td class="ok">ok</td><td>Segmentation on, quantizers given, but no segment map: every macroblock is segment 0.</td></tr>
+<tr><td><a href="lossy-segment-prob-extremes.txt"><code>lossy-segment-prob-extremes</code></a></td><td class="ok">ok</td><td>Segment probabilities of 0 and 255, and loop-filter updates at both ends of their range.</td></tr>
+<tr><td><a href="lossy-segment-quant-extremes.txt"><code>lossy-segment-quant-extremes</code></a></td><td class="ok">ok</td><td>Segment quantizers at 127, -127, 0 and absent.</td></tr>
+<tr><td><a href="lossy-skip-all.txt"><code>lossy-skip-all</code></a></td><td class="ok">ok</td><td>Every macroblock skipped.</td></tr>
+<tr><td><a href="lossy-skip-i4x4-nz-dc.txt"><code>lossy-skip-i4x4-nz-dc</code></a></td><td class="ok">ok</td><td>A skipped 4x4 macroblock between two 16x16 ones that both carry a Y2 block.</td></tr>
+<tr><td><a href="lossy-skip-mixed.txt"><code>lossy-skip-mixed</code></a></td><td class="ok">ok</td><td>Skipped and coded macroblocks alternating, with a skip probability of 1.</td></tr>
+<tr><td><a href="lossy-truncated-header.txt"><code>lossy-truncated-header</code></a></td><td class="reject">reject</td><td>Partition 0 cut to two bytes, which is enough for the segment header and not for the filter header.</td></tr>
+<tr><td><a href="lossy-truncated-modes.txt"><code>lossy-truncated-modes</code></a></td><td class="reject">reject</td><td>Partition 0 long enough for the whole frame header and not for the macroblock modes that follow it.</td></tr>
+<tr><td><a href="lossy-truncated-short-modes.txt"><code>lossy-truncated-short-modes</code></a></td><td class="ok">ok</td><td>Mode data for 15 macroblocks in a frame whose dimensions call for 16.</td></tr>
+<tr><td><a href="lossy-truncated-tokens.txt"><code>lossy-truncated-tokens</code></a></td><td class="reject">reject</td><td>Partition 0 intact, the token partition cut in half.</td></tr>
 </table>
