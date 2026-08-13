@@ -289,7 +289,7 @@ expected verdict; the notes further down say what each targets.
 | file | what it is |
 | --- | --- |
 | [`vp8l.py`](vp8l.py) | VP8L bitstream writer: bit packing, canonical Huffman codes, prefix coding, RIFF wrapping. |
-| [`generate.py`](generate.py) | Writes the lossless cases, assembles the rest from `cases/`, and produces `expected.txt`, `files/index.html` and this README. |
+| [`generate.py`](generate.py) | Writes the lossless cases, assembles the rest from `cases/`, and produces `expected.txt`, this README and the two `index.html` listings. |
 | [`vp8.py`](vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
 | [`vp8_asm.py`](vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
 | [`webp_asm.py`](webp_asm.py) | Wraps that frame in a RIFF container, in RFC 9649's field names, for the cases that need one. |

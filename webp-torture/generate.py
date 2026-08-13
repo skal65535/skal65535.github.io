@@ -1368,7 +1368,7 @@ def build_index(rows, groups):
     return '\n'.join(out) + '\n'
 
 
-FILES_INDEX_HEAD = """<!doctype html>
+INDEX_STYLE = """<!doctype html>
 <meta charset="utf-8">
 <title>webp-torture bitstreams</title>
 <style>
@@ -1380,12 +1380,25 @@ FILES_INDEX_HEAD = """<!doctype html>
  .reject { color: #a33; }
  code { font-size: 90%%; }
 </style>
-<h1>webp-torture bitstreams</h1>
+"""
+
+FILES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture bitstreams</h1>
 <p>%(count)d WebP files that exercise corners of the format a normal encoder
-never emits. See the <a href="../">notes</a> for what each one targets.
-<b>reject</b> means a conforming decoder must refuse the file.</p>
+never emits, most of them assembled from the text in
+<a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
+one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <table>
 <tr><th>file</th><th>bytes</th><th>expected</th></tr>
+"""
+
+CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture cases</h1>
+<p>%(count)d text cases, each assembled into the .webp of the same name in
+<a href="../files/">files/</a>. A case names the fields the specification
+names &mdash; RFC 6386 for the frame, RFC 9649 for the container &mdash; and
+carries its own note on what it is for; the <a href="../">notes</a> have the
+full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
+<table>
+<tr><th>case</th><th>expected</th><th>what it is</th></tr>
 """
 
 
@@ -1402,12 +1415,35 @@ def write_files_index(outdir, rows):
         f.write('\n'.join(lines) + '\n')
 
 
+def write_cases_index(outdir, rows):
+    """cases/index.html -- same reason, and the README links cases/."""
+    lines = [CASES_INDEX_HEAD]
+    n = 0
+    for name, expect, note, _exercises, _size in sorted(rows):
+        if not os.path.exists(os.path.join(outdir, 'cases',
+                                           name + '.bitstream')):
+            continue                    # written by vp8l.py, not assembled
+        n += 1
+        lines.append('<tr><td><a href="%s.bitstream"><code>%s</code></a></td>'
+                     '<td class="%s">%s</td><td>%s</td></tr>'
+                     % (name, name, 'reject' if expect == 'reject' else 'ok',
+                        expect, html_escape(note)))
+    lines.append('</table>')
+    lines[0] = CASES_INDEX_HEAD % {'count': n}
+    with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
+def html_escape(text):
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
 CODE = [
     ('vp8l.py', 'VP8L bitstream writer: bit packing, canonical Huffman codes, '
                 'prefix coding, RIFF wrapping.'),
     ('generate.py', 'Writes the lossless cases, assembles the rest from '
-                    '`cases/`, and produces `expected.txt`, '
-                    '`files/index.html` and this README.'),
+                    '`cases/`, and produces `expected.txt`, this README '
+                    'and the two `index.html` listings.'),
     ('vp8.py', 'VP8 lossy bitstream writer: the boolean coder, the frame '
                'header, the mode trees, the coefficients.'),
     ('vp8_asm.py', 'Assembles a lossy frame from a text case, in RFC 6386\'s '
@@ -1537,6 +1573,7 @@ def write_readme(outdir, rows):
         '`cases/` through `webp_asm.py`, which hands the frame to '
         '`vp8_asm.py` and that to `vp8.py`.' % (len(rows), total)))
     write_files_index(outdir, rows)
+    write_cases_index(outdir, rows)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
     with open(os.path.join(outdir, 'README.md'), 'w') as f:
         f.write(text)
