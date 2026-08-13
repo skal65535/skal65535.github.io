@@ -1246,6 +1246,18 @@ Each entry says what the reference decoder is expected to do:
 %(code)s
 ## Using them
 
+Every file is one click away from this page, but the corpus is one
+directory of a much larger repository, so to take the whole thing at once
+ask git for just that directory:
+
+    git clone --depth 1 --filter=blob:none --sparse \\
+        https://github.com/skal65535/skal65535.github.io.git
+    cd skal65535.github.io
+    git sparse-checkout set webp-torture
+
+That fetches about 2MB instead of the ~90MB the rest of the site comes to.
+Then, from `webp-torture/`:
+
     ./check.sh              # verdict + decoded-pixel hash for every file
     ./asan_sweep.sh         # 14 decode modes, under a sanitizer build
     ./vp8_selftest.py       # checks the lossy writer against libwebp
