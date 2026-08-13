@@ -1,0 +1,78 @@
+# Decoder paths each file actually reaches.
+#
+# Regenerate with ./make_coverage.sh, which applies probes.py to a
+# throwaway worktree. Every probe sits on the line a README note
+# refers to, so this is the evidence behind those notes: a file can
+# reject for the wrong reason, and several did before being fixed.
+#
+# libwebp revision: 0be8ddd1
+
+cache-bits-0-invalid                     reject_cache_bits 
+cache-bits-1                             build_single_value cache_bits_min simple_1sym 
+cache-bits-11                            build_single_value cache_bits_max simple_1sym 
+cache-bits-12-invalid                    reject_cache_bits 
+cache-index-literal                      build_single_value cache_bits_min codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
+codelen-all-zero-lengths                 build_empty_code build_single_value codelen_18 complex_code num_codes_min simple_1sym 
+codelen-depth-15                         build_depth_15 build_single_value build_two_level codelen_18 codelen_18_max_run complex_code num_codes_max simple_1sym 
+codelen-incomplete                       build_single_value codelen_18 complex_code reject_incomplete simple_1sym 
+codelen-max-symbol-early-stop            build_single_value complex_code max_symbol_early_stop num_codes_min simple_1sym use_length 
+codelen-max-symbol-too-big               build_single_value complex_code num_codes_min reject_max_symbol_too_big simple_1sym use_length 
+codelen-num-codes-19                     build_single_value codelen_18 complex_code num_codes_max simple_1sym 
+codelen-num-codes-4                      build_single_value codelen_18 complex_code num_codes_min simple_1sym 
+codelen-over-capacity                    build_single_value codelen_18 complex_code num_codes_min reject_count_over_capacity simple_1sym 
+codelen-oversubscribed                   build_single_value codelen_18 complex_code reject_oversubscribed simple_1sym 
+codelen-repeat-past-end                  build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min reject_repeat_past_end simple_1sym 
+codelen-repeat16-no-previous             build_single_value codelen_16 codelen_16_default_prev codelen_18 complex_code simple_1sym 
+codelen-repeat17-short-zeros             build_single_value codelen_17 codelen_17_max_run complex_code num_codes_min simple_1sym 
+codelen-repeat18-138-zeros               build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
+codelen-single-symbol-complex-form       build_single_value codelen_18 complex_code num_codes_min simple_1sym 
+codelen-two-level-table                  build_single_value build_two_level codelen_18 codelen_18_max_run complex_code simple_1sym 
+header-max-area-bomb                     build_single_value header_huge_area header_width_16384 simple_1sym 
+header-max-area-truncated                build_empty_code complex_code header_huge_area header_width_16384 num_codes_min 
+header-version-nonzero                   reject_signature_version 
+header-width-16384                       build_single_value header_width_16384 simple_1sym 
+lossy-1-partitions                       parts_1 
+lossy-2-partitions                       parts_2 
+lossy-4-partitions                       parts_4 
+lossy-8-partitions-size-overflow         parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
+lossy-8-partitions-sizes-sum-past-end    parts_8 parts_no_data_left parts_psize_clamped parts_psize_zero 
+lossy-8-partitions-zero-sizes            parts_8 parts_psize_zero 
+lossy-8-partitions                       parts_8 
+lz77-distance-1-run                      build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
+lz77-distance-direct-121                 build_single_value codelen_18 codelen_18_max_run complex_code dist_direct num_codes_min simple_1sym 
+lz77-distance-past-start                 build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 num_codes_min simple_1sym 
+lz77-length-past-end                     build_single_value codelen_18 codelen_18_max_run complex_code dist_direct num_codes_min simple_1sym 
+lz77-max-length-symbol                   build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
+lz77-plane-code-1                        build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 num_codes_min simple_1sym 
+lz77-plane-code-120                      build_single_value codelen_17 codelen_17_max_run codelen_18 codelen_18_max_run complex_code dist_plane_code_120 num_codes_min simple_1sym 
+lz77-plane-code-clamped-to-1             build_single_value codelen_18 codelen_18_max_run complex_code dist_clamped_to_1 num_codes_min simple_1sym 
+meta-huffman-1001-groups                 build_single_value meta_groups_over_1000 meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym 
+meta-huffman-precision-max               build_single_value meta_huffman meta_precision_max simple_1sym 
+meta-huffman-precision-min               build_single_value meta_huffman meta_precision_min simple_1sym 
+meta-huffman-sparse-groups               build_single_value meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym 
+meta-huffman-two-groups                  build_single_value meta_huffman meta_precision_min simple_1sym simple_2sym 
+predictor-all-16-modes                   build_single_value complex_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_14 pred_mode_15 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym tf_bits_min tf_predictor 
+predictor-mode-11-select                 build_single_value pred_first_row pred_mode_11 simple_1sym tf_bits_min tf_predictor 
+predictor-mode-13-clamp-half             build_single_value pred_first_row pred_mode_13 simple_1sym tf_bits_min tf_predictor 
+predictor-mode-14-undefined              build_single_value pred_first_row pred_mode_14 simple_1sym tf_bits_min tf_predictor 
+predictor-mode-15-undefined              build_single_value pred_first_row pred_mode_15 simple_1sym tf_bits_min tf_predictor 
+predictor-single-row                     build_single_value pred_first_row simple_1sym tf_bits_min tf_predictor 
+predictor-tile-bits-min                  build_single_value complex_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym tf_bits_min tf_predictor 
+simple-dist-1sym-oob                     build_empty_code build_single_value simple_1sym simple_sym1_oob 
+simple-dist-2sym-both-oob                build_empty_code build_single_value simple_1sym simple_2sym simple_sym1_oob simple_sym2_oob 
+simple-dist-2sym-duplicate               build_single_value simple_1sym simple_2sym 
+simple-dist-2sym-first-oob               build_single_value simple_1sym simple_2sym simple_sym1_oob 
+simple-dist-2sym-second-oob              build_single_value simple_1sym simple_2sym simple_sym2_oob 
+simple-dist-sym-39-last-valid            build_single_value simple_1sym 
+simple-dist-sym-40-first-oob             build_empty_code build_single_value simple_1sym simple_sym1_oob 
+simple-green-1bit-symbol                 build_single_value simple_1sym simple_sym_1bit 
+simple-green-2sym-1bit-each              build_single_value simple_1sym simple_2sym 
+transform-all-four                       build_single_value palette_2 pred_first_row simple_1sym simple_2sym tf_bits_min tf_color_indexing tf_cross_color tf_predictor tf_subtract_green 
+transform-palette-1-color                build_single_value palette_1 palette_black_tail simple_1sym tf_color_indexing 
+transform-palette-16-colors              build_single_value complex_code palette_16 simple_1sym simple_2sym tf_color_indexing 
+transform-palette-2-colors               build_single_value palette_2 simple_1sym simple_2sym tf_color_indexing 
+transform-palette-256-colors             build_single_value palette_256 simple_1sym simple_2sym tf_color_indexing 
+transform-palette-3-colors               build_single_value complex_code palette_3 palette_black_tail simple_1sym simple_2sym tf_color_indexing 
+transform-palette-index-past-end         build_single_value complex_code palette_3 palette_black_tail simple_1sym simple_2sym tf_color_indexing 
+transform-predictor-bits-max             build_single_value pred_first_row pred_mode_0 simple_1sym tf_bits_max tf_predictor 
+transform-repeated                       reject_transform_repeated tf_subtract_green 
