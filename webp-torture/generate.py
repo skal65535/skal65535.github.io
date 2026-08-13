@@ -1159,10 +1159,10 @@ README_HEAD = """# WebP torture bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
 emits. %(vp8l)d of them are lossless (VP8L) streams written bit by bit by
-`vp8l.py`. The other %(lossy)d are lossy VP8 frames carrying multiple token
-partitions, which cwebp cannot produce at all: those start from an
-encoder-API call (`make_partition_sources.c`) and are then patched by
-`lossy_parts.py`.
+[`vp8l.py`](vp8l.py). The other %(lossy)d are lossy VP8 frames carrying
+multiple token partitions, which cwebp cannot produce at all: those start from
+an encoder-API call ([`make_partition_sources.c`](make_partition_sources.c))
+and are then patched by [`lossy_parts.py`](lossy_parts.py).
 
 Each entry says what the reference decoder is expected to do:
 
@@ -1172,6 +1172,8 @@ Each entry says what the reference decoder is expected to do:
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
 
+%(files)s
+%(code)s
 ## Using them
 
     ./check.sh           # verdict + decoded-pixel hash for every file
@@ -1180,8 +1182,10 @@ Each entry says what the reference decoder is expected to do:
     python3 generate.py  # rebuild files/, expected.txt and this README
 
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
-the multi-partition cases are patched from live in `sources/`, and are
-themselves rebuilt by `make_partition_sources.c`.
+the multi-partition cases are patched from live in `sources/` --
+[1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
+[4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
+partitions -- and are themselves rebuilt by `make_partition_sources.c`.
 
 `check.sh` honours `$DWEBP` and `asan_sweep.sh` honours `$ASAN_DWEBP`, so both
 can be pointed at any build, or at another decoder implementation; both fall
@@ -1216,11 +1220,8 @@ also no ALPH-chunk case, since that needs a valid lossy frame to sit behind.
 
 ## License
 
-BSD 3-clause, the same as libwebp. See `COPYING`. That covers the generators,
-the scripts and the bitstreams in `files/` alike.
-
-%(index)s
-%(files)s
+BSD 3-clause, the same as libwebp. See [`COPYING`](COPYING). That covers the
+generators, the scripts and the bitstreams in `files/` alike.
 """
 
 
@@ -1231,7 +1232,7 @@ def wrap(text, indent=''):
 
 def build_index(rows, groups):
     """A compact table: one row per group, with the ok/reject split."""
-    out = ['## Index\n', '| Group | Files | must decode | must be rejected |',
+    out = ['| Group | Files | must decode | must be rejected |',
            '| --- | ---: | ---: | ---: |']
     seen = set()
     for prefix, title, _ in groups:
@@ -1283,11 +1284,43 @@ def write_files_index(outdir, rows):
         f.write('\n'.join(lines) + '\n')
 
 
-def build_file_list(rows, groups):
+CODE = [
+    ('vp8l.py', 'VP8L bitstream writer: bit packing, canonical Huffman codes, '
+                'prefix coding, RIFF wrapping.'),
+    ('generate.py', 'Every lossless case, plus `expected.txt`, '
+                    '`files/index.html` and this README.'),
+    ('lossy_parts.py', 'The multi-partition lossy cases, patched from '
+                       '`sources/`.'),
+    ('make_partition_sources.c', 'Rebuilds `sources/`: cwebp cannot emit more '
+                                 'than one token partition.'),
+    ('check.sh', 'Decodes every file; checks the verdict and the pixels.'),
+    ('asan_sweep.sh', 'Decodes every file in 13 modes, under a sanitizer '
+                      'build.'),
+    ('probes.py', 'The `fprintf` probes `make_coverage.sh` patches in.'),
+    ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
+    ('expected.txt', 'Name and expected verdict, one line per file.'),
+    ('hashes.txt', "SHA-256 of each decoding file's `-pam` output."),
+    ('coverage.txt', 'Which decoder path each file actually reached.'),
+    ('COPYING', 'BSD 3-clause, the same as libwebp.'),
+]
+
+
+def build_code_list(outdir):
+    """A linked table of the generators, scripts and data files."""
+    out = ['## The code\n', '| file | what it is |', '| --- | --- |']
+    for name, what in CODE:
+        assert os.path.exists(os.path.join(outdir, name)), name
+        out.append('| [`%s`](%s) | %s |' % (name, name, what))
+    return '\n'.join(out) + '\n'
+
+
+def build_file_list(rows, groups, index):
     """A linked list of every bitstream, grouped, for the top of the README."""
     out = ['## The bitstreams\n',
-           'One `.webp` each, all under **[`files/`](files/)** --',
-           'that page lists them with sizes and expected verdicts.\n']
+           'Every name below links straight to the file. The whole set lives',
+           'in **[`files/`](files/)**, which lists each one with its size and',
+           'expected verdict; the notes further down say what each targets.\n',
+           index]
     seen = set()
     for prefix, title, _ in groups:
         group = [r for r in rows if r[0].startswith(prefix) and r[0] not in seen]
@@ -1313,9 +1346,10 @@ def write_readme(outdir, rows):
     by_name = {r[0]: r for r in rows}
     used = set()
     n_lossy = sum(1 for r in rows if r[0].startswith('lossy-'))
+    index = build_index(rows, GROUPS)
     lines = [README_HEAD % {'vp8l': len(rows) - n_lossy, 'lossy': n_lossy,
-                            'index': build_index(rows, GROUPS),
-                            'files': build_file_list(rows, GROUPS)}]
+                            'files': build_file_list(rows, GROUPS, index),
+                            'code': build_code_list(outdir)}]
     for prefix, title, blurb in GROUPS:
         group = [r for r in rows
                  if r[0].startswith(prefix) and r[0] not in used]

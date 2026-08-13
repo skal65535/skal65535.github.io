@@ -2,10 +2,10 @@
 
 Small WebP files that exercise corners of the format a normal encoder never
 emits. 62 of them are lossless (VP8L) streams written bit by bit by
-`vp8l.py`. The other 7 are lossy VP8 frames carrying multiple token
-partitions, which cwebp cannot produce at all: those start from an
-encoder-API call (`make_partition_sources.c`) and are then patched by
-`lossy_parts.py`.
+[`vp8l.py`](vp8l.py). The other 7 are lossy VP8 frames carrying
+multiple token partitions, which cwebp cannot produce at all: those start from
+an encoder-API call ([`make_partition_sources.c`](make_partition_sources.c))
+and are then patched by [`lossy_parts.py`](lossy_parts.py).
 
 Each entry says what the reference decoder is expected to do:
 
@@ -15,54 +15,11 @@ Each entry says what the reference decoder is expected to do:
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
 
-## Using them
+## The bitstreams
 
-    ./check.sh           # verdict + decoded-pixel hash for every file
-    ./asan_sweep.sh      # 13 decode modes, under a sanitizer build
-    ./make_coverage.sh   # regenerate coverage.txt
-    python3 generate.py  # rebuild files/, expected.txt and this README
-
-`files/` is pure output and is wiped on every rebuild. The four lossy encodes
-the multi-partition cases are patched from live in `sources/`, and are
-themselves rebuilt by `make_partition_sources.c`.
-
-`check.sh` honours `$DWEBP` and `asan_sweep.sh` honours `$ASAN_DWEBP`, so both
-can be pointed at any build, or at another decoder implementation; both fall
-back to whatever `dwebp` is on `$PATH`. `make_coverage.sh` needs `$LIBWEBP`
-set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file that
-allocates a gigabyte.
-
-`hashes.txt` holds the SHA-256 of each decoding file's `-pam` output, so the
-suite catches a *silent* change in decoded pixels, not just a crash or a
-changed verdict.
-
-## How they were verified
-
-Verdicts alone prove little -- a file can be rejected for the wrong reason,
-and several of these were before being corrected. Each file was also run
-against a decoder instrumented with probes on the exact lines the notes below
-refer to; `coverage.txt` records which paths each file actually reached, and
-`make_coverage.sh` regenerates it from `probes.py` in a throwaway worktree.
-The notes are written from that output, not from reading the code.
-
-The source line numbers they quote (`vp8l_dec.c:111` and friends) are only
-meaningful against one revision of libwebp: the one recorded at the top of
-`coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
-disagree, trust `coverage.txt`.
-
-## What is not covered
-
-The lossy VP8 syntax, apart from the partition size table. Everything
-bool-coded -- segment header, filter header, quantizer deltas, intra modes,
-coefficient tokens -- would need a bool encoder and is untouched. There is
-also no ALPH-chunk case, since that needs a valid lossy frame to sit behind.
-
-## License
-
-BSD 3-clause, the same as libwebp. See `COPYING`. That covers the generators,
-the scripts and the bitstreams in `files/` alike.
-
-## Index
+Every name below links straight to the file. The whole set lives
+in **[`files/`](files/)**, which lists each one with its size and
+expected verdict; the notes further down say what each targets.
 
 | Group | Files | must decode | must be rejected |
 | --- | ---: | ---: | ---: |
@@ -77,11 +34,6 @@ the scripts and the bitstreams in `files/` alike.
 | Frame header | 4 | 2 | 2 |
 | Multiple token partitions (lossy VP8) | 7 | 4 | 3 |
 | **total** | **69** | **50** | **19** |
-
-## The bitstreams
-
-One `.webp` each, all under **[`files/`](files/)** --
-that page lists them with sizes and expected verdicts.
 
 **Simple codes** —
  [simple-dist-2sym-first-oob](files/simple-dist-2sym-first-oob.webp) ·
@@ -167,6 +119,72 @@ that page lists them with sizes and expected verdicts.
  [lossy-8-partitions-size-overflow](files/lossy-8-partitions-size-overflow.webp) ·
  [lossy-8-partitions-zero-sizes](files/lossy-8-partitions-zero-sizes.webp) ·
  [lossy-8-partitions-sizes-sum-past-end](files/lossy-8-partitions-sizes-sum-past-end.webp)
+
+## The code
+
+| file | what it is |
+| --- | --- |
+| [`vp8l.py`](vp8l.py) | VP8L bitstream writer: bit packing, canonical Huffman codes, prefix coding, RIFF wrapping. |
+| [`generate.py`](generate.py) | Every lossless case, plus `expected.txt`, `files/index.html` and this README. |
+| [`lossy_parts.py`](lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
+| [`make_partition_sources.c`](make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
+| [`check.sh`](check.sh) | Decodes every file; checks the verdict and the pixels. |
+| [`asan_sweep.sh`](asan_sweep.sh) | Decodes every file in 13 modes, under a sanitizer build. |
+| [`probes.py`](probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+| [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
+| [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
+| [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output. |
+| [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
+| [`COPYING`](COPYING) | BSD 3-clause, the same as libwebp. |
+
+## Using them
+
+    ./check.sh           # verdict + decoded-pixel hash for every file
+    ./asan_sweep.sh      # 13 decode modes, under a sanitizer build
+    ./make_coverage.sh   # regenerate coverage.txt
+    python3 generate.py  # rebuild files/, expected.txt and this README
+
+`files/` is pure output and is wiped on every rebuild. The four lossy encodes
+the multi-partition cases are patched from live in `sources/` --
+[1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
+[4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
+partitions -- and are themselves rebuilt by `make_partition_sources.c`.
+
+`check.sh` honours `$DWEBP` and `asan_sweep.sh` honours `$ASAN_DWEBP`, so both
+can be pointed at any build, or at another decoder implementation; both fall
+back to whatever `dwebp` is on `$PATH`. `make_coverage.sh` needs `$LIBWEBP`
+set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file that
+allocates a gigabyte.
+
+`hashes.txt` holds the SHA-256 of each decoding file's `-pam` output, so the
+suite catches a *silent* change in decoded pixels, not just a crash or a
+changed verdict.
+
+## How they were verified
+
+Verdicts alone prove little -- a file can be rejected for the wrong reason,
+and several of these were before being corrected. Each file was also run
+against a decoder instrumented with probes on the exact lines the notes below
+refer to; `coverage.txt` records which paths each file actually reached, and
+`make_coverage.sh` regenerates it from `probes.py` in a throwaway worktree.
+The notes are written from that output, not from reading the code.
+
+The source line numbers they quote (`vp8l_dec.c:111` and friends) are only
+meaningful against one revision of libwebp: the one recorded at the top of
+`coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
+disagree, trust `coverage.txt`.
+
+## What is not covered
+
+The lossy VP8 syntax, apart from the partition size table. Everything
+bool-coded -- segment header, filter header, quantizer deltas, intra modes,
+coefficient tokens -- would need a bool encoder and is untouched. There is
+also no ALPH-chunk case, since that needs a valid lossy frame to sit behind.
+
+## License
+
+BSD 3-clause, the same as libwebp. See [`COPYING`](COPYING). That covers the
+generators, the scripts and the bitstreams in `files/` alike.
 
 ## Simple codes
 
