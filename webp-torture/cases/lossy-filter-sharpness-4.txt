@@ -1,9 +1,6 @@
 # note: Sharpness 4, the last level that halves the interior limit.
 # expect: ok
-# exercises: PrecomputeFilterStrengths() shifts the interior limit right by
-#   one for sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 -
-#   sharpness. These two files sit on either side of that boundary; 0, 1, 2, 3
-#   and 7 were already covered.
+# exercises: This is the last level of the first shift.
 loop_filter_level 48
 sharpness_level 4
 width 32

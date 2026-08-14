@@ -1,13 +1,8 @@
 # note: The same sweep across the four blocks of a chroma plane.
 # expect: ok
 # exercises: Type 2 (chroma). The 2x2 layout means block 3 is the only one
-#   with both a left and an above neighbour, so it is the only way to read the
-#   chroma band 0 at context 2. The three token classes drive the context of
-#   the next position: a zero gives 0, a +-1 gives 1, anything larger gives 2.
-#   A block of each, walked to position 15, reads every band at that class, and
-#   the blocks are placed so their neighbour contexts are 0, 1 and 2 in turn --
-#   which is the only way to reach band 0, the one that is never a token's
-#   successor.
+#   with both a left and an above neighbour, so it is the only way to read
+#   the chroma band 0 at context 2.
 width 16
 height 16
 yac_qi 8

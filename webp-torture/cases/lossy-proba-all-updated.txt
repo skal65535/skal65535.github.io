@@ -1,7 +1,8 @@
 # note: Every one of the 1056 coefficient probabilities updated.
 # expect: ok
-# exercises: The largest partition 0 the corpus has: 1056 set flags, each
-#   followed by a raw byte. cwebp updates a handful at most.
+# exercises: Every one of the 1056 flags set, each followed by a raw byte,
+#   so partition 0 holds nothing but probability updates. cwebp writes a
+#   handful at most.
 width 32
 height 32
 coeff_prob * * * * 128

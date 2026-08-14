@@ -1,7 +1,8 @@
 # note: Profile 2, the value between the two the corpus already had.
 # expect: ok
-# exercises: Completes the four accepted values of the 3-bit version field: 0
-#   and 1 and 3 were covered, 2 was not.
+# exercises: One of the four values "profile > 3" lets through. libwebp
+#   reads the field only to refuse the others, so what this pins is that it
+#   does not act on the value.
 version 2
 width 32
 height 32

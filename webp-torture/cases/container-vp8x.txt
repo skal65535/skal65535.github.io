@@ -1,9 +1,9 @@
 # note: The extended format: a VP8X chunk ahead of the frame.
 # expect: ok
 # roundtrip: no
-# exercises: ParseVP8X(). The canvas size is written as width and height less
-#   one, and here it agrees with the frame behind it. No file in the corpus had
-#   a VP8X chunk at all before this one.
+# exercises: ParseVP8X(). The canvas size is written as width and height
+#   less one, and here everything agrees: it is the shape each of the other
+#   container-vp8x-* cases breaks in one way.
 chunks VP8X VP8
 width 32
 height 32

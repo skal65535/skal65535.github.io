@@ -1,5 +1,5 @@
-# note: Four rows over two partitions, so each partition holds two non-
-#   adjacent rows.
+# note: Four rows over two partitions, so each partition holds two
+#   non-adjacent rows.
 # expect: ok
 # exercises: The "mb_y & num_parts_minus_one" wrap. Each bit reader is left
 #   in the middle of a row and resumed two rows later.

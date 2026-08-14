@@ -4,10 +4,10 @@
 # roundtrip: no
 # exercises: The one shape that reaches DecodeAlphaData(): exactly one
 #   transform, that transform colour-indexing, no colour cache, and the red,
-#   blue and alpha codes each a single symbol. That is the lossless decoder's
-#   8-bit mode, a different loop from the one all 62 VP8L files here take, and
-#   this is the only file in the corpus that runs it. Its partner alph-
-#   lossless-predictor is the same feature failing the same test.
+#   blue and alpha codes each a single symbol. That is the lossless
+#   decoder's 8-bit mode, a different loop from the one every VP8L file here
+#   takes, and this is the only file in the corpus that runs it. Its partner
+#   alph-lossless-predictor is the same feature failing the same test.
 chunks VP8X ALPH VP8
 alpha 1
 alph_compression 1

@@ -72,7 +72,10 @@ GROUPS = [
      'four two-bit fields, then the plane itself, either stored as it is or '
      'compressed with the lossless coder in its 8-bit mode. That mode is a '
      'separate path through vp8l_dec.c from the one every VP8L file here '
-     'takes, and these are the only files that reach it.'),
+     'takes, and these are the only files that reach it. Each of the four '
+     'filters has a routine of its own in dsp/filters.c, and the same stored '
+     'bytes come out as four different planes, so the pixel hash is what '
+     'tells those apart.'),
     ('lossy-frame-', 'Lossy: frame tag and picture header',
      'The ten uncompressed bytes every lossy frame starts with: the profile, '
      'the visibility and key-frame bits, the length of partition 0, the '
@@ -84,7 +87,10 @@ GROUPS = [
      'the map and the data together.'),
     ('lossy-filter-', 'Lossy: loop filter',
      'The in-loop deblocking filter: simple or normal, its level and '
-     'sharpness, and the per-reference and per-mode deltas.'),
+     'sharpness, and the per-reference and per-mode deltas. '
+     'PrecomputeFilterStrengths() shifts the interior limit right by one for '
+     'sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - '
+     'sharpness, which is what the sharpness files sit either side of.'),
     ('lossy-quant-', 'Lossy: quantizer',
      'The frame quantizer index and the five deltas around it, one per plane '
      'and coefficient kind, with clamps that are not all the same.'),
@@ -96,7 +102,13 @@ GROUPS = [
      'neighbour-indexed probability table the 4x4 modes are coded with.'),
     ('lossy-coeff-', 'Lossy: coefficients',
      'The token coder of section 13: magnitudes and their escape categories, '
-     'end-of-block, zero runs, and the four coefficient types.'),
+     'end-of-block, zero runs, and the four coefficient types. The band '
+     'sweeps below share a trick: the three token classes drive the context '
+     'of the next position -- a zero gives 0, a +-1 gives 1, anything larger '
+     'gives 2 -- so a block of each, walked to position 15, reads every band '
+     'at that class, and placing the blocks so their neighbour contexts are '
+     "0, 1 and 2 in turn is the only way to reach band 0, which is never a "
+     "token's successor."),
     ('lossy-skip-', 'Lossy: skipped macroblocks',
      'The per-macroblock skip flag, which drops the residual entirely and '
      'clears the neighbouring non-zero flags -- almost all of them.'),

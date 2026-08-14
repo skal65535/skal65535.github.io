@@ -994,8 +994,8 @@ a VP8X chunk is 10 bytes and no other length is tolerated, in either direction.
 The extended format: a VP8X chunk ahead of the frame.
 
 ParseVP8X(). The canvas size is written as width and height less one, and here
-it agrees with the frame behind it. No file in the corpus had a VP8X chunk at
-all before this one.
+everything agrees: it is the shape each of the other container-vp8x-* cases
+breaks in one way.
 
 ### [`container-zero-size-chunk.webp`](files/container-zero-size-chunk.webp) -- ok -- from [`container-zero-size-chunk.txt`](cases/container-zero-size-chunk.txt)
 
@@ -1011,7 +1011,9 @@ ALPH carries the alpha plane beside a lossy frame: a header byte of four two-
 bit fields, then the plane itself, either stored as it is or compressed with
 the lossless coder in its 8-bit mode. That mode is a separate path through
 vp8l_dec.c from the one every VP8L file here takes, and these are the only
-files that reach it.
+files that reach it. Each of the four filters has a routine of its own in
+dsp/filters.c, and the same stored bytes come out as four different planes, so
+the pixel hash is what tells those apart.
 
 ### [`alph-after-image.webp`](files/alph-after-image.webp) -- ok -- from [`alph-after-image.txt`](cases/alph-after-image.txt)
 
@@ -1052,8 +1054,8 @@ encode of a two-valued plane.
 The one shape that reaches DecodeAlphaData(): exactly one transform, that
 transform colour-indexing, no colour cache, and the red, blue and alpha codes
 each a single symbol. That is the lossless decoder's 8-bit mode, a different
-loop from the one all 62 VP8L files here take, and this is the only file in the
-corpus that runs it. Its partner alph- lossless-predictor is the same feature
+loop from the one every VP8L file here takes, and this is the only file in the
+corpus that runs it. Its partner alph-lossless-predictor is the same feature
 failing the same test.
 
 ### [`alph-lossless-predictor.webp`](files/alph-lossless-predictor.webp) -- ok -- from [`alph-lossless-predictor.txt`](cases/alph-lossless-predictor.txt)
@@ -1094,37 +1096,25 @@ partner to this.
 
 An uncompressed alpha plane under the gradient filter.
 
-WebPUnfilters[3], from left plus above minus above-left. The four filters have
-a routine each in dsp/filters.c and the same stored bytes come out as four
-different planes, so the pixel hash is what tells them apart. Nothing in the
-corpus reached any of them before.
+WebPUnfilters[3], from left plus above minus above-left.
 
 ### [`alph-raw-filter-horizontal.webp`](files/alph-raw-filter-horizontal.webp) -- ok -- from [`alph-raw-filter-horizontal.txt`](cases/alph-raw-filter-horizontal.txt)
 
 An uncompressed alpha plane under the horizontal filter.
 
-WebPUnfilters[1], each byte a difference from the one to its left. The four
-filters have a routine each in dsp/filters.c and the same stored bytes come out
-as four different planes, so the pixel hash is what tells them apart. Nothing
-in the corpus reached any of them before.
+WebPUnfilters[1], each byte a difference from the one to its left.
 
 ### [`alph-raw-filter-none.webp`](files/alph-raw-filter-none.webp) -- ok -- from [`alph-raw-filter-none.txt`](cases/alph-raw-filter-none.txt)
 
 An uncompressed alpha plane under the none filter.
 
-WebPUnfilters[0], stored as it is. The four filters have a routine each in
-dsp/filters.c and the same stored bytes come out as four different planes, so
-the pixel hash is what tells them apart. Nothing in the corpus reached any of
-them before.
+WebPUnfilters[0], stored as it is.
 
 ### [`alph-raw-filter-vertical.webp`](files/alph-raw-filter-vertical.webp) -- ok -- from [`alph-raw-filter-vertical.txt`](cases/alph-raw-filter-vertical.txt)
 
 An uncompressed alpha plane under the vertical filter.
 
-WebPUnfilters[2], from the one above. The four filters have a routine each in
-dsp/filters.c and the same stored bytes come out as four different planes, so
-the pixel hash is what tells them apart. Nothing in the corpus reached any of
-them before.
+WebPUnfilters[2], from the one above.
 
 ### [`alph-raw-oversized.webp`](files/alph-raw-oversized.webp) -- ok -- from [`alph-raw-oversized.txt`](cases/alph-raw-oversized.txt)
 
@@ -1220,7 +1210,7 @@ it.
 
 A horizontal upscaling hint of 1 and a vertical one of 3.
 
-Two of the four values of the two 2-bit scale fields; lossy- frame-scaled has 3
+Two of the four values of the two 2-bit scale fields; lossy-frame-scaled has 3
 and 2 and lossy-frame-scale-2 the rest, so between the three every value of
 both is written. libwebp reads them into pic_hdr and acts on neither.
 
@@ -1252,8 +1242,8 @@ pixels.
 
 Profile 2, the value between the two the corpus already had.
 
-Completes the four accepted values of the 3-bit version field: 0 and 1 and 3
-were covered, 2 was not.
+One of the four values "profile > 3" lets through. libwebp reads the field only
+to refuse the others, so what this pins is that it does not act on the value.
 
 ### [`lossy-frame-version-3.webp`](files/lossy-frame-version-3.webp) -- ok -- from [`lossy-frame-version-3.txt`](cases/lossy-frame-version-3.txt)
 
@@ -1359,7 +1349,10 @@ express.
 ## Lossy: loop filter
 
 The in-loop deblocking filter: simple or normal, its level and sharpness, and
-the per-reference and per-mode deltas.
+the per-reference and per-mode deltas. PrecomputeFilterStrengths() shifts the
+interior limit right by one for sharpness 1 to 4 and by two for 5 to 7, then
+clamps it to 9 - sharpness, which is what the sharpness files sit either side
+of.
 
 ### [`lossy-filter-lf-delta-extremes.webp`](files/lossy-filter-lf-delta-extremes.webp) -- ok -- from [`lossy-filter-lf-delta-extremes.txt`](cases/lossy-filter-lf-delta-extremes.txt)
 
@@ -1390,19 +1383,13 @@ filter_type 2 with the widest possible filter, so both the 8-pixel and the
 
 Sharpness 4, the last level that halves the interior limit.
 
-PrecomputeFilterStrengths() shifts the interior limit right by one for
-sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - sharpness. These
-two files sit on either side of that boundary; 0, 1, 2, 3 and 7 were already
-covered.
+This is the last level of the first shift.
 
 ### [`lossy-filter-sharpness-5.webp`](files/lossy-filter-sharpness-5.webp) -- ok -- from [`lossy-filter-sharpness-5.txt`](cases/lossy-filter-sharpness-5.txt)
 
 Sharpness 5, the first level that quarters it.
 
-PrecomputeFilterStrengths() shifts the interior limit right by one for
-sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - sharpness. These
-two files sit on either side of that boundary; 0, 1, 2, 3 and 7 were already
-covered.
+This is the first level of the second shift.
 
 ### [`lossy-filter-simple-max.webp`](files/lossy-filter-simple-max.webp) -- ok -- from [`lossy-filter-simple-max.txt`](cases/lossy-filter-simple-max.txt)
 
@@ -1471,8 +1458,8 @@ replaced in the frame header, plus the skip probability.
 
 Every one of the 1056 coefficient probabilities updated.
 
-The largest partition 0 the corpus has: 1056 set flags, each followed by a raw
-byte. cwebp updates a handful at most.
+Every one of the 1056 flags set, each followed by a raw byte, so partition 0
+holds nothing but probability updates. cwebp writes a handful at most.
 
 ### [`lossy-proba-one-update.webp`](files/lossy-proba-one-update.webp) -- ok -- from [`lossy-proba-one-update.txt`](cases/lossy-proba-one-update.txt)
 
@@ -1550,7 +1537,12 @@ predictors.
 ## Lossy: coefficients
 
 The token coder of section 13: magnitudes and their escape categories, end-of-
-block, zero runs, and the four coefficient types.
+block, zero runs, and the four coefficient types. The band sweeps below share a
+trick: the three token classes drive the context of the next position -- a zero
+gives 0, a +-1 gives 1, anything larger gives 2 -- so a block of each, walked
+to position 15, reads every band at that class, and placing the blocks so their
+neighbour contexts are 0, 1 and 2 in turn is the only way to reach band 0,
+which is never a token's successor.
 
 ### [`lossy-coeff-all-types.webp`](files/lossy-coeff-all-types.webp) -- ok -- from [`lossy-coeff-all-types.txt`](cases/lossy-coeff-all-types.txt)
 
@@ -1566,11 +1558,7 @@ The same sweep across the four blocks of a chroma plane.
 
 Type 2 (chroma). The 2x2 layout means block 3 is the only one with both a left
 and an above neighbour, so it is the only way to read the chroma band 0 at
-context 2. The three token classes drive the context of the next position: a
-zero gives 0, a +-1 gives 1, anything larger gives 2. A block of each, walked
-to position 15, reads every band at that class, and the blocks are placed so
-their neighbour contexts are 0, 1 and 2 in turn -- which is the only way to
-reach band 0, the one that is never a token's successor.
+context 2.
 
 ### [`lossy-coeff-bands-i16.webp`](files/lossy-coeff-bands-i16.webp) -- ok -- from [`lossy-coeff-bands-i16.txt`](cases/lossy-coeff-bands-i16.txt)
 
@@ -1580,21 +1568,13 @@ the luma blocks that follow it.
 Types 1 (Y2) and 0 (luma after Y2). The luma blocks start at position 1, so
 band 0 is unreachable for them and band 1 is what their neighbour context
 selects. One Y2 block per macroblock means the four macroblocks are what give
-it contexts 0, 1, 1 and 2. The three token classes drive the context of the
-next position: a zero gives 0, a +-1 gives 1, anything larger gives 2. A block
-of each, walked to position 15, reads every band at that class, and the blocks
-are placed so their neighbour contexts are 0, 1 and 2 in turn -- which is the
-only way to reach band 0, the one that is never a token's successor.
+it contexts 0, 1, 1 and 2.
 
 ### [`lossy-coeff-bands-i4.webp`](files/lossy-coeff-bands-i4.webp) -- ok -- from [`lossy-coeff-bands-i4.txt`](cases/lossy-coeff-bands-i4.txt)
 
 Three 4x4 luma blocks that sweep every coefficient band, one per context.
 
-Type 3 (luma with its own DC). The three token classes drive the context of the
-next position: a zero gives 0, a +-1 gives 1, anything larger gives 2. A block
-of each, walked to position 15, reads every band at that class, and the blocks
-are placed so their neighbour contexts are 0, 1 and 2 in turn -- which is the
-only way to reach band 0, the one that is never a token's successor.
+Type 3 (luma with its own DC).
 
 ### [`lossy-coeff-cat3.webp`](files/lossy-coeff-cat3.webp) -- ok -- from [`lossy-coeff-cat3.txt`](cases/lossy-coeff-cat3.txt)
 
@@ -1720,7 +1700,7 @@ so none of this is reachable through the tools.
 
 ### [`lossy-parts-2-wrap.webp`](files/lossy-parts-2-wrap.webp) -- ok -- from [`lossy-parts-2-wrap.txt`](cases/lossy-parts-2-wrap.txt)
 
-Four rows over two partitions, so each partition holds two non- adjacent rows.
+Four rows over two partitions, so each partition holds two non-adjacent rows.
 
 The "mb_y & num_parts_minus_one" wrap. Each bit reader is left in the middle of
 a row and resumed two rows later.
