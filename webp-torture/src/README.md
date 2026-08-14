@@ -9,6 +9,7 @@ into one `.webp`. Run them from the directory above, where `cases/` is:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
+    ./src/vp8l_dis.py --check some-lossless.webp
 
 Three layers, and a case only ever touches the top one:
 

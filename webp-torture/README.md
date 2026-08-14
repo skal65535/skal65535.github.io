@@ -23,11 +23,8 @@ emits, one layer of it at a time:
   different path through the decoder from the one every VP8L file here
   takes.
 
-A case is a text file and the notes below are its own: each one carries what
-it is, what the decoder should do with it, and which path that answer comes
-from.
-
-Each entry says what the reference decoder is expected to do:
+Each note below is its case's own, and says what the reference decoder is
+expected to do with it:
 
 * **ok** -- must decode, and must keep decoding to the same pixels. Several
   are not something cwebp can produce, so nothing else pins the behaviour.
@@ -37,9 +34,9 @@ Each entry says what the reference decoder is expected to do:
 
 ## The bitstreams
 
-Every name below links straight to the file. The whole set lives
-in **[`files/`](files/)**, which lists each one with its size and
-expected verdict; the notes further down say what each targets.
+The whole set lives in **[`files/`](files)**, which lists each one with its
+size and expected verdict. Every note below links straight to the file it is
+about.
 
 | Group | Files | must decode | must be rejected |
 | --- | ---: | ---: | ---: |
@@ -67,241 +64,6 @@ expected verdict; the notes further down say what each targets.
 | Lossy: truncation | 4 | 1 | 3 |
 | Lossy: partition sizes, from real encodes | 8 | 5 | 3 |
 | **total** | **196** | **138** | **58** |
-
-**Simple codes** — [simple-dist-1sym-oob](files/simple-dist-1sym-oob.webp) ·
- [simple-dist-2sym-both-oob](files/simple-dist-2sym-both-oob.webp) ·
- [simple-dist-2sym-duplicate](files/simple-dist-2sym-duplicate.webp) ·
- [simple-dist-2sym-first-oob](files/simple-dist-2sym-first-oob.webp) ·
- [simple-dist-2sym-second-oob](files/simple-dist-2sym-second-oob.webp) ·
- [simple-dist-sym-39-last-valid](files/simple-dist-sym-39-last-valid.webp) ·
- [simple-dist-sym-40-first-oob](files/simple-dist-sym-40-first-oob.webp) ·
- [simple-green-1bit-symbol](files/simple-green-1bit-symbol.webp) ·
- [simple-green-2sym-1bit-each](files/simple-green-2sym-1bit-each.webp)
-
-**The code-length code** —
- [codelen-all-zero-lengths](files/codelen-all-zero-lengths.webp) ·
- [codelen-depth-15](files/codelen-depth-15.webp) ·
- [codelen-incomplete](files/codelen-incomplete.webp) ·
- [codelen-max-symbol-early-stop](files/codelen-max-symbol-early-stop.webp) ·
- [codelen-max-symbol-too-big](files/codelen-max-symbol-too-big.webp) ·
- [codelen-num-codes-19](files/codelen-num-codes-19.webp) ·
- [codelen-num-codes-4](files/codelen-num-codes-4.webp) ·
- [codelen-over-capacity](files/codelen-over-capacity.webp) ·
- [codelen-oversubscribed](files/codelen-oversubscribed.webp) ·
- [codelen-repeat-past-end](files/codelen-repeat-past-end.webp) ·
- [codelen-repeat16-no-previous](files/codelen-repeat16-no-previous.webp) ·
- [codelen-repeat17-short-zeros](files/codelen-repeat17-short-zeros.webp) ·
- [codelen-repeat18-138-zeros](files/codelen-repeat18-138-zeros.webp) ·
- [codelen-single-symbol-complex-form](files/codelen-single-symbol-complex-form.webp) ·
- [codelen-two-level-table](files/codelen-two-level-table.webp)
-
-**Meta Huffman / entropy image** —
- [meta-huffman-1001-groups](files/meta-huffman-1001-groups.webp) ·
- [meta-huffman-groups-truncated](files/meta-huffman-groups-truncated.webp) ·
- [meta-huffman-per-tile-data](files/meta-huffman-per-tile-data.webp) ·
- [meta-huffman-precision-max](files/meta-huffman-precision-max.webp) ·
- [meta-huffman-precision-min](files/meta-huffman-precision-min.webp) ·
- [meta-huffman-sparse-groups](files/meta-huffman-sparse-groups.webp) ·
- [meta-huffman-two-groups](files/meta-huffman-two-groups.webp)
-
-**Color cache** — [cache-bits-0-invalid](files/cache-bits-0-invalid.webp) ·
- [cache-bits-1](files/cache-bits-1.webp) ·
- [cache-bits-11](files/cache-bits-11.webp) ·
- [cache-bits-12-invalid](files/cache-bits-12-invalid.webp) ·
- [cache-index-literal](files/cache-index-literal.webp)
-
-**Sub-images** —
- [subimage-cache-12-invalid](files/subimage-cache-12-invalid.webp) ·
- [subimage-cache-entropy-image](files/subimage-cache-entropy-image.webp) ·
- [subimage-cache-palette-max](files/subimage-cache-palette-max.webp) ·
- [subimage-cache-predictor-min](files/subimage-cache-predictor-min.webp) ·
- [subimage-cache-zero-invalid](files/subimage-cache-zero-invalid.webp) ·
- [subimage-code-complex-form](files/subimage-code-complex-form.webp) ·
- [subimage-code-empty](files/subimage-code-empty.webp) ·
- [subimage-code-max-symbol](files/subimage-code-max-symbol.webp) ·
- [subimage-code-oversubscribed](files/subimage-code-oversubscribed.webp)
-
-**Palette packing** —
- [transform-palette-1-color](files/transform-palette-1-color.webp) ·
- [transform-palette-16-colors](files/transform-palette-16-colors.webp) ·
- [transform-palette-2-colors](files/transform-palette-2-colors.webp) ·
- [transform-palette-256-colors](files/transform-palette-256-colors.webp) ·
- [transform-palette-3-colors](files/transform-palette-3-colors.webp) ·
- [transform-palette-index-past-end](files/transform-palette-index-past-end.webp)
-
-**Transforms** — [transform-all-four](files/transform-all-four.webp) ·
- [transform-cross-color-bits-max](files/transform-cross-color-bits-max.webp) ·
- [transform-cross-color-multipliers](files/transform-cross-color-multipliers.webp) ·
- [transform-predictor-bits-max](files/transform-predictor-bits-max.webp) ·
- [transform-repeated](files/transform-repeated.webp)
-
-**Back-references** — [lz77-distance-1-run](files/lz77-distance-1-run.webp) ·
- [lz77-distance-direct-121](files/lz77-distance-direct-121.webp) ·
- [lz77-distance-past-start](files/lz77-distance-past-start.webp) ·
- [lz77-length-past-end](files/lz77-length-past-end.webp) ·
- [lz77-max-length-symbol](files/lz77-max-length-symbol.webp) ·
- [lz77-plane-code-1](files/lz77-plane-code-1.webp) ·
- [lz77-plane-code-120](files/lz77-plane-code-120.webp) ·
- [lz77-plane-code-clamped-to-1](files/lz77-plane-code-clamped-to-1.webp)
-
-**Predictor modes** —
- [predictor-all-16-modes](files/predictor-all-16-modes.webp) ·
- [predictor-mode-11-select](files/predictor-mode-11-select.webp) ·
- [predictor-mode-13-clamp-half](files/predictor-mode-13-clamp-half.webp) ·
- [predictor-mode-14-undefined](files/predictor-mode-14-undefined.webp) ·
- [predictor-mode-15-undefined](files/predictor-mode-15-undefined.webp) ·
- [predictor-single-row](files/predictor-single-row.webp) ·
- [predictor-tile-bits-min](files/predictor-tile-bits-min.webp)
-
-**Frame header** — [header-alpha-is-used](files/header-alpha-is-used.webp) ·
- [header-magic-wrong](files/header-magic-wrong.webp) ·
- [header-max-area-bomb](files/header-max-area-bomb.webp) ·
- [header-max-area-truncated](files/header-max-area-truncated.webp) ·
- [header-version-max](files/header-version-max.webp) ·
- [header-version-nonzero](files/header-version-nonzero.webp) ·
- [header-width-16384](files/header-width-16384.webp)
-
-**The RIFF container** —
- [container-chunk-header-truncated](files/container-chunk-header-truncated.webp) ·
- [container-duplicate-image-chunk](files/container-duplicate-image-chunk.webp) ·
- [container-metadata-chunks](files/container-metadata-chunks.webp) ·
- [container-no-image-chunk](files/container-no-image-chunk.webp) ·
- [container-odd-chunk-no-pad](files/container-odd-chunk-no-pad.webp) ·
- [container-odd-chunk-payload](files/container-odd-chunk-payload.webp) ·
- [container-riff-size-past-end](files/container-riff-size-past-end.webp) ·
- [container-riff-size-short](files/container-riff-size-short.webp) ·
- [container-riff-size-truncates-chunks](files/container-riff-size-truncates-chunks.webp) ·
- [container-trailing-bytes](files/container-trailing-bytes.webp) ·
- [container-unknown-chunk](files/container-unknown-chunk.webp) ·
- [container-vp8x-animation](files/container-vp8x-animation.webp) ·
- [container-vp8x-area-overflow](files/container-vp8x-area-overflow.webp) ·
- [container-vp8x-canvas-mismatch](files/container-vp8x-canvas-mismatch.webp) ·
- [container-vp8x-reserved-bits](files/container-vp8x-reserved-bits.webp) ·
- [container-vp8x-still-flags](files/container-vp8x-still-flags.webp) ·
- [container-vp8x-wrong-size](files/container-vp8x-wrong-size.webp) ·
- [container-vp8x](files/container-vp8x.webp) ·
- [container-zero-size-chunk](files/container-zero-size-chunk.webp)
-
-**The alpha chunk** — [alph-after-image](files/alph-after-image.webp) ·
- [alph-compression-invalid](files/alph-compression-invalid.webp) ·
- [alph-empty-payload](files/alph-empty-payload.webp) ·
- [alph-lossless-byte-flipped](files/alph-lossless-byte-flipped.webp) ·
- [alph-lossless-palette](files/alph-lossless-palette.webp) ·
- [alph-lossless-predictor](files/alph-lossless-predictor.webp) ·
- [alph-lossless-truncated](files/alph-lossless-truncated.webp) ·
- [alph-no-vp8x](files/alph-no-vp8x.webp) ·
- [alph-preprocessing-invalid](files/alph-preprocessing-invalid.webp) ·
- [alph-raw-filter-gradient](files/alph-raw-filter-gradient.webp) ·
- [alph-raw-filter-horizontal](files/alph-raw-filter-horizontal.webp) ·
- [alph-raw-filter-none](files/alph-raw-filter-none.webp) ·
- [alph-raw-filter-vertical](files/alph-raw-filter-vertical.webp) ·
- [alph-raw-oversized](files/alph-raw-oversized.webp) ·
- [alph-raw-preprocessing](files/alph-raw-preprocessing.webp) ·
- [alph-raw-short](files/alph-raw-short.webp) ·
- [alph-reserved-set](files/alph-reserved-set.webp) ·
- [alph-without-vp8x-flag](files/alph-without-vp8x-flag.webp)
-
-**Lossy: frame tag and picture header** —
- [lossy-frame-bad-start-code](files/lossy-frame-bad-start-code.webp) ·
- [lossy-frame-colorspace-clamp](files/lossy-frame-colorspace-clamp.webp) ·
- [lossy-frame-interframe](files/lossy-frame-interframe.webp) ·
- [lossy-frame-not-shown](files/lossy-frame-not-shown.webp) ·
- [lossy-frame-part0-empty](files/lossy-frame-part0-empty.webp) ·
- [lossy-frame-part0-past-end](files/lossy-frame-part0-past-end.webp) ·
- [lossy-frame-scale-1](files/lossy-frame-scale-1.webp) ·
- [lossy-frame-scale-2](files/lossy-frame-scale-2.webp) ·
- [lossy-frame-scaled](files/lossy-frame-scaled.webp) ·
- [lossy-frame-version-1](files/lossy-frame-version-1.webp) ·
- [lossy-frame-version-2](files/lossy-frame-version-2.webp) ·
- [lossy-frame-version-3](files/lossy-frame-version-3.webp) ·
- [lossy-frame-version-4](files/lossy-frame-version-4.webp) ·
- [lossy-frame-version-7](files/lossy-frame-version-7.webp) ·
- [lossy-frame-width-16383](files/lossy-frame-width-16383.webp) ·
- [lossy-frame-zero-width](files/lossy-frame-zero-width.webp)
-
-**Lossy: segmentation** —
- [lossy-segment-delta-quantizers](files/lossy-segment-delta-quantizers.webp) ·
- [lossy-segment-filter-strengths](files/lossy-segment-filter-strengths.webp) ·
- [lossy-segment-four-quantizers](files/lossy-segment-four-quantizers.webp) ·
- [lossy-segment-map-only](files/lossy-segment-map-only.webp) ·
- [lossy-segment-no-map](files/lossy-segment-no-map.webp) ·
- [lossy-segment-prob-extremes](files/lossy-segment-prob-extremes.webp) ·
- [lossy-segment-quant-extremes](files/lossy-segment-quant-extremes.webp)
-
-**Lossy: loop filter** —
- [lossy-filter-lf-delta-extremes](files/lossy-filter-lf-delta-extremes.webp) ·
- [lossy-filter-lf-delta](files/lossy-filter-lf-delta.webp) ·
- [lossy-filter-normal-max](files/lossy-filter-normal-max.webp) ·
- [lossy-filter-sharpness-4](files/lossy-filter-sharpness-4.webp) ·
- [lossy-filter-sharpness-5](files/lossy-filter-sharpness-5.webp) ·
- [lossy-filter-simple-max](files/lossy-filter-simple-max.webp)
-
-**Lossy: quantizer** —
- [lossy-quant-deltas-mirrored](files/lossy-quant-deltas-mirrored.webp) ·
- [lossy-quant-deltas](files/lossy-quant-deltas.webp) ·
- [lossy-quant-dequant-overflow](files/lossy-quant-dequant-overflow.webp) ·
- [lossy-quant-max](files/lossy-quant-max.webp) ·
- [lossy-quant-min](files/lossy-quant-min.webp) ·
- [lossy-quant-uv-dc-clamp](files/lossy-quant-uv-dc-clamp.webp)
-
-**Lossy: coefficient probabilities** —
- [lossy-proba-all-updated](files/lossy-proba-all-updated.webp) ·
- [lossy-proba-one-update](files/lossy-proba-one-update.webp) ·
- [lossy-proba-refresh-and-skip-zero](files/lossy-proba-refresh-and-skip-zero.webp) ·
- [lossy-proba-skip-extremes](files/lossy-proba-skip-extremes.webp) ·
- [lossy-proba-zero](files/lossy-proba-zero.webp)
-
-**Lossy: prediction modes** —
- [lossy-mode-i16-all-four](files/lossy-mode-i16-all-four.webp) ·
- [lossy-mode-i4-all-ten](files/lossy-mode-i4-all-ten.webp) ·
- [lossy-mode-i4-context](files/lossy-mode-i4-context.webp) ·
- [lossy-mode-mixed](files/lossy-mode-mixed.webp) ·
- [lossy-mode-uv-all-four](files/lossy-mode-uv-all-four.webp)
-
-**Lossy: coefficients** —
- [lossy-coeff-all-types](files/lossy-coeff-all-types.webp) ·
- [lossy-coeff-bands-chroma](files/lossy-coeff-bands-chroma.webp) ·
- [lossy-coeff-bands-i16](files/lossy-coeff-bands-i16.webp) ·
- [lossy-coeff-bands-i4](files/lossy-coeff-bands-i4.webp) ·
- [lossy-coeff-cat3](files/lossy-coeff-cat3.webp) ·
- [lossy-coeff-cat4](files/lossy-coeff-cat4.webp) ·
- [lossy-coeff-cat5](files/lossy-coeff-cat5.webp) ·
- [lossy-coeff-cat6-max](files/lossy-coeff-cat6-max.webp) ·
- [lossy-coeff-cat6](files/lossy-coeff-cat6.webp) ·
- [lossy-coeff-context](files/lossy-coeff-context.webp) ·
- [lossy-coeff-empty-blocks](files/lossy-coeff-empty-blocks.webp) ·
- [lossy-coeff-full-block](files/lossy-coeff-full-block.webp) ·
- [lossy-coeff-medium-magnitudes](files/lossy-coeff-medium-magnitudes.webp) ·
- [lossy-coeff-small-magnitudes](files/lossy-coeff-small-magnitudes.webp) ·
- [lossy-coeff-wht-full](files/lossy-coeff-wht-full.webp) ·
- [lossy-coeff-zero-runs](files/lossy-coeff-zero-runs.webp)
-
-**Lossy: skipped macroblocks** — [lossy-skip-all](files/lossy-skip-all.webp) ·
- [lossy-skip-i4x4-nz-dc](files/lossy-skip-i4x4-nz-dc.webp) ·
- [lossy-skip-mixed](files/lossy-skip-mixed.webp)
-
-**Lossy: token partitions** —
- [lossy-parts-2-wrap](files/lossy-parts-2-wrap.webp) ·
- [lossy-parts-8-rows](files/lossy-parts-8-rows.webp) ·
- [lossy-parts-last-empty](files/lossy-parts-last-empty.webp) ·
- [lossy-parts-size-past-end](files/lossy-parts-size-past-end.webp) ·
- [lossy-parts-table-too-small](files/lossy-parts-table-too-small.webp)
-
-**Lossy: truncation** —
- [lossy-truncated-header](files/lossy-truncated-header.webp) ·
- [lossy-truncated-modes](files/lossy-truncated-modes.webp) ·
- [lossy-truncated-short-modes](files/lossy-truncated-short-modes.webp) ·
- [lossy-truncated-tokens](files/lossy-truncated-tokens.webp)
-
-**Lossy: partition sizes, from real encodes** —
- [lossy-1-partitions](files/lossy-1-partitions.webp) ·
- [lossy-2-partitions](files/lossy-2-partitions.webp) ·
- [lossy-4-partitions](files/lossy-4-partitions.webp) ·
- [lossy-8-partitions](files/lossy-8-partitions.webp) ·
- [lossy-8-partitions-size-overflow](files/lossy-8-partitions-size-overflow.webp) ·
- [lossy-8-partitions-zero-sizes](files/lossy-8-partitions-zero-sizes.webp) ·
- [lossy-8-partitions-sizes-sum-past-end](files/lossy-8-partitions-sizes-sum-past-end.webp) ·
- [lossy-combo-all-features](files/lossy-combo-all-features.webp)
 
 ## What to run
 
@@ -341,7 +103,7 @@ describing how they fit together.
 | --- | --- |
 | [`SYNTAX.md`](SYNTAX.md) | The whole case syntax, generated from `src/grammar.py`. |
 | [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
-| [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output. |
+| [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output, so a silent change in decoded pixels fails too. |
 | [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
 | [`COPYING`](COPYING) | BSD 3-clause, the same as libwebp. |
 
@@ -357,26 +119,17 @@ ask git for just that directory:
     git sparse-checkout set webp-torture
 
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
-Then, from `webp-torture/`:
-
-    ./check.sh              # verdict + decoded-pixel hash for every file
-    ./asan_sweep.sh         # 14 decode modes, under a sanitizer build
-    ./vp8_selftest.py       # checks the lossy writer against libwebp
-    ./make_coverage.sh      # regenerate coverage.txt
-    ./make_hashes.sh        # regenerate hashes.txt, once the output is right
-    python3 generate.py     # rebuild files/, expected.txt and this README
+Run the scripts above from `webp-torture/`.
 
 A case is a text file, one field per line under the name the specification
-gives it -- RFC 6386 for the lossy frame, RFC 9649 for the container -- so a
-case reads against the format rather than against the decoder that happens
-to be under test. Every field has a default, so a case says only what it is
-about, and nothing is validated or clamped: a value too big for its field
-loses its top bits, which is usually the point.
+gives it, so it reads against the format rather than against the decoder
+under test. Every field has a default, so a case says only what it is about,
+and nothing is validated or clamped: a value too big for its field loses its
+top bits, which is usually the point. [`SYNTAX.md`](SYNTAX.md) is the whole
+vocabulary; `./src/grammar.py` prints it as JSON, which is what a generator
+should read rather than the prose.
 
-`src/webp_asm.py` assembles any of them. It hands the image part to
-`src/vp8l_asm.py` if the case says `lossless` and to `src/vp8_asm.py` if it
-does not; use any of the three directly, or read an existing lossy frame
-back out as text to start from:
+Any one case, or any real encode read back into a case:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
     ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
@@ -384,30 +137,17 @@ back out as text to start from:
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
 
-[`SYNTAX.md`](SYNTAX.md) is the whole vocabulary in one place, generated
-from [`src/grammar.py`](src/grammar.py); `./src/grammar.py` prints the same
-thing as JSON, which is what a generator should read rather than the prose.
-Each tool's docstring is the reference for the fields it owns:
-`vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
-`webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
-README of its own saying how the three layers fit together.
-
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
 the multi-partition cases are patched from live in `sources/` --
 [1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
 [4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
 partitions -- and are themselves rebuilt by `make_partition_sources.c`.
 
-`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP` and
-`asan_sweep.sh` honours `$ASAN_DWEBP`, so all of them can be pointed at any
-build, or at another decoder implementation; they fall back to whatever
+`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
+`asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
 `dwebp` is on `$PATH`. `make_coverage.sh` and `make_vp8_tables.py` need
 `$LIBWEBP` set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file
 that allocates a gigabyte.
-
-`hashes.txt` holds the SHA-256 of each decoding file's `-pam` output, so the
-suite catches a *silent* change in decoded pixels, not just a crash or a
-changed verdict.
 
 ## How they were verified
 
@@ -423,22 +163,23 @@ meaningful against one revision of libwebp: the one recorded at the top of
 `coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
 disagree, trust `coverage.txt`.
 
-Both writers are checked a second way, against libwebp rather than against
-themselves: `vp8_dis.py` and `vp8l_dis.py` read a file back into the same
-text the assemblers take, so a real cwebp encode can be disassembled,
-reassembled and compared byte for byte. Every file in `sources/` survives
-that, as do encodes from 1x1 to 128x128 across the whole quality range --
-596 macroblocks, all four 16x16 modes, all ten 4x4 modes and coefficients in
-every escape category. `vp8_selftest.py` runs it, along with every
-coefficient magnitude up to the format's largest and a handful of frames
-that say the same thing two different ways and must decode alike.
+Both writers are checked against libwebp rather than against themselves:
+`vp8_dis.py` and `vp8l_dis.py` read a file back into the text the assemblers
+take, so a real encode can be disassembled, reassembled and compared byte
+for byte. `vp8_selftest.py` runs it.
 
-The lossless writer gets the same treatment. 84 real `cwebp` encodes -- a
-dozen images from 1x1 to 256x256, flat, gradient, noise, palettised and with
-alpha, each at seven lossless settings -- disassemble and reassemble bit for
-bit, transforms, back-references, colour caches, entropy images and all. So
-do the corpus's own lossless files, bar the fifteen whose whole point is to
-be unreadable and the one that decodes to a gigabyte.
+* Lossy: every file in `sources/`, and encodes from 1x1 to 128x128 across
+  the whole quality range -- 596 macroblocks, all four 16x16 modes, all ten
+  4x4 modes, every escape category.
+* Lossless: 84 `cwebp` encodes -- a dozen images from 1x1 to 256x256, flat,
+  gradient, noise, palettised and with alpha, at seven settings each --
+  transforms, back-references, colour caches and entropy images included.
+* Both, over the corpus itself, bar the cases whose point is to be
+  unreadable and the one that decodes to a gigabyte.
+
+It also writes every coefficient magnitude up to the format's largest, and a
+handful of frames that say the same thing two different ways and must decode
+alike.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy

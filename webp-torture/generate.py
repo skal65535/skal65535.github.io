@@ -142,11 +142,8 @@ emits, one layer of it at a time:
   different path through the decoder from the one every VP8L file here
   takes.
 
-A case is a text file and the notes below are its own: each one carries what
-it is, what the decoder should do with it, and which path that answer comes
-from.
-
-Each entry says what the reference decoder is expected to do:
+Each note below is its case's own, and says what the reference decoder is
+expected to do with it:
 
 * **ok** -- must decode, and must keep decoding to the same pixels. Several
   are not something cwebp can produce, so nothing else pins the behaviour.
@@ -168,26 +165,17 @@ ask git for just that directory:
     git sparse-checkout set webp-torture
 
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
-Then, from `webp-torture/`:
-
-    ./check.sh              # verdict + decoded-pixel hash for every file
-    ./asan_sweep.sh         # 14 decode modes, under a sanitizer build
-    ./vp8_selftest.py       # checks the lossy writer against libwebp
-    ./make_coverage.sh      # regenerate coverage.txt
-    ./make_hashes.sh        # regenerate hashes.txt, once the output is right
-    python3 generate.py     # rebuild files/, expected.txt and this README
+Run the scripts above from `webp-torture/`.
 
 A case is a text file, one field per line under the name the specification
-gives it -- RFC 6386 for the lossy frame, RFC 9649 for the container -- so a
-case reads against the format rather than against the decoder that happens
-to be under test. Every field has a default, so a case says only what it is
-about, and nothing is validated or clamped: a value too big for its field
-loses its top bits, which is usually the point.
+gives it, so it reads against the format rather than against the decoder
+under test. Every field has a default, so a case says only what it is about,
+and nothing is validated or clamped: a value too big for its field loses its
+top bits, which is usually the point. [`SYNTAX.md`](SYNTAX.md) is the whole
+vocabulary; `./src/grammar.py` prints it as JSON, which is what a generator
+should read rather than the prose.
 
-`src/webp_asm.py` assembles any of them. It hands the image part to
-`src/vp8l_asm.py` if the case says `lossless` and to `src/vp8_asm.py` if it
-does not; use any of the three directly, or read an existing lossy frame
-back out as text to start from:
+Any one case, or any real encode read back into a case:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
     ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
@@ -195,30 +183,17 @@ back out as text to start from:
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
 
-[`SYNTAX.md`](SYNTAX.md) is the whole vocabulary in one place, generated
-from [`src/grammar.py`](src/grammar.py); `./src/grammar.py` prints the same
-thing as JSON, which is what a generator should read rather than the prose.
-Each tool's docstring is the reference for the fields it owns:
-`vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
-`webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
-README of its own saying how the three layers fit together.
-
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
 the multi-partition cases are patched from live in `sources/` --
 [1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
 [4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
 partitions -- and are themselves rebuilt by `make_partition_sources.c`.
 
-`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP` and
-`asan_sweep.sh` honours `$ASAN_DWEBP`, so all of them can be pointed at any
-build, or at another decoder implementation; they fall back to whatever
+`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
+`asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
 `dwebp` is on `$PATH`. `make_coverage.sh` and `make_vp8_tables.py` need
 `$LIBWEBP` set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file
 that allocates a gigabyte.
-
-`hashes.txt` holds the SHA-256 of each decoding file's `-pam` output, so the
-suite catches a *silent* change in decoded pixels, not just a crash or a
-changed verdict.
 
 ## How they were verified
 
@@ -234,22 +209,23 @@ meaningful against one revision of libwebp: the one recorded at the top of
 `coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
 disagree, trust `coverage.txt`.
 
-Both writers are checked a second way, against libwebp rather than against
-themselves: `vp8_dis.py` and `vp8l_dis.py` read a file back into the same
-text the assemblers take, so a real cwebp encode can be disassembled,
-reassembled and compared byte for byte. Every file in `sources/` survives
-that, as do encodes from 1x1 to 128x128 across the whole quality range --
-596 macroblocks, all four 16x16 modes, all ten 4x4 modes and coefficients in
-every escape category. `vp8_selftest.py` runs it, along with every
-coefficient magnitude up to the format's largest and a handful of frames
-that say the same thing two different ways and must decode alike.
+Both writers are checked against libwebp rather than against themselves:
+`vp8_dis.py` and `vp8l_dis.py` read a file back into the text the assemblers
+take, so a real encode can be disassembled, reassembled and compared byte
+for byte. `vp8_selftest.py` runs it.
 
-The lossless writer gets the same treatment. 84 real `cwebp` encodes -- a
-dozen images from 1x1 to 256x256, flat, gradient, noise, palettised and with
-alpha, each at seven lossless settings -- disassemble and reassemble bit for
-bit, transforms, back-references, colour caches, entropy images and all. So
-do the corpus's own lossless files, bar the fifteen whose whole point is to
-be unreadable and the one that decodes to a gigabyte.
+* Lossy: every file in `sources/`, and encodes from 1x1 to 128x128 across
+  the whole quality range -- 596 macroblocks, all four 16x16 modes, all ten
+  4x4 modes, every escape category.
+* Lossless: 84 `cwebp` encodes -- a dozen images from 1x1 to 256x256, flat,
+  gradient, noise, palettised and with alpha, at seven settings each --
+  transforms, back-references, colour caches and entropy images included.
+* Both, over the corpus itself, bar the cases whose point is to be
+  unreadable and the one that decodes to a gigabyte.
+
+It also writes every coefficient magnitude up to the format's largest, and a
+handful of frames that say the same thing two different ways and must decode
+alike.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy
@@ -428,7 +404,8 @@ SRC = [
 DATA = [
     ('SYNTAX.md', 'The whole case syntax, generated from `src/grammar.py`.'),
     ('expected.txt', 'Name and expected verdict, one line per file.'),
-    ('hashes.txt', "SHA-256 of each decoding file's `-pam` output."),
+    ('hashes.txt', "SHA-256 of each decoding file's `-pam` output, so a "
+                   'silent change in decoded pixels fails too.'),
     ('coverage.txt', 'Which decoder path each file actually reached.'),
     ('COPYING', 'BSD 3-clause, the same as libwebp.'),
 ]
@@ -602,6 +579,7 @@ into one `.webp`. Run them from the directory above, where `cases/` is:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
+    ./src/vp8l_dis.py --check some-lossless.webp
 
 Three layers, and a case only ever touches the top one:
 
@@ -658,32 +636,13 @@ def build_cases(outdir):
     return rows
 
 
-def build_file_list(rows, groups, index):
-    """A linked list of every bitstream, grouped, for the top of the README."""
-    out = ['## The bitstreams\n',
-           'Every name below links straight to the file. The whole set lives',
-           'in **[`files/`](files/)**, which lists each one with its size and',
-           'expected verdict; the notes further down say what each targets.\n',
-           index]
-    seen = set()
-    for prefix, title, _ in groups:
-        group = [r for r in rows if r[0].startswith(prefix) and r[0] not in seen]
-        seen.update(r[0] for r in group)
-        if not group:
-            continue
-        # pack the links by hand: textwrap would break them mid-URL
-        line, block = '**%s** —' % title, []
-        for r in group:
-            link = ' [%s](files/%s.webp)' % (r[0], r[0])
-            if len(line) + len(link) > 78 and line.strip():
-                block.append(line)
-                line = ' ' + link.lstrip()
-            else:
-                line += link
-            line += ' ·'
-        block.append(line.rstrip(' ·'))
-        out.append('\n'.join(block) + '\n')
-    return '\n'.join(out)
+def build_file_list(index):
+    """What the corpus holds, per group. Every file is one click from its own
+    note further down, and listed with its size in files/."""
+    return '## The bitstreams\n\n' + wrap(
+        'The whole set lives in **[`files/`](files)**, which lists each one '
+        'with its size and expected verdict. Every note below links straight '
+        'to the file it is about.') + '\n' + index
 
 
 def heading(outdir, name, expect):
@@ -708,7 +667,7 @@ def write_readme(outdir, rows):
             kinds['vp8l'] += 1
     index = build_index(rows, GROUPS)
     lines = [README_HEAD % dict(kinds,
-                                files=build_file_list(rows, GROUPS, index),
+                                files=build_file_list(index),
                                 code=build_code_list(outdir))]
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
         group = [r for r in rows if r[0] not in used and
