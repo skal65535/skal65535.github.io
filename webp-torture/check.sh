@@ -26,12 +26,9 @@ if [ ! -x "$DWEBP" ]; then
   exit 2
 fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-verdict() {                      # an exit status, in the words expected.txt uses
-  if [ "$1" -eq 0 ]; then echo ok; else echo reject; fi
-}
-recorded() {                     # the hash hashes.txt holds for a file, if any
-  [ -f hashes.txt ] && grep "^$1 " hashes.txt | awk '{print $2}'
-}
+# an exit status in the words expected.txt uses, and the hash it recorded
+verdict() { if [ "$1" -eq 0 ]; then echo ok; else echo reject; fi; }
+recorded() { [ -f hashes.txt ] && grep "^$1 " hashes.txt | awk '{print $2}'; }
 fail=0; n=0; hashed=0; animated=0; skipped=0; walked=0; streamed=0
 # 'rest' is deliberate: with one variable per column, adding a column makes
 # the last one swallow it instead, silently. That cost an afternoon once.

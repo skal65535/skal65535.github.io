@@ -108,14 +108,14 @@ GROUPS = [
      'an odd-sized one even on disk. Everything here is read by '
      'webp_dec.c before the frame is looked at.'),
     ('anim-', 'Animation',
-     'A sequence of frames rather than one image: an ANIM chunk carrying the '
-     'loop count, then an ANMF per frame carrying its own position, duration, '
-     'disposal and blending, and its own image chunks. None of it is reachable '
-     'through dwebp, which refuses any file claiming animation before looking '
-     'at a frame, so these are checked with anim_dump instead -- the demuxer '
-     'of demux.c, the composition of anim_decode.c, and one decode per frame. '
-     'The verdict quoted for each is that one; every file here is still a '
-     'reject to a still decoder.'),
+     'A sequence of frames rather than one image: an ANIM chunk with the '
+     'loop count, then an ANMF per frame carrying its own position, '
+     'duration, disposal and blending, and its own image chunks. None of it '
+     'is reachable through dwebp, which refuses any file claiming animation '
+     'before looking at a frame, so these are checked with anim_dump '
+     'instead -- the demuxer of demux.c, the composition of anim_decode.c, '
+     'and one decode per frame. The verdict quoted for each is that one; '
+     'every file here is still a reject to a still decoder.'),
     ('alph-', 'The alpha chunk',
      'ALPH carries the alpha plane beside a lossy frame: a header byte of '
      'four two-bit fields, then the plane itself, either stored as it is or '
@@ -528,6 +528,11 @@ def check_howto(outdir):
     for named in set(re.findall(r'cases/[\w-]+\.txt', text)):
         assert os.path.exists(os.path.join(outdir, named)), \
             'HOWTO.md names %s, which does not exist' % named
+    # named in backticks, as `slow` or as `roundtrip: no`
+    missing = sorted(k for k in vp8_asm.HEADER_KEYS
+                     if not re.search('`%s[`:]' % k, text))
+    assert not missing, 'HOWTO.md never mentions the header key(s) %s' \
+        % ' '.join(missing)
     return len(blocks)
 
 

@@ -148,21 +148,53 @@ class Chunks:
         except ValueError:
             self.fail('bad %s %r' % (what, tok))
 
+    def args(self, rest, n, what):
+        """Exactly n values, or a line number and what was wrong with it.
+
+        The same bargain the other two assemblers make: everything a case
+        gets wrong is an AsmError naming the line, never a traceback.
+        """
+        if len(rest) != n:
+            self.fail('%s needs %d values, got %d' % (what, n, len(rest)))
+        return rest
+
+    def one(self, rest, what):
+        return self.args(rest, 1, what)[0]
+
+    def hexbytes(self, tok, what):
+        try:
+            return bytes.fromhex(tok)
+        except ValueError:
+            self.fail('%s is not an even number of hex digits: %r'
+                      % (what, tok))
+
+    def fourcc(self, tok, what):
+        try:
+            return fourcc(tok)
+        except UnicodeEncodeError:
+            self.fail('%s is not a fourcc: %r' % (what, tok))
+
     def take(self, name, rest):
         """One chunk-list directive. False if it belongs to a layer above."""
         if name == 'chunks':
             self.chunks = rest
         elif name in ALPH_FIELDS:
-            self.alph[name] = self.num(rest[0], name)
+            self.alph[name] = self.num(self.one(rest, name), name)
         elif name == 'alph_raw':
-            self.alph_raw = self.num(rest[0], name) if rest else -1
+            self.alph_raw = self.num(self.one(rest, name), name) if rest \
+                else -1
         elif name == 'alph_data':
-            self.alph_data = bytes.fromhex(rest[0]) if rest else b''
+            self.alph_data = self.hexbytes(self.one(rest, name), name) \
+                if rest else b''
         elif name == 'payload':
-            self.payloads[fourcc(rest[0])] = bytes.fromhex(
-                rest[1]) if len(rest) > 1 else b''
+            if not 1 <= len(rest) <= 2:
+                self.fail('payload needs a fourcc and optional hex, got %d '
+                          'values' % len(rest))
+            self.payloads[self.fourcc(rest[0], name)] = \
+                self.hexbytes(rest[1], name) if len(rest) > 1 else b''
         elif name == 'chunk_size':
-            self.sizes[fourcc(rest[0])] = self.num(rest[1], name)
+            tag, size = self.args(rest, 2, name)
+            self.sizes[self.fourcc(tag, name)] = self.num(size, name)
         else:
             return False
         return True
@@ -239,9 +271,9 @@ class Frame(Chunks):
 
     def take(self, name, rest):
         if name in self.fields:
-            self.fields[name] = self.num(rest[0], name)
+            self.fields[name] = self.num(self.one(rest, name), name)
         elif name in self.bits:
-            self.bits[name] = self.num(rest[0], name)
+            self.bits[name] = self.num(self.one(rest, name), name)
         else:
             return super().take(name, rest)
         return True
@@ -259,10 +291,9 @@ class Frame(Chunks):
 
     def extent(self):
         """The canvas this frame needs: past its offset, its own size."""
-        return (2 * self.field('frame_x') + self.field('frame_width_minus_one')
-                + 1,
-                2 * self.field('frame_y') + self.field('frame_height_minus_one')
-                + 1)
+        return tuple(2 * self.field('frame_%s' % axis) +
+                     self.field('frame_%s_minus_one' % span) + 1
+                     for axis, span in (('x', 'width'), ('y', 'height')))
 
     def anmf(self):
         """The ANMF payload: the header fields, then the frame's chunks."""
@@ -292,20 +323,21 @@ class Container(Chunks):
     def take(self, name, rest):
         if name in FLAGS:
             self.flags_seen.add(name)
-            if self.num(rest[0], name):
+            if self.num(self.one(rest, name), name):
                 self.flags |= FLAGS[name]
             else:
                 self.flags &= ~FLAGS[name]
         elif name == 'vp8x_reserved':
-            self.reserved = self.num(rest[0], name)
+            self.reserved = self.num(self.one(rest, name), name)
         elif name.startswith('canvas_'):
-            self.canvas[0 if 'width' in name else 1] = self.num(rest[0], name)
+            self.canvas[0 if 'width' in name else 1] = \
+                self.num(self.one(rest, name), name)
         elif name == 'riff_size':
-            self.riff_size = self.num(rest[0], name)
+            self.riff_size = self.num(self.one(rest, name), name)
         elif name == 'trailing':
-            self.trailing = bytes.fromhex(rest[0])
+            self.trailing = self.hexbytes(self.one(rest, name), name)
         elif name in ('loop_count', 'background_color'):
-            setattr(self, name, self.num(rest[0], name))
+            setattr(self, name, self.num(self.one(rest, name), name))
         else:
             return super().take(name, rest)
         return True
@@ -397,6 +429,13 @@ def fill(box, lines, header=True, size=None):
 
 def assemble_text(text):
     """The .webp bytes for one case, container, frames and all."""
+    try:
+        return build(text)
+    except vp8_asm.UNWRITABLE as e:
+        raise vp8_asm.unwritable(e)
+
+
+def build(text):
     blocks = split_blocks(text)
     box = Container()
     fill(box, blocks[0][1])

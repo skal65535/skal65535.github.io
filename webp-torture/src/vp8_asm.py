@@ -102,6 +102,7 @@ works too.
 
 import os
 import re
+import struct
 import sys
 
 import vp8
@@ -161,6 +162,20 @@ HEADER_KEYS = {'note': True, 'expect': True, 'exercises': True,
 
 class AsmError(Exception):
     pass
+
+
+# What vp8.py and vp8l.py raise when a case asks for something they cannot
+# encode at all -- a symbol outside an alphabet, a length no prefix code
+# reaches, a field too wide for its pack. They validate nothing by design,
+# so this is where "unwritable" stops being a traceback and becomes the
+# diagnostic every other mistake in a case already gets.
+UNWRITABLE = (IndexError, OverflowError, ValueError, ZeroDivisionError,
+              struct.error)
+
+
+def unwritable(e):
+    return AsmError('the case asks for something no bitstream can hold: '
+                    '%s: %s' % (type(e).__name__, e))
 
 
 def parse_header(text, what='case'):
@@ -483,8 +498,11 @@ class Assembler:
 def assemble_text(text):
     """The .webp bytes for one case."""
     asm = Assembler()
-    asm.feed(text)
-    return vp8.wrap_webp(asm.finish())
+    try:
+        asm.feed(text)
+        return vp8.wrap_webp(asm.finish())
+    except UNWRITABLE as e:
+        raise unwritable(e)
 
 
 def main(argv):

@@ -1077,8 +1077,8 @@ other.
 
 ## Animation
 
-A sequence of frames rather than one image: an ANIM chunk carrying the loop
-count, then an ANMF per frame carrying its own position, duration, disposal and
+A sequence of frames rather than one image: an ANIM chunk with the loop count,
+then an ANMF per frame carrying its own position, duration, disposal and
 blending, and its own image chunks. None of it is reachable through dwebp,
 which refuses any file claiming animation before looking at a frame, so these
 are checked with anim_dump instead -- the demuxer of demux.c, the composition
@@ -1297,8 +1297,10 @@ is handed a payload size of zero, reads the chunk header belonging to the next
 frame, rewinds and returns having stored nothing; the frame record it was
 filling still has the frame_num zero WebPSafeCalloc() left, so the
 "frame->frame_num > 0" test in ParseAnimationFrame() fails and it is freed. One
-frame comes out of a file that declares two. webpinfo refuses the same file --
-"No VP8/VP8L chunk detected in an ANMF chunk".
+frame comes out of a file that declares two. webpinfo refuses the same file,
+though not for that reason: it requires an ANMF to be strictly longer than its
+own header, so it stops at "Truncated data detected when parsing ANMF chunk"
+before it can notice there is no image.
 
 ### [`anim-frame-1x1.webp`](files/anim-frame-1x1.webp) -- reject, anim_dump ok -- from [`anim-frame-1x1.txt`](cases/anim-frame-1x1.txt)
 

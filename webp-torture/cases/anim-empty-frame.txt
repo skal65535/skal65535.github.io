@@ -9,8 +9,10 @@
 #   nothing; the frame record it was filling still has the frame_num zero
 #   WebPSafeCalloc() left, so the "frame->frame_num > 0" test in
 #   ParseAnimationFrame() fails and it is freed. One frame comes out of a
-#   file that declares two. webpinfo refuses the same file -- "No VP8/VP8L
-#   chunk detected in an ANMF chunk".
+#   file that declares two. webpinfo refuses the same file, though not for
+#   that reason: it requires an ANMF to be strictly longer than its own
+#   header, so it stops at "Truncated data detected when parsing ANMF
+#   chunk" before it can notice there is no image.
 frame
 frame_duration 100
 chunks

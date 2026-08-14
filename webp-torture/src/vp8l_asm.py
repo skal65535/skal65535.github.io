@@ -118,6 +118,7 @@ import os
 import sys
 
 import vp8l
+import vp8_asm
 from vp8_asm import AsmError
 
 # The five codes of a group, in the order the stream carries them, and the
@@ -681,8 +682,11 @@ def is_lossless(text):
 def assemble_text(text):
     """The .webp bytes for one case."""
     asm = Assembler()
-    asm.feed(text)
-    return vp8l.wrap_webp(asm.finish())
+    try:
+        asm.feed(text)
+        return vp8l.wrap_webp(asm.finish())
+    except vp8_asm.UNWRITABLE as e:
+        raise vp8_asm.unwritable(e)
 
 
 def main(argv):
