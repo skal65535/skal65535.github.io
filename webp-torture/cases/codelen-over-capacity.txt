@@ -1,0 +1,8 @@
+# note: Three symbols of depth 1, more than the two codes of that length
+#   that exist.
+# expect: reject
+# exercises: Caught early, by the count[len] > (1 << len) guard in
+#   BuildHuffmanTable(), before the tree walk runs.
+lossless
+code dist lengths 1 1 1
+code dist codelen 1 1 1 18x37

@@ -1,0 +1,11 @@
+# note: 34 bytes declaring 16384x16384, every pixel one color.
+# expect: ok
+# exercises: A bare VP8L stream has no area limit -- MAX_IMAGE_AREA is only
+#   checked in ParseVP8X (webp_dec.c:138) -- and single-symbol codes cost
+#   zero bits per pixel, so this decodes for real: 1.83GB peak RSS and 3.4s.
+#   The backstop is WEBP_MAX_ALLOCABLE_MEMORY (utils.c:185), nothing
+#   earlier.
+# slow: yes
+lossless
+width 16384
+height 16384

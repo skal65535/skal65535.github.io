@@ -1,0 +1,13 @@
+# note: Predictor tiles of 4x4 pixels, the smallest the format allows.
+# expect: ok
+# exercises: MIN_TRANSFORM_BITS, so the sub-image is as large as it can get
+#   and the mode changes every four pixels.
+lossless
+width 32
+height 8
+transforms predictor
+predictor_tiles 0 1 2 3 4 5 6 7 8 9 10 11 12 13 0 1
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

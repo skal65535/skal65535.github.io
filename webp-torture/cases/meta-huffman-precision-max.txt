@@ -1,0 +1,9 @@
+# note: Meta Huffman with the largest tile size (precision 9, 512x512
+#   pixels).
+# expect: ok
+# exercises: MAX_HUFFMAN_BITS. One tile covers the whole image, so the
+#   entropy image is 1x1.
+lossless
+width 8
+height 8
+meta_bits 9

@@ -1,0 +1,12 @@
+# note: Palette of 16 colors, so indices are 4 bits and 2 pixels share a
+#   byte.
+# expect: ok
+# exercises: The bits = 1 packing, and the largest palette that still packs.
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff000000 0xff111111 0xff222222 0xff333333 0xff444444
+palette_colors 0xff555555 0xff666666 0xff777777 0xff888888 0xff999999
+palette_colors 0xffaaaaaa 0xffbbbbbb 0xffcccccc 0xffdddddd 0xffeeeeee
+palette_colors 0xffffffff
+pixels 0x10 0x32 0x54 0x76

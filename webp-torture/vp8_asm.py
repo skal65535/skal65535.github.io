@@ -154,7 +154,7 @@ MB_FIELDS = {'segment_id': 'segment', 'mb_skip_coeff': 'skip'}
 
 
 HEADER_KEYS = {'note': True, 'expect': True, 'exercises': True,
-               'roundtrip': False}       # value is 'required?'
+               'roundtrip': False, 'slow': False}   # value is 'required?'
 
 
 class AsmError(Exception):

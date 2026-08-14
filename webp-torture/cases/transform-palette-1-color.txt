@@ -1,0 +1,10 @@
+# note: Palette with a single color, the smallest the 8-bit field can
+#   express.
+# expect: ok
+# exercises: bits = 3, so 8 pixels share a byte and the map is padded from 1
+#   entry to 2. Index 1 is the black tail.
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff123456
+pixels 0x0f

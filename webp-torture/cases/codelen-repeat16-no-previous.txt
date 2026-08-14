@@ -1,0 +1,8 @@
+# note: Code-length stream starting with code 16 (repeat previous), before
+#   any non-zero length was seen.
+# expect: ok
+# exercises: Hits DEFAULT_CODE_LENGTH: 'prev_code_len' is still 8 at
+#   vp8l_dec.c:254, so the first symbols get length 8 out of nowhere.
+lossless
+code dist lengths 8 8 8 8 1 2 3 4 5 6
+code dist codelen 16x3 8 1 2 3 4 5 6 18x30

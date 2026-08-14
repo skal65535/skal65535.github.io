@@ -1,0 +1,10 @@
+# note: Back-reference with plane code 1, which means "the pixel directly
+#   above".
+# expect: ok
+# exercises: kCodeToPlane[0] is 0x18: yoffset 1, xoffset 0, so the distance
+#   is a whole row rather than a small number.
+lossless
+width 8
+height 2
+code green complex
+pixels 0x33 x8 copy 8 1

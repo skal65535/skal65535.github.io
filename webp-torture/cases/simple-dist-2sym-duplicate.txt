@@ -1,0 +1,7 @@
+# note: Distance code: simple form declaring 2 symbols that are the same (5,
+#   5).
+# expect: ok
+# exercises: code_lengths[5] is written twice, so the code really has one
+#   symbol. BuildHuffmanTable() takes its single-value shortcut.
+lossless
+code dist 5 5

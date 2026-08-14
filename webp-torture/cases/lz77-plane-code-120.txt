@@ -1,0 +1,9 @@
+# note: Plane code 120, the last entry of the 2-D offset table.
+# expect: ok
+# exercises: kCodeToPlane[119] is 0x70: yoffset 7, xoffset 8, so on a
+#   16-wide image the distance is 120. Upper bound of the mapped range.
+lossless
+width 16
+height 32
+code green complex
+pixels 0x33 x412 copy 100 120

@@ -1,0 +1,8 @@
+# note: All 19 code-length codes declared.
+# expect: ok
+# exercises: Maximum of the 4-bit num_codes field; every entry of
+#   kCodeLengthCodeOrder[] gets a 3-bit length.
+lossless
+code dist lengths 1 1
+code dist codelen 1 1 18x38
+code dist num_codes 19

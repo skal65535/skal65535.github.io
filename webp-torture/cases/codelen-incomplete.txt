@@ -1,0 +1,8 @@
+# note: A code whose lengths leave the tree incomplete (two symbols of depth
+#   2).
+# expect: reject
+# exercises: Caught by the num_nodes != 2 * num_symbols - 1 test at the end
+#   of BuildHuffmanTable().
+lossless
+code dist lengths 2 2
+code dist codelen 2 2 18x38

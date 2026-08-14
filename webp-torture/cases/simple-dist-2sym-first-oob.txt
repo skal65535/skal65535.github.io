@@ -1,0 +1,8 @@
+# note: Distance code: simple form, 2 symbols, the first one 200 >=
+#   alphabet_size 40.
+# expect: ok
+# exercises: ReadHuffmanCode() writes code_lengths[200] with alphabet_size
+#   40; the code then has one symbol left and is accepted. Pins the
+#   behaviour CL 8256621 documents.
+lossless
+code dist 200 3

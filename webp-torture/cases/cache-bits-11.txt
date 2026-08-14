@@ -1,0 +1,6 @@
+# note: Color cache with the maximum size, 11 bits (2048 entries).
+# expect: ok
+# exercises: MAX_CACHE_BITS. Also stretches the green alphabet to 280 + 2048
+#   symbols.
+lossless
+cache_bits 11

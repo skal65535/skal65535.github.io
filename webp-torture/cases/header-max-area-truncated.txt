@@ -1,0 +1,9 @@
+# note: The same 16384x16384 header, cut off before the Huffman codes.
+# expect: reject
+# exercises: Must fail on the missing data rather than allocating the
+#   gigabyte first. Partner of header-max-area-bomb: together they say where
+#   the allocation sits relative to the parse.
+lossless
+width 16384
+height 16384
+group_count 0

@@ -9,13 +9,16 @@
 
     ./webp_asm.py cases/container-vp8x.txt files/container-vp8x.webp
 
-The layer above vp8_asm.py. A case that says nothing about the container
-gets the plain 'RIFF....WEBP' plus one image chunk that every lossy and
-lossless case has always had; the directives below are for the cases that
-need the container itself to be interesting. Names are RFC 9649's.
+The layer above vp8_asm.py and vp8l_asm.py, and the one that picks between
+them: a case that says 'lossless' is a VP8L image, anything else a lossy VP8
+frame. A case that says nothing about the container gets the plain
+'RIFF....WEBP' plus its one image chunk; the directives below are for the
+cases that need the container itself to be interesting. Names are RFC
+9649's.
 
-  chunks FOURCC...        the chunks to write, in order. VP8 is the frame
-                          the rest of the case describes. Default: VP8
+  chunks FOURCC...        the chunks to write, in order. VP8 -- or VP8L, in
+                          a lossless case -- is the image the rest of the
+                          case describes, and is what the list defaults to
   alpha 0                 the VP8X feature flags, by their RFC names
   animation 0
   icc_profile 0
@@ -50,6 +53,8 @@ import sys
 
 import vp8
 import vp8_asm
+import vp8l
+import vp8l_asm
 
 # RFC 9649's feature flags, from WebPFeatureFlags in src/webp/mux_types.h
 FLAGS = {'animation': 0x02, 'xmp_metadata': 0x04, 'exif_metadata': 0x08,
@@ -72,8 +77,9 @@ def fourcc(name):
 class Container:
     """The chunk list a case asks for, and the bytes it comes to."""
 
-    def __init__(self):
-        self.chunks = ['VP8']
+    def __init__(self, image='VP8'):
+        self.image = fourcc(image)     # the chunk the rest of the case is
+        self.chunks = [image]
         self.flags = 0
         self.reserved = 0
         self.canvas = [None, None]     # width - 1, height - 1
@@ -162,7 +168,7 @@ class Container:
         out = bytearray()
         for name in self.chunks:
             tag = fourcc(name)
-            if tag == b'VP8 ':
+            if tag == self.image:
                 data = image
             elif tag == b'VP8X':
                 data = self.vp8x(frame)
@@ -191,14 +197,15 @@ def assemble_text(text):
             container.append((lineno, line))
         else:
             frame.append(line)
-    asm = vp8_asm.Assembler()
-    asm.feed('\n'.join(frame))
+    lossless = vp8l_asm.is_lossless(text)
+    asm = (vp8l_asm if lossless else vp8_asm).Assembler()
+    what = asm.feed('\n'.join(frame))
     image = asm.finish()
     if not container:
-        return vp8.wrap_webp(image)    # what every case had before this file
-    box = Container()
+        return (vp8l if lossless else vp8).wrap_webp(image)
+    box = Container('VP8L' if lossless else 'VP8')
     box.feed(container)
-    return box.build(asm.f, image)
+    return box.build(what, image)
 
 
 def main(argv):

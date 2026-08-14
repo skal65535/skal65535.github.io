@@ -38,6 +38,7 @@ import tempfile
 import vp8
 import vp8_asm
 import vp8_dis
+import vp8l_asm
 
 DWEBP = os.environ.get('DWEBP', 'dwebp')
 
@@ -63,9 +64,16 @@ def case_round_trip():
     anything, this disassembler included. Those are counted rather than
     failed, as are the ones that say '# roundtrip: no' because what they
     pin is invisible to a reader. Everything else has to survive.
+
+    Lossless cases are left out: there is no VP8L disassembler to read them
+    back with.
     """
     bad = broken = skipped = 0
-    paths = sorted(glob.glob('cases/*.txt'))
+    paths = []
+    for path in sorted(glob.glob('cases/*.txt')):
+        with open(path) as fp:
+            if not vp8l_asm.is_lossless(fp.read()):
+                paths.append(path)
     for path in paths:
         with open(path) as fp:
             text = fp.read()

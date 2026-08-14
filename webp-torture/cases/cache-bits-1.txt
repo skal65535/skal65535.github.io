@@ -1,0 +1,6 @@
+# note: Color cache with the minimum size, 1 bit (2 entries).
+# expect: ok
+# exercises: Lower bound of the cache_bits >= 1 check in
+#   DecodeImageStream().
+lossless
+cache_bits 1

@@ -1,0 +1,8 @@
+# note: Explicit max_symbol greater than the alphabet size.
+# expect: reject
+# exercises: Must be caught by the max_symbol > num_symbols test at
+#   vp8l_dec.c:273.
+lossless
+code dist lengths 1 1
+code dist codelen 1 1
+code dist max_symbol 200

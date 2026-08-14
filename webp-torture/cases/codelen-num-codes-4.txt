@@ -1,0 +1,9 @@
+# note: Only 4 code-length codes declared, the minimum the 4-bit field
+#   allows.
+# expect: ok
+# exercises: Restricts the code-length alphabet to {17, 18, 0, 1}, so
+#   lengths can only be 0 or 1 plus the two zero-run escapes.
+lossless
+code dist lengths 1 1
+code dist codelen 1 1 18x38
+code dist num_codes 4

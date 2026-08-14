@@ -1,0 +1,7 @@
+# note: Green code: simple form with first_symbol_len_code = 0, so the
+#   symbol is 1 bit wide.
+# expect: ok
+# exercises: The short form of the simple code, only reachable when the
+#   symbol is 0 or 1. cwebp emits it rarely.
+lossless
+code green simple1 1

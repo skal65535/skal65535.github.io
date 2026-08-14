@@ -1,0 +1,6 @@
+# note: Distance code: simple form, single symbol 255, alphabet_size is 40.
+# expect: reject
+# exercises: The single write lands past the logical alphabet but inside the
+#   shared max_alphabet_size buffer. Rejected because no symbol remains.
+lossless
+code dist 255

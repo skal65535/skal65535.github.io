@@ -1,0 +1,6 @@
+# note: Distance code: single symbol 39, the last in-range value.
+# expect: ok
+# exercises: Boundary partner of simple-dist-sym-40-first-oob: 39 ==
+#   NUM_DISTANCE_CODES - 1 must be accepted.
+lossless
+code dist 39

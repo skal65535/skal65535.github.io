@@ -1,0 +1,9 @@
+# note: A pixel coded as a color-cache index rather than as a literal.
+# expect: ok
+# exercises: Green symbols >= NUM_LITERAL_CODES + NUM_LENGTH_CODES address
+#   the cache. Pixel 2 replays pixel 1 through cache slot 0.
+lossless
+width 2
+cache_bits 1
+code green complex
+pixels 0x20 cache 0

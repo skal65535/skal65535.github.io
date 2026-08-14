@@ -1,0 +1,7 @@
+# note: A green code with depths up to 10, past the 8-bit root table.
+# expect: ok
+# exercises: Forces BuildHuffmanTable() to allocate a second-level table and
+#   ReadSymbol() to take its two-step lookup.
+lossless
+code green lengths 1 2 3 4 5 6 7 8 9 10 10
+pixels 10

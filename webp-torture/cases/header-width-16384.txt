@@ -1,0 +1,7 @@
+# note: Width 16384, one past WEBP_MAX_DIMENSION.
+# expect: ok
+# exercises: The header stores width - 1 in 14 bits, so 16384 is expressible
+#   and the decoder accepts it. WEBP_MAX_DIMENSION (16383) is enforced only
+#   in the encoder, at webp_enc.c:347, so cwebp can never produce this.
+lossless
+width 16384

@@ -1,0 +1,13 @@
+# note: Predictor 11 (Select) over the whole image.
+# expect: ok
+# exercises: The only predictor with a data-dependent branch, Select() at
+#   lossless.c:100.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 11 11 11 11
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

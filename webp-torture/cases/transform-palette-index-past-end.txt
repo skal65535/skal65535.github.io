@@ -1,0 +1,10 @@
+# note: Palette of 3 colors addressed with index 3, which does not exist.
+# expect: ok
+# exercises: Reads ExpandColorMap()'s black tail (vp8l_dec.c:1412): the map
+#   is padded out to the packing capacity of 4, so the pixel comes back
+#   transparent black instead of out of bounds.
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff0000ff 0xff00ff00 0xffff0000
+pixels 0xe4 0xff

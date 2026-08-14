@@ -1,0 +1,10 @@
+# note: Entropy image whose highest group index is 1000, one past the
+#   decoder's arbitrary limit.
+# expect: ok
+# exercises: Crosses the num_htree_groups_max > 1000 test at vp8l_dec.c:409,
+#   which forces the mapping[] path even when the count is plausible.
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 1000

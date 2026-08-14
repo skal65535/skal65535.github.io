@@ -1,0 +1,10 @@
+# note: Palette of 3 colors, so indices are 2 bits and 4 pixels share a
+#   byte.
+# expect: ok
+# exercises: num_colors in 3..4 selects bits = 2, the middle packing
+#   density. The byte 0xe4 holds indices 0, 1, 2, 3 least-significant first.
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff0000ff 0xff00ff00 0xffff0000
+pixels 0x24 0x24

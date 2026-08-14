@@ -1,0 +1,6 @@
+# note: Color cache flagged as present but with 0 bits.
+# expect: reject
+# exercises: Must be rejected: the format reserves "no cache" for the flag
+#   bit, so 0 is not a legal size.
+lossless
+cache_bits 0

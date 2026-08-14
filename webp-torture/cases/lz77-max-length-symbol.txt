@@ -1,0 +1,10 @@
+# note: A back-reference using length symbol 23, the largest the format
+#   defines.
+# expect: ok
+# exercises: NUM_LENGTH_CODES - 1: 10 extra bits, copy lengths up to 4096.
+#   Here it copies 1200 pixels.
+lossless
+width 3074
+code green complex
+code dist complex
+pixels 0x44 copy 3073 2

@@ -1,0 +1,10 @@
+# note: All four transforms present in one stream.
+# expect: ok
+# exercises: NUM_TRANSFORMS in a row: color-indexing, subtract-green,
+#   cross-color and predictor, each with its own sub-image.
+lossless
+width 8
+height 8
+transforms color_indexing subtract_green cross_color predictor
+palette_colors 0xff000000 0xff00ff00
+code green 0

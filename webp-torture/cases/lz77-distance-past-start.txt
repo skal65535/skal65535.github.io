@@ -1,0 +1,10 @@
+# note: A back-reference pointing further back than the pixels decoded so
+#   far.
+# expect: reject
+# exercises: One literal, then a copy at a distance of one whole row. Must
+#   be rejected rather than reading before the buffer.
+lossless
+width 8
+height 2
+code green complex
+pixels 0x33 x1 copy 8 1

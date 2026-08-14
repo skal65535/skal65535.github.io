@@ -1,0 +1,7 @@
+# note: Distance code: both simple-form symbols out of range (200, 201).
+# expect: reject
+# exercises: No symbol is left inside alphabet_size, so BuildHuffmanTable()
+#   sees an empty code and fails. Must stay a clean BITSTREAM_ERROR, not a
+#   crash.
+lossless
+code dist 200 201

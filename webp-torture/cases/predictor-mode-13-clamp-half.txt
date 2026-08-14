@@ -1,0 +1,13 @@
+# note: Predictor 13 (ClampAddSubtractHalf) over the whole image.
+# expect: ok
+# exercises: Exercises AddSubtractComponentHalf() and its Clip255(), the
+#   arithmetic most likely to differ between the C and SIMD paths.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 13 13 13 13
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

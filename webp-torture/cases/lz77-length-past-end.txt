@@ -1,0 +1,9 @@
+# note: A copy whose length runs past the last pixel of the image.
+# expect: reject
+# exercises: Four literals then an 8-pixel copy in an 8-pixel image. Must be
+#   rejected rather than writing past the buffer.
+lossless
+width 8
+height 1
+code green complex
+pixels 0x33 x4 copy 8 121

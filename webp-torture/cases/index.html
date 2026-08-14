@@ -11,11 +11,12 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-torture cases</h1>
-<p>111 text cases, each assembled into the .webp of the same name in
+<p>173 text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
-names &mdash; RFC 6386 for the frame, RFC 9649 for the container &mdash; and
-carries its own note on what it is for; the <a href="../">notes</a> have the
-full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
+names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
+&mdash; and carries its own note on what it is for; the
+<a href="../">notes</a> have the full write-up. <b>reject</b> means a
+conforming decoder must refuse it.</p>
 <table>
 <tr><th>case</th><th>expected</th><th>what it is</th></tr>
 
@@ -37,6 +38,26 @@ full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
 <tr><td><a href="alph-raw-short.txt"><code>alph-raw-short</code></a></td><td class="reject">reject</td><td>An uncompressed plane one byte short of the picture.</td></tr>
 <tr><td><a href="alph-reserved-set.txt"><code>alph-reserved-set</code></a></td><td class="reject">reject</td><td>The two reserved bits of the ALPH header byte set.</td></tr>
 <tr><td><a href="alph-without-vp8x-flag.txt"><code>alph-without-vp8x-flag</code></a></td><td class="ok">ok</td><td>An ALPH chunk with the VP8X alpha flag left clear.</td></tr>
+<tr><td><a href="cache-bits-0-invalid.txt"><code>cache-bits-0-invalid</code></a></td><td class="reject">reject</td><td>Color cache flagged as present but with 0 bits.</td></tr>
+<tr><td><a href="cache-bits-1.txt"><code>cache-bits-1</code></a></td><td class="ok">ok</td><td>Color cache with the minimum size, 1 bit (2 entries).</td></tr>
+<tr><td><a href="cache-bits-11.txt"><code>cache-bits-11</code></a></td><td class="ok">ok</td><td>Color cache with the maximum size, 11 bits (2048 entries).</td></tr>
+<tr><td><a href="cache-bits-12-invalid.txt"><code>cache-bits-12-invalid</code></a></td><td class="reject">reject</td><td>Color cache with 12 bits, one past MAX_CACHE_BITS.</td></tr>
+<tr><td><a href="cache-index-literal.txt"><code>cache-index-literal</code></a></td><td class="ok">ok</td><td>A pixel coded as a color-cache index rather than as a literal.</td></tr>
+<tr><td><a href="codelen-all-zero-lengths.txt"><code>codelen-all-zero-lengths</code></a></td><td class="reject">reject</td><td>A code-length stream that assigns length 0 to every symbol.</td></tr>
+<tr><td><a href="codelen-depth-15.txt"><code>codelen-depth-15</code></a></td><td class="ok">ok</td><td>A green code containing a symbol of depth 15, MAX_ALLOWED_CODE_LENGTH.</td></tr>
+<tr><td><a href="codelen-incomplete.txt"><code>codelen-incomplete</code></a></td><td class="reject">reject</td><td>A code whose lengths leave the tree incomplete (two symbols of depth 2).</td></tr>
+<tr><td><a href="codelen-max-symbol-early-stop.txt"><code>codelen-max-symbol-early-stop</code></a></td><td class="ok">ok</td><td>Code-length stream with an explicit max_symbol far below the alphabet size.</td></tr>
+<tr><td><a href="codelen-max-symbol-too-big.txt"><code>codelen-max-symbol-too-big</code></a></td><td class="reject">reject</td><td>Explicit max_symbol greater than the alphabet size.</td></tr>
+<tr><td><a href="codelen-num-codes-19.txt"><code>codelen-num-codes-19</code></a></td><td class="ok">ok</td><td>All 19 code-length codes declared.</td></tr>
+<tr><td><a href="codelen-num-codes-4.txt"><code>codelen-num-codes-4</code></a></td><td class="ok">ok</td><td>Only 4 code-length codes declared, the minimum the 4-bit field allows.</td></tr>
+<tr><td><a href="codelen-over-capacity.txt"><code>codelen-over-capacity</code></a></td><td class="reject">reject</td><td>Three symbols of depth 1, more than the two codes of that length that exist.</td></tr>
+<tr><td><a href="codelen-oversubscribed.txt"><code>codelen-oversubscribed</code></a></td><td class="reject">reject</td><td>Lengths 1, 2, 2, 2: each length is individually possible, but together they over-subscribe the tree.</td></tr>
+<tr><td><a href="codelen-repeat-past-end.txt"><code>codelen-repeat-past-end</code></a></td><td class="reject">reject</td><td>A repeat run that would write past the end of the alphabet.</td></tr>
+<tr><td><a href="codelen-repeat16-no-previous.txt"><code>codelen-repeat16-no-previous</code></a></td><td class="ok">ok</td><td>Code-length stream starting with code 16 (repeat previous), before any non-zero length was seen.</td></tr>
+<tr><td><a href="codelen-repeat17-short-zeros.txt"><code>codelen-repeat17-short-zeros</code></a></td><td class="ok">ok</td><td>Code-length stream using code 17 (3..10 zeros) rather than 18.</td></tr>
+<tr><td><a href="codelen-repeat18-138-zeros.txt"><code>codelen-repeat18-138-zeros</code></a></td><td class="ok">ok</td><td>Code-length stream using code 18 with its maximum run of 138 zeros.</td></tr>
+<tr><td><a href="codelen-single-symbol-complex-form.txt"><code>codelen-single-symbol-complex-form</code></a></td><td class="ok">ok</td><td>The complex form used to describe a code with exactly one symbol.</td></tr>
+<tr><td><a href="codelen-two-level-table.txt"><code>codelen-two-level-table</code></a></td><td class="ok">ok</td><td>A green code with depths up to 10, past the 8-bit root table.</td></tr>
 <tr><td><a href="container-chunk-header-truncated.txt"><code>container-chunk-header-truncated</code></a></td><td class="reject">reject</td><td>The file cut four bytes into the last chunk header.</td></tr>
 <tr><td><a href="container-duplicate-image-chunk.txt"><code>container-duplicate-image-chunk</code></a></td><td class="ok">ok</td><td>Two VP8 chunks, one after the other.</td></tr>
 <tr><td><a href="container-metadata-chunks.txt"><code>container-metadata-chunks</code></a></td><td class="ok">ok</td><td>ICCP, EXIF and XMP chunks around the frame.</td></tr>
@@ -56,6 +77,10 @@ full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
 <tr><td><a href="container-vp8x-still-flags.txt"><code>container-vp8x-still-flags</code></a></td><td class="ok">ok</td><td>The four still-image VP8X flags set, with none of the chunks they promise.</td></tr>
 <tr><td><a href="container-vp8x-wrong-size.txt"><code>container-vp8x-wrong-size</code></a></td><td class="reject">reject</td><td>A VP8X chunk whose header claims 9 bytes rather than 10.</td></tr>
 <tr><td><a href="container-zero-size-chunk.txt"><code>container-zero-size-chunk</code></a></td><td class="ok">ok</td><td>An optional chunk declaring a zero-length payload.</td></tr>
+<tr><td><a href="header-max-area-bomb.txt"><code>header-max-area-bomb</code></a></td><td class="ok">ok</td><td>34 bytes declaring 16384x16384, every pixel one color.</td></tr>
+<tr><td><a href="header-max-area-truncated.txt"><code>header-max-area-truncated</code></a></td><td class="reject">reject</td><td>The same 16384x16384 header, cut off before the Huffman codes.</td></tr>
+<tr><td><a href="header-version-nonzero.txt"><code>header-version-nonzero</code></a></td><td class="reject">reject</td><td>Header with the 3-bit version field set to 1.</td></tr>
+<tr><td><a href="header-width-16384.txt"><code>header-width-16384</code></a></td><td class="ok">ok</td><td>Width 16384, one past WEBP_MAX_DIMENSION.</td></tr>
 <tr><td><a href="lossy-coeff-all-types.txt"><code>lossy-coeff-all-types</code></a></td><td class="ok">ok</td><td>All four coefficient types in one macroblock, and both luma types across two.</td></tr>
 <tr><td><a href="lossy-coeff-bands-chroma.txt"><code>lossy-coeff-bands-chroma</code></a></td><td class="ok">ok</td><td>The same sweep across the four blocks of a chroma plane.</td></tr>
 <tr><td><a href="lossy-coeff-bands-i16.txt"><code>lossy-coeff-bands-i16</code></a></td><td class="ok">ok</td><td>The same sweep for the two block kinds a 16x16 macroblock has: the Y2 block and the luma blocks that follow it.</td></tr>
@@ -130,4 +155,42 @@ full write-up. <b>reject</b> means a conforming decoder must refuse it.</p>
 <tr><td><a href="lossy-truncated-modes.txt"><code>lossy-truncated-modes</code></a></td><td class="reject">reject</td><td>Partition 0 long enough for the whole frame header and not for the macroblock modes that follow it.</td></tr>
 <tr><td><a href="lossy-truncated-short-modes.txt"><code>lossy-truncated-short-modes</code></a></td><td class="ok">ok</td><td>Mode data for 15 macroblocks in a frame whose dimensions call for 16.</td></tr>
 <tr><td><a href="lossy-truncated-tokens.txt"><code>lossy-truncated-tokens</code></a></td><td class="reject">reject</td><td>Partition 0 intact, the token partition cut in half.</td></tr>
+<tr><td><a href="lz77-distance-1-run.txt"><code>lz77-distance-1-run</code></a></td><td class="ok">ok</td><td>A single literal followed by a length-8 copy at distance 1.</td></tr>
+<tr><td><a href="lz77-distance-direct-121.txt"><code>lz77-distance-direct-121</code></a></td><td class="ok">ok</td><td>Plane code 121, the first value past the table.</td></tr>
+<tr><td><a href="lz77-distance-past-start.txt"><code>lz77-distance-past-start</code></a></td><td class="reject">reject</td><td>A back-reference pointing further back than the pixels decoded so far.</td></tr>
+<tr><td><a href="lz77-length-past-end.txt"><code>lz77-length-past-end</code></a></td><td class="reject">reject</td><td>A copy whose length runs past the last pixel of the image.</td></tr>
+<tr><td><a href="lz77-max-length-symbol.txt"><code>lz77-max-length-symbol</code></a></td><td class="ok">ok</td><td>A back-reference using length symbol 23, the largest the format defines.</td></tr>
+<tr><td><a href="lz77-plane-code-1.txt"><code>lz77-plane-code-1</code></a></td><td class="ok">ok</td><td>Back-reference with plane code 1, which means "the pixel directly above".</td></tr>
+<tr><td><a href="lz77-plane-code-120.txt"><code>lz77-plane-code-120</code></a></td><td class="ok">ok</td><td>Plane code 120, the last entry of the 2-D offset table.</td></tr>
+<tr><td><a href="lz77-plane-code-clamped-to-1.txt"><code>lz77-plane-code-clamped-to-1</code></a></td><td class="ok">ok</td><td>Plane code 4 on a 1-pixel-wide image, where the 2-D offset computes to 0.</td></tr>
+<tr><td><a href="meta-huffman-1001-groups.txt"><code>meta-huffman-1001-groups</code></a></td><td class="ok">ok</td><td>Entropy image whose highest group index is 1000, one past the decoder's arbitrary limit.</td></tr>
+<tr><td><a href="meta-huffman-precision-max.txt"><code>meta-huffman-precision-max</code></a></td><td class="ok">ok</td><td>Meta Huffman with the largest tile size (precision 9, 512x512 pixels).</td></tr>
+<tr><td><a href="meta-huffman-precision-min.txt"><code>meta-huffman-precision-min</code></a></td><td class="ok">ok</td><td>Meta Huffman with the smallest tile size (precision 2, 4x4 pixels).</td></tr>
+<tr><td><a href="meta-huffman-sparse-groups.txt"><code>meta-huffman-sparse-groups</code></a></td><td class="ok">ok</td><td>Entropy image referencing groups 0 and 900 only, leaving a 900-entry hole.</td></tr>
+<tr><td><a href="meta-huffman-two-groups.txt"><code>meta-huffman-two-groups</code></a></td><td class="ok">ok</td><td>Two Huffman groups selected per tile by the entropy image.</td></tr>
+<tr><td><a href="predictor-all-16-modes.txt"><code>predictor-all-16-modes</code></a></td><td class="ok">ok</td><td>One tile per predictor index, 0 to 15, across a 64x4 image.</td></tr>
+<tr><td><a href="predictor-mode-11-select.txt"><code>predictor-mode-11-select</code></a></td><td class="ok">ok</td><td>Predictor 11 (Select) over the whole image.</td></tr>
+<tr><td><a href="predictor-mode-13-clamp-half.txt"><code>predictor-mode-13-clamp-half</code></a></td><td class="ok">ok</td><td>Predictor 13 (ClampAddSubtractHalf) over the whole image.</td></tr>
+<tr><td><a href="predictor-mode-14-undefined.txt"><code>predictor-mode-14-undefined</code></a></td><td class="ok">ok</td><td>Every tile selects predictor 14, which the format does not define.</td></tr>
+<tr><td><a href="predictor-mode-15-undefined.txt"><code>predictor-mode-15-undefined</code></a></td><td class="ok">ok</td><td>Every tile selects predictor 15, the other undefined index.</td></tr>
+<tr><td><a href="predictor-single-row.txt"><code>predictor-single-row</code></a></td><td class="ok">ok</td><td>A predictor transform on a one-row image.</td></tr>
+<tr><td><a href="predictor-tile-bits-min.txt"><code>predictor-tile-bits-min</code></a></td><td class="ok">ok</td><td>Predictor tiles of 4x4 pixels, the smallest the format allows.</td></tr>
+<tr><td><a href="simple-dist-1sym-oob.txt"><code>simple-dist-1sym-oob</code></a></td><td class="reject">reject</td><td>Distance code: simple form, single symbol 255, alphabet_size is 40.</td></tr>
+<tr><td><a href="simple-dist-2sym-both-oob.txt"><code>simple-dist-2sym-both-oob</code></a></td><td class="reject">reject</td><td>Distance code: both simple-form symbols out of range (200, 201).</td></tr>
+<tr><td><a href="simple-dist-2sym-duplicate.txt"><code>simple-dist-2sym-duplicate</code></a></td><td class="ok">ok</td><td>Distance code: simple form declaring 2 symbols that are the same (5, 5).</td></tr>
+<tr><td><a href="simple-dist-2sym-first-oob.txt"><code>simple-dist-2sym-first-oob</code></a></td><td class="ok">ok</td><td>Distance code: simple form, 2 symbols, the first one 200 &gt;= alphabet_size 40.</td></tr>
+<tr><td><a href="simple-dist-2sym-second-oob.txt"><code>simple-dist-2sym-second-oob</code></a></td><td class="ok">ok</td><td>Distance code: simple form, 2 symbols, the second one 200 &gt;= 40.</td></tr>
+<tr><td><a href="simple-dist-sym-39-last-valid.txt"><code>simple-dist-sym-39-last-valid</code></a></td><td class="ok">ok</td><td>Distance code: single symbol 39, the last in-range value.</td></tr>
+<tr><td><a href="simple-dist-sym-40-first-oob.txt"><code>simple-dist-sym-40-first-oob</code></a></td><td class="reject">reject</td><td>Distance code: single symbol 40, the first out-of-range value.</td></tr>
+<tr><td><a href="simple-green-1bit-symbol.txt"><code>simple-green-1bit-symbol</code></a></td><td class="ok">ok</td><td>Green code: simple form with first_symbol_len_code = 0, so the symbol is 1 bit wide.</td></tr>
+<tr><td><a href="simple-green-2sym-1bit-each.txt"><code>simple-green-2sym-1bit-each</code></a></td><td class="ok">ok</td><td>Green code with two real symbols, so every pixel costs exactly 1 bit.</td></tr>
+<tr><td><a href="transform-all-four.txt"><code>transform-all-four</code></a></td><td class="ok">ok</td><td>All four transforms present in one stream.</td></tr>
+<tr><td><a href="transform-palette-1-color.txt"><code>transform-palette-1-color</code></a></td><td class="ok">ok</td><td>Palette with a single color, the smallest the 8-bit field can express.</td></tr>
+<tr><td><a href="transform-palette-16-colors.txt"><code>transform-palette-16-colors</code></a></td><td class="ok">ok</td><td>Palette of 16 colors, so indices are 4 bits and 2 pixels share a byte.</td></tr>
+<tr><td><a href="transform-palette-2-colors.txt"><code>transform-palette-2-colors</code></a></td><td class="ok">ok</td><td>Color-indexing transform with 2 colors, so 8 pixels are packed per byte.</td></tr>
+<tr><td><a href="transform-palette-256-colors.txt"><code>transform-palette-256-colors</code></a></td><td class="ok">ok</td><td>Color-indexing transform with the full 256-entry palette.</td></tr>
+<tr><td><a href="transform-palette-3-colors.txt"><code>transform-palette-3-colors</code></a></td><td class="ok">ok</td><td>Palette of 3 colors, so indices are 2 bits and 4 pixels share a byte.</td></tr>
+<tr><td><a href="transform-palette-index-past-end.txt"><code>transform-palette-index-past-end</code></a></td><td class="ok">ok</td><td>Palette of 3 colors addressed with index 3, which does not exist.</td></tr>
+<tr><td><a href="transform-predictor-bits-max.txt"><code>transform-predictor-bits-max</code></a></td><td class="ok">ok</td><td>Predictor transform with bits = 9, the maximum tile size.</td></tr>
+<tr><td><a href="transform-repeated.txt"><code>transform-repeated</code></a></td><td class="reject">reject</td><td>The subtract-green transform declared twice.</td></tr>
 </table>

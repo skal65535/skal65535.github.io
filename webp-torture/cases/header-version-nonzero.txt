@@ -1,0 +1,9 @@
+# note: Header with the 3-bit version field set to 1.
+# expect: reject
+# exercises: Rejected by VP8LCheckSignature() at vp8l_dec.c:111, which tests
+#   (data[4] >> 5) before ReadImageInfo() ever runs. The version field is
+#   the format's only forward-compatibility escape.
+lossless
+width 4
+height 4
+version 1

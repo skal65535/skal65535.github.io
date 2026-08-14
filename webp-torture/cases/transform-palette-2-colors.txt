@@ -1,0 +1,10 @@
+# note: Color-indexing transform with 2 colors, so 8 pixels are packed per
+#   byte.
+# expect: ok
+# exercises: num_colors <= 2 gives bits = 3, the densest packing, and
+#   shrinks xsize to ceil(w / 8).
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff0000ff 0xff00ff00
+code green 0xaa

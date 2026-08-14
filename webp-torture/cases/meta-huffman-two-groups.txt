@@ -1,0 +1,13 @@
+# note: Two Huffman groups selected per tile by the entropy image.
+# expect: ok
+# exercises: The left half of the image uses group 0 (green 0x20), the right
+#   half group 1 (green 0xd0).
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 1
+group
+code green 0x20
+group
+code green 0xd0

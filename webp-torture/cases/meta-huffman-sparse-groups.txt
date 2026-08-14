@@ -1,0 +1,11 @@
+# note: Entropy image referencing groups 0 and 900 only, leaving a 900-entry
+#   hole.
+# expect: ok
+# exercises: num_htree_groups_max (901) exceeds the pixel count, so
+#   ReadHuffmanCodes() builds the mapping[] remap and the 899 unused groups
+#   take the "validate but do not store" branch.
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 900

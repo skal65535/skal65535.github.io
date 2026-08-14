@@ -1,0 +1,6 @@
+# note: Distance code: simple form, 2 symbols, the second one 200 >= 40.
+# expect: ok
+# exercises: Same as above but the out-of-range symbol is the second 8-bit
+#   field.
+lossless
+code dist 3 200

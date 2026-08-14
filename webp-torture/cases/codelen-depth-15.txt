@@ -1,0 +1,8 @@
+# note: A green code containing a symbol of depth 15,
+#   MAX_ALLOWED_CODE_LENGTH.
+# expect: ok
+# exercises: The deepest code the format allows; forces the two-level lookup
+#   in BuildHuffmanTable() past HUFFMAN_TABLE_BITS.
+lossless
+code green lengths 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 15
+pixels 15

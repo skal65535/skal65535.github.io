@@ -1,0 +1,6 @@
+# note: A code-length stream that assigns length 0 to every symbol.
+# expect: reject
+# exercises: Empty code. Different route to the same rejection as
+#   simple-dist-1sym-oob.
+lossless
+code dist codelen 18x40

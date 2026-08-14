@@ -235,6 +235,68 @@ def write_complex_code(bw, lengths, use_repeats=False, num_codes=None,
     return cl
 
 
+def write_code(bw, huff):
+    """Emit a Huffman code, using the simple form when it fits."""
+    used = [i for i, l in enumerate(huff.lengths) if l > 0]
+    if len(used) == 0:
+        write_simple_code(bw, 1, [0])
+    elif len(used) == 1 and used[0] < 256:
+        write_simple_code(bw, 1, [used[0]])
+    elif len(used) == 2 and used[0] < 256 and used[1] < 256 and \
+            huff.lengths[used[0]] == huff.lengths[used[1]]:
+        write_simple_code(bw, 2, used)
+    else:
+        write_complex_code(bw, huff.lengths)
+
+
+def write_subimage(bw, pixels):
+    """A complete non-level0 image stream holding exactly 'pixels' (ARGB)."""
+    # No transform bit and no meta-huffman bit here: DecodeImageStream() only
+    # reads transforms at level 0, and ReadHuffmanCodes() short-circuits on
+    # 'allow_recursion &&', so the meta bit is not in the stream either.
+    bw.put(0, 1)  # no color cache
+    greens = [(p >> 8) & 0xff for p in pixels]
+    reds = [(p >> 16) & 0xff for p in pixels]
+    blues = [p & 0xff for p in pixels]
+    alphas = [(p >> 24) & 0xff for p in pixels]
+    codes = []
+    for vals, size in ((greens, alphabet_size(0)), (reds, 256),
+                       (blues, 256), (alphas, 256)):
+        freqs = [0] * size
+        for v in vals:
+            freqs[v] += 1
+        codes.append(Huffman.from_freqs(freqs))
+    codes.append(Huffman.single(0, NUM_DISTANCE_CODES))   # distances
+    for c in codes:
+        write_code(bw, c)
+    trivial_literal = all(c.trivial for c in codes[1:4])
+    for i in range(len(pixels)):
+        codes[0].emit_symbol(bw, greens[i])
+        if not trivial_literal:
+            codes[1].emit_symbol(bw, reds[i])
+            codes[2].emit_symbol(bw, blues[i])
+            codes[3].emit_symbol(bw, alphas[i])
+
+
+def delta_palette(colors):
+    """ExpandColorMap() accumulates entries, so store per-byte deltas."""
+    out = [colors[0]]
+    for i in range(1, len(colors)):
+        d = 0
+        for shift in (0, 8, 16, 24):
+            b = (((colors[i] >> shift) & 0xff) -
+                 ((colors[i - 1] >> shift) & 0xff))
+            d |= (b & 0xff) << shift
+        out.append(d)
+    return out
+
+
+def palette_bits(num_colors):
+    """How many indices a packed byte holds, as a log2 of the palette size."""
+    return 0 if num_colors > 16 else 1 if num_colors > 4 else \
+        2 if num_colors > 2 else 3
+
+
 def write_header(bw, width, height, alpha=0, version=0):
     bw.put(MAGIC, 8)
     bw.put(width - 1, IMAGE_SIZE_BITS)

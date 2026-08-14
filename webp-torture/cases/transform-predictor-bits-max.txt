@@ -1,0 +1,9 @@
+# note: Predictor transform with bits = 9, the maximum tile size.
+# expect: ok
+# exercises: MIN_TRANSFORM_BITS + 7. The predictor sub-image is a single
+#   pixel for any image up to 512x512.
+lossless
+width 8
+height 8
+transforms predictor
+predictor_bits 9

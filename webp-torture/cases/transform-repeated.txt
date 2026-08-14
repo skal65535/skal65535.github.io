@@ -1,0 +1,8 @@
+# note: The subtract-green transform declared twice.
+# expect: reject
+# exercises: Each transform type may appear once. Caught by the
+#   transforms_seen bitmask in ReadTransform().
+lossless
+width 4
+height 4
+transforms subtract_green subtract_green

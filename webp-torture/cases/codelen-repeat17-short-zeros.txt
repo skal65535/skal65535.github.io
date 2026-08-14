@@ -1,0 +1,6 @@
+# note: Code-length stream using code 17 (3..10 zeros) rather than 18.
+# expect: ok
+# exercises: The short zero-run escape. Its extra field is 3 bits, offset 3.
+lossless
+code dist lengths 0:1 11:1
+code dist codelen 1 17x10 1 17x10 17x10 17x8

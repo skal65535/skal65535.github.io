@@ -1,0 +1,8 @@
+# note: Meta Huffman with the smallest tile size (precision 2, 4x4 pixels).
+# expect: ok
+# exercises: MIN_HUFFMAN_BITS. A 16x16 image is split into 4x4 = 16 tiles,
+#   all pointing at group 0.
+lossless
+width 16
+height 16
+meta_bits 2

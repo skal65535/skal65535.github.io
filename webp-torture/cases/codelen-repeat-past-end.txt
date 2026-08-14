@@ -1,0 +1,7 @@
+# note: A repeat run that would write past the end of the alphabet.
+# expect: reject
+# exercises: Must be caught by the symbol + repeat > num_symbols test at
+#   vp8l_dec.c:298.
+lossless
+code dist lengths 1 1
+code dist codelen 1 1 18x138

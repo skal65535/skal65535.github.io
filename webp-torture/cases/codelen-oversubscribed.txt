@@ -1,0 +1,8 @@
+# note: Lengths 1, 2, 2, 2: each length is individually possible, but
+#   together they over-subscribe the tree.
+# expect: reject
+# exercises: Slips past the per-length capacity guard and is caught later,
+#   when num_open goes negative during the tree walk.
+lossless
+code dist lengths 1 2 2 2
+code dist codelen 1 2 2 2 18x36

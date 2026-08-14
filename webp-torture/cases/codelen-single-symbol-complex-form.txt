@@ -1,0 +1,7 @@
+# note: The complex form used to describe a code with exactly one symbol.
+# expect: ok
+# exercises: Takes BuildHuffmanTable()'s offset[MAX_ALLOWED_CODE_LENGTH] ==
+#   1 shortcut, which makes the code 0 bits wide.
+lossless
+code dist lengths 7:1
+code dist codelen 0 0 0 0 0 0 0 1 18x32

@@ -1,0 +1,9 @@
+# note: Green code with two real symbols, so every pixel costs exactly 1
+#   bit.
+# expect: ok
+# exercises: The smallest non-trivial code. 4x1 pixels alternate between the
+#   two green values.
+lossless
+width 4
+code green 0x10 0x20
+pixels 0x10 0x20 0x20 0x10

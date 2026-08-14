@@ -1,0 +1,8 @@
+# note: Code-length stream using code 18 with its maximum run of 138 zeros.
+# expect: ok
+# exercises: Longest repeat the format allows (11 + 127). Green alphabet is
+#   280 symbols so two of them fit.
+lossless
+code green lengths 0:1 277:1
+code green codelen 1 18x138 18x138 1 0 0
+pixels 0

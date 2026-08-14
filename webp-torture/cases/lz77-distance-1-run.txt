@@ -1,0 +1,9 @@
+# note: A single literal followed by a length-8 copy at distance 1.
+# expect: ok
+# exercises: The degenerate overlapping copy: the copy loop reads bytes it
+#   has just written.
+lossless
+width 10
+code green complex
+code dist complex
+pixels 0x33 copy 9 2

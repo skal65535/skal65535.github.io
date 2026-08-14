@@ -1,0 +1,9 @@
+# note: Code-length stream with an explicit max_symbol far below the
+#   alphabet size.
+# expect: ok
+# exercises: ReadHuffmanCodeLengths() breaks out at vp8l_dec.c:284 with most
+#   lengths still zero. Exercises the use_length branch cwebp never takes.
+lossless
+code dist lengths 1 1
+code dist codelen 1 1
+code dist max_symbol 2

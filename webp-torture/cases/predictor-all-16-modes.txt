@@ -1,0 +1,13 @@
+# note: One tile per predictor index, 0 to 15, across a 64x4 image.
+# expect: ok
+# exercises: The mode is read as ((pixel >> 8) & 0xf) at lossless.c:247, so
+#   all 16 indices are reachable even though the format defines only 0..13.
+lossless
+width 64
+height 4
+transforms predictor
+predictor_tiles 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

@@ -1,0 +1,14 @@
+# note: Every tile selects predictor 15, the other undefined index.
+# expect: ok
+# exercises: Partner of predictor-mode-14-undefined and the largest value
+#   the 4-bit mask can produce. Verified to decode identically to mode 14,
+#   i.e. both really do land on PredictorAdd0_C.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 15 15 15 15
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

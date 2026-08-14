@@ -1,0 +1,14 @@
+# note: A predictor transform on a one-row image.
+# expect: ok
+# exercises: Only the y_start == 0 shortcut runs (lossless.c:223): the first
+#   pixel takes mode 0 and the rest mode 1, so the tile modes are never
+#   read.
+lossless
+width 16
+height 1
+transforms predictor
+predictor_tiles 7 7 7 7
+code green 0x11
+code red 0x22
+code blue 0x33
+code alpha 0x44

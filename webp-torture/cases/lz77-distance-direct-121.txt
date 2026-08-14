@@ -1,0 +1,9 @@
+# note: Plane code 121, the first value past the table.
+# expect: ok
+# exercises: Distances above CODE_TO_PLANE_CODES bypass the 2-D mapping
+#   entirely: the distance is plane_code - 120, so 121 means 1.
+lossless
+width 16
+height 4
+code green complex
+pixels 0x33 x32 copy 32 121

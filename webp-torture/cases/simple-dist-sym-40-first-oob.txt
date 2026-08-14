@@ -1,0 +1,7 @@
+# note: Distance code: single symbol 40, the first out-of-range value.
+# expect: reject
+# exercises: Exact boundary of the check that does not exist in
+#   ReadHuffmanCode(). If someone adds one, these two files pin where it
+#   goes.
+lossless
+code dist 40
