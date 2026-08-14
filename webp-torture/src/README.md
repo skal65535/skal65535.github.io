@@ -24,9 +24,11 @@ Three layers, and a case only ever touches the top one:
   canonical Huffman codes, prefix codes, the sub-image streams. They
   validate nothing either.
 
-`vp8_dis.py` goes the other way, lossy only, and is what
-[`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writer against
-real encodes rather than against itself. There is no VP8L disassembler yet.
+`vp8_dis.py` and `vp8l_dis.py` go the other way, and are what
+[`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writers against
+real encodes rather than against themselves: disassemble a file, reassemble
+from its own text, compare the bytes. `--check` does exactly that for any
+file you point it at.
 
 `grammar.py` is the third thing a case touches, though not at assembly time:
 it holds every keyword and the range of every value, and
@@ -42,7 +44,8 @@ drift from the code.
 | [`vp8.py`](vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
 | [`vp8_asm.py`](vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
 | [`webp_asm.py`](webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
-| [`vp8_dis.py`](vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
+| [`vp8_dis.py`](vp8_dis.py) | The other direction for a lossy frame. `--check` round trips one against libwebp. |
+| [`vp8l_dis.py`](vp8l_dis.py) | The other direction for a lossless image, the same way. |
 | [`grammar.py`](grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
 | [`vp8_tables.py`](vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
 | [`make_vp8_tables.py`](make_vp8_tables.py) | Extracts them, so they are never retyped. |

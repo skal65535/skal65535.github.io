@@ -173,6 +173,7 @@ nothing about covers whatever the pixel data asks of it.
 
 | form | values | range | what it is |
 | --- | --- | --- | --- |
+| `code NAME cl_lengths` | any | `0`..`7` | the code-length code itself, as symbol:length pairs; without it one is built from how often each code-length symbol is used, which two encoders may do differently |
 | `code NAME codelen` | any | a word | the code-length stream itself: a length 0..15, or 16xN, 17xN, 18xN for a run of N |
 | `code NAME complex` | 0 | -- | the normal form, over whatever the pixels need |
 | `code NAME lengths` | any | `0`..`15` | a length per symbol, positional from 0; 'N:L' jumps to symbol N, trailing zeros implied |

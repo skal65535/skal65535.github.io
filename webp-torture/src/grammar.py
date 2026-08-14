@@ -214,6 +214,10 @@ CODE_FORMS = {
     'codelen': ('list', [TOKEN],
                 'the code-length stream itself: a length 0..15, or 16xN, '
                 '17xN, 18xN for a run of N'),
+    'cl_lengths': ('list', [uint(3)],
+                   'the code-length code itself, as symbol:length pairs; '
+                   'without it one is built from how often each code-length '
+                   'symbol is used, which two encoders may do differently'),
     'num_codes': (1, [{'kind': 'uint', 'bits': 5, 'min': 4, 'max': 19}],
                   'how many of the 19 code-length codes to declare'),
     'max_symbol': (1, [uint(16)], 'the optional early stop'),

@@ -326,7 +326,8 @@ describing how they fit together.
 | [`src/vp8.py`](src/vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
 | [`src/vp8_asm.py`](src/vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
 | [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
-| [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
+| [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction for a lossy frame. `--check` round trips one against libwebp. |
+| [`src/vp8l_dis.py`](src/vp8l_dis.py) | The other direction for a lossless image, the same way. |
 | [`src/grammar.py`](src/grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
 | [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
 | [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
@@ -381,6 +382,7 @@ back out as text to start from:
     ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
+    ./src/vp8l_dis.py --check some-lossless.webp
 
 [`SYNTAX.md`](SYNTAX.md) is the whole vocabulary in one place, generated
 from [`src/grammar.py`](src/grammar.py); `./src/grammar.py` prints the same
@@ -421,15 +423,22 @@ meaningful against one revision of libwebp: the one recorded at the top of
 `coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
 disagree, trust `coverage.txt`.
 
-The lossy writer is checked a second way, against libwebp rather than against
-itself: `vp8_dis.py` reads a frame back into the same text `vp8_asm.py`
-assembles, so a real cwebp encode can be disassembled, reassembled and
-compared byte for byte. Every file in `sources/` survives that, as do encodes
+Both writers are checked a second way, against libwebp rather than against
+themselves: `vp8_dis.py` and `vp8l_dis.py` read a file back into the same
+text the assemblers take, so a real cwebp encode can be disassembled,
+reassembled and compared byte for byte. Every file in `sources/` survives that, as do encodes
 from 1x1 to 128x128 across the whole quality range -- 596 macroblocks, all
 four 16x16 modes, all ten 4x4 modes and coefficients in every escape
 category. `vp8_selftest.py` runs it, along with every coefficient magnitude
 up to the format's largest and a handful of frames that say the same thing
 two different ways and must decode alike.
+
+The lossless writer gets the same treatment. 84 real `cwebp` encodes -- a
+dozen images from 1x1 to 256x256, flat, gradient, noise, palettised and with
+alpha, each at seven lossless settings -- disassemble and reassemble bit for
+bit, transforms, back-references, colour caches, entropy images and all. So
+do the corpus's own lossless files, bar the fifteen whose whole point is to
+be unreadable and the one that decodes to a gigabyte.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy

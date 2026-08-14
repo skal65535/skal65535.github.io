@@ -14,7 +14,8 @@
                byte for byte. Anything the two disagree on shows up within a
                byte or two, so this pins the whole syntax against files
                libwebp itself produced.
-  cases        the same, starting from the text in cases/ instead. The
+  cases        the same, starting from the text in cases/ instead, lossy
+               then lossless. The
                ones meant to be refused often cannot be read back at
                all, which is the point of them; those are counted.
   levels       every coefficient magnitude from 1 to 2114, the largest the
@@ -42,21 +43,67 @@ import vp8
 import vp8_asm
 import vp8_dis
 import vp8l_asm
+import vp8l_dis
 
 DWEBP = os.environ.get('DWEBP', 'dwebp')
 
 
 def round_trip(paths):
-    """Real encodes: bytes -> text -> bytes must not move."""
-    bad = done = 0
+    """Real encodes: bytes -> text -> bytes must not move.
+
+    Either kind: a lossy frame goes through vp8_dis.py, a lossless image
+    through vp8l_dis.py, and both have to come back byte for byte.
+    """
+    bad = lossy = lossless = 0
     for path in paths:
         with open(path, 'rb') as fp:
             data = fp.read()
-        if b'VP8 ' not in data[:20]:
-            continue                   # lossless, not ours
+        if b'VP8 ' in data[:20]:
+            lossy += 1
+            bad += bool(vp8_dis.check(path, data))
+        elif b'VP8L' in data[:20]:
+            lossless += 1
+            bad += bool(vp8l_dis.check(path, data))
+    print('sources  %d lossy, %d lossless' % (lossy, lossless))
+    return bad
+
+
+def lossless_round_trip():
+    """The lossless cases, the same way round.
+
+    A case meant to be refused often cannot be read back at all -- that is
+    what it is for -- so those are counted rather than failed, and the one
+    file that decodes to a gigabyte is left out.
+    """
+    bad = broken = skipped = 0
+    done = 0
+    for path in sorted(glob.glob('cases/*.txt')):
+        with open(path) as fp:
+            text = fp.read()
+        if not vp8l_asm.is_lossless(text):
+            continue
+        head = vp8_asm.parse_header(text, path)
+        if head.get('slow') == 'yes':
+            skipped += 1
+            continue
         done += 1
-        bad += bool(vp8_dis.check(path, data))
-    print('sources  %d files' % done)
+        want = vp8l_dis.vp8l_chunk(vp8l_asm.assemble_text(text))
+        try:
+            got = vp8l_dis.vp8l_chunk(
+                vp8l_asm.assemble_text(vp8l_dis.dump(want)))
+        except (vp8l_dis.Truncated, vp8_asm.AsmError):
+            got = None
+        if got == want:
+            continue
+        if head['expect'] == 'reject':
+            broken += 1
+            continue
+        print('%s: reassembles to %s bytes, not %d'
+              % (path, len(got) if got else 'unreadable', len(want)),
+              file=sys.stderr)
+        bad += 1
+    print('lossless %d cases, %d refused by the reader, %d too big to read'
+          % (done, broken, skipped))
     return bad
 
 
@@ -68,8 +115,7 @@ def case_round_trip():
     failed, as are the ones that say '# roundtrip: no' because what they
     pin is invisible to a reader. Everything else has to survive.
 
-    Lossless cases are left out: there is no VP8L disassembler to read them
-    back with.
+    Lossless cases go through lossless_round_trip() instead.
     """
     bad = broken = skipped = 0
     paths = []
@@ -288,6 +334,7 @@ def main(argv):
     bad = 0
     bad += round_trip(sorted(glob.glob('sources/*.webp')) + argv[1:])
     bad += case_round_trip()
+    bad += lossless_round_trip()
     bad += levels()
     if shutil.which(DWEBP):
         bad += pixels()

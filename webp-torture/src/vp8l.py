@@ -200,14 +200,22 @@ def code_length_symbols(lengths, use_repeats=False):
 
 
 def write_complex_code(bw, lengths, use_repeats=False, num_codes=None,
-                       max_symbol=None, raw_symbols=None):
-    """The 'normal' form: a Huffman code over the code lengths themselves."""
+                       max_symbol=None, raw_symbols=None, cl_lengths=None):
+    """The 'normal' form: a Huffman code over the code lengths themselves.
+
+    'cl_lengths' is that inner code, spelled out. Without it one is built
+    from how often each code-length symbol is used, which is what an encoder
+    would do -- but two encoders faced with the same frequencies may still
+    pick different lengths, so anything that has to reproduce a stream
+    exactly passes the ones the stream declared.
+    """
     syms = raw_symbols if raw_symbols is not None else \
         code_length_symbols(lengths, use_repeats)
-    freqs = [0] * CODE_LENGTH_CODES
-    for s, _, _ in syms:
-        freqs[s] += 1
-    cl_lengths = huffman_lengths(freqs, max_len=7)
+    if cl_lengths is None:
+        freqs = [0] * CODE_LENGTH_CODES
+        for s, _, _ in syms:
+            freqs[s] += 1
+        cl_lengths = huffman_lengths(freqs, max_len=7)
     cl = Huffman(cl_lengths)
     if num_codes is None:
         num_codes = CODE_LENGTH_CODES

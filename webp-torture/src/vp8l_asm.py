@@ -42,10 +42,14 @@ pixel data -- so a case reads in that order too.
                             same thing and is not legal either
   meta_bits N               the entropy image, absent by default
   meta_tiles G...           one Huffman-group index per tile
-  subimage NAME             aims the 'code' lines that follow at one of the
-                            sub-images: predictor, cross_color, palette or
-                            meta. Each is an image stream of its own, so it
-                            has its own five codes
+  subimage NAME             aims the 'code', 'pixels' and 'argb' lines that
+                            follow at one of the sub-images: predictor,
+                            cross_color, palette or meta. Each is an image
+                            stream of its own, so it has its own five codes
+                            and its own pixel data -- back-references and
+                            all, which is the only way to say what a real
+                            encoder writes there. 'group' aims them back at
+                            the image itself
   subimage_cache_bits NAME N   and its own color cache, absent by default
   code NAME ...             one Huffman code of the group being filled in
   group                     opens another group of codes
@@ -71,6 +75,9 @@ a case names the form it wants each one in:
                             symbol stream itself: a length 0..15, or 16xN to
                             repeat the previous length N times, or 17xN and
                             18xN for N zeros
+  code green cl_lengths S:L...  the code-length code itself, as symbol:length
+                            pairs; without it one is built from how often
+                            each code-length symbol is used
   code green num_codes N    how many of the 19 code-length codes to declare
   code green max_symbol N   the optional early stop
   code green complex        the normal form, over whatever the pixels need
@@ -146,6 +153,47 @@ LIST_FIELDS = {'predictor_tiles': 'predictor_tiles',
                'transforms': 'transforms'}
 
 
+def item_freqs(items, cache_bits=0):
+    """What one pixel-item stream asks of the five codes of a group."""
+    freqs = [[0] * vp8l.alphabet_size(i, cache_bits) for i in range(5)]
+
+    def count(table, symbol, times=1):
+        if symbol >= len(table):
+            raise AsmError('pixels: symbol %d, past the %d the alphabet holds'
+                           % (symbol, len(table)))
+        table[symbol] += times
+
+    for item in items:
+        if item[0] == 'green':
+            count(freqs[0], item[1], item[2])
+        elif item[0] == 'argb':
+            for table, at in zip(freqs, vp8l.CHANNEL_SHIFTS):
+                count(table, (item[1] >> at) & 0xff, item[2])
+        elif item[0] == 'cache':
+            count(freqs[0], vp8l.NUM_LITERAL_CODES +
+                  vp8l.NUM_LENGTH_CODES + item[1])
+        else:
+            count(freqs[0],
+                  vp8l.NUM_LITERAL_CODES + vp8l.prefix_code(item[1])[0])
+            count(freqs[4], vp8l.prefix_code(item[2])[0])
+    return freqs
+
+
+def one(item):
+    """The same item, written once: repeats are unrolled by the caller."""
+    return (item[0], item[1], 1) if item[0] in ('green', 'argb') else item
+
+
+def copied(pixels, length, plane_code, xsize):
+    """What a back-reference repeats, so the values behind it are known."""
+    distance = vp8l.plane_code_to_distance(xsize, plane_code)
+    out = []
+    for _ in range(length):
+        out.append((pixels + out)[-distance] if distance <= len(pixels + out)
+                   else 0)
+    return out
+
+
 class Code:
     """One Huffman code of a group: how to write it, and what it encodes."""
 
@@ -157,13 +205,15 @@ class Code:
         self.codelen = None         # [(symbol, extra bits, extra value)]
         self.num_codes = None
         self.max_symbol = None
+        self.cl_lengths = None      # the code-length code, spelled out
         self.derive = False         # 'complex': normal form, from the pixels
 
     @property
     def spelled(self):
         """Whether the case says what the code is, rather than the pixels."""
         return (self.lengths is not None or self.codelen is not None or
-                self.num_codes is not None or self.max_symbol is not None)
+                self.num_codes is not None or self.max_symbol is not None or
+                self.cl_lengths is not None)
 
     def write(self, bw, cache_bits, freqs):
         """Emits the code, and returns the Huffman that encodes its symbols."""
@@ -178,7 +228,8 @@ class Code:
             vp8l.write_complex_code(bw, lengths, use_repeats=True,
                                     num_codes=self.num_codes,
                                     max_symbol=self.max_symbol,
-                                    raw_symbols=self.codelen)
+                                    raw_symbols=self.codelen,
+                                    cl_lengths=self.cl_lengths)
             return vp8l.Huffman(lengths)
         if self.simple is not None:
             vp8l.write_simple_code(bw, len(self.simple), self.simple,
@@ -222,6 +273,8 @@ class Image:
         self.magic = vp8l.MAGIC
         self.sub_cache = dict.fromkeys(SUBIMAGES)     # name -> cache_bits
         self.sub_groups = {}                          # name -> Group
+        self.sub_items = {}                           # name -> pixel items
+        self.tiles = None            # group per tile, once meta is written
         self.cache_bits = None
         self.meta_bits = None
         self.meta_tiles = None
@@ -231,12 +284,12 @@ class Image:
 
     def group_at(self, position, xsize):
         """Which Huffman group codes the pixel at that raster position."""
-        if self.meta_bits is None or not self.meta_tiles:
+        groups = self.tiles if self.tiles is not None else self.meta_tiles
+        if self.meta_bits is None or not groups:
             return 0
         sw = vp8l.sub_sample_size(xsize, self.meta_bits)
         x, y = position % xsize, position // xsize
-        return self.meta_tiles[(y >> self.meta_bits) * sw +
-                               (x >> self.meta_bits)]
+        return groups[(y >> self.meta_bits) * sw + (x >> self.meta_bits)]
 
     def walk(self, xsize):
         """(group, item) for every item of the pixel stream, in order.
@@ -284,7 +337,8 @@ class Image:
     def num_groups(self):
         if self.group_count is not None:
             return self.group_count
-        n = max(self.meta_tiles) + 1 if self.meta_tiles else 1
+        groups = self.tiles if self.tiles is not None else self.meta_tiles
+        n = max(groups) + 1 if groups else 1
         return max(n, len(self.groups))
 
 
@@ -294,6 +348,8 @@ class Assembler:
     def __init__(self):
         self.img = Image()
         self.group = None
+        self.sub_xsize = 1          # width a copy inside one image sees
+        self.items = self.img.pixels     # what 'pixels'/'argb' fill in
         self.line = 0
 
     def fail(self, msg):
@@ -325,13 +381,15 @@ class Assembler:
             self.fail('group takes no value')
         self.group = Group()
         self.img.groups.append(self.group)
+        self.items = self.img.pixels
 
     def do_subimage(self, args):
-        """Aims the 'code' lines that follow at one of the sub-images."""
+        """Aims the 'code' and pixel lines that follow at one sub-image."""
         name = self.one(args, 'subimage')
         if name not in SUBIMAGES:
             self.fail('subimage names one of %s' % ', '.join(SUBIMAGES))
         self.group = self.img.sub_groups.setdefault(name, Group())
+        self.items = self.img.sub_items.setdefault(name, [])
 
     def do_subimage_cache_bits(self, args):
         name, bits = self.take(args, 2, 'subimage_cache_bits')
@@ -360,6 +418,12 @@ class Assembler:
         elif form == 'codelen':
             code.codelen = (code.codelen or []) + \
                 [self.codelen_symbol(tok) for tok in rest]
+        elif form == 'cl_lengths':
+            code.cl_lengths = [0] * vp8l.CODE_LENGTH_CODES
+            for tok in rest:
+                where, _, value = tok.partition(':')
+                code.cl_lengths[self.num(where, 'symbol')] = \
+                    self.num(value, 'length')
         elif form in ('num_codes', 'max_symbol'):
             setattr(code, form, self.num(self.one(rest, form), form))
         elif form == 'complex':
@@ -397,7 +461,7 @@ class Assembler:
             repeat = 1
             if i < len(args) and args[i].startswith('x'):
                 repeat, i = self.num(args[i][1:], 'repeat'), i + 1
-            self.img.pixels.append(('argb', value, repeat))
+            self.items.append(('argb', value, repeat))
 
     def do_pixels(self, args):
         i = 0
@@ -407,20 +471,20 @@ class Assembler:
             if tok == 'copy':
                 if i + 2 > len(args):
                     self.fail('copy needs a length and a plane code')
-                self.img.pixels.append(('copy', self.num(args[i], 'length'),
-                                        self.num(args[i + 1], 'plane code')))
+                self.items.append(('copy', self.num(args[i], 'length'),
+                                   self.num(args[i + 1], 'plane code')))
                 i += 2
             elif tok == 'cache':
                 if i == len(args):
                     self.fail('cache needs an index')
-                self.img.pixels.append(('cache', self.num(args[i], 'index')))
+                self.items.append(('cache', self.num(args[i], 'index')))
                 i += 1
             else:
                 repeat = 1
                 if i < len(args) and args[i].startswith('x'):
                     repeat = self.num(args[i][1:], 'repeat')
                     i += 1
-                self.img.pixels.append(
+                self.items.append(
                     ('green', self.num(tok, 'symbol'), repeat))
 
     def do_lossless(self, args):
@@ -467,30 +531,78 @@ class Assembler:
         return given
 
     def subimage(self, bw, name, pixels):
-        """A complete non-level0 image stream holding exactly 'pixels'.
+        """A complete non-level0 image stream, and the pixels it comes to.
 
         No transform bit and no meta-Huffman bit: DecodeImageStream() reads
         transforms at level 0 only, and ReadHuffmanCodes() short-circuits on
         'allow_recursion &&', so neither is in the stream. The color cache
         and the five codes are, which is why a case can speak about them.
+
+        'pixels' is what the friendly per-tile directives came to. A case
+        that opened 'subimage NAME' and listed its own pixel items replaces
+        that, which is the only way to say a sub-image using back-references.
         """
         cache_bits = self.img.sub_cache[name]
         group = self.img.sub_groups.get(name) or Group()
+        items = self.img.sub_items.get(name)
+        if not items:
+            items = [('argb', p, 1) for p in pixels]
         if cache_bits is None:
             bw.put(0, 1)
         else:
             bw.put(1, 1)
             bw.put(cache_bits, 4)
-        huffs = [code.write(bw, cache_bits or 0, freqs)
-                 for code, freqs in zip(group.codes,
-                                        vp8l.pixel_freqs(pixels,
-                                                         cache_bits or 0))]
+        freqs = item_freqs(items, cache_bits or 0)
+        huffs = []
+        for i, code in enumerate(group.codes):
+            want = freqs[i]
+            if not any(want):
+                want = list(want)
+                want[CODE_DEFAULTS[i]] = 1
+            huffs.append(code.write(bw, cache_bits or 0, want))
+        return self.emit_items(bw, items, huffs, name)
+
+    def emit_items(self, bw, items, huffs, what):
+        """Writes one pixel stream, and returns the pixels it decodes to."""
+        green, dist = huffs[0], huffs[4]
         trivial = all(h.trivial for h in huffs[1:4])
-        for p in pixels:
-            self.emit(bw, huffs[0], (p >> 8) & 0xff, name)
-            if not trivial:
-                for huff, shift in zip(huffs[1:4], vp8l.CHANNEL_SHIFTS[1:]):
-                    self.emit(bw, huff, (p >> shift) & 0xff, name)
+        arb = 0
+        if trivial:
+            for huff, at in zip(huffs[1:4], vp8l.CHANNEL_SHIFTS[1:]):
+                arb |= next(s for s, l in enumerate(huff.lengths) if l) << at
+        out = []
+        for item in items:
+            for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
+                if item[0] == 'green':
+                    if not trivial:
+                        raise AsmError('%s: symbol %d leaves red, blue and '
+                                       'alpha unsaid; spell the whole pixel '
+                                       'with "argb"' % (what, item[1]))
+                    self.emit(bw, green, item[1], what)
+                    out.append(arb | (item[1] << 8))
+                elif item[0] == 'argb':
+                    self.emit(bw, green, (item[1] >> 8) & 0xff, what)
+                    if not trivial:
+                        for huff, at in zip(huffs[1:4],
+                                            vp8l.CHANNEL_SHIFTS[1:]):
+                            self.emit(bw, huff, (item[1] >> at) & 0xff, what)
+                    out.append(item[1])
+                elif item[0] == 'cache':
+                    self.emit(bw, green, vp8l.NUM_LITERAL_CODES +
+                              vp8l.NUM_LENGTH_CODES + item[1], what)
+                    out.append(0)      # only the index matters here
+                else:
+                    symbol, bits, extra = vp8l.prefix_code(item[1])
+                    self.emit(bw, green,
+                              vp8l.NUM_LITERAL_CODES + symbol, what)
+                    if bits:
+                        bw.put(extra, bits)
+                    symbol, bits, extra = vp8l.prefix_code(item[2])
+                    self.emit(bw, dist, symbol, what)
+                    if bits:
+                        bw.put(extra, bits)
+                    out += copied(out, item[1], item[2], self.sub_xsize)
+        return out
 
     def emit(self, bw, huff, symbol, what):
         if not huff.trivial and not huff.lengths[symbol]:
@@ -545,11 +657,14 @@ class Assembler:
         else:
             bw.put(1, 1)
             bw.put(img.meta_bits - vp8l.MIN_HUFFMAN_BITS, 3)
-            groups = self.tiles(img.meta_tiles, xsize, img.meta_bits,
-                                'meta_tiles')
+            tiles = self.tiles(img.meta_tiles, xsize, img.meta_bits,
+                               'meta_tiles')
             # the group index lives in the red (high) and green (low) bytes
-            self.subimage(bw, 'meta', [((g >> 8) << 16) | ((g & 0xff) << 8)
-                                       for g in groups])
+            self.sub_xsize = vp8l.sub_sample_size(xsize, img.meta_bits)
+            pixels = self.subimage(bw, 'meta',
+                                   [((g >> 8) << 16) | ((g & 0xff) << 8)
+                                    for g in tiles])
+            img.tiles = [(p >> 8) & 0xffff for p in pixels]
         count = img.num_groups()
         freqs = img.freqs(xsize, count)
         huffs = []
@@ -570,40 +685,18 @@ class Assembler:
         return bw.to_bytes()
 
     def write_pixels(self, bw, huffs, xsize):
+        """Level 0, where the entropy image may change codes mid-row."""
         if not self.img.pixels:
             return
         if not huffs:
             raise AsmError('pixels, but the case writes no Huffman codes')
-        for group, item in self.img.walk(xsize):
-            codes = huffs[group]
-            green, dist = codes[0], codes[4]
-            # The decoder reads the other three literal codes only when they
-            # are not all one symbol, so a bare green symbol is a whole pixel
-            # exactly then.
-            trivial = all(h.trivial for h in codes[1:4])
-            if item[0] == 'green':
-                if not trivial:
-                    raise AsmError('pixels: symbol %d leaves red, blue and '
-                                   'alpha unsaid; spell the whole pixel with '
-                                   '"argb"' % item[1])
-                self.emit(bw, green, item[1], 'pixels')
-            elif item[0] == 'argb':
-                self.emit(bw, green, (item[1] >> 8) & 0xff, 'pixels')
-                if not trivial:
-                    for huff, at in zip(codes[1:4], vp8l.CHANNEL_SHIFTS[1:]):
-                        self.emit(bw, huff, (item[1] >> at) & 0xff, 'pixels')
-            elif item[0] == 'cache':
-                self.emit(bw, green, vp8l.NUM_LITERAL_CODES +
-                          vp8l.NUM_LENGTH_CODES + item[1], 'pixels')
-            else:
-                symbol, bits, extra = vp8l.prefix_code(item[1])
-                self.emit(bw, green, vp8l.NUM_LITERAL_CODES + symbol, 'pixels')
-                if bits:
-                    bw.put(extra, bits)
-                symbol, bits, extra = vp8l.prefix_code(item[2])
-                self.emit(bw, dist, symbol, 'pixels')
-                if bits:
-                    bw.put(extra, bits)
+        self.sub_xsize = xsize
+        at = 0
+        for item in self.img.pixels:
+            for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
+                group = huffs[self.img.group_at(at, xsize)]
+                self.emit_items(bw, [one(item)], group, 'pixels')
+                at += item[1] if item[0] == 'copy' else 1
 
 
 def is_lossless(text):
