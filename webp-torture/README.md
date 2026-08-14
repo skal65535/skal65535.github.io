@@ -76,14 +76,18 @@ about.
 
 ## What to run
 
+The first two are the point: they run every file here through a decoder and say
+whether it behaved. The rest rebuild the corpus or check the tools that write
+it.
+
 | file | what it is |
 | --- | --- |
-| [`generate.py`](generate.py) | Assembles every case in `cases/` and produces `expected.txt`, this README, `src/README.md` and the two `index.html` listings. |
-| [`check.sh`](check.sh) | Decodes every file; checks the verdict and the pixels. |
-| [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt` when the new output is known to be right. |
+| [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels. The one to run. |
+| [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
+| [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md` and the three `index.html` listings. |
+| [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
 | [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
-| [`asan_sweep.sh`](asan_sweep.sh) | Decodes every file in 14 modes, under a sanitizer build. |
-| [`vp8_selftest.py`](vp8_selftest.py) | Round trips real encodes through the lossy writer and reader, and checks what cwebp cannot emit against dwebp. |
+| [`vp8_selftest.py`](vp8_selftest.py) | Checks the assemblers themselves, not the corpus: only needed if you change them. |
 
 ## The code
 

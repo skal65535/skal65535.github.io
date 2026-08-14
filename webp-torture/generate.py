@@ -424,19 +424,21 @@ def html_escape(text):
 
 # What lives where: the things you run stay at the top, the code they are
 # built out of sits in src/. Paths are relative to this directory.
+# The two that answer "does my decoder survive this?" come first; the rest
+# are for changing the corpus, not for using it.
 RUN = [
-    ('generate.py', 'Assembles every case in `cases/` and produces '
-                    '`expected.txt`, this README, `src/README.md` and the two '
-                    '`index.html` listings.'),
-    ('check.sh', 'Decodes every file; checks the verdict and the pixels.'),
-    ('make_hashes.sh', 'Rewrites `hashes.txt` when the new output is known '
+    ('check.sh', 'Decodes every file and checks the verdict and the pixels. '
+                 'The one to run.'),
+    ('asan_sweep.sh', 'The same, in 14 output modes under a sanitizer build. '
+                      'Point `$ASAN_DWEBP` at one.'),
+    ('generate.py', 'Rebuilds `files/` from `cases/`, and writes '
+                    '`expected.txt`, this README, `SYNTAX.md`, '
+                    '`src/README.md` and the three `index.html` listings.'),
+    ('make_hashes.sh', 'Rewrites `hashes.txt`, once the new output is known '
                        'to be right.'),
     ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
-    ('asan_sweep.sh', 'Decodes every file in 14 modes, under a sanitizer '
-                      'build.'),
-    ('vp8_selftest.py', 'Round trips real encodes through the lossy writer '
-                        'and reader, and checks what cwebp cannot emit '
-                        'against dwebp.'),
+    ('vp8_selftest.py', 'Checks the assemblers themselves, not the corpus: '
+                        'only needed if you change them.'),
 ]
 
 SRC = [
@@ -497,7 +499,10 @@ def code_table(outdir, entries, title, intro=None, strip=''):
 def build_code_list(outdir):
     """The three tables that go into the top-level README."""
     return '\n'.join((
-        code_table(outdir, RUN, 'What to run'),
+        code_table(outdir, RUN, 'What to run',
+                   'The first two are the point: they run every file here '
+                   'through a decoder and say whether it behaved. The rest '
+                   'rebuild the corpus or check the tools that write it.'),
         code_table(outdir, SRC, 'The code',
                    'The layers underneath, in **[`src/`](src)**, which has '
                    'its own README describing how they fit together.'),
