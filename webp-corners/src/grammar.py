@@ -309,7 +309,7 @@ def build():
         add(name, arity, values, scope, doc)
 
     return {
-        'about': 'webp-torture case syntax. Ranges are what the bitstream '
+        'about': 'webp-corners case syntax. Ranges are what the bitstream '
                  'field holds, not what a decoder accepts.',
         'header_keys': {k: ('required' if v else 'optional')
                         for k, v in vp8_asm.HEADER_KEYS.items()},

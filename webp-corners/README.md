@@ -1,4 +1,4 @@
-# WebP torture bitstreams
+# WebP stress bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
@@ -834,9 +834,9 @@ ask git for just that directory:
     git clone --depth 1 --filter=blob:none --sparse \
         https://github.com/skal65535/skal65535.github.io.git
     cd skal65535.github.io
-    git sparse-checkout set webp-torture
+    git sparse-checkout set webp-corners
 
-Run the scripts above from `webp-torture/`.
+Run the scripts above from `webp-corners/`.
 
 To write one of your own, or read a real encode back into a case,
 [`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the

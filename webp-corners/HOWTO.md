@@ -45,7 +45,7 @@ This is the point of the whole thing, and the one rule to keep in mind:
 **A value too big for its field loses its top bits rather than being
 refused.** `cache_bits 15` writes 15 into a 4-bit field that a decoder only
 accepts 1..11 in. `magic 0x00` writes a signature byte no decoder will take.
-That is how a torture case is made, and it is why the ranges in `SYNTAX.md`
+That is how a stress case is made, and it is why the ranges in `SYNTAX.md`
 are the width of the *bitstream field*, not what libwebp accepts.
 
 The handful of things the assemblers do refuse are the ones they could not

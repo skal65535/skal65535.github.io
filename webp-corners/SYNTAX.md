@@ -17,7 +17,7 @@ comment. Every field has a default, so a case says only what it is about:
 
 **Nothing is validated or clamped.** The ranges below are what the
 *bitstream field* holds, not what a decoder accepts: a value past one loses
-its top bits rather than being refused, which for a torture case is usually
+its top bits rather than being refused, which for a stress case is usually
 the point. The handful of things the assemblers do refuse are the ones they
 could not write at all -- a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.

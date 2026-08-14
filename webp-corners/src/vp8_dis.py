@@ -19,7 +19,7 @@ rather than against itself.
 The boolean decoder is a port of VP8GetBit()/VP8GetSigned()
 (src/utils/bit_reader_inl_utils.h) and the parsing follows VP8GetHeaders(),
 ParseIntraMode() and ParseResiduals(). It is meant for the small frames of
-a torture corpus, not for speed.
+a stress corpus, not for speed.
 """
 
 import itertools

@@ -4,7 +4,7 @@
 # that can be found in the COPYING file in the root of the source
 # tree.
 
-"""Minimal VP8L (WebP lossless) bitstream *writer*, for building torture cases.
+"""Minimal VP8L (WebP lossless) bitstream *writer*, for building stress cases.
 
 Deliberately does no validation: the point is to emit streams that a normal
 encoder cannot produce. Bit order and canonical-code layout mirror

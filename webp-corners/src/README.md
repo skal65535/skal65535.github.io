@@ -1,4 +1,4 @@
-# webp-torture: the code
+# webp-corners: the code
 
 Everything the scripts one directory up are built out of. Nothing here is
 run directly to produce the corpus -- [`../generate.py`](../generate.py)

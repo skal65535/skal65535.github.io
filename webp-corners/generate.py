@@ -4,7 +4,7 @@
 # Use of this source code is governed by a BSD-style license
 # that can be found in the COPYING file in the root of the source
 # tree.
-"""Generates the torture bitstreams. Run: python3 generate.py [outdir]
+"""Generates the stress bitstreams. Run: python3 generate.py [outdir]
 
 Every file but the multi-partition ones comes from a text case in cases/,
 which carries its own note; this assembles them into files/ and writes
@@ -177,7 +177,7 @@ GROUPS = [
      'coefficients, which the assembled cases do not.'),
 ]
 
-README_HEAD = """# WebP torture bitstreams
+README_HEAD = """# WebP stress bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
@@ -221,9 +221,9 @@ ask git for just that directory:
     git clone --depth 1 --filter=blob:none --sparse \\
         https://github.com/skal65535/skal65535.github.io.git
     cd skal65535.github.io
-    git sparse-checkout set webp-torture
+    git sparse-checkout set webp-corners
 
-Run the scripts above from `webp-torture/`.
+Run the scripts above from `webp-corners/`.
 
 To write one of your own, or read a real encode back into a case,
 [`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
@@ -432,7 +432,7 @@ def build_index(rows, groups):
 
 INDEX_STYLE = """<!doctype html>
 <meta charset="utf-8">
-<title>webp-torture bitstreams</title>
+<title>webp-corners</title>
 <style>
  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 54rem;
         padding: 0 1rem; }
@@ -444,7 +444,7 @@ INDEX_STYLE = """<!doctype html>
 </style>
 """
 
-FILES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture bitstreams</h1>
+FILES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: bitstreams</h1>
 <p>%(count)d WebP files that exercise corners of the format a normal encoder
 never emits, most of them assembled from the text in
 <a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
@@ -453,7 +453,7 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><th>file</th><th>bytes</th><th>expected</th></tr>
 """
 
-SOURCES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture sources</h1>
+SOURCES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: sources</h1>
 <p>Real encoder output, not assembled: %(count)d lossy frames carrying 1, 2, 4
 and 8 token partitions, made through the encoder API by
 <a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
@@ -465,7 +465,7 @@ it. <a href="../">The notes</a> say what each one does.</p>
 <tr><th>file</th><th>bytes</th></tr>
 """
 
-CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture cases</h1>
+CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: cases</h1>
 <p>%(count)d text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
 names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
@@ -730,7 +730,7 @@ comment. Every field has a default, so a case says only what it is about:
 
 **Nothing is validated or clamped.** The ranges below are what the
 *bitstream field* holds, not what a decoder accepts: a value past one loses
-its top bits rather than being refused, which for a torture case is usually
+its top bits rather than being refused, which for a stress case is usually
 the point. The handful of things the assemblers do refuse are the ones they
 could not write at all -- a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.
@@ -859,7 +859,7 @@ def build_syntax(outdir):
         f.write(re.sub(r'\n{3,}', '\n\n', '\n'.join(out)) + '\n')
 
 
-SRC_README = """# webp-torture: the code
+SRC_README = """# webp-corners: the code
 
 Everything the scripts one directory up are built out of. Nothing here is
 run directly to produce the corpus -- [`../generate.py`](../generate.py)
