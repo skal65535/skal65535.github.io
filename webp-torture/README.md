@@ -161,15 +161,23 @@ through the encoder API, because a frame may carry up to eight token
 partitions and cwebp emits only one. Nothing in this directory can write
 them.
 
-`check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
-`asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
-`dwebp` is on `$PATH`. The animation files need two more: `$ANIM_DUMP` for
-`check.sh` and `make_hashes.sh`, which `asan_sweep.sh` instead looks for
-beside `$ASAN_DWEBP`, and `$WEBPINFO` for `check.sh`. `webpinfo` ships with
-libwebp; `anim_dump` does not, and is built with `cmake --build . --target
-anim_dump`. Without either, `check.sh` carries on and says what it skipped.
-`make_coverage.sh` and `make_vp8_tables.py` need `$LIBWEBP` set to a libwebp
-git checkout. `SKIP_SLOW=1` skips the one file that allocates a gigabyte.
+Nothing here looks for a decoder on its own account: every tool is named
+in the environment, so the thing under test is always the one you meant.
+
+| variable | what for |
+| --- | --- |
+| `$DWEBP` | The decoder under test -- `check.sh`, `make_hashes.sh`, `vp8_selftest.py`. Defaults to whatever `dwebp` is on `$PATH`. |
+| `$ANIM_DUMP` | The animation decoder, which is the only thing that opens the animated files. libwebp does not build it by default: `cmake --build . --target anim_dump`. |
+| `$WEBPINFO` | The container reader `check.sh` holds the animations to as a second opinion. Ships with libwebp. |
+| `$CWEBP` | The encoder, for the half of `vp8_selftest.py` that starts from real encodes rather than from this corpus. |
+| `$WEBPMUX` | The muxer, likewise, for real animations. |
+| `$ASAN_DWEBP` | A sanitizer build, for `asan_sweep.sh`. |
+| `$ASAN_ANIM_DUMP` | The same for the animations. Looked for beside `$ASAN_DWEBP` when unset, which is where the build puts it. |
+| `$ASAN_OPTIONS` | Passed through to those two; `detect_leaks=0` unless you say otherwise. |
+| `$LIBWEBP` | A libwebp git checkout, for `make_coverage.sh` and `make_vp8_tables.py`. |
+| `$SKIP_SLOW` | Set it to skip the one file that allocates a gigabyte. |
+
+A missing tool is reported and skipped, never silently passed over.
 
 ## How they were verified
 
