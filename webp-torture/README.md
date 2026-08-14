@@ -50,6 +50,56 @@ frame, so that half says nothing about the file and the second half is the
 one that does. `webpinfo` and the incremental decoder are named where they
 disagree, and `check.sh` holds all of them to it.
 
+## What to run
+
+The first two are the point: they run every file here through a decoder and say
+whether it behaved. The rest rebuild the corpus or check the tools that write
+it.
+
+| file | what it is |
+| --- | --- |
+| [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels, through `dwebp` or -- for the animations -- `$ANIM_DUMP` and `$WEBPINFO`. The one to run. |
+| [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
+| [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md`, and an `index.html` for each directory that needs one. |
+| [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
+| [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
+| [`vp8_selftest.py`](vp8_selftest.py) | Checks the assemblers themselves, not the corpus: only needed if you change them. |
+
+## The code
+
+The layers underneath, in **[`src/`](src)**, which has its own README
+describing how they fit together.
+
+| file | what it is |
+| --- | --- |
+| [`src/vp8l.py`](src/vp8l.py) | VP8L lossless bitstream writer: bit packing, canonical Huffman codes, prefix coding, sub-images. |
+| [`src/vp8l_asm.py`](src/vp8l_asm.py) | Assembles a lossless image from a text case. Its docstring is the format. |
+| [`src/vp8.py`](src/vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
+| [`src/vp8_asm.py`](src/vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
+| [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
+| [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction for a lossy frame. `--check` round trips one against libwebp. |
+| [`src/vp8l_dis.py`](src/vp8l_dis.py) | The other direction for a lossless image, the same way. |
+| [`src/webp_dis.py`](src/webp_dis.py) | The other direction for a whole file: chunks, animation frames and alpha planes, delegating each image to one of those two. |
+| [`src/grammar.py`](src/grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
+| [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
+| [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
+| [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
+| [`src/make_partition_sources.c`](src/make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
+| [`src/probes.py`](src/probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+| [`src/check_refs.py`](src/check_refs.py) | Checks that the source lines the notes point at still say what the notes claim. |
+
+## The data
+
+| file | what it is |
+| --- | --- |
+| [`HOWTO.md`](HOWTO.md) | How to write a case, read a real file back into one, and add one here. |
+| [`SYNTAX.md`](SYNTAX.md) | The whole case syntax, generated from `src/grammar.py`. |
+| [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
+| [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output, so a silent change in decoded pixels fails too. |
+| [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
+| [`refs.txt`](refs.txt) | What each line a note points at said when it was written. |
+| [`COPYING`](COPYING) | BSD 3-clause, the same as libwebp. |
+
 ## The bitstreams
 
 The whole set lives in **[`files/`](files)**, which lists each one with its
@@ -775,56 +825,6 @@ backwards. Generated from `coverage.txt`.
 | `ymode_2` | `anim-lossy-frames`, `container-duplicate-image-chunk`, `container-metadata-chunks`, `container-odd-chunk-payload`, `container-trailing-bytes`, `container-unknown-chunk` +33 |
 | `ymode_3` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-filter-normal-max`, `lossy-filter-simple-max` +9 |
 
-## What to run
-
-The first two are the point: they run every file here through a decoder and say
-whether it behaved. The rest rebuild the corpus or check the tools that write
-it.
-
-| file | what it is |
-| --- | --- |
-| [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels, through `dwebp` or -- for the animations -- `$ANIM_DUMP` and `$WEBPINFO`. The one to run. |
-| [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
-| [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md`, and an `index.html` for each directory that needs one. |
-| [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
-| [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
-| [`vp8_selftest.py`](vp8_selftest.py) | Checks the assemblers themselves, not the corpus: only needed if you change them. |
-
-## The code
-
-The layers underneath, in **[`src/`](src)**, which has its own README
-describing how they fit together.
-
-| file | what it is |
-| --- | --- |
-| [`src/vp8l.py`](src/vp8l.py) | VP8L lossless bitstream writer: bit packing, canonical Huffman codes, prefix coding, sub-images. |
-| [`src/vp8l_asm.py`](src/vp8l_asm.py) | Assembles a lossless image from a text case. Its docstring is the format. |
-| [`src/vp8.py`](src/vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
-| [`src/vp8_asm.py`](src/vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
-| [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
-| [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction for a lossy frame. `--check` round trips one against libwebp. |
-| [`src/vp8l_dis.py`](src/vp8l_dis.py) | The other direction for a lossless image, the same way. |
-| [`src/webp_dis.py`](src/webp_dis.py) | The other direction for a whole file: chunks, animation frames and alpha planes, delegating each image to one of those two. |
-| [`src/grammar.py`](src/grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
-| [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
-| [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
-| [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
-| [`src/make_partition_sources.c`](src/make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
-| [`src/probes.py`](src/probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
-| [`src/check_refs.py`](src/check_refs.py) | Checks that the source lines the notes point at still say what the notes claim. |
-
-## The data
-
-| file | what it is |
-| --- | --- |
-| [`HOWTO.md`](HOWTO.md) | How to write a case, read a real file back into one, and add one here. |
-| [`SYNTAX.md`](SYNTAX.md) | The whole case syntax, generated from `src/grammar.py`. |
-| [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
-| [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output, so a silent change in decoded pixels fails too. |
-| [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
-| [`refs.txt`](refs.txt) | What each line a note points at said when it was written. |
-| [`COPYING`](COPYING) | BSD 3-clause, the same as libwebp. |
-
 ## Using them
 
 Every file is one click away from this page, but the corpus is one
@@ -912,11 +912,6 @@ hold, a complete frame carrying neither image nor alpha, and a second frame
 in a file without the animation flag. One more is real but out of reach from
 here -- the master-chunk table matching nothing, which `WebPGetInfo()`
 refuses before the demuxer is ever called.
-
-**The counts are deliberately not repeated here.** They change with every
-file added, and prose does not: `check.sh`, `vp8_selftest.py` and
-`make_coverage.sh` each print what they covered, and `coverage.txt`,
-`hashes.txt` and `expected.txt` are the record.
 
 ## What is not covered
 

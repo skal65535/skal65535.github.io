@@ -210,8 +210,8 @@ frame, so that half says nothing about the file and the second half is the
 one that does. `webpinfo` and the incremental decoder are named where they
 disagree, and `check.sh` holds all of them to it.
 
-%(files)s
 %(code)s
+%(files)s
 ## Using them
 
 Every file is one click away from this page, but the corpus is one
@@ -287,11 +287,6 @@ hold, a complete frame carrying neither image nor alpha, and a second frame
 in a file without the animation flag. One more is real but out of reach from
 here -- the master-chunk table matching nothing, which `WebPGetInfo()`
 refuses before the demuxer is ever called.
-
-**The counts are deliberately not repeated here.** They change with every
-file added, and prose does not: `check.sh`, `vp8_selftest.py` and
-`make_coverage.sh` each print what they covered, and `coverage.txt`,
-`hashes.txt` and `expected.txt` are the record.
 
 ## What is not covered
 
