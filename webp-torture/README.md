@@ -181,61 +181,47 @@ A missing tool is reported and skipped, never silently passed over.
 
 ## How they were verified
 
-Verdicts alone prove little -- a file can be rejected for the wrong reason,
-and several of these were before being corrected. Every file is also run
-against decoders instrumented with probes on the exact lines the notes
-name; `coverage.txt` records which paths each one actually reached, and
-`make_coverage.sh` regenerates it from `src/probes.py` in a throwaway
-worktree, through `dwebp` and -- for the animations, which dwebp cannot
-open -- `anim_dump`. The notes are written from that output, not from
-reading the code. Two were rewritten because of it: an ANMF with no image
-turned out to be dropped rather than refused, and a frame claiming an
-impossible area was being caught by the canvas check one layer up.
+A verdict alone proves little: a file can be refused for the wrong reason,
+and several of these were until the reason was measured. So nothing here
+rests on having read the code.
 
-The animation files are read a third time, by `webpinfo`, which walks every
-chunk of the container and decodes nothing. Its verdict is recorded beside
-the others and checked with them, so a file the two readers disagree about
-is a checked fact rather than a remark, and its heading says so. The
-disagreements all have one shape -- webpinfo tests something the demuxer
-does not look at: a frame whose ANMF header size disagrees with the image
-inside it, an alpha frame in a file that does not set the alpha flag, an
-ANIM chunk with padding after its two fields.
+* **What each file reaches is measured.** `make_coverage.sh` builds an
+  instrumented decoder in a throwaway worktree -- probes on the exact lines
+  the notes name -- runs every file through `dwebp` and, for the animations,
+  `anim_dump`, and writes `coverage.txt`. Every note is written from that
+  output; two were rewritten when it disagreed with them.
 
-The source line numbers the notes quote are only meaningful against one
-revision of libwebp: the one stamped at the top of `coverage.txt`.
-`src/check_refs.py` records what each cited line said and checks it still
-says it, so upstream moving underneath a note is reported rather than
-discovered later. Three were already wrong when that check was written.
+* **A second reader checks the first.** `webpinfo` walks every chunk and
+  decodes nothing. Its verdict is recorded beside the demuxer's, so the
+  files the two disagree about are a checked fact rather than a remark --
+  and they disagree in one direction only, webpinfo testing things the
+  demuxer never looks at.
 
-Both writers are checked against libwebp rather than against themselves:
-the three disassemblers in `src/` read a file back into the text the
-assemblers take, so a real encode can be disassembled, reassembled and
-compared byte for byte. `vp8_selftest.py` runs that over `sources/`, over a
-spread of images it asks cwebp to encode both ways, over animations it asks
-webpmux to build, and over the corpus itself; it also writes every
-coefficient magnitude the format allows, and pairs of frames that say the
-same thing two different ways and must decode alike. A case that cannot
-survive the trip says `roundtrip: no`, and the selftest fails a case that
-says so and then survives it anyway.
+* **The writers are checked against libwebp, not against themselves.** The
+  three disassemblers read a file back into case text; assemble that, and
+  the bytes have to return. `vp8_selftest.py` runs it over `sources/`, over
+  images it asks cwebp to encode both ways, over animations it asks webpmux
+  to build, and over the corpus itself. It also writes every coefficient
+  magnitude the format allows, and pairs of frames that say the same thing
+  two ways and must decode alike.
 
-What the corpus reaches is measured rather than assumed, and the measurement
-is what says where to add files next. As it stands: every field of the lossy
-frame header is written at both ends of its range, every reachable
-(coefficient type, band, context) probability cell is read, and every pair
-of optional tools appears together in some frame.
+* **The source lines the notes quote are pinned.** They mean nothing except
+  against the libwebp revision stamped in `coverage.txt`, so
+  `src/check_refs.py` records what each cited line said and checks it still
+  says it. Three were already wrong when it was written.
 
-What the probes do *not* reach is worth naming, because all of it turned out
-to be checks that cannot fire. The magic-byte and version tests inside
-`ReadImageInfo()` have already been made by `VP8LCheckSignature()` by the
-time they run. In `demux.c`: a negative loop count, which a 16-bit unsigned
-field cannot produce; a complete frame carrying neither an image nor an
-alpha chunk, which is the one thing that stops a frame being added at all,
-so it can never be found later; and a second frame in a file without the
-animation flag, which cannot be reached because nothing without that flag
-ever numbers a frame past the first. One more, the master-chunk table
-matching nothing, is real but out of reach from here: every tool checks the
-format with `WebPGetInfo()` first, and that refuses such a file before the
-demuxer is called.
+Where that leaves the corpus: every field of the lossy frame header is
+written at both ends of its range, every reachable (coefficient type, band,
+context) probability cell is read, and every pair of optional tools appears
+together in some frame.
+
+The probes nothing reaches are all checks that cannot fire: the magic-byte
+and version tests inside `ReadImageInfo()`, which `VP8LCheckSignature()` has
+already made; and in `demux.c`, a negative loop count no 16-bit field can
+hold, a complete frame carrying neither image nor alpha, and a second frame
+in a file without the animation flag. One more is real but out of reach from
+here -- the master-chunk table matching nothing, which `WebPGetInfo()`
+refuses before the demuxer is ever called.
 
 **The counts are deliberately not repeated here.** They change with every
 file added, and prose does not: `check.sh`, `vp8_selftest.py` and
