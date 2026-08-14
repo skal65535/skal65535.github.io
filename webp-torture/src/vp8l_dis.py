@@ -102,20 +102,22 @@ class Code:
                           ' '.join('0x%02x' % s for s in self.simple)))
             return out
         out.append('%scode %s num_codes %d' % (prefix, name, self.num_codes))
-        used = [(s, l) for s, l in enumerate(self.cl_lengths) if l]
-        out.append('%scode %s cl_lengths %s'
-                   % (prefix, name, ' '.join('%d:%d' % sl for sl in used)))
+        out.append('%scode %s cl_lengths %s' % (prefix, name, spell(
+            self.cl_lengths)))
         if self.max_symbol is not None:
             out.append('%scode %s max_symbol %d'
                        % (prefix, name, self.max_symbol))
         out.append('%scode %s codelen %s'
                    % (prefix, name, ' '.join(spell_codelen(self.codelen))))
-        used = [(s, l) for s, l in enumerate(self.lengths) if l]
-        if used:
-            out.append('%scode %s lengths %s'
-                       % (prefix, name,
-                          ' '.join('%d:%d' % sl for sl in used)))
+        if any(self.lengths):
+            out.append('%scode %s lengths %s' % (prefix, name, spell(
+                self.lengths)))
         return out
+
+
+def spell(lengths):
+    """Non-zero entries of a length array, as 'symbol:length' pairs."""
+    return ' '.join('%d:%d' % (s, l) for s, l in enumerate(lengths) if l)
 
 
 def spell_codelen(symbols):
@@ -238,10 +240,15 @@ class Image:
                 raise Truncated('color cache of %d bits' % self.cache_bits)
         groups = 1
         if level0 and br.read(1):
-            self.meta_bits = vp8l.MIN_HUFFMAN_BITS + br.read(3)
+            self.meta_bits = vp8l.MIN_HUFFMAN_BITS + br.read(
+                vp8l.NUM_HUFFMAN_BITS)
             self.meta = Image(br, vp8l.sub_sample_size(xsize, self.meta_bits),
                               vp8l.sub_sample_size(ysize, self.meta_bits),
                               level0=False)
+            if any(i[0] == 'cache' for i in self.meta.items):
+                raise Truncated('entropy image using its color cache: its '
+                                'pixels are the group indices, and what the '
+                                'cache held is not modelled here')
             self.tiles = [(p >> 8) & 0xffff for p in self.meta.pixels]
             groups = max(self.tiles) + 1
         else:
@@ -261,27 +268,26 @@ class Image:
             xsize = vp8l.sub_sample_size(xsize,
                                          vp8l.palette_bits(count))
         elif name != 'subtract_green':
-            params['bits'] = vp8l.MIN_TRANSFORM_BITS + br.read(3)
+            params['bits'] = vp8l.MIN_TRANSFORM_BITS + br.read(
+                vp8l.NUM_TRANSFORM_BITS)
             params['image'] = Image(
                 br, vp8l.sub_sample_size(xsize, params['bits']),
                 vp8l.sub_sample_size(ysize, params['bits']), level0=False)
         self.transforms.append((name, params))
         return xsize
 
-    def group_at(self, position):
-        if self.tiles is None:
-            return 0
-        sw = vp8l.sub_sample_size(self.xsize, self.meta_bits)
-        x, y = position % self.xsize, position // self.xsize
-        return self.tiles[(y >> self.meta_bits) * sw + (x >> self.meta_bits)]
-
     def read_pixels(self, br):
-        """The pixel data, as items and as the ARGB it comes to."""
+        """The pixel data, as items and as the ARGB it comes to.
+
+        Only the entropy image's values are ever read back, so a cache index
+        contributes a placeholder rather than a modelled cache; parse()
+        refuses the one case where that would matter.
+        """
         total = self.xsize * self.ysize
-        cache = [0] * (1 << self.cache_bits) if self.cache_bits else None
         at = 0
         while at < total:
-            group = self.groups[self.group_at(at)]
+            group = self.groups[0] if self.tiles is None else self.groups[
+                vp8l.tile_at(self.tiles, at, self.xsize, self.meta_bits)]
             if group.trivial_code:
                 literal = group.codes[0].decoder.trivial
                 self.pixels.append(self.arb(group) | (literal << 8))
@@ -301,7 +307,7 @@ class Image:
                     self.items.append(('argb', pixel))
                     self.pixels.append(pixel)
                 at += 1
-            elif symbol < vp8l.NUM_LITERAL_CODES + vp8l.NUM_LENGTH_CODES:
+            elif symbol < vp8l.CACHE_BASE:
                 length = read_prefix(br, symbol - vp8l.NUM_LITERAL_CODES)
                 plane = read_prefix(br, group.codes[4].decoder.read(br))
                 self.items.append(('copy', length, plane))
@@ -312,19 +318,9 @@ class Image:
                     self.pixels.append(self.pixels[-distance])
                 at += length
             else:
-                index = symbol - (vp8l.NUM_LITERAL_CODES +
-                                  vp8l.NUM_LENGTH_CODES)
-                self.items.append(('cache', index))
-                self.pixels.append(cache[index] if cache else 0)
+                self.items.append(('cache', symbol - vp8l.CACHE_BASE))
+                self.pixels.append(0)
                 at += 1
-            if cache:
-                for pixel in self.pixels[len(cache and self.pixels) - 1:]:
-                    pass
-        if cache:
-            self.refill_cache(cache)
-
-    def refill_cache(self, cache):
-        """Only the indices matter for the round trip, not what they held."""
 
     @staticmethod
     def arb(group):

@@ -39,6 +39,7 @@ and a value is one of
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -269,8 +270,8 @@ def build():
                           'doc': doc}
 
     for name, (value, doc) in LOSSY.items():
-        add(name, LOSSY_ARITY.get(name, 1),
-            [value] * LOSSY_ARITY.get(name, 1), 'frame', doc)
+        arity = LOSSY_ARITY.get(name, 1)
+        add(name, arity, [value] * arity, 'frame', doc)
     for name, (arity, values, scope, doc) in LOSSY_EXTRA.items():
         add(name, arity, values, scope, doc)
     for name, (arity, values, scope, doc) in LOSSLESS.items():
@@ -315,21 +316,39 @@ def build():
     }
 
 
+# Which module's docstring is the reference for a keyword of that scope.
+OWNER = {'frame': vp8_asm, 'macroblock': vp8_asm, 'frame, image': vp8l_asm,
+         'image': vp8l_asm, 'group': vp8l_asm, 'container': webp_asm}
+
+
 def check():
-    """Every keyword the assemblers take is described here, and back."""
+    """The three places a keyword is written down have to agree: the
+    assembler that takes it, the tables here, and the docstring that is that
+    tool's own reference."""
     known = set(vp8_asm.FRAME_FIELDS) | set(vp8_asm.QUANT_DELTAS) | \
         set(vp8_asm.MB_FIELDS) | set(webp_asm.DIRECTIVES) | \
         set(vp8l_asm.NUM_FIELDS) | set(vp8l_asm.LIST_FIELDS)
     for cls in (vp8_asm.Assembler, vp8l_asm.Assembler):
         known |= {n[3:] for n in dir(cls) if n.startswith('do_')}
-    described = set(build()['keywords'])
-    missing = sorted(known - described)
-    extra = sorted(described - known)
-    if missing:
-        print('not described: %s' % ' '.join(missing), file=sys.stderr)
-    if extra:
-        print('described but unknown: %s' % ' '.join(extra), file=sys.stderr)
-    return len(missing) + len(extra)
+    keywords = build()['keywords']
+    bad = 0
+    for what, names in (('not described here',
+                         sorted(known - set(keywords))),
+                        ('described here but unknown to the assemblers',
+                         sorted(set(keywords) - known))):
+        if names:
+            print('%s: %s' % (what, ' '.join(names)), file=sys.stderr)
+            bad += len(names)
+    # a keyword is listed in the docstring of the tool that owns it
+    undocumented = sorted(
+        name for name, entry in keywords.items()
+        if not re.search(r'(?m)^ *(\d+(\.\d+)? +)?%s\b' % re.escape(name),
+                         OWNER[entry['scope']].__doc__))
+    if undocumented:
+        print('missing from their module docstring: %s'
+              % ' '.join(undocumented), file=sys.stderr)
+        bad += len(undocumented)
+    return bad
 
 
 def main(argv):

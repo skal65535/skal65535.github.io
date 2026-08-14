@@ -426,12 +426,12 @@ disagree, trust `coverage.txt`.
 Both writers are checked a second way, against libwebp rather than against
 themselves: `vp8_dis.py` and `vp8l_dis.py` read a file back into the same
 text the assemblers take, so a real cwebp encode can be disassembled,
-reassembled and compared byte for byte. Every file in `sources/` survives that, as do encodes
-from 1x1 to 128x128 across the whole quality range -- 596 macroblocks, all
-four 16x16 modes, all ten 4x4 modes and coefficients in every escape
-category. `vp8_selftest.py` runs it, along with every coefficient magnitude
-up to the format's largest and a handful of frames that say the same thing
-two different ways and must decode alike.
+reassembled and compared byte for byte. Every file in `sources/` survives
+that, as do encodes from 1x1 to 128x128 across the whole quality range --
+596 macroblocks, all four 16x16 modes, all ten 4x4 modes and coefficients in
+every escape category. `vp8_selftest.py` runs it, along with every
+coefficient magnitude up to the format's largest and a handful of frames
+that say the same thing two different ways and must decode alike.
 
 The lossless writer gets the same treatment. 84 real `cwebp` encodes -- a
 dozen images from 1x1 to 256x256, flat, gradient, noise, palettised and with

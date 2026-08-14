@@ -153,45 +153,58 @@ LIST_FIELDS = {'predictor_tiles': 'predictor_tiles',
                'transforms': 'transforms'}
 
 
+def unroll(items):
+    """The item stream one pixel at a time, repeats spelled out."""
+    for item in items:
+        for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
+            yield (item[0], item[1], 1) if item[0] in ('green', 'argb') \
+                else item
+
+
+def symbols(item):
+    """(code index, symbol, extra bits, extra value) for what one item
+    writes. A back-reference is the only one carrying extra bits."""
+    if item[0] == 'green':
+        return [(0, item[1], 0, 0)]
+    if item[0] == 'argb':
+        return [(i, (item[1] >> at) & 0xff, 0, 0)
+                for i, at in enumerate(vp8l.CHANNEL_SHIFTS)]
+    if item[0] == 'cache':
+        return [(0, vp8l.CACHE_BASE + item[1], 0, 0)]
+    length, plane = (vp8l.prefix_code(item[1]), vp8l.prefix_code(item[2]))
+    return [(0, vp8l.NUM_LITERAL_CODES + length[0], length[1], length[2]),
+            (4, plane[0], plane[1], plane[2])]
+
+
 def item_freqs(items, cache_bits=0):
     """What one pixel-item stream asks of the five codes of a group."""
     freqs = [[0] * vp8l.alphabet_size(i, cache_bits) for i in range(5)]
-
-    def count(table, symbol, times=1):
-        if symbol >= len(table):
-            raise AsmError('pixels: symbol %d, past the %d the alphabet holds'
-                           % (symbol, len(table)))
-        table[symbol] += times
-
-    for item in items:
-        if item[0] == 'green':
-            count(freqs[0], item[1], item[2])
-        elif item[0] == 'argb':
-            for table, at in zip(freqs, vp8l.CHANNEL_SHIFTS):
-                count(table, (item[1] >> at) & 0xff, item[2])
-        elif item[0] == 'cache':
-            count(freqs[0], vp8l.NUM_LITERAL_CODES +
-                  vp8l.NUM_LENGTH_CODES + item[1])
-        else:
-            count(freqs[0],
-                  vp8l.NUM_LITERAL_CODES + vp8l.prefix_code(item[1])[0])
-            count(freqs[4], vp8l.prefix_code(item[2])[0])
+    for item in unroll(items):
+        for index, symbol, _bits, _extra in symbols(item):
+            table = freqs[index]
+            if symbol >= len(table):
+                raise AsmError('pixels: symbol %d, past the %d the alphabet '
+                               'holds' % (symbol, len(table)))
+            table[symbol] += 1
     return freqs
 
 
-def one(item):
-    """The same item, written once: repeats are unrolled by the caller."""
-    return (item[0], item[1], 1) if item[0] in ('green', 'argb') else item
+def literal_arb(huffs):
+    """Whether red, blue and alpha are one symbol each, and which pixel
+    that makes. cf. is_trivial_literal in ReadHuffmanCodes()."""
+    if not all(h.trivial for h in huffs[1:4]):
+        return False, 0
+    arb = 0
+    for huff, at in zip(huffs[1:4], vp8l.CHANNEL_SHIFTS[1:]):
+        arb |= next(s for s, l in enumerate(huff.lengths) if l) << at
+    return True, arb
 
 
-def copied(pixels, length, plane_code, xsize):
-    """What a back-reference repeats, so the values behind it are known."""
+def copy_into(pixels, length, plane_code, xsize):
+    """Repeat what a back-reference points at, so later values are known."""
     distance = vp8l.plane_code_to_distance(xsize, plane_code)
-    out = []
     for _ in range(length):
-        out.append((pixels + out)[-distance] if distance <= len(pixels + out)
-                   else 0)
-    return out
+        pixels.append(pixels[-distance] if distance <= len(pixels) else 0)
 
 
 class Code:
@@ -282,64 +295,36 @@ class Image:
         self.groups = []
         self.pixels = []
 
-    def group_at(self, position, xsize):
-        """Which Huffman group codes the pixel at that raster position."""
-        groups = self.tiles if self.tiles is not None else self.meta_tiles
-        if self.meta_bits is None or not groups:
-            return 0
-        sw = vp8l.sub_sample_size(xsize, self.meta_bits)
-        x, y = position % xsize, position // xsize
-        return groups[(y >> self.meta_bits) * sw + (x >> self.meta_bits)]
+    def tile_groups(self):
+        """The group index per tile: resolved from the entropy image once it
+        is written, and whatever 'meta_tiles' said until then."""
+        return self.tiles if self.tiles is not None else self.meta_tiles
 
     def walk(self, xsize):
-        """(group, item) for every item of the pixel stream, in order.
-
-        The entropy image picks the group per pixel, so this is also what
-        says which group's codes an item is counted against.
-        """
+        """(group, item) for every pixel, in order, repeats spelled out."""
+        tiles = self.tile_groups()
         at = 0
-        for item in self.pixels:
-            for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
-                yield self.group_at(at, xsize), item
-                at += item[1] if item[0] == 'copy' else 1
+        for item in unroll(self.pixels):
+            group = 0 if self.meta_bits is None or not tiles else \
+                vp8l.tile_at(tiles, at, xsize, self.meta_bits)
+            yield group, item
+            at += item[1] if item[0] == 'copy' else 1
 
     def freqs(self, xsize, num_groups):
         """What the pixel data asks of each group's five codes."""
-        cache_bits = self.cache_bits or 0
-        want = [[[0] * vp8l.alphabet_size(i, cache_bits) for i in range(5)]
-                for _ in range(max(num_groups, 1))]
-
-        def count(table, symbol):
-            if symbol >= len(table):
-                raise AsmError('pixels: symbol %d, past the %d the alphabet '
-                               'holds' % (symbol, len(table)))
-            table[symbol] += 1
-
+        buckets = [[] for _ in range(max(num_groups, 1))]
         for group, item in self.walk(xsize):
-            if group >= len(want):
+            if group >= len(buckets):
                 raise AsmError('pixels: the entropy image asks for group %d, '
-                               'but %d are written' % (group, len(want)))
-            tables = want[group]
-            if item[0] == 'green':
-                count(tables[0], item[1])
-            elif item[0] == 'argb':
-                for table, shift in zip(tables, vp8l.CHANNEL_SHIFTS):
-                    count(table, (item[1] >> shift) & 0xff)
-            elif item[0] == 'cache':
-                count(tables[0], vp8l.NUM_LITERAL_CODES +
-                      vp8l.NUM_LENGTH_CODES + item[1])
-            else:
-                count(tables[0],
-                      vp8l.NUM_LITERAL_CODES + vp8l.prefix_code(item[1])[0])
-                count(tables[4], vp8l.prefix_code(item[2])[0])
-        return want
+                               'but %d are written' % (group, len(buckets)))
+            buckets[group].append(item)
+        return [item_freqs(b, self.cache_bits or 0) for b in buckets]
 
     def num_groups(self):
         if self.group_count is not None:
             return self.group_count
-        groups = self.tiles if self.tiles is not None else self.meta_tiles
-        n = max(groups) + 1 if groups else 1
-        return max(n, len(self.groups))
+        tiles = self.tile_groups()
+        return max(max(tiles) + 1 if tiles else 1, len(self.groups))
 
 
 class Assembler:
@@ -348,7 +333,6 @@ class Assembler:
     def __init__(self):
         self.img = Image()
         self.group = None
-        self.sub_xsize = 1          # width a copy inside one image sees
         self.items = self.img.pixels     # what 'pixels'/'argb' fill in
         self.line = 0
 
@@ -530,23 +514,16 @@ class Assembler:
                            % (what, len(given), tw, th, tw * th))
         return given
 
-    def subimage(self, bw, name, pixels):
+    def subimage(self, bw, name, pixels, xsize):
         """A complete non-level0 image stream, and the pixels it comes to.
 
-        No transform bit and no meta-Huffman bit: DecodeImageStream() reads
-        transforms at level 0 only, and ReadHuffmanCodes() short-circuits on
-        'allow_recursion &&', so neither is in the stream. The color cache
-        and the five codes are, which is why a case can speak about them.
-
-        'pixels' is what the friendly per-tile directives came to. A case
-        that opened 'subimage NAME' and listed its own pixel items replaces
-        that, which is the only way to say a sub-image using back-references.
+        No transform bit and no meta-Huffman bit, but a color cache and five
+        codes of its own, and its own pixel items when the case gave any.
         """
         cache_bits = self.img.sub_cache[name]
         group = self.img.sub_groups.get(name) or Group()
-        items = self.img.sub_items.get(name)
-        if not items:
-            items = [('argb', p, 1) for p in pixels]
+        items = self.img.sub_items.get(name) or \
+            [('argb', p, 1) for p in pixels]
         if cache_bits is None:
             bw.put(0, 1)
         else:
@@ -560,48 +537,38 @@ class Assembler:
                 want = list(want)
                 want[CODE_DEFAULTS[i]] = 1
             huffs.append(code.write(bw, cache_bits or 0, want))
-        return self.emit_items(bw, items, huffs, name)
+        return self.emit_items(bw, [huffs],
+                               ((0, item) for item in unroll(items)),
+                               xsize, name)
 
-    def emit_items(self, bw, items, huffs, what):
-        """Writes one pixel stream, and returns the pixels it decodes to."""
-        green, dist = huffs[0], huffs[4]
-        trivial = all(h.trivial for h in huffs[1:4])
-        arb = 0
-        if trivial:
-            for huff, at in zip(huffs[1:4], vp8l.CHANNEL_SHIFTS[1:]):
-                arb |= next(s for s, l in enumerate(huff.lengths) if l) << at
+    def emit_items(self, bw, groups, walk, xsize, what):
+        """Writes one pixel stream, and returns the pixels it decodes to.
+
+        'walk' pairs each pixel with the group that codes it, which is how
+        an entropy image changes codes part-way along a row.
+        """
+        literals = [literal_arb(huffs) for huffs in groups]
         out = []
-        for item in items:
-            for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
-                if item[0] == 'green':
-                    if not trivial:
-                        raise AsmError('%s: symbol %d leaves red, blue and '
-                                       'alpha unsaid; spell the whole pixel '
-                                       'with "argb"' % (what, item[1]))
-                    self.emit(bw, green, item[1], what)
-                    out.append(arb | (item[1] << 8))
-                elif item[0] == 'argb':
-                    self.emit(bw, green, (item[1] >> 8) & 0xff, what)
-                    if not trivial:
-                        for huff, at in zip(huffs[1:4],
-                                            vp8l.CHANNEL_SHIFTS[1:]):
-                            self.emit(bw, huff, (item[1] >> at) & 0xff, what)
-                    out.append(item[1])
-                elif item[0] == 'cache':
-                    self.emit(bw, green, vp8l.NUM_LITERAL_CODES +
-                              vp8l.NUM_LENGTH_CODES + item[1], what)
-                    out.append(0)      # only the index matters here
-                else:
-                    symbol, bits, extra = vp8l.prefix_code(item[1])
-                    self.emit(bw, green,
-                              vp8l.NUM_LITERAL_CODES + symbol, what)
-                    if bits:
-                        bw.put(extra, bits)
-                    symbol, bits, extra = vp8l.prefix_code(item[2])
-                    self.emit(bw, dist, symbol, what)
-                    if bits:
-                        bw.put(extra, bits)
-                    out += copied(out, item[1], item[2], self.sub_xsize)
+        for n, item in walk:
+            huffs, (trivial, arb) = groups[n], literals[n]
+            if item[0] == 'green' and not trivial:
+                raise AsmError('%s: symbol %d leaves red, blue and alpha '
+                               'unsaid; spell the whole pixel with "argb"'
+                               % (what, item[1]))
+            for index, symbol, bits, extra in symbols(item):
+                if 1 <= index <= 3 and trivial:
+                    continue          # the decoder does not read those three
+                self.emit(bw, huffs[index], symbol, what)
+                if bits:
+                    bw.put(extra, bits)
+            if item[0] == 'copy':
+                copy_into(out, item[1], item[2], xsize)
+            elif item[0] == 'green':
+                out.append(arb | (item[1] << 8))
+            elif item[0] == 'argb':
+                out.append(item[1])
+            else:
+                out.append(0)         # a cache index: only the index matters
         return out
 
     def emit(self, bw, huff, symbol, what):
@@ -620,23 +587,28 @@ class Assembler:
             if name == 'color_indexing':
                 colors = img.palette_colors or [0xff000000, 0xff00ff00]
                 bw.put(len(colors) - 1, 8)
-                self.subimage(bw, 'palette', vp8l.delta_palette(colors))
+                self.subimage(bw, 'palette', vp8l.delta_palette(colors),
+                              len(colors))
                 xsize = vp8l.sub_sample_size(xsize,
                                              vp8l.palette_bits(len(colors)))
             elif name == 'predictor':
-                bw.put(img.predictor_bits - vp8l.MIN_TRANSFORM_BITS, 3)
+                bw.put(img.predictor_bits - vp8l.MIN_TRANSFORM_BITS,
+                       vp8l.NUM_TRANSFORM_BITS)
                 modes = self.tiles(img.predictor_tiles, xsize,
                                    img.predictor_bits, 'predictor_tiles')
                 # the predictor index is the green byte of its tile
                 self.subimage(bw, 'predictor',
-                              [0xff000000 | ((m & 0xff) << 8) for m in modes])
+                              [0xff000000 | ((m & 0xff) << 8) for m in modes],
+                              vp8l.sub_sample_size(xsize, img.predictor_bits))
             elif name == 'cross_color':
-                bw.put(img.cross_color_bits - vp8l.MIN_TRANSFORM_BITS, 3)
+                bw.put(img.cross_color_bits - vp8l.MIN_TRANSFORM_BITS,
+                       vp8l.NUM_TRANSFORM_BITS)
                 self.subimage(
                     bw, 'cross_color',
                     self.tiles(img.cross_color_tiles, xsize,
                                img.cross_color_bits, 'cross_color_tiles',
-                               default=0xff000000))
+                               default=0xff000000),
+                    vp8l.sub_sample_size(xsize, img.cross_color_bits))
         bw.put(0, 1)                     # no more transforms
         return xsize
 
@@ -656,14 +628,15 @@ class Assembler:
             bw.put(0, 1)
         else:
             bw.put(1, 1)
-            bw.put(img.meta_bits - vp8l.MIN_HUFFMAN_BITS, 3)
+            bw.put(img.meta_bits - vp8l.MIN_HUFFMAN_BITS,
+                   vp8l.NUM_HUFFMAN_BITS)
             tiles = self.tiles(img.meta_tiles, xsize, img.meta_bits,
                                'meta_tiles')
             # the group index lives in the red (high) and green (low) bytes
-            self.sub_xsize = vp8l.sub_sample_size(xsize, img.meta_bits)
             pixels = self.subimage(bw, 'meta',
                                    [((g >> 8) << 16) | ((g & 0xff) << 8)
-                                    for g in tiles])
+                                    for g in tiles],
+                                   vp8l.sub_sample_size(xsize, img.meta_bits))
             img.tiles = [(p >> 8) & 0xffff for p in pixels]
         count = img.num_groups()
         freqs = img.freqs(xsize, count)
@@ -690,13 +663,7 @@ class Assembler:
             return
         if not huffs:
             raise AsmError('pixels, but the case writes no Huffman codes')
-        self.sub_xsize = xsize
-        at = 0
-        for item in self.img.pixels:
-            for _ in range(item[2] if item[0] in ('green', 'argb') else 1):
-                group = huffs[self.img.group_at(at, xsize)]
-                self.emit_items(bw, [one(item)], group, 'pixels')
-                at += item[1] if item[0] == 'copy' else 1
+        self.emit_items(bw, huffs, self.img.walk(xsize), xsize, 'pixels')
 
 
 def is_lossless(text):

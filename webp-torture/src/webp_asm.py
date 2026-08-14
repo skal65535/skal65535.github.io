@@ -59,8 +59,6 @@ import vp8l_asm
 # RFC 9649's feature flags, from WebPFeatureFlags in src/webp/mux_types.h
 FLAGS = {'animation': 0x02, 'xmp_metadata': 0x04, 'exif_metadata': 0x08,
          'alpha': 0x10, 'icc_profile': 0x20}
-VP8X_CHUNK_SIZE = 10
-CHUNK_HEADER_SIZE = 8
 ALPH_FIELDS = {'alph_compression': 0, 'alph_filtering': 2,
                'alph_preprocessing': 4, 'alph_reserved': 6}
 

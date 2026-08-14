@@ -21,6 +21,8 @@ NUM_LITERAL_CODES = 256
 NUM_LENGTH_CODES = 24
 NUM_DISTANCE_CODES = 40
 CODE_LENGTH_CODES = 19
+# green symbols at or above this address the color cache
+CACHE_BASE = NUM_LITERAL_CODES + NUM_LENGTH_CODES
 MAX_ALLOWED_CODE_LENGTH = 15
 DEFAULT_CODE_LENGTH = 8
 MAX_CACHE_BITS = 11
@@ -52,6 +54,12 @@ def alphabet_size(index, cache_bits=0):
 
 def sub_sample_size(size, sampling_bits):
     return (size + (1 << sampling_bits) - 1) >> sampling_bits
+
+
+def tile_at(tiles, position, xsize, bits):
+    """The tile covering a raster position, in a sub-sampled image."""
+    x, y = position % xsize, position // xsize
+    return tiles[(y >> bits) * sub_sample_size(xsize, bits) + (x >> bits)]
 
 
 class BitWriter:
@@ -203,11 +211,9 @@ def write_complex_code(bw, lengths, use_repeats=False, num_codes=None,
                        max_symbol=None, raw_symbols=None, cl_lengths=None):
     """The 'normal' form: a Huffman code over the code lengths themselves.
 
-    'cl_lengths' is that inner code, spelled out. Without it one is built
-    from how often each code-length symbol is used, which is what an encoder
-    would do -- but two encoders faced with the same frequencies may still
-    pick different lengths, so anything that has to reproduce a stream
-    exactly passes the ones the stream declared.
+    'cl_lengths' is that inner code, spelled out. Built from the symbol
+    frequencies when absent -- which is what an encoder does, but two
+    encoders given the same frequencies need not agree.
     """
     syms = raw_symbols if raw_symbols is not None else \
         code_length_symbols(lengths, use_repeats)
@@ -258,16 +264,6 @@ def write_code(bw, huff):
 
 
 CHANNEL_SHIFTS = (8, 16, 0, 24)   # green, red, blue, alpha
-
-
-def pixel_freqs(pixels, cache_bits=0):
-    """What a run of ARGB pixels asks of the five codes of a group."""
-    freqs = [[0] * alphabet_size(i, cache_bits) for i in range(5)]
-    for p in pixels:
-        for table, shift in zip(freqs, CHANNEL_SHIFTS):
-            table[(p >> shift) & 0xff] += 1
-    freqs[4][0] = 1                      # no back-references, but a code still
-    return freqs
 
 
 def delta_palette(colors):

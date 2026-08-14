@@ -237,12 +237,12 @@ disagree, trust `coverage.txt`.
 Both writers are checked a second way, against libwebp rather than against
 themselves: `vp8_dis.py` and `vp8l_dis.py` read a file back into the same
 text the assemblers take, so a real cwebp encode can be disassembled,
-reassembled and compared byte for byte. Every file in `sources/` survives that, as do encodes
-from 1x1 to 128x128 across the whole quality range -- 596 macroblocks, all
-four 16x16 modes, all ten 4x4 modes and coefficients in every escape
-category. `vp8_selftest.py` runs it, along with every coefficient magnitude
-up to the format's largest and a handful of frames that say the same thing
-two different ways and must decode alike.
+reassembled and compared byte for byte. Every file in `sources/` survives
+that, as do encodes from 1x1 to 128x128 across the whole quality range --
+596 macroblocks, all four 16x16 modes, all ten 4x4 modes and coefficients in
+every escape category. `vp8_selftest.py` runs it, along with every
+coefficient magnitude up to the format's largest and a handful of frames
+that say the same thing two different ways and must decode alike.
 
 The lossless writer gets the same treatment. 84 real `cwebp` encodes -- a
 dozen images from 1x1 to 256x256, flat, gradient, noise, palettised and with
@@ -434,15 +434,18 @@ DATA = [
 ]
 
 
-def code_table(outdir, entries, title, intro=None):
-    """A linked table of files, each one asserted to exist."""
+def code_table(outdir, entries, title, intro=None, strip=''):
+    """A linked table of files, each one asserted to exist. 'strip' is the
+    directory the README being written lives in, so its links are relative
+    to it rather than to the top."""
     out = ['## %s\n' % title]
     if intro:
         out.append(wrap(intro))
     out += ['| file | what it is |', '| --- | --- |']
     for name, what in entries:
         assert os.path.exists(os.path.join(outdir, name)), name
-        out.append('| [`%s`](%s) | %s |' % (name, name, what))
+        link = name[len(strip):] if name.startswith(strip) else name
+        out.append('| [`%s`](%s) | %s |' % (link, link, what))
     return '\n'.join(out) + '\n'
 
 
@@ -629,8 +632,8 @@ drift from the code.
 
 
 def write_src_readme(outdir):
-    table = code_table(outdir, SRC, 'The files')
-    text = SRC_README % {'files': table.replace('src/', '')}
+    text = SRC_README % {
+        'files': code_table(outdir, SRC, 'The files', strip='src/')}
     with open(os.path.join(outdir, 'src', 'README.md'), 'w') as f:
         f.write(text)
 
