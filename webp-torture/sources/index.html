@@ -14,9 +14,10 @@
 <p>Real encoder output, not assembled: 4 lossy frames carrying 1, 2, 4
 and 8 token partitions, made through the encoder API by
 <a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
-because cwebp cannot emit more than one. The multi-partition cases in
-<a href="../files/">files/</a> are these with their partition-size table
-rewritten; <a href="../">the notes</a> say how.</p>
+because cwebp emits only one. Seven files in
+<a href="../files/">files/</a> come from these: these four as they are, and
+three more with the partition-size table rewritten to lie about what follows
+it. <a href="../">The notes</a> say what each one does.</p>
 <table>
 <tr><th>file</th><th>bytes</th></tr>
 

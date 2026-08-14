@@ -17,11 +17,12 @@ that describes it.
   pixel data.
 * **81 lossy VP8 frames** ([`vp8_asm.py`](src/vp8_asm.py)), under the
   field names [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives
-  them. Seven are the exception to all of the above: they start from an
-  encoder-API call
-  ([`make_partition_sources.c`](src/make_partition_sources.c)) into
-  [`sources/`](sources), and [`lossy_parts.py`](src/lossy_parts.py) patches
-  those.
+  them. Seven of them are the exception to the paragraph above: a frame may
+  carry up to eight token partitions and cwebp emits only one, so
+  [`make_partition_sources.c`](src/make_partition_sources.c) makes four
+  through the encoder API into [`sources/`](sources), and
+  [`lossy_parts.py`](src/lossy_parts.py) turns those into seven -- the four
+  as they are, plus three with the partition-size table rewritten.
 * **19 RIFF containers** ([`webp_asm.py`](src/webp_asm.py)), in
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
@@ -142,10 +143,9 @@ Any one case, or any real encode read back into a case:
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
 
-[`files/`](files) is pure output and is wiped on every rebuild.
-[`sources/`](sources) is the opposite: four real encodes, checked in, that
-the multi-partition cases are patched from, and that
-[`make_partition_sources.c`](src/make_partition_sources.c) rebuilds.
+[`files/`](files) is pure output and is wiped on every rebuild. The only
+input here that is not text is [`sources/`](sources), the four frames above:
+nothing in this directory can write them, only the encoder can.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
