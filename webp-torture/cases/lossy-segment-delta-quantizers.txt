@@ -1,6 +1,7 @@
 # note: Segment quantizers read as deltas on the frame quantizer instead of
 #   absolute values.
 # expect: ok
+# unique: quant_segment_delta
 # exercises: segment_feature_mode = 0, the "q += base_q0" branch of
 #   VP8ParseQuant(). cwebp always writes absolute values (syntax_enc.c:196), so
 #   nothing else reaches this.

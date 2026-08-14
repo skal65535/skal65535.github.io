@@ -6,12 +6,17 @@
 # tree.
 # Decodes every file, compares the verdict with the 'expect' column, and for
 # files that must decode, compares the decoded pixels against hashes.txt.
-# A file with a fourth column is an animation: dwebp refuses every one of
-# those outright, so anim_dump decodes it instead and the hash covers all of
-# its frames at once. Point $ANIM_DUMP at one; without it that half is
-# skipped, and said so. A fifth column is webpinfo's verdict on the same
-# file, which is a second reader of the container and not always of the same
-# opinion; $WEBPINFO points at it.
+# Then the same file again through three more readers, since a decoder is
+# never only one implementation:
+#   -incremental   always, and it must agree with the one-shot decode on both
+#                  the verdict and the pixels. Column 6 is the exception, for
+#                  the file where the two are meant to differ.
+#   anim_dump      column 4: dwebp refuses every animated file outright, so
+#                  this is the only thing that reads one. The hash covers all
+#                  of its frames at once. $ANIM_DUMP points at it.
+#   webpinfo       column 5: walks the container without decoding, to
+#                  stricter rules. $WEBPINFO points at it.
+# A missing tool is reported and skipped rather than failing the run.
 # Files tagged 'slow' allocate over a gigabyte; skip them with SKIP_SLOW=1.
 DWEBP=${DWEBP:-$(command -v dwebp)}
 ANIM_DUMP=${ANIM_DUMP:-$(command -v anim_dump)}
@@ -21,8 +26,10 @@ if [ ! -x "$DWEBP" ]; then
   exit 2
 fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-fail=0; n=0; hashed=0; animated=0; skipped=0; walked=0
-while IFS='|' read -r name expect flag anim info; do
+fail=0; n=0; hashed=0; animated=0; skipped=0; walked=0; streamed=0
+# 'rest' is deliberate: with one variable per column, adding a column makes
+# the last one swallow it instead, silently. That cost an afternoon once.
+while IFS='|' read -r name expect flag anim info incr rest; do
   [ -z "$name" ] && continue
   [ "$flag" = slow ] && [ -n "$SKIP_SLOW" ] && continue
   f=files/$name.webp
@@ -45,6 +52,23 @@ while IFS='|' read -r name expect flag anim info; do
       fi
     else
       echo "NOTE no hash recorded for $name"
+    fi
+  fi
+  # the incremental decoder is a second implementation of the same bitstream,
+  # and it must reach the same verdict and the same pixels. Where it does not
+  # -- a RIFF size past the end of the file looks like data still arriving --
+  # the case says so, and that disagreement is what gets pinned.
+  if [ -z "$anim" ] && [ "$flag" != slow ]; then
+    want=${incr:-$expect}
+    msg=$($DWEBP -quiet -incremental "$f" -pam -o "$TMP/inc.pam" 2>&1); rc=$?
+    if [ $rc -eq 0 ]; then got=ok; else got=reject; fi
+    streamed=$((streamed+1))
+    if [ "$got" != "$want" ]; then
+      echo "MISMATCH $name: incremental expected $want, got $got  ${msg}"
+      fail=1
+    elif [ "$got" = ok ] && [ "$expect" = ok ] &&
+         ! cmp -s "$TMP/out.pam" "$TMP/inc.pam"; then
+      echo "INCREMENTAL PIXELS $name: differ from the one-shot decode"; fail=1
     fi
   fi
   # webpinfo walks the container without decoding anything, to stricter
@@ -84,5 +108,6 @@ done < expected.txt
   echo "NOTE \$ANIM_DUMP is not set, so $skipped animations went unchecked"
 [ $fail -eq 0 ] &&
   echo "all $n files behave as expected ($hashed pixel hashes matched," \
-       "$animated through the animation decoder, $walked walked by webpinfo)"
+       "$streamed decoded twice, $animated through the animation decoder," \
+       "$walked walked by webpinfo)"
 exit $fail

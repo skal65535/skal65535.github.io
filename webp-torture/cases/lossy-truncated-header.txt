@@ -1,6 +1,7 @@
 # note: Partition 0 cut to two bytes, which is enough for the segment header
 #   and not for the filter header.
 # expect: reject
+# unique: error:cannot-parse-filter-header
 # exercises: The "cannot parse filter header" exit of VP8GetHeaders().
 #   ParseFilterHeader() returns !br->eof, and this is the only file that
 #   makes it the one to fail: one byte less and the segment header goes

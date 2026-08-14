@@ -970,13 +970,14 @@ something follows the chunk it rounded. Here a JUNK payload of three bytes sits
 in front of the image, so getting the rounding wrong moves the frame rather
 than the end of the file.
 
-### [`container-riff-size-past-end.webp`](files/container-riff-size-past-end.webp) -- reject -- from [`container-riff-size-past-end.txt`](cases/container-riff-size-past-end.txt)
+### [`container-riff-size-past-end.webp`](files/container-riff-size-past-end.webp) -- reject, incremental ok -- from [`container-riff-size-past-end.txt`](cases/container-riff-size-past-end.txt)
 
 A RIFF header claiming far more bytes than the file holds.
 
 The "size > *data_size - CHUNK_HEADER_SIZE" test, which only fires when the
 whole file is in hand -- the same lie is tolerated while a stream is still
-arriving.
+arriving, so this is the one file in the corpus the incremental decoder accepts
+and the one-shot one does not.
 
 ### [`container-riff-size-short.webp`](files/container-riff-size-short.webp) -- reject -- from [`container-riff-size-short.txt`](cases/container-riff-size-short.txt)
 

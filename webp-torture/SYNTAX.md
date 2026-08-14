@@ -22,12 +22,15 @@ the point. The handful of things the assemblers do refuse are the ones they
 could not write at all -- a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.
 
-The header keys are `anim`, `exercises`, `expect`, `info`, `note`, `roundtrip`, `slow`. `expect` is `ok` or `reject`; `slow` marks
+The header keys are `anim`, `exercises`, `expect`, `incremental`, `info`, `note`, `roundtrip`, `slow`, `unique`. `expect` is `ok` or `reject`; `slow` marks
 the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
 be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
 animation decoder, for the files a still one refuses on sight; `info` is
 webpinfo's, which is a second reader of the container and not always of the
-same opinion.
+same opinion; `incremental` is the streaming decoder's, and is written down
+only where it differs from `expect`, which is the whole reason to write it.
+`unique` names probes the case claims to be the only file reaching, and
+`generate.py` refuses to build if `coverage.txt` disagrees.
 
 Which assembler owns a case follows from its keywords: a case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container

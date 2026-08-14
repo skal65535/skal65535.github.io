@@ -155,7 +155,8 @@ MB_FIELDS = {'segment_id': 'segment', 'mb_skip_coeff': 'skip'}
 
 HEADER_KEYS = {'note': True, 'expect': True, 'exercises': True,
                'roundtrip': False, 'slow': False,
-               'anim': False, 'info': False}        # value is 'required?'
+               'anim': False, 'info': False,
+               'incremental': False, 'unique': False}  # value is 'required?'
 
 
 class AsmError(Exception):
@@ -191,10 +192,15 @@ def parse_header(text, what='case'):
     if fields.setdefault('roundtrip', 'yes') not in ('yes', 'no'):
         raise AsmError('%s: roundtrip is %r, not yes or no'
                        % (what, fields['roundtrip']))
-    for key in ('anim', 'info'):
+    for key in ('anim', 'info', 'incremental'):
         if fields.setdefault(key, '') not in ('', 'ok', 'reject'):
             raise AsmError('%s: %s is %r, not ok or reject'
                            % (what, key, fields[key]))
+    if fields['incremental'] == fields['expect']:
+        raise AsmError('%s: incremental says %r, which is what expect says '
+                       'already; the column is only for a case where the two '
+                       'decoders disagree' % (what, fields['incremental']))
+    fields.setdefault('unique', '')
     return fields
 
 

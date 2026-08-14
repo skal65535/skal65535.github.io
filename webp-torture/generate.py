@@ -28,13 +28,15 @@ import webp_asm
 
 SLOW = set()      # the cases that allocate enough memory to be worth skipping
 
-# A row is (name, expect, note, exercises, size, anim, info). 'anim' is the
-# verdict of the animation decoder, and is empty for a file that is not one:
-# dwebp refuses every animated file before looking at a frame, so 'expect'
-# says nothing about those beyond that. 'info' is webpinfo's verdict, which
-# is worth recording where it disagrees, since it is a second reader of the
-# same container written to stricter rules.
-ANIM, INFO = 5, 6
+# A row is (name, expect, note, exercises, size, anim, info, incremental).
+# 'anim' is the verdict of the animation decoder, and is empty for a file
+# that is not one: dwebp refuses every animated file before looking at a
+# frame, so 'expect' says nothing about those beyond that. 'info' is
+# webpinfo's verdict, which is worth recording where it disagrees, since it
+# is a second reader of the same container written to stricter rules.
+# 'incremental' is empty unless the streaming decoder disagrees with the
+# one-shot one, which is the whole point of writing it down.
+ANIM, INFO, INCR, UNIQUE = 5, 6, 7, 8
 
 
 def verdict(row):
@@ -43,6 +45,8 @@ def verdict(row):
     webpinfo is named only when it disagrees: it walks the container without
     decoding, so on its own it says less than the other two.
     """
+    if row[INCR]:
+        return '%s, incremental %s' % (row[1], row[INCR])
     if not row[ANIM]:
         return row[1]
     out = '%s, anim_dump %s' % (row[1], row[ANIM])
@@ -499,6 +503,42 @@ def check_links(outdir):
                     '%s links %s/, which has no index' % (doc, target)
 
 
+def check_unique(outdir, rows):
+    """Every '# unique:' claim, against what coverage.txt measured.
+
+    A note saying a file is the only one to reach some path is the kind of
+    claim nothing else here checks, and the kind most likely to stop being
+    true the next time a case is added. Naming the probe makes it an
+    assertion instead of a remark.
+    """
+    path = os.path.join(outdir, 'coverage.txt')
+    claims = [r for r in rows if r[UNIQUE]]
+    if not claims:
+        return
+    assert os.path.exists(path), 'a case claims a probe, but there is no ' \
+        'coverage.txt to check it against; run make_coverage.sh'
+    reached, measured = {}, set()
+    for line in open(path):
+        if line.startswith('#') or not line.strip():
+            continue
+        name, _, tags = line.partition(' ')
+        measured.add(name)
+        for tag in tags.split():
+            reached.setdefault(tag, set()).add(name)
+    # A case coverage.txt has never seen would make every claim below look
+    # true, so say that rather than trusting it.
+    stale = sorted({r[0] for r in rows} - measured)
+    assert not stale, 'coverage.txt predates %s; rerun make_coverage.sh' \
+        % ' '.join(stale[:3])
+    for row in claims:
+        for probe in row[UNIQUE].split():
+            who = reached.get(probe, set())
+            assert who == {row[0]}, \
+                '%s says it is the only file reaching %s, but coverage.txt ' \
+                'says %s' % (row[0], probe,
+                             ' '.join(sorted(who)) if who else 'no file does')
+
+
 def html_escape(text):
     return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -620,7 +660,10 @@ the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
 be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
 animation decoder, for the files a still one refuses on sight; `info` is
 webpinfo's, which is a second reader of the container and not always of the
-same opinion.
+same opinion; `incremental` is the streaming decoder's, and is written down
+only where it differs from `expect`, which is the whole reason to write it.
+`unique` names probes the case claims to be the only file reaching, and
+`generate.py` refuses to build if `coverage.txt` disagrees.
 
 Which assembler owns a case follows from its keywords: a case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container
@@ -802,7 +845,8 @@ def build_cases(outdir):
             f.write(data)
         rows.append((name, fields['expect'], fields['note'],
                      fields['exercises'], len(data), fields['anim'],
-                     fields['info']))
+                     fields['info'], fields['incremental'],
+                     fields['unique']))
         print('%-40s %-7s %5d bytes' % (name, fields['expect'], len(data)))
     return rows
 
@@ -879,11 +923,12 @@ def main():
     rows = lossy_parts.build(outdir) + build_cases(outdir)
     with open(os.path.join(outdir, 'expected.txt'), 'w') as f:
         for row in rows:
-            f.write('%s|%s|%s|%s|%s\n' % (row[0], row[1],
-                                          'slow' if row[0] in SLOW else '',
-                                          row[ANIM], row[INFO]))
+            f.write('%s|%s|%s|%s|%s|%s\n'
+                    % (row[0], row[1], 'slow' if row[0] in SLOW else '',
+                       row[ANIM], row[INFO], row[INCR]))
     write_readme(outdir, rows)
     check_links(outdir)
+    check_unique(outdir, rows)
     return rows
 
 

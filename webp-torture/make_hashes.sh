@@ -20,7 +20,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 n=0
 : > "$TMP/hashes"
-while IFS='|' read -r name expect flag anim info; do
+while IFS='|' read -r name expect flag anim info incr rest; do
   [ -z "$name" ] && continue
   [ "$flag" = slow ] && continue          # too big to hash on every rebuild
   if [ -n "$anim" ]; then

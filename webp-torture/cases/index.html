@@ -123,7 +123,7 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="container-no-image-chunk.txt"><code>container-no-image-chunk</code></a></td><td class="reject">reject</td><td>A VP8X chunk and some metadata, and no image chunk at all.</td></tr>
 <tr><td><a href="container-odd-chunk-no-pad.txt"><code>container-odd-chunk-no-pad</code></a></td><td class="reject">reject</td><td>An odd-sized chunk whose header rounds its length up, taking the pad byte away.</td></tr>
 <tr><td><a href="container-odd-chunk-payload.txt"><code>container-odd-chunk-payload</code></a></td><td class="ok">ok</td><td>An optional chunk with an odd-sized payload, and the pad byte that must follow it.</td></tr>
-<tr><td><a href="container-riff-size-past-end.txt"><code>container-riff-size-past-end</code></a></td><td class="reject">reject</td><td>A RIFF header claiming far more bytes than the file holds.</td></tr>
+<tr><td><a href="container-riff-size-past-end.txt"><code>container-riff-size-past-end</code></a></td><td class="reject">reject, incremental ok</td><td>A RIFF header claiming far more bytes than the file holds.</td></tr>
 <tr><td><a href="container-riff-size-short.txt"><code>container-riff-size-short</code></a></td><td class="reject">reject</td><td>A RIFF header claiming 11 bytes, one less than the smallest legal value.</td></tr>
 <tr><td><a href="container-riff-size-truncates-chunks.txt"><code>container-riff-size-truncates-chunks</code></a></td><td class="reject">reject</td><td>A RIFF size that stops in the middle of the chunks behind it.</td></tr>
 <tr><td><a href="container-trailing-bytes.txt"><code>container-trailing-bytes</code></a></td><td class="ok">ok</td><td>Bytes after the last chunk that the RIFF size does not account for.</td></tr>

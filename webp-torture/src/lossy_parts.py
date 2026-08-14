@@ -111,7 +111,7 @@ def build(outdir='.', srcdir=None):
     for name, expect, note, exercises, data in cases(src):
         with open(os.path.join(files, name + '.webp'), 'wb') as f:
             f.write(data)
-        rows.append((name, expect, note, exercises, len(data), '', ''))
+        rows.append((name, expect, note, exercises, len(data), '', '', '', ''))
         print('%-40s %-7s %5d bytes' % (name, expect, len(data)))
     return rows
 

@@ -1,9 +1,11 @@
 # note: A RIFF header claiming far more bytes than the file holds.
 # expect: reject
+# incremental: ok
 # roundtrip: no
 # exercises: The "size > *data_size - CHUNK_HEADER_SIZE" test, which only
 #   fires when the whole file is in hand -- the same lie is tolerated while a
-#   stream is still arriving.
+#   stream is still arriving, so this is the one file in the corpus the
+#   incremental decoder accepts and the one-shot one does not.
 riff_size 1000000
 width 32
 height 32

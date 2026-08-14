@@ -1,6 +1,7 @@
 # note: A palette-coded alpha plane with an entropy image inside it.
 # expect: ok
 # roundtrip: no
+# unique: alpha_8b_blocks
 # exercises: The block loop of DecodeAlphaData(), which nothing else here
 #   reaches: with an entropy image the Huffman mask stops being ~0, so the
 #   decoder stops reading straight through to the last row and instead walks
