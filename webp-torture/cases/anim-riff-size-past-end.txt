@@ -1,0 +1,17 @@
+# note: A RIFF size claiming more bytes than the file has.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: Where the demuxer parts company with the still decoder. It
+#   computes partial = (buffer < riff_end) up front and, unless the caller
+#   asked for partial parsing, refuses the file there and then -- before the
+#   master chunk table is consulted, so none of the animation code runs at
+#   all. container-riff-size-past-end is the same lie told to dwebp.
+riff_size 4096
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

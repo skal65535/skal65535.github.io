@@ -1,0 +1,34 @@
+# note: A partial frame that asks to be cleared away after it is shown.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: disposal_method 1 is DISPOSE_BACKGROUND: once frame 2 has been
+#   handed out, ZeroFillFrameRect() clears just its rectangle out of the
+#   canvas the next frame starts from, so frame 3 sees frame 1 everywhere
+#   except that hole. Frame 3 is opaque and full-canvas, so it overwrites
+#   all of it anyway -- what is being pinned is that the clearing does not
+#   reach past the rectangle.
+alpha 1
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 4
+frame_y 4
+frame_duration 100
+disposal_method 1
+lossless
+width 16
+height 16
+alpha_is_used 1
+argb 0x80ff0000 x256
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff00ff00 x1024

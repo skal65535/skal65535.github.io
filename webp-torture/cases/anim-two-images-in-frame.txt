@@ -1,0 +1,18 @@
+# note: One ANMF carrying two image chunks.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: How the walk leaves a frame it cannot finish. StoreFrame()
+#   takes the first VP8L, sees a second while image_chunks is already one,
+#   and jumps to the label that rewinds and stops -- leaving the reader
+#   positioned inside the ANMF payload, at the second image's header. The
+#   outer walk then reads that as a top-level chunk and refuses it, because
+#   in an animation every image belongs to a frame.
+frame
+frame_duration 100
+chunks VP8L VP8L
+lossless
+width 16
+height 16
+argb 0xff800000 x256

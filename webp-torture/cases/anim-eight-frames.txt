@@ -1,0 +1,57 @@
+# note: Eight frames, each a different flat colour.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: A longer frame list than anything else here: the demuxer chains
+#   eight Frame records and AddFrame() walks to the tail each time. Every one
+#   is a full-canvas opaque key frame, so the canvas is zero-filled and
+#   overwritten eight times with no blending anywhere.
+frame
+frame_duration 10
+lossless
+width 16
+height 16
+argb 0xff000000 x256
+frame
+frame_duration 20
+lossless
+width 16
+height 16
+argb 0xff202020 x256
+frame
+frame_duration 30
+lossless
+width 16
+height 16
+argb 0xff404040 x256
+frame
+frame_duration 40
+lossless
+width 16
+height 16
+argb 0xff606060 x256
+frame
+frame_duration 50
+lossless
+width 16
+height 16
+argb 0xff808080 x256
+frame
+frame_duration 60
+lossless
+width 16
+height 16
+argb 0xffa0a0a0 x256
+frame
+frame_duration 70
+lossless
+width 16
+height 16
+argb 0xffc0c0c0 x256
+frame
+frame_duration 80
+lossless
+width 16
+height 16
+argb 0xffffffff x256

@@ -1,0 +1,18 @@
+# note: An alpha plane carrying a palette and a subtract-green transform.
+# expect: ok
+# roundtrip: no
+# exercises: The transform count, the other half of the 8-bit test: the
+#   decoder asks for exactly one transform and for it to be the palette, so
+#   a second one -- however harmless subtracting green from a plane that is
+#   all green may be -- sends it back to the 32-bit loop.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms subtract_green color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+pixels 0x24 x64

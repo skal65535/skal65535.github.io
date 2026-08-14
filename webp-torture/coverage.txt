@@ -15,6 +15,17 @@ alph-lossless-palette                    alpha_8b_copy alpha_8b_data alpha_8b_no
 alph-lossless-predictor                  build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code literal_four_channels literal_trivial_code lz77_copy mb_i16 parts_1 pred_first_row pred_mode_2 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
 alph-lossless-truncated                  build_single_value codelen_17 coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Alpha-decoder-initialization-failed. literal_trivial_code mb_i16 parts_1 simple_1sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
 alph-no-vp8x                             info:bad-signature reject_signature_magic 
+alph-plane-cache                         build_single_value coeff_cat4 complex_code literal_trivial_code mb_i16 palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-filtered                      alpha_8b_data alpha_8b_no_blocks build_single_value coeff_cat4 mb_i16 palette_3 palette_black_tail parts_1 simple_1sym simple_2sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-literals                      build_single_value coeff_cat4 literal_trivial_code mb_i16 parts_1 simple_1sym uvmode_0 wht_dc_only ymode_0 
+alph-plane-lz77-past-start               alpha_8b_copy_oob alpha_8b_data alpha_8b_no_blocks build_single_value codelen_17 codelen_17_max_run codelen_18 codelen_18_max_run coeff_cat4 complex_code error:Could-not-decode-alpha-data. mb_i16 num_codes_min palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-lz77                          alpha_8b_copy alpha_8b_data alpha_8b_no_blocks build_single_value codelen_18 codelen_18_max_run coeff_cat4 complex_code mb_i16 num_codes_min palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-meta-huffman                  alpha_8b_blocks alpha_8b_data build_single_value coeff_cat4 complex_code mb_i16 meta_huffman meta_precision_min palette_3 palette_black_tail parts_1 simple_1sym simple_2sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-nontrivial-red                build_single_value coeff_cat4 complex_code mb_i16 palette_3 palette_black_tail parts_1 simple_1sym simple_2sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-oversubscribed                codelen_18 codelen_18_max_run coeff_cat4 complex_code error:Alpha-decoder-initialization-failed. mb_i16 num_codes_min parts_1 reject_count_over_capacity uvmode_0 wht_dc_only ymode_0 
+alph-plane-palette                       alpha_8b_data alpha_8b_no_blocks build_single_value coeff_cat4 complex_code mb_i16 palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-preprocessed                  alpha_8b_data alpha_8b_no_blocks build_single_value coeff_cat4 complex_code mb_i16 palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-plane-two-transforms                build_single_value coeff_cat4 complex_code literal_trivial_code mb_i16 palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing tf_subtract_green uvmode_0 wht_dc_only ymode_0 
 alph-preprocessing-invalid               coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-raw-filter-gradient                 coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-raw-filter-horizontal               coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
@@ -25,6 +36,54 @@ alph-raw-preprocessing                   coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16
 alph-raw-short                           coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-reserved-set                        coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-without-vp8x-flag                   coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
+anim-alph-after-image                    anim_blend_nonpremult demux_alph_after_image demux_frame_added demux_frame_alph 
+anim-alpha-flag-missing                  alpha_is_used anim_blend_nonpremult anim_blend_whole_rows anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-alpha-lossless-frame                alpha_8b_data alpha_8b_no_blocks anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value coeff_cat4 complex_code demux_bounds_inexact demux_frame_added demux_frame_alph mb_i16 palette_3 palette_black_tail parts_1 simple_1sym subimage_stream tf_color_indexing uvmode_0 wht_dc_only wht_empty ymode_0 
+anim-alpha-raw-frame                     anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value coeff_cat4 demux_bounds_inexact demux_frame_added demux_frame_alph literal_trivial_code mb_i16 parts_1 simple_1sym uvmode_0 wht_dc_only wht_empty ymode_0 
+anim-anim-chunk-padded                   anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_anim_padded demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-anim-chunk-short                    anim_blend_nonpremult demux_anim_too_small 
+anim-anmf-header-truncated               anim_blend_nonpremult demux_frame_too_small 
+anim-anmf-odd-size                       anim_blend_nonpremult demux_frame_added 
+anim-anmf-size-past-end                  anim_blend_nonpremult 
+anim-anmf-size-short                     anim_blend_nonpremult demux_frame_overran_payload 
+anim-background-color                    anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-blend-none                          alpha_is_used anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-blend-over                          alpha_is_used anim_blend_nonpremult anim_blend_whole_rows anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-blend-ranges                        alpha_is_used anim_blend_around_prev anim_blend_nonpremult anim_blend_whole_rows anim_dispose_background anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose anim_range_disjoint anim_range_left anim_range_right build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-canvas-larger-than-frames           anim_blend_nonpremult anim_blend_whole_rows anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-dispose-background                  alpha_is_used anim_blend_nonpremult anim_blend_whole_rows anim_dispose_background anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-dispose-blend-matrix                alpha_is_used anim_blend_nonpremult anim_blend_whole_rows anim_dispose_background anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-duplicate-anim                      anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_anim_duplicate demux_bounds_inexact demux_chunk_flagless demux_frame_added literal_trivial_code simple_1sym 
+anim-duration-extremes                   anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-eight-frames                        anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-empty-frame-alone                   anim_blend_nonpremult demux_frame_dropped 
+anim-empty-frame                         anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_frame_added demux_frame_dropped literal_trivial_code simple_1sym 
+anim-frame-1x1                           anim_blend_nonpremult anim_blend_whole_rows anim_dispose_background anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-frame-alpha-only                    anim_blend_nonpremult demux_frame_added demux_frame_alph 
+anim-frame-area-overflow                 anim_blend_nonpremult demux_frame_area_overflow 
+anim-frame-image-past-canvas             anim_blend_nonpremult demux_bounds_inexact demux_frame_added demux_frame_past_canvas 
+anim-frame-offsets                       alpha_is_used anim_blend_nonpremult anim_blend_whole_rows anim_inter_frame anim_key_first_frame anim_key_frame anim_key_from_prev_dispose build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-frame-past-canvas                   anim_blend_nonpremult demux_bounds_inexact demux_frame_added demux_frame_past_canvas 
+anim-frame-reserved-bits                 anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-frame-size-mismatch                 anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-frames-without-flag                 anim_blend_nonpremult demux_no_frames 
+anim-image-chunk-beside-frames           anim_blend_nonpremult demux_frame_added demux_frame_chunk_done demux_image_in_animation 
+anim-loop-count-max                      anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-lossy-frames                        anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame coeff_cat3 coeff_cat4 demux_bounds_inexact demux_frame_added mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
+anim-metadata-chunks                     anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-metadata-without-flags              anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_chunk_flagless demux_frame_added literal_trivial_code simple_1sym 
+anim-mixed-formats                       anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value coeff_cat4 demux_bounds_inexact demux_frame_added literal_trivial_code mb_i16 parts_1 simple_1sym uvmode_0 wht_dc_only wht_empty ymode_0 
+anim-nested-anmf                         anim_blend_nonpremult demux_frame_dropped 
+anim-no-anim-chunk                       anim_blend_nonpremult demux_frame_before_anim 
+anim-no-vp8x                             info:bad-signature reject_signature_magic 
+anim-riff-size-past-end                  anim_blend_nonpremult demux_partial 
+anim-riff-size-truncates-frames          anim_blend_nonpremult 
+anim-second-vp8x                         anim_blend_nonpremult demux_frame_added demux_second_vp8x 
+anim-single-frame                        anim_blend_nonpremult anim_key_first_frame anim_key_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-two-frames                          anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-two-images-in-frame                 anim_blend_nonpremult demux_frame_added demux_frame_chunk_done demux_image_in_animation 
+anim-unknown-chunk-between-frames        anim_blend_nonpremult anim_key_first_frame anim_key_frame anim_key_opaque_full_frame build_single_value demux_bounds_inexact demux_frame_added literal_trivial_code simple_1sym 
+anim-vp8l-with-alph                      anim_blend_nonpremult demux_frame_alph demux_vp8l_with_alph 
 cache-bits-0-invalid                     reject_cache_bits 
 cache-bits-1                             build_single_value cache_bits_min literal_trivial_code simple_1sym 
 cache-bits-11                            build_single_value cache_bits_max literal_trivial_code simple_1sym 
@@ -71,6 +130,8 @@ header-max-area-truncated                build_empty_code complex_code header_hu
 header-version-max                       reject_signature_version 
 header-version-nonzero                   reject_signature_version 
 header-width-16384                       build_single_value header_width_16384 literal_trivial_code simple_1sym 
+lossless-all-features                    build_single_value cache_index codelen_18 codelen_18_max_run complex_code literal_trivial_code lz77_copy meta_group_switch meta_huffman meta_precision_min num_codes_min pred_first_row pred_mode_0 simple_1sym simple_2sym subimage_stream tf_bits_min tf_color_indexing tf_cross_color tf_predictor tf_subtract_green 
+lossless-plain                           build_single_value complex_code literal_four_channels simple_1sym 
 lossy-1-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
 lossy-2-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_2 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
 lossy-4-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_4 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 

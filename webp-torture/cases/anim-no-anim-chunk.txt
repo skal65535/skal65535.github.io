@@ -1,0 +1,22 @@
+# note: Frames with no ANIM chunk in front of them.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: "'ANIM' precedes frames": ParseVP8XChunks() refuses an ANMF
+#   while anim_chunks is still zero. The ANIM chunk carries the loop count
+#   and background colour, and the format puts it before the frames rather
+#   than anywhere among them.
+chunks VP8X ANMF ANMF
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

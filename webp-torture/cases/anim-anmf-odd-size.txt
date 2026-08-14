@@ -1,0 +1,19 @@
+# note: An ANMF chunk whose declared length is odd.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The padding rule, one layer in. A frame chunk always comes out
+#   even -- its header is sixteen bytes and every sub-chunk inside it is
+#   padded already -- so an odd length is a contradiction. The demuxer does
+#   not test for it: it rounds the length up like any other chunk, and what
+#   refuses the file is the pad byte left over at the end, one short of a
+#   chunk header. webpinfo does test for it, by name -- "ANMF chunk size
+#   should always be even".
+chunk_size ANMF 37
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

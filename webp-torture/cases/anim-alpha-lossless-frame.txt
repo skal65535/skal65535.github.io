@@ -1,0 +1,22 @@
+# note: An animation frame whose alpha plane is a compressed image stream.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The other ALPH compression, inside an animation: the payload is
+#   a headerless VP8L stream read by VP8LDecodeAlphaHeader(), and this one is
+#   a palette of three alpha values, so it also takes the 8-bit decoding path
+#   -- a lossless decode nested inside a frame of an animation, two chunk
+#   layers below the file.
+alpha 1
+frame
+frame_duration 100
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+pixels 0x24 x256

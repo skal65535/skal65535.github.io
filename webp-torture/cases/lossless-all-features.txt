@@ -1,0 +1,19 @@
+# note: Every optional part of the lossless format in one image.
+# expect: ok
+# exercises: The maximal stack: all four transforms, a colour cache, an
+#   entropy image selecting between two Huffman groups, and pixel data using
+#   literals, a cache index and a back-reference. transform-all-four has the
+#   transforms alone; this adds everything that is read after them, so the
+#   header walk of DecodeImageStream() runs to its full length and the pixel
+#   loop consults the entropy image, the cache and the copy path in turn.
+lossless
+width 16
+height 16
+transforms color_indexing subtract_green cross_color predictor
+palette_colors 0xff102030 0xff405060 0xff708090 0xffa0b0c0
+cache_bits 4
+meta_bits 2
+meta_tiles 0 1 1 0
+code green complex
+code dist complex
+pixels 0x1b x31 cache 0 copy 32 2

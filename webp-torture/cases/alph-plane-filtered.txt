@@ -1,0 +1,20 @@
+# note: A compressed alpha plane with the gradient filter on top.
+# expect: ok
+# roundtrip: no
+# exercises: The two alpha stages together. Filtering and compression are
+#   separate fields of the ALPH header byte and the raw cases sweep the
+#   filters on their own; here the plane is decompressed first and the
+#   gradient unfilter then runs over what came out, so the values in the
+#   stream are differences rather than levels.
+chunks VP8X ALPH VP8
+alpha 1
+alph_filtering 3
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x00000800 0x00001000
+pixels 0x24 x64

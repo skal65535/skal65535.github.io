@@ -1,0 +1,21 @@
+# note: A top-level image chunk in a file that also has frames.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: "check that this isn't an animation (all frames should be in an
+#   ANMF)". An animated file has no image of its own; the VP8 here sits
+#   beside the frames rather than inside one, and the walk refuses it on
+#   sight of either the flag or a preceding ANIM chunk.
+chunks VP8X ANIM ANMF VP8
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

@@ -1,0 +1,29 @@
+# note: An animation carrying an ICC profile and both metadata chunks.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: Every optional chunk the format defines, around an animation
+#   rather than around a still frame: ICCP has to come before the image data
+#   and EXIF and XMP after it, and each is stored for the caller only
+#   because its VP8X flag is set. container-metadata-chunks is the same
+#   three around a lossy frame.
+chunks VP8X ICCP ANIM ANMF ANMF EXIF XMP
+icc_profile 1
+exif_metadata 1
+xmp_metadata 1
+payload ICCP 00112233445566778899
+payload EXIF 45786966000049492a00
+payload XMP 3c783a786d706d6574613e
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

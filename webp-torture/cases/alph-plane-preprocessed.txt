@@ -1,0 +1,22 @@
+# note: A compressed alpha plane flagged as level-reduced.
+# expect: ok
+# roundtrip: no
+# exercises: ALPHA_PREPROCESSED_LEVELS on a compressed plane. The bit makes
+#   the decoder take the "decode everything in one pass" branch rather than
+#   the row-by-row one, which here means the whole lossless stream is read
+#   before any of it is handed on. WebPDequantizeLevels() is then called
+#   with the dithering strength, which is zero unless the caller asks for
+#   it, so the plane comes out unchanged: this pins the control path, not
+#   the pixels. alph-raw-preprocessing is the same bit on a stored plane.
+chunks VP8X ALPH VP8
+alpha 1
+alph_preprocessing 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+pixels 0x24 x64

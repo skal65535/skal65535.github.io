@@ -1,0 +1,16 @@
+# note: A second VP8X chunk after the frames have started.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The one fourcc the chunk walk refuses on sight. VP8X is the
+#   header that started the walk and it carries the canvas size and the
+#   feature flags, so a second one would be re-declaring what has already
+#   been acted on; the walk returns an error rather than picking either.
+chunks VP8X ANIM ANMF VP8X
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

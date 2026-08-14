@@ -1,0 +1,21 @@
+# note: A frame carrying an alpha chunk and no image.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The ALPH arm of StoreFrame() sets frame_num where the image arm
+#   would have, so unlike anim-empty-frame this frame is kept: it has an
+#   alpha component, no image component, and the width and height the ANMF
+#   header claimed. That is enough to pass every test in
+#   IsValidExtendedFormat(), which only refuses a frame with neither. The
+#   decoder is then handed an ALPH chunk to decode as an image.
+alpha 1
+frame
+frame_duration 100
+chunks ALPH
+alph_raw
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20

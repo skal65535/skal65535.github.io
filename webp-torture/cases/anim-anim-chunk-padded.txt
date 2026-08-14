@@ -1,0 +1,18 @@
+# note: An ANIM chunk with four bytes of padding after its two fields.
+# expect: reject
+# anim: ok
+# info: reject
+# roundtrip: no
+# exercises: The ANIM chunk is six bytes of content and the demuxer treats
+#   that as a minimum, not a size: it reads the background colour and loop
+#   count and then skips whatever else the chunk declares, the same
+#   forward-compatibility the VP8X chunk gets. webpinfo takes the other
+#   view and requires the length to be exactly six -- "Corrupted ANIM
+#   chunk" -- so this is a file the two disagree about.
+payload ANIM ffffffff0300deadbeef
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

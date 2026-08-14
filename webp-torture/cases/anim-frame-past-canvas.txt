@@ -1,0 +1,26 @@
+# note: A frame whose rectangle runs off the edge of the canvas.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: CheckFrameBounds() with exact = 0, the animation form: a frame
+#   need not fill the canvas, but x_offset + width must still fit inside it.
+#   16 wide at x = 48 in a 32-wide canvas does not, and the check runs after
+#   the whole file has parsed, so this is refused by the validator rather
+#   than by the walk.
+canvas_width_minus_one 31
+canvas_height_minus_one 31
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 24
+frame_y 24
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

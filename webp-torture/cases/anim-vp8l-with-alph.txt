@@ -1,0 +1,19 @@
+# note: A frame carrying both an alpha chunk and a lossless image.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: "VP8L has its own alpha": the lossless format carries a fourth
+#   channel already, so an ALPH beside it is contradictory rather than
+#   redundant, and StoreFrame() refuses the pair outright as soon as it
+#   reads the VP8L tag with alpha_chunks non-zero.
+alpha 1
+frame
+frame_duration 100
+chunks ALPH VP8L
+alph_raw
+lossless
+width 16
+height 16
+alpha_is_used 1
+argb 0x80800000 x256

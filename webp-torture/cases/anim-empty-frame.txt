@@ -1,0 +1,27 @@
+# note: An ANMF chunk holding its header and nothing else, followed by a
+#   real frame.
+# expect: reject
+# anim: ok
+# info: reject
+# roundtrip: no
+# exercises: A frame with no image is dropped rather than refused, and
+#   quietly. StoreFrame() is handed a payload size of zero, reads the chunk
+#   header belonging to the next frame, rewinds and returns having stored
+#   nothing; the frame record it was filling still has the frame_num zero
+#   WebPSafeCalloc() left, so the "frame->frame_num > 0" test in
+#   ParseAnimationFrame() fails and it is freed. One frame comes out of a
+#   file that declares two. webpinfo refuses the same file -- "No VP8/VP8L
+#   chunk detected in an ANMF chunk".
+frame
+frame_duration 100
+chunks
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

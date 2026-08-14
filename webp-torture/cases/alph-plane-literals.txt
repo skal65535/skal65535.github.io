@@ -1,0 +1,17 @@
+# note: A compressed alpha plane written as plain green literals.
+# expect: ok
+# roundtrip: no
+# exercises: The simplest compressed plane there is: no transform, so
+#   Is8bOptimizable() is never consulted and the plane goes through
+#   DecodeImageData() with ExtractAlphaRows() pulling the green channel out
+#   of a full ARGB buffer. The alpha value is the green symbol, which is why
+#   this needs no palette to say anything.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+pixels 200 x256

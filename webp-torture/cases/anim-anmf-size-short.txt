@@ -1,0 +1,17 @@
+# note: An ANMF chunk declaring less than the image inside it takes up.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The other of the two size tests in ParseAnimationFrame(): after
+#   StoreFrame() has read the frame's chunks, what it consumed is compared
+#   against what the ANMF said its payload was. The image is really there
+#   and reads back fine; it is the ANMF header's own arithmetic that does
+#   not add up, and the frame is refused for overrunning itself.
+chunk_size ANMF 20
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

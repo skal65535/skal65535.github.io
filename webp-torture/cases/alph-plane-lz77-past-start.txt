@@ -1,0 +1,20 @@
+# note: An alpha plane copying from before its own beginning.
+# expect: reject
+# roundtrip: no
+# exercises: The bounds test inside the 8-bit loop, which is written
+#   separately from the 32-bit one and refuses the copy rather than clamping
+#   it: the distance reaches back further than the pixels decoded so far.
+#   lz77-distance-past-start is the same mistake on the 32-bit path.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+code green complex
+code dist complex
+pixels 0x24 copy 32 40

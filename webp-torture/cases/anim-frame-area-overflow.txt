@@ -1,0 +1,22 @@
+# note: An ANMF header claiming a frame of sixteen million by sixteen
+#   million, inside a canvas of sixteen by sixteen.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The MAX_IMAGE_AREA test inside ParseAnimationFrame(), which
+#   runs on the header fields alone -- before the frame's own chunks are
+#   looked at, and before anything is allocated for it. Both size fields are
+#   0xffffff, so the product overflows 32 bits and is computed as a uint64.
+#   The canvas is pinned small on purpose: left to follow the frame it would
+#   be refused by the VP8X area check first, and this test would never run.
+canvas_width_minus_one 15
+canvas_height_minus_one 15
+frame
+frame_width_minus_one 16777215
+frame_height_minus_one 16777215
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

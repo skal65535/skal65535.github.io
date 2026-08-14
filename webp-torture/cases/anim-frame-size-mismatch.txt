@@ -1,0 +1,21 @@
+# note: An ANMF header claiming a size its own image disagrees with.
+# expect: reject
+# anim: ok
+# info: reject
+# roundtrip: no
+# exercises: Which of the two sizes wins. The ANMF header says 16x16 and the
+#   VP8L inside says 32x32; ParseAnimationFrame() takes the header's numbers
+#   and then SetFrameInfo() overwrites them with the image's, so the header
+#   fields are dropped and the frame composes at 32x32. webpinfo refuses the
+#   same file -- "Frame size in VP8/VP8L sub-chunk differs from ANMF header"
+#   -- so the two readers in this repository disagree about it.
+canvas_width_minus_one 31
+canvas_height_minus_one 31
+frame
+frame_width_minus_one 15
+frame_height_minus_one 15
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024

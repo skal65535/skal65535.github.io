@@ -11,7 +11,7 @@ turns the case into bytes. Nothing is checked on the way, so a case can say
 what no encoder would -- and the file it produces is readable as the text
 that describes it.
 
-* **78 lossless (VP8L) streams**
+* **80 lossless (VP8L) streams**
   ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
   Huffman codes down to the code-length stream that describes them, and the
   pixel data.
@@ -27,12 +27,12 @@ that describes it.
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
   and sizes that lie about what is behind them.
-* **18 alpha chunks**, where the plane is either stored one byte per
+* **29 alpha chunks**, where the plane is either stored one byte per
   pixel or compressed with the lossless coder in its 8-bit mode -- a
   different path through the decoder from the one every VP8L file here
   takes. A compressed plane is a lossless image stream without a header, so
   `vp8l_asm.py` writes those too.
-* **0 animations** ([`webp_asm.py`](src/webp_asm.py) again): an ANIM
+* **48 animations** ([`webp_asm.py`](src/webp_asm.py) again): an ANIM
   chunk and one ANMF per frame, each frame carrying its own image, position,
   duration, disposal and blending. No still decoder will open one, so these
   are checked with `anim_dump` instead.
@@ -59,6 +59,7 @@ about.
 
 | Group | Files | must decode | must be rejected |
 | --- | ---: | ---: | ---: |
+| Whole lossless images | 2 | 2 | 0 |
 | Simple codes | 9 | 6 | 3 |
 | The code-length code | 15 | 9 | 6 |
 | Meta Huffman / entropy image | 7 | 6 | 1 |
@@ -70,7 +71,8 @@ about.
 | Predictor modes | 7 | 7 | 0 |
 | Frame header | 7 | 3 | 4 |
 | The RIFF container | 19 | 9 | 10 |
-| The alpha chunk | 18 | 10 | 8 |
+| Animation | 48 | 27 | 21 |
+| The alpha chunk | 29 | 19 | 10 |
 | Lossy: frame tag and picture header | 16 | 8 | 8 |
 | Lossy: segmentation | 7 | 7 | 0 |
 | Lossy: loop filter | 6 | 6 | 0 |
@@ -82,7 +84,7 @@ about.
 | Lossy: token partitions | 5 | 2 | 3 |
 | Lossy: truncation | 4 | 1 | 3 |
 | Lossy: partition sizes, from real encodes | 8 | 5 | 3 |
-| **total** | **196** | **138** | **58** |
+| **total** | **257** | **176** | **81** |
 
 ## What to run
 
@@ -257,6 +259,34 @@ either would fail a pixel hash rather than pass unnoticed.
 
 BSD 3-clause, the same as libwebp. See [`COPYING`](COPYING). That covers the
 generators, the scripts and the bitstreams in `files/` alike.
+
+## Whole lossless images
+
+The two ends of the format rather than one corner of it: an image with nothing
+optional in it at all, and one with everything. Between them they are what the
+rest of the lossless files here are a departure from.
+
+### [`lossless-all-features.webp`](files/lossless-all-features.webp) -- ok -- from [`lossless-all-features.txt`](cases/lossless-all-features.txt)
+
+Every optional part of the lossless format in one image.
+
+The maximal stack: all four transforms, a colour cache, an entropy image
+selecting between two Huffman groups, and pixel data using literals, a cache
+index and a back-reference. transform-all-four has the transforms alone; this
+adds everything that is read after them, so the header walk of
+DecodeImageStream() runs to its full length and the pixel loop consults the
+entropy image, the cache and the copy path in turn.
+
+### [`lossless-plain.webp`](files/lossless-plain.webp) -- ok -- from [`lossless-plain.txt`](cases/lossless-plain.txt)
+
+An ordinary lossless image, with none of the corners.
+
+The control. No transform, no colour cache, no entropy image: whole pixels
+straight through, which is the one shape every other lossless file here departs
+from. The four colours differ in all four channels, so the red, blue and alpha
+codes each carry several symbols and are read once per pixel -- the path a
+stream takes when is_trivial_literal is false, which a single-colour image
+never reaches.
 
 ## Simple codes
 
@@ -1043,6 +1073,478 @@ disk_chunk_size is then just the 8-byte header, which is the smallest step the
 walk can take. A zero-length chunk is legal and must be stepped over like any
 other.
 
+## Animation
+
+A sequence of frames rather than one image: an ANIM chunk carrying the loop
+count, then an ANMF per frame carrying its own position, duration, disposal and
+blending, and its own image chunks. None of it is reachable through dwebp,
+which refuses any file claiming animation before looking at a frame, so these
+are checked with anim_dump instead -- the demuxer of demux.c, the composition
+of anim_decode.c, and one decode per frame. The verdict quoted for each is that
+one; every file here is still a reject to a still decoder.
+
+### [`anim-alph-after-image.webp`](files/anim-alph-after-image.webp) -- reject, anim_dump reject -- from [`anim-alph-after-image.txt`](cases/anim-alph-after-image.txt)
+
+A frame whose alpha chunk comes after its image.
+
+Both chunks are stored -- StoreFrame() has no opinion on their order -- and it
+is IsValidExtendedFormat() that compares the two offsets afterwards and
+requires the alpha to precede the image. The still-image form of the same
+mistake is alph-after-image, which libwebp's own decoder accepts, so the two
+layers do not agree about it.
+
+### [`anim-alpha-flag-missing.webp`](files/anim-alpha-flag-missing.webp) -- reject, anim_dump ok, webpinfo reject -- from [`anim-alpha-flag-missing.txt`](cases/anim-alpha-flag-missing.txt)
+
+Frames with transparency in a file whose VP8X does not admit it.
+
+The reverse of container-vp8x-still-flags, which sets flags with nothing behind
+them. Here the data is there and the flag is not. Nothing in the demuxer
+compares the two, so the frames blend exactly as they would with the flag set;
+webpinfo refuses the file -- "Unexpected alpha data detected" -- which makes
+this the pair of cases where the two readers here disagree in opposite
+directions.
+
+### [`anim-alpha-lossless-frame.webp`](files/anim-alpha-lossless-frame.webp) -- reject, anim_dump ok -- from [`anim-alpha-lossless-frame.txt`](cases/anim-alpha-lossless-frame.txt)
+
+An animation frame whose alpha plane is a compressed image stream.
+
+The other ALPH compression, inside an animation: the payload is a headerless
+VP8L stream read by VP8LDecodeAlphaHeader(), and this one is a palette of three
+alpha values, so it also takes the 8-bit decoding path -- a lossless decode
+nested inside a frame of an animation, two chunk layers below the file.
+
+### [`anim-alpha-raw-frame.webp`](files/anim-alpha-raw-frame.webp) -- reject, anim_dump ok -- from [`anim-alpha-raw-frame.txt`](cases/anim-alpha-raw-frame.txt)
+
+An animation frame carrying an uncompressed ALPH chunk beside its lossy image.
+
+An ANMF holds a chunk list, not a chunk: ALPH then VP8 is the same pair a still
+file uses, and StoreFrame() fills both slots of img_components. The alpha plane
+is stored one byte per pixel, so this is the animation route into ALPHInit()
+and the unfiltered plane.
+
+### [`anim-anim-chunk-padded.webp`](files/anim-anim-chunk-padded.webp) -- reject, anim_dump ok, webpinfo reject -- from [`anim-anim-chunk-padded.txt`](cases/anim-anim-chunk-padded.txt)
+
+An ANIM chunk with four bytes of padding after its two fields.
+
+The ANIM chunk is six bytes of content and the demuxer treats that as a
+minimum, not a size: it reads the background colour and loop count and then
+skips whatever else the chunk declares, the same forward-compatibility the VP8X
+chunk gets. webpinfo takes the other view and requires the length to be exactly
+six -- "Corrupted ANIM chunk" -- so this is a file the two disagree about.
+
+### [`anim-anim-chunk-short.webp`](files/anim-anim-chunk-short.webp) -- reject, anim_dump reject -- from [`anim-anim-chunk-short.txt`](cases/anim-anim-chunk-short.txt)
+
+An ANIM chunk of two bytes.
+
+The other side of anim-anim-chunk-padded. The demuxer treats six bytes as the
+minimum an ANIM chunk may be and refuses anything shorter outright, because the
+background colour and loop count it is about to read are not there. Longer is
+tolerated; shorter is not.
+
+### [`anim-anmf-header-truncated.webp`](files/anim-anmf-header-truncated.webp) -- reject, anim_dump reject -- from [`anim-anmf-header-truncated.txt`](cases/anim-anmf-header-truncated.txt)
+
+An ANMF chunk declaring fewer bytes than its own header needs.
+
+NewFrame()'s "actual_size < min_size" test. The sixteen bytes of ANMF header
+are the minimum a frame chunk can be, and the check is made against the
+declared length before a single field is read, so nothing here depends on what
+the chunk actually contains.
+
+### [`anim-anmf-odd-size.webp`](files/anim-anmf-odd-size.webp) -- reject, anim_dump reject -- from [`anim-anmf-odd-size.txt`](cases/anim-anmf-odd-size.txt)
+
+An ANMF chunk whose declared length is odd.
+
+The padding rule, one layer in. A frame chunk always comes out even -- its
+header is sixteen bytes and every sub-chunk inside it is padded already -- so
+an odd length is a contradiction. The demuxer does not test for it: it rounds
+the length up like any other chunk, and what refuses the file is the pad byte
+left over at the end, one short of a chunk header. webpinfo does test for it,
+by name -- "ANMF chunk size should always be even".
+
+### [`anim-anmf-size-past-end.webp`](files/anim-anmf-size-past-end.webp) -- reject, anim_dump reject -- from [`anim-anmf-size-past-end.txt`](cases/anim-anmf-size-past-end.txt)
+
+An ANMF chunk claiming to be far longer than the file.
+
+SizeIsInvalid(), the test the walk makes before trusting any declared length: a
+chunk may not claim to extend past the end of the RIFF chunk it sits in. This
+one claims four kilobytes inside a file of about a hundred bytes, so it is
+refused before ParseAnimationFrame() is called at all.
+
+### [`anim-anmf-size-short.webp`](files/anim-anmf-size-short.webp) -- reject, anim_dump reject -- from [`anim-anmf-size-short.txt`](cases/anim-anmf-size-short.txt)
+
+An ANMF chunk declaring less than the image inside it takes up.
+
+The other of the two size tests in ParseAnimationFrame(): after StoreFrame()
+has read the frame's chunks, what it consumed is compared against what the ANMF
+said its payload was. The image is really there and reads back fine; it is the
+ANMF header's own arithmetic that does not add up, and the frame is refused for
+overrunning itself.
+
+### [`anim-background-color.webp`](files/anim-background-color.webp) -- reject, anim_dump ok -- from [`anim-background-color.txt`](cases/anim-background-color.txt)
+
+A background colour that is neither white nor transparent.
+
+ANIM's first four bytes. The demuxer reads them into dmux->bgcolor and hands
+them to the caller, and that is all: the animation decoder zero-fills its
+canvas for a key frame rather than filling it with this, so the field cannot
+change a pixel of the output. Written so that a decoder that started obeying it
+would fail the hash.
+
+### [`anim-blend-none.webp`](files/anim-blend-none.webp) -- reject, anim_dump ok -- from [`anim-blend-none.txt`](cases/anim-blend-none.txt)
+
+A half-transparent frame that says not to blend it.
+
+blending_method 1 is NO_BLEND, and it changes two things at once: the frame is
+written over the canvas as it is, alpha and all, and IsKeyFrame() takes its
+second branch, because a full-canvas frame that does not blend needs nothing
+underneath it. Same bytes as anim-blend-over, one bit apart, and the frames
+come out different.
+
+### [`anim-blend-over.webp`](files/anim-blend-over.webp) -- reject, anim_dump ok -- from [`anim-blend-over.txt`](cases/anim-blend-over.txt)
+
+The same half-transparent frame, blended.
+
+The pair to anim-blend-none. blending_method 0 with alpha and a frame that does
+not fill the canvas keeps IsKeyFrame() false, so BlendPixelRowNonPremult() runs
+over the previous canvas -- the non-premultiplied formula of
+BlendPixelNonPremult(), which is what MODE_RGBA output asks for.
+
+### [`anim-blend-ranges.webp`](files/anim-blend-ranges.webp) -- reject, anim_dump ok -- from [`anim-blend-ranges.txt`](cases/anim-blend-ranges.txt)
+
+Three frames arranged so the blended region is split in two.
+
+FindBlendRangeAtRow(), which is only reached when the previous frame was
+disposed to background and the current one blends. Frame 3 sticks out on both
+sides of frame 2's rectangle, so rows that cross it yield two ranges to blend
+and the strip between them is left alone; rows above and below frame 2 take the
+disjoint branch and blend whole. Neither frame 2 nor frame 3 is a key frame,
+which is what it takes to get here at all.
+
+### [`anim-canvas-larger-than-frames.webp`](files/anim-canvas-larger-than-frames.webp) -- reject, anim_dump ok -- from [`anim-canvas-larger-than-frames.txt`](cases/anim-canvas-larger-than-frames.txt)
+
+A canvas bigger than any frame in it.
+
+Nothing requires a frame to reach the edges of the canvas. The 16x16 frames sit
+in the corner of a 64x48 one and the rest stays as ZeroFillCanvas() left it --
+transparent black -- for the whole sequence, so the output is mostly the canvas
+rather than the frames.
+
+### [`anim-dispose-background.webp`](files/anim-dispose-background.webp) -- reject, anim_dump ok -- from [`anim-dispose-background.txt`](cases/anim-dispose-background.txt)
+
+A partial frame that asks to be cleared away after it is shown.
+
+disposal_method 1 is DISPOSE_BACKGROUND: once frame 2 has been handed out,
+ZeroFillFrameRect() clears just its rectangle out of the canvas the next frame
+starts from, so frame 3 sees frame 1 everywhere except that hole. Frame 3 is
+opaque and full-canvas, so it overwrites all of it anyway -- what is being
+pinned is that the clearing does not reach past the rectangle.
+
+### [`anim-dispose-blend-matrix.webp`](files/anim-dispose-blend-matrix.webp) -- reject, anim_dump ok -- from [`anim-dispose-blend-matrix.txt`](cases/anim-dispose-blend-matrix.txt)
+
+The four combinations of the disposal and blending bits, in one sequence.
+
+Both bits of the ANMF flag byte, in every combination, over partial frames with
+alpha so that each combination actually changes the canvas. Frame 1 is the
+opaque background; frames 2 to 5 are (dispose, blend) = (0,0), (0,1), (1,0) and
+(1,1) in turn, which walks IsKeyFrame(), the copy-or-zero-fill choice, both
+arms of the blending branch and ZeroFillFrameRect() one after another in a
+single file.
+
+### [`anim-duplicate-anim.webp`](files/anim-duplicate-anim.webp) -- reject, anim_dump ok -- from [`anim-duplicate-anim.txt`](cases/anim-duplicate-anim.txt)
+
+A second ANIM chunk between the frames.
+
+The one place the demuxer silently drops a chunk rather than refusing the file:
+with anim_chunks already at one, the second ANIM takes the store_chunk = 0 path
+and is skipped by its declared length. Its loop count and background colour are
+not read, so the first ANIM still decides both.
+
+### [`anim-duration-extremes.webp`](files/anim-duration-extremes.webp) -- reject, anim_dump ok -- from [`anim-duration-extremes.txt`](cases/anim-duration-extremes.txt)
+
+One frame of zero milliseconds and one of the longest the field can say.
+
+Both ends of the 24-bit duration field in one file. Neither is refused: a zero-
+duration frame is legal and common as an interstitial, and 0xffffff is just
+under MAX_DURATION, so nothing in the field's range is out of range. The
+durations accumulate into the timestamp anim_dump reports, and change no pixel.
+
+### [`anim-eight-frames.webp`](files/anim-eight-frames.webp) -- reject, anim_dump ok -- from [`anim-eight-frames.txt`](cases/anim-eight-frames.txt)
+
+Eight frames, each a different flat colour.
+
+A longer frame list than anything else here: the demuxer chains eight Frame
+records and AddFrame() walks to the tail each time. Every one is a full-canvas
+opaque key frame, so the canvas is zero-filled and overwritten eight times with
+no blending anywhere.
+
+### [`anim-empty-frame-alone.webp`](files/anim-empty-frame-alone.webp) -- reject, anim_dump reject -- from [`anim-empty-frame-alone.txt`](cases/anim-empty-frame-alone.txt)
+
+An animation whose only frame carries no image.
+
+The same silent drop as anim-empty-frame, with nothing left behind it. The
+frame list stays empty, and IsValidExtendedFormat() refuses a finished file
+with no frames at all -- so what the demuxer tolerates in the middle of a
+sequence it will not tolerate as the whole of one.
+
+### [`anim-empty-frame.webp`](files/anim-empty-frame.webp) -- reject, anim_dump ok, webpinfo reject -- from [`anim-empty-frame.txt`](cases/anim-empty-frame.txt)
+
+An ANMF chunk holding its header and nothing else, followed by a real frame.
+
+A frame with no image is dropped rather than refused, and quietly. StoreFrame()
+is handed a payload size of zero, reads the chunk header belonging to the next
+frame, rewinds and returns having stored nothing; the frame record it was
+filling still has the frame_num zero WebPSafeCalloc() left, so the
+"frame->frame_num > 0" test in ParseAnimationFrame() fails and it is freed. One
+frame comes out of a file that declares two. webpinfo refuses the same file --
+"No VP8/VP8L chunk detected in an ANMF chunk".
+
+### [`anim-frame-1x1.webp`](files/anim-frame-1x1.webp) -- reject, anim_dump ok -- from [`anim-frame-1x1.txt`](cases/anim-frame-1x1.txt)
+
+A single-pixel frame in the middle of a canvas.
+
+The smallest frame the ANMF header can describe, since the size fields hold
+width - 1. Its rectangle is one pixel wide, which is what ZeroFillFrameRect()
+and the blend ranges are handed after it, and the copy from the previous canvas
+supplies every other pixel.
+
+### [`anim-frame-alpha-only.webp`](files/anim-frame-alpha-only.webp) -- reject, anim_dump reject -- from [`anim-frame-alpha-only.txt`](cases/anim-frame-alpha-only.txt)
+
+A frame carrying an alpha chunk and no image.
+
+The ALPH arm of StoreFrame() sets frame_num where the image arm would have, so
+unlike anim-empty-frame this frame is kept: it has an alpha component, no image
+component, and the width and height the ANMF header claimed. That is enough to
+pass every test in IsValidExtendedFormat(), which only refuses a frame with
+neither. The decoder is then handed an ALPH chunk to decode as an image.
+
+### [`anim-frame-area-overflow.webp`](files/anim-frame-area-overflow.webp) -- reject, anim_dump reject -- from [`anim-frame-area-overflow.txt`](cases/anim-frame-area-overflow.txt)
+
+An ANMF header claiming a frame of sixteen million by sixteen million, inside a
+canvas of sixteen by sixteen.
+
+The MAX_IMAGE_AREA test inside ParseAnimationFrame(), which runs on the header
+fields alone -- before the frame's own chunks are looked at, and before
+anything is allocated for it. Both size fields are 0xffffff, so the product
+overflows 32 bits and is computed as a uint64. The canvas is pinned small on
+purpose: left to follow the frame it would be refused by the VP8X area check
+first, and this test would never run.
+
+### [`anim-frame-image-past-canvas.webp`](files/anim-frame-image-past-canvas.webp) -- reject, anim_dump reject -- from [`anim-frame-image-past-canvas.txt`](cases/anim-frame-image-past-canvas.txt)
+
+A frame whose header fits the canvas but whose image does not.
+
+The other half of anim-frame-size-mismatch. The ANMF says 16x16 at (16,16),
+which fits; the image inside is 32x32, and since that is the size
+CheckFrameBounds() ends up testing, the frame runs 16 pixels past the canvas
+and the file is refused. The header numbers being reasonable is no protection.
+
+### [`anim-frame-offsets.webp`](files/anim-frame-offsets.webp) -- reject, anim_dump ok -- from [`anim-frame-offsets.txt`](cases/anim-frame-offsets.txt)
+
+A second frame smaller than the canvas, placed at an offset.
+
+The ANMF offset fields, which hold half the pixel offset: frame_x 4 puts the
+frame at x = 8. The frame covers part of the canvas, so the rest of it is
+whatever frame 1 left there -- CopyCanvas() rather than ZeroFillCanvas(), the
+only way a frame is not composed from scratch.
+
+### [`anim-frame-past-canvas.webp`](files/anim-frame-past-canvas.webp) -- reject, anim_dump reject -- from [`anim-frame-past-canvas.txt`](cases/anim-frame-past-canvas.txt)
+
+A frame whose rectangle runs off the edge of the canvas.
+
+CheckFrameBounds() with exact = 0, the animation form: a frame need not fill
+the canvas, but x_offset + width must still fit inside it. 16 wide at x = 48 in
+a 32-wide canvas does not, and the check runs after the whole file has parsed,
+so this is refused by the validator rather than by the walk.
+
+### [`anim-frame-reserved-bits.webp`](files/anim-frame-reserved-bits.webp) -- reject, anim_dump ok -- from [`anim-frame-reserved-bits.txt`](cases/anim-frame-reserved-bits.txt)
+
+The six reserved bits of the ANMF flag byte all set.
+
+The byte after the duration holds six reserved bits above the blending and
+disposal ones. Both readers take it with a mask -- bits & 1 and bits & 2 -- so
+the rest is dropped rather than refused, and the frame composes as if the byte
+were zero.
+
+### [`anim-frame-size-mismatch.webp`](files/anim-frame-size-mismatch.webp) -- reject, anim_dump ok, webpinfo reject -- from [`anim-frame-size-mismatch.txt`](cases/anim-frame-size-mismatch.txt)
+
+An ANMF header claiming a size its own image disagrees with.
+
+Which of the two sizes wins. The ANMF header says 16x16 and the VP8L inside
+says 32x32; ParseAnimationFrame() takes the header's numbers and then
+SetFrameInfo() overwrites them with the image's, so the header fields are
+dropped and the frame composes at 32x32. webpinfo refuses the same file --
+"Frame size in VP8/VP8L sub-chunk differs from ANMF header" -- so the two
+readers in this repository disagree about it.
+
+### [`anim-frames-without-flag.webp`](files/anim-frames-without-flag.webp) -- reject, anim_dump reject -- from [`anim-frames-without-flag.txt`](cases/anim-frames-without-flag.txt)
+
+A full animation whose VP8X does not claim to be one.
+
+The animation flag is what makes the frames real. Without it
+ParseAnimationFrame() parses each ANMF, allocates a frame, and then throws it
+away rather than adding it, so a file with two frames in it ends with none and
+is refused for being empty. The ANIM chunk itself is read either way -- nothing
+checks the flag before that.
+
+### [`anim-image-chunk-beside-frames.webp`](files/anim-image-chunk-beside-frames.webp) -- reject, anim_dump reject -- from [`anim-image-chunk-beside-frames.txt`](cases/anim-image-chunk-beside-frames.txt)
+
+A top-level image chunk in a file that also has frames.
+
+"check that this isn't an animation (all frames should be in an ANMF)". An
+animated file has no image of its own; the VP8 here sits beside the frames
+rather than inside one, and the walk refuses it on sight of either the flag or
+a preceding ANIM chunk.
+
+### [`anim-loop-count-max.webp`](files/anim-loop-count-max.webp) -- reject, anim_dump ok -- from [`anim-loop-count-max.txt`](cases/anim-loop-count-max.txt)
+
+Loop count 65535, the largest the field holds.
+
+ANIM's loop count is read by ReadLE16s() into an int, so every value of the
+field is non-negative and the "loop_count < 0" test in IsValidExtendedFormat()
+can never fire. 0 means forever; this is the other end, and the decoder
+composes the frames the same either way.
+
+### [`anim-lossy-frames.webp`](files/anim-lossy-frames.webp) -- reject, anim_dump ok -- from [`anim-lossy-frames.txt`](cases/anim-lossy-frames.txt)
+
+Two lossy frames rather than lossless ones.
+
+An ANMF may carry either image format. This is the VP8 side: StoreFrame() takes
+the MKFOURCC('V','P','8',' ') arm and WebPGetFeatures() reads the frame tag
+rather than the lossless header.
+
+### [`anim-metadata-chunks.webp`](files/anim-metadata-chunks.webp) -- reject, anim_dump ok -- from [`anim-metadata-chunks.txt`](cases/anim-metadata-chunks.txt)
+
+An animation carrying an ICC profile and both metadata chunks.
+
+Every optional chunk the format defines, around an animation rather than around
+a still frame: ICCP has to come before the image data and EXIF and XMP after
+it, and each is stored for the caller only because its VP8X flag is set.
+container-metadata-chunks is the same three around a lossy frame.
+
+### [`anim-metadata-without-flags.webp`](files/anim-metadata-without-flags.webp) -- reject, anim_dump ok, webpinfo reject -- from [`anim-metadata-without-flags.txt`](cases/anim-metadata-without-flags.txt)
+
+ICCP and EXIF chunks in an animation that declares neither.
+
+A metadata chunk whose flag is missing is not stored: the store_chunk test in
+ParseVP8XChunks() drops it, and the walk then skips its bytes by their declared
+length like any chunk it does not want. So the animation decodes and the two
+chunks are simply invisible to the caller -- no error, no chunk. webpinfo
+refuses the same file, twice over: "Unexpected ICCP chunk detected".
+
+### [`anim-mixed-formats.webp`](files/anim-mixed-formats.webp) -- reject, anim_dump ok -- from [`anim-mixed-formats.txt`](cases/anim-mixed-formats.txt)
+
+A lossy frame and a lossless one in the same animation.
+
+Nothing ties the frames of an animation to one format. The decoder re-reads the
+chunk tag per frame, so WebPDecode() switches between VP8 and VP8L mid-
+sequence, and both write into the same RGBA canvas.
+
+### [`anim-nested-anmf.webp`](files/anim-nested-anmf.webp) -- reject, anim_dump reject -- from [`anim-nested-anmf.txt`](cases/anim-nested-anmf.txt)
+
+An ANMF chunk inside another ANMF chunk.
+
+There is no nesting in the format: a frame holds image chunks and nothing else.
+StoreFrame() does not recognise the inner ANMF, so it rewinds and leaves the
+outer frame with no image, which drops it; the walk then meets the inner one as
+though it were a top-level frame, and that one declares a payload of nothing
+while an image follows it.
+
+### [`anim-no-anim-chunk.webp`](files/anim-no-anim-chunk.webp) -- reject, anim_dump reject -- from [`anim-no-anim-chunk.txt`](cases/anim-no-anim-chunk.txt)
+
+Frames with no ANIM chunk in front of them.
+
+"'ANIM' precedes frames": ParseVP8XChunks() refuses an ANMF while anim_chunks
+is still zero. The ANIM chunk carries the loop count and background colour, and
+the format puts it before the frames rather than anywhere among them.
+
+### [`anim-no-vp8x.webp`](files/anim-no-vp8x.webp) -- reject, anim_dump reject -- from [`anim-no-vp8x.txt`](cases/anim-no-vp8x.txt)
+
+ANIM and ANMF chunks with no VP8X in front of them.
+
+How far such a file gets, which is not far. An application reaches the demuxer
+through a format check first -- anim_util.c calls WebPGetInfo() -- and that is
+the still-image header walk, which looks for VP8 or VP8L where this file has
+ANIM and refuses it as a bad signature. The demuxer would have refused it too,
+one layer down: its master chunk table has three entries, VP8, VP8L and VP8X,
+and a file beginning with none of them matches no parser at all.
+
+### [`anim-riff-size-past-end.webp`](files/anim-riff-size-past-end.webp) -- reject, anim_dump reject -- from [`anim-riff-size-past-end.txt`](cases/anim-riff-size-past-end.txt)
+
+A RIFF size claiming more bytes than the file has.
+
+Where the demuxer parts company with the still decoder. It computes partial =
+(buffer < riff_end) up front and, unless the caller asked for partial parsing,
+refuses the file there and then -- before the master chunk table is consulted,
+so none of the animation code runs at all. container-riff-size-past-end is the
+same lie told to dwebp.
+
+### [`anim-riff-size-truncates-frames.webp`](files/anim-riff-size-truncates-frames.webp) -- reject, anim_dump reject -- from [`anim-riff-size-truncates-frames.txt`](cases/anim-riff-size-truncates-frames.txt)
+
+A RIFF size that stops in the middle of the last frame.
+
+The RIFF length is the ceiling every other length is measured against: the
+demuxer clamps its buffer to it, so the second frame's own header -- which is
+intact on disk, and correct -- now declares more bytes than are left, and
+SizeIsInvalid() refuses it. The bytes are there; the file just says they are
+not.
+
+### [`anim-second-vp8x.webp`](files/anim-second-vp8x.webp) -- reject, anim_dump reject -- from [`anim-second-vp8x.txt`](cases/anim-second-vp8x.txt)
+
+A second VP8X chunk after the frames have started.
+
+The one fourcc the chunk walk refuses on sight. VP8X is the header that started
+the walk and it carries the canvas size and the feature flags, so a second one
+would be re-declaring what has already been acted on; the walk returns an error
+rather than picking either.
+
+### [`anim-single-frame.webp`](files/anim-single-frame.webp) -- reject, anim_dump ok -- from [`anim-single-frame.txt`](cases/anim-single-frame.txt)
+
+An animation of one frame.
+
+The degenerate sequence. Nothing requires more than one ANMF, so the
+composition loop runs once and stops; the file is still an animation to every
+decoder, and still refused by the still one.
+
+### [`anim-two-frames.webp`](files/anim-two-frames.webp) -- reject, anim_dump ok -- from [`anim-two-frames.txt`](cases/anim-two-frames.txt)
+
+Two full-canvas lossless frames, the plain animation everything else here is a
+variation on.
+
+The whole ordinary path: VP8X with the animation flag, ANIM, then one ANMF per
+frame carrying a VP8L image the size of the canvas. Both frames are key frames
+-- frame 1 always is, and frame 2 is because it is opaque and fills the canvas
+-- so IsKeyFrame() takes its first two branches and neither frame is blended
+against anything.
+
+### [`anim-two-images-in-frame.webp`](files/anim-two-images-in-frame.webp) -- reject, anim_dump reject -- from [`anim-two-images-in-frame.txt`](cases/anim-two-images-in-frame.txt)
+
+One ANMF carrying two image chunks.
+
+How the walk leaves a frame it cannot finish. StoreFrame() takes the first
+VP8L, sees a second while image_chunks is already one, and jumps to the label
+that rewinds and stops -- leaving the reader positioned inside the ANMF
+payload, at the second image's header. The outer walk then reads that as a top-
+level chunk and refuses it, because in an animation every image belongs to a
+frame.
+
+### [`anim-unknown-chunk-between-frames.webp`](files/anim-unknown-chunk-between-frames.webp) -- reject, anim_dump ok -- from [`anim-unknown-chunk-between-frames.txt`](cases/anim-unknown-chunk-between-frames.txt)
+
+An unrecognised chunk sitting between two frames.
+
+The chunk walk between frames. A fourcc the demuxer knows nothing about is
+stored by offset and stepped over by its declared length, exactly as it would
+be in a still file, and the frame that follows is unaffected -- the frames of
+an animation need not be adjacent.
+
+### [`anim-vp8l-with-alph.webp`](files/anim-vp8l-with-alph.webp) -- reject, anim_dump reject -- from [`anim-vp8l-with-alph.txt`](cases/anim-vp8l-with-alph.txt)
+
+A frame carrying both an alpha chunk and a lossless image.
+
+"VP8L has its own alpha": the lossless format carries a fourth channel already,
+so an ALPH beside it is contradictory rather than redundant, and StoreFrame()
+refuses the pair outright as soon as it reads the VP8L tag with alpha_chunks
+non-zero.
+
 ## The alpha chunk
 
 ALPH carries the alpha plane beside a lossy frame: a header byte of four two-
@@ -1125,6 +1627,115 @@ An ALPH chunk in a RIFF file with no VP8X ahead of it.
 The extended format is what an ALPH chunk lives in: libwebp only accepts a
 leading ALPH when there is no RIFF header at all, the bare stream case. With
 RIFF and no VP8X it is refused.
+
+### [`alph-plane-cache.webp`](files/alph-plane-cache.webp) -- ok -- from [`alph-plane-cache.txt`](cases/alph-plane-cache.txt)
+
+A palette-coded alpha plane that also declares a colour cache.
+
+The first test in Is8bOptimizable(), and the only one that is about the stream
+rather than about its Huffman codes: any colour cache at all disqualifies the
+8-bit path, because that path keeps one byte per pixel and the cache is keyed
+on whole ARGB values. Same palette as alph-plane-palette, one field apart, and
+it decodes through the 32-bit loop instead.
+
+### [`alph-plane-filtered.webp`](files/alph-plane-filtered.webp) -- ok -- from [`alph-plane-filtered.txt`](cases/alph-plane-filtered.txt)
+
+A compressed alpha plane with the gradient filter on top.
+
+The two alpha stages together. Filtering and compression are separate fields of
+the ALPH header byte and the raw cases sweep the filters on their own; here the
+plane is decompressed first and the gradient unfilter then runs over what came
+out, so the values in the stream are differences rather than levels.
+
+### [`alph-plane-literals.webp`](files/alph-plane-literals.webp) -- ok -- from [`alph-plane-literals.txt`](cases/alph-plane-literals.txt)
+
+A compressed alpha plane written as plain green literals.
+
+The simplest compressed plane there is: no transform, so Is8bOptimizable() is
+never consulted and the plane goes through DecodeImageData() with
+ExtractAlphaRows() pulling the green channel out of a full ARGB buffer. The
+alpha value is the green symbol, which is why this needs no palette to say
+anything.
+
+### [`alph-plane-lz77-past-start.webp`](files/alph-plane-lz77-past-start.webp) -- reject -- from [`alph-plane-lz77-past-start.txt`](cases/alph-plane-lz77-past-start.txt)
+
+An alpha plane copying from before its own beginning.
+
+The bounds test inside the 8-bit loop, which is written separately from the
+32-bit one and refuses the copy rather than clamping it: the distance reaches
+back further than the pixels decoded so far. lz77-distance-past-start is the
+same mistake on the 32-bit path.
+
+### [`alph-plane-lz77.webp`](files/alph-plane-lz77.webp) -- ok -- from [`alph-plane-lz77.txt`](cases/alph-plane-lz77.txt)
+
+An alpha plane whose second half is a back-reference to its first.
+
+CopyBlock8b(), the byte-wide copy the 8-bit alpha path uses in place of the
+32-bit one every other back-reference here goes through. The distance is a
+plane code, resolved against the packed width of the palette-coded image rather
+than against the width of the alpha plane.
+
+### [`alph-plane-meta-huffman.webp`](files/alph-plane-meta-huffman.webp) -- ok -- from [`alph-plane-meta-huffman.txt`](cases/alph-plane-meta-huffman.txt)
+
+A palette-coded alpha plane with an entropy image inside it.
+
+The block loop of DecodeAlphaData(), which nothing else here reaches: with an
+entropy image the Huffman mask stops being ~0, so the decoder stops reading
+straight through to the last row and instead walks one tile-sized block at a
+time, asking GetHtreeGroupForPos() which group each one belongs to. Four tiles
+down the plane, alternating between two groups, and both groups keep their red,
+blue and alpha codes single so the 8-bit path still applies.
+
+### [`alph-plane-nontrivial-red.webp`](files/alph-plane-nontrivial-red.webp) -- ok -- from [`alph-plane-nontrivial-red.txt`](cases/alph-plane-nontrivial-red.txt)
+
+A palette-coded alpha plane whose red code carries two symbols.
+
+The Huffman half of Is8bOptimizable(), which asks that the red, blue and alpha
+codes each hold a single symbol so their bits can be skipped entirely. Here the
+packed pixels vary in a channel the palette lookup never reads, which costs the
+plane its 8-bit path for nothing: the alpha that comes out is the same as alph-
+plane-palette's, decoded the long way.
+
+### [`alph-plane-oversubscribed.webp`](files/alph-plane-oversubscribed.webp) -- reject -- from [`alph-plane-oversubscribed.txt`](cases/alph-plane-oversubscribed.txt)
+
+An alpha plane whose green code is over-subscribed.
+
+A malformed Huffman code inside the alpha stream rather than inside a VP8L
+image. It fails in the same BuildHuffmanTable() as codelen-oversubscribed, but
+the error has to travel back out through VP8LDecodeAlphaHeader() and ALPHInit()
+to become the decoder's verdict.
+
+### [`alph-plane-palette.webp`](files/alph-plane-palette.webp) -- ok -- from [`alph-plane-palette.txt`](cases/alph-plane-palette.txt)
+
+A compressed alpha plane of three values, through a palette.
+
+The shape that reaches DecodeAlphaData(): one transform, that transform colour-
+indexing, no colour cache, and the red, blue and alpha codes each a single
+symbol. Written rather than pasted from an encoder, so the neighbouring cases
+can each break one of those four conditions and watch the decoder fall back.
+Three values in a two-bit index, so a packed byte holds four pixels and the
+fourth index is the unused one.
+
+### [`alph-plane-preprocessed.webp`](files/alph-plane-preprocessed.webp) -- ok -- from [`alph-plane-preprocessed.txt`](cases/alph-plane-preprocessed.txt)
+
+A compressed alpha plane flagged as level-reduced.
+
+ALPHA_PREPROCESSED_LEVELS on a compressed plane. The bit makes the decoder take
+the "decode everything in one pass" branch rather than the row-by-row one,
+which here means the whole lossless stream is read before any of it is handed
+on. WebPDequantizeLevels() is then called with the dithering strength, which is
+zero unless the caller asks for it, so the plane comes out unchanged: this pins
+the control path, not the pixels. alph-raw-preprocessing is the same bit on a
+stored plane.
+
+### [`alph-plane-two-transforms.webp`](files/alph-plane-two-transforms.webp) -- ok -- from [`alph-plane-two-transforms.txt`](cases/alph-plane-two-transforms.txt)
+
+An alpha plane carrying a palette and a subtract-green transform.
+
+The transform count, the other half of the 8-bit test: the decoder asks for
+exactly one transform and for it to be the palette, so a second one -- however
+harmless subtracting green from a plane that is all green may be -- sends it
+back to the 32-bit loop.
 
 ### [`alph-preprocessing-invalid.webp`](files/alph-preprocessing-invalid.webp) -- reject -- from [`alph-preprocessing-invalid.txt`](cases/alph-preprocessing-invalid.txt)
 
@@ -1894,6 +2505,6 @@ that meet nowhere else.
 
 ---
 
-196 files, 47674 bytes total. Rebuild with `generate.py`: it assembles
+257 files, 57387 bytes total. Rebuild with `generate.py`: it assembles
 everything in `cases/` through `webp_asm.py`, which hands each case to
 `vp8l_asm.py` or `vp8_asm.py`, and those to `vp8l.py` and `vp8.py`.

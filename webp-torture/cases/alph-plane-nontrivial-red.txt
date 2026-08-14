@@ -1,0 +1,20 @@
+# note: A palette-coded alpha plane whose red code carries two symbols.
+# expect: ok
+# roundtrip: no
+# exercises: The Huffman half of Is8bOptimizable(), which asks that the red,
+#   blue and alpha codes each hold a single symbol so their bits can be
+#   skipped entirely. Here the packed pixels vary in a channel the palette
+#   lookup never reads, which costs the plane its 8-bit path for nothing:
+#   the alpha that comes out is the same as alph-plane-palette's, decoded
+#   the long way.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+argb 0x00002400 x32 0x00012400 x32

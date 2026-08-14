@@ -1,0 +1,20 @@
+# note: ICCP and EXIF chunks in an animation that declares neither.
+# expect: reject
+# anim: ok
+# info: reject
+# roundtrip: no
+# exercises: A metadata chunk whose flag is missing is not stored: the
+#   store_chunk test in ParseVP8XChunks() drops it, and the walk then skips
+#   its bytes by their declared length like any chunk it does not want. So
+#   the animation decodes and the two chunks are simply invisible to the
+#   caller -- no error, no chunk. webpinfo refuses the same file, twice
+#   over: "Unexpected ICCP chunk detected".
+chunks VP8X ICCP ANIM ANMF EXIF
+payload ICCP 00112233445566778899
+payload EXIF 45786966000049492a00
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

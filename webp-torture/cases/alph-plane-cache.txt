@@ -1,0 +1,21 @@
+# note: A palette-coded alpha plane that also declares a colour cache.
+# expect: ok
+# roundtrip: no
+# exercises: The first test in Is8bOptimizable(), and the only one that is
+#   about the stream rather than about its Huffman codes: any colour cache
+#   at all disqualifies the 8-bit path, because that path keeps one byte per
+#   pixel and the cache is keyed on whole ARGB values. Same palette as
+#   alph-plane-palette, one field apart, and it decodes through the 32-bit
+#   loop instead.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+cache_bits 4
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+pixels 0x24 x64

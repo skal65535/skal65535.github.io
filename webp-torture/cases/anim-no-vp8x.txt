@@ -1,0 +1,19 @@
+# note: ANIM and ANMF chunks with no VP8X in front of them.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: How far such a file gets, which is not far. An application
+#   reaches the demuxer through a format check first -- anim_util.c calls
+#   WebPGetInfo() -- and that is the still-image header walk, which looks
+#   for VP8 or VP8L where this file has ANIM and refuses it as a bad
+#   signature. The demuxer would have refused it too, one layer down: its
+#   master chunk table has three entries, VP8, VP8L and VP8X, and a file
+#   beginning with none of them matches no parser at all.
+chunks ANIM ANMF
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

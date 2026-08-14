@@ -1,0 +1,20 @@
+# note: A compressed alpha plane of three values, through a palette.
+# expect: ok
+# roundtrip: no
+# exercises: The shape that reaches DecodeAlphaData(): one transform, that
+#   transform colour-indexing, no colour cache, and the red, blue and alpha
+#   codes each a single symbol. Written rather than pasted from an encoder,
+#   so the neighbouring cases can each break one of those four conditions
+#   and watch the decoder fall back. Three values in a two-bit index, so a
+#   packed byte holds four pixels and the fourth index is the unused one.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+pixels 0x24 x64

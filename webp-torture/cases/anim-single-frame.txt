@@ -1,0 +1,14 @@
+# note: An animation of one frame.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The degenerate sequence. Nothing requires more than one ANMF,
+#   so the composition loop runs once and stops; the file is still an
+#   animation to every decoder, and still refused by the still one.
+frame
+frame_duration 40
+lossless
+width 16
+height 16
+argb 0xff0000ff x256

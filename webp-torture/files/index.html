@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-torture bitstreams</h1>
-<p>196 WebP files that exercise corners of the format a normal encoder
+<p>257 WebP files that exercise corners of the format a normal encoder
 never emits, most of them assembled from the text in
 <a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
 one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
@@ -26,6 +26,17 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="alph-lossless-predictor.webp"><code>alph-lossless-predictor.webp</code></a></td><td class="n">96</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-lossless-truncated.webp"><code>alph-lossless-truncated.webp</code></a></td><td class="n">86</td><td class="reject">reject</td></tr>
 <tr><td><a href="alph-no-vp8x.webp"><code>alph-no-vp8x.webp</code></a></td><td class="n">314</td><td class="reject">reject</td></tr>
+<tr><td><a href="alph-plane-cache.webp"><code>alph-plane-cache.webp</code></a></td><td class="n">126</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-filtered.webp"><code>alph-plane-filtered.webp</code></a></td><td class="n">88</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-literals.webp"><code>alph-plane-literals.webp</code></a></td><td class="n">80</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-lz77.webp"><code>alph-plane-lz77.webp</code></a></td><td class="n">136</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-lz77-past-start.webp"><code>alph-plane-lz77-past-start.webp</code></a></td><td class="n">134</td><td class="reject">reject</td></tr>
+<tr><td><a href="alph-plane-meta-huffman.webp"><code>alph-plane-meta-huffman.webp</code></a></td><td class="n">140</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-nontrivial-red.webp"><code>alph-plane-nontrivial-red.webp</code></a></td><td class="n">134</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-oversubscribed.webp"><code>alph-plane-oversubscribed.webp</code></a></td><td class="n">114</td><td class="reject">reject</td></tr>
+<tr><td><a href="alph-plane-palette.webp"><code>alph-plane-palette.webp</code></a></td><td class="n">124</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-preprocessed.webp"><code>alph-plane-preprocessed.webp</code></a></td><td class="n">124</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-two-transforms.webp"><code>alph-plane-two-transforms.webp</code></a></td><td class="n">126</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-preprocessing-invalid.webp"><code>alph-preprocessing-invalid.webp</code></a></td><td class="n">332</td><td class="reject">reject</td></tr>
 <tr><td><a href="alph-raw-filter-gradient.webp"><code>alph-raw-filter-gradient.webp</code></a></td><td class="n">332</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-raw-filter-horizontal.webp"><code>alph-raw-filter-horizontal.webp</code></a></td><td class="n">332</td><td class="ok">ok</td></tr>
@@ -36,6 +47,54 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="alph-raw-short.webp"><code>alph-raw-short.webp</code></a></td><td class="n">330</td><td class="reject">reject</td></tr>
 <tr><td><a href="alph-reserved-set.webp"><code>alph-reserved-set.webp</code></a></td><td class="n">332</td><td class="reject">reject</td></tr>
 <tr><td><a href="alph-without-vp8x-flag.webp"><code>alph-without-vp8x-flag.webp</code></a></td><td class="n">332</td><td class="ok">ok</td></tr>
+<tr><td><a href="anim-alph-after-image.webp"><code>anim-alph-after-image.webp</code></a></td><td class="n">366</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-alpha-flag-missing.webp"><code>anim-alpha-flag-missing.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok, webpinfo reject</td></tr>
+<tr><td><a href="anim-alpha-lossless-frame.webp"><code>anim-alpha-lossless-frame.webp</code></a></td><td class="n">164</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-alpha-raw-frame.webp"><code>anim-alpha-raw-frame.webp</code></a></td><td class="n">1182</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-anim-chunk-padded.webp"><code>anim-anim-chunk-padded.webp</code></a></td><td class="n">94</td><td class="ok">reject, anim_dump ok, webpinfo reject</td></tr>
+<tr><td><a href="anim-anim-chunk-short.webp"><code>anim-anim-chunk-short.webp</code></a></td><td class="n">86</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-anmf-header-truncated.webp"><code>anim-anmf-header-truncated.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-anmf-odd-size.webp"><code>anim-anmf-odd-size.webp</code></a></td><td class="n">91</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-anmf-size-past-end.webp"><code>anim-anmf-size-past-end.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-anmf-size-short.webp"><code>anim-anmf-size-short.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-background-color.webp"><code>anim-background-color.webp</code></a></td><td class="n">90</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-blend-none.webp"><code>anim-blend-none.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-blend-over.webp"><code>anim-blend-over.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-blend-ranges.webp"><code>anim-blend-ranges.webp</code></a></td><td class="n">182</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-canvas-larger-than-frames.webp"><code>anim-canvas-larger-than-frames.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-dispose-background.webp"><code>anim-dispose-background.webp</code></a></td><td class="n">182</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-dispose-blend-matrix.webp"><code>anim-dispose-blend-matrix.webp</code></a></td><td class="n">274</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-duplicate-anim.webp"><code>anim-duplicate-anim.webp</code></a></td><td class="n">150</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-duration-extremes.webp"><code>anim-duration-extremes.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-eight-frames.webp"><code>anim-eight-frames.webp</code></a></td><td class="n">412</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-empty-frame.webp"><code>anim-empty-frame.webp</code></a></td><td class="n">114</td><td class="ok">reject, anim_dump ok, webpinfo reject</td></tr>
+<tr><td><a href="anim-empty-frame-alone.webp"><code>anim-empty-frame-alone.webp</code></a></td><td class="n">68</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-frame-1x1.webp"><code>anim-frame-1x1.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-frame-alpha-only.webp"><code>anim-frame-alpha-only.webp</code></a></td><td class="n">334</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-frame-area-overflow.webp"><code>anim-frame-area-overflow.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-frame-image-past-canvas.webp"><code>anim-frame-image-past-canvas.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-frame-offsets.webp"><code>anim-frame-offsets.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-frame-past-canvas.webp"><code>anim-frame-past-canvas.webp</code></a></td><td class="n">136</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-frame-reserved-bits.webp"><code>anim-frame-reserved-bits.webp</code></a></td><td class="n">90</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-frame-size-mismatch.webp"><code>anim-frame-size-mismatch.webp</code></a></td><td class="n">90</td><td class="ok">reject, anim_dump ok, webpinfo reject</td></tr>
+<tr><td><a href="anim-frames-without-flag.webp"><code>anim-frames-without-flag.webp</code></a></td><td class="n">136</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-image-chunk-beside-frames.webp"><code>anim-image-chunk-beside-frames.webp</code></a></td><td class="n">122</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-loop-count-max.webp"><code>anim-loop-count-max.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-lossy-frames.webp"><code>anim-lossy-frames.webp</code></a></td><td class="n">160</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-metadata-chunks.webp"><code>anim-metadata-chunks.webp</code></a></td><td class="n">192</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-metadata-without-flags.webp"><code>anim-metadata-without-flags.webp</code></a></td><td class="n">126</td><td class="ok">reject, anim_dump ok, webpinfo reject</td></tr>
+<tr><td><a href="anim-mixed-formats.webp"><code>anim-mixed-formats.webp</code></a></td><td class="n">148</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-nested-anmf.webp"><code>anim-nested-anmf.webp</code></a></td><td class="n">118</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-no-anim-chunk.webp"><code>anim-no-anim-chunk.webp</code></a></td><td class="n">122</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-no-vp8x.webp"><code>anim-no-vp8x.webp</code></a></td><td class="n">72</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-riff-size-past-end.webp"><code>anim-riff-size-past-end.webp</code></a></td><td class="n">90</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-riff-size-truncates-frames.webp"><code>anim-riff-size-truncates-frames.webp</code></a></td><td class="n">136</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-second-vp8x.webp"><code>anim-second-vp8x.webp</code></a></td><td class="n">108</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-single-frame.webp"><code>anim-single-frame.webp</code></a></td><td class="n">90</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-two-frames.webp"><code>anim-two-frames.webp</code></a></td><td class="n">136</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-two-images-in-frame.webp"><code>anim-two-images-in-frame.webp</code></a></td><td class="n">112</td><td class="reject">reject, anim_dump reject</td></tr>
+<tr><td><a href="anim-unknown-chunk-between-frames.webp"><code>anim-unknown-chunk-between-frames.webp</code></a></td><td class="n">160</td><td class="ok">reject, anim_dump ok</td></tr>
+<tr><td><a href="anim-vp8l-with-alph.webp"><code>anim-vp8l-with-alph.webp</code></a></td><td class="n">356</td><td class="reject">reject, anim_dump reject</td></tr>
 <tr><td><a href="cache-bits-0-invalid.webp"><code>cache-bits-0-invalid.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="cache-bits-1.webp"><code>cache-bits-1.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
 <tr><td><a href="cache-bits-11.webp"><code>cache-bits-11.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
@@ -82,6 +141,8 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="header-version-max.webp"><code>header-version-max.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="header-version-nonzero.webp"><code>header-version-nonzero.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="header-width-16384.webp"><code>header-width-16384.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
+<tr><td><a href="lossless-all-features.webp"><code>lossless-all-features.webp</code></a></td><td class="n">126</td><td class="ok">ok</td></tr>
+<tr><td><a href="lossless-plain.webp"><code>lossless-plain.webp</code></a></td><td class="n">234</td><td class="ok">ok</td></tr>
 <tr><td><a href="lossy-1-partitions.webp"><code>lossy-1-partitions.webp</code></a></td><td class="n">2494</td><td class="ok">ok</td></tr>
 <tr><td><a href="lossy-2-partitions.webp"><code>lossy-2-partitions.webp</code></a></td><td class="n">2500</td><td class="ok">ok</td></tr>
 <tr><td><a href="lossy-4-partitions.webp"><code>lossy-4-partitions.webp</code></a></td><td class="n">2510</td><td class="ok">ok</td></tr>

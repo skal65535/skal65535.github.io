@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-torture cases</h1>
-<p>189 text cases, each assembled into the .webp of the same name in
+<p>250 text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
 names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
 &mdash; and carries its own note on what it is for; the
@@ -28,6 +28,17 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="alph-lossless-predictor.txt"><code>alph-lossless-predictor</code></a></td><td class="ok">ok</td><td>A losslessly compressed alpha plane carrying a predictor transform, from a cwebp encode of a gradient.</td></tr>
 <tr><td><a href="alph-lossless-truncated.txt"><code>alph-lossless-truncated</code></a></td><td class="reject">reject</td><td>The predictor-transform plane cut to ten bytes.</td></tr>
 <tr><td><a href="alph-no-vp8x.txt"><code>alph-no-vp8x</code></a></td><td class="reject">reject</td><td>An ALPH chunk in a RIFF file with no VP8X ahead of it.</td></tr>
+<tr><td><a href="alph-plane-cache.txt"><code>alph-plane-cache</code></a></td><td class="ok">ok</td><td>A palette-coded alpha plane that also declares a colour cache.</td></tr>
+<tr><td><a href="alph-plane-filtered.txt"><code>alph-plane-filtered</code></a></td><td class="ok">ok</td><td>A compressed alpha plane with the gradient filter on top.</td></tr>
+<tr><td><a href="alph-plane-literals.txt"><code>alph-plane-literals</code></a></td><td class="ok">ok</td><td>A compressed alpha plane written as plain green literals.</td></tr>
+<tr><td><a href="alph-plane-lz77.txt"><code>alph-plane-lz77</code></a></td><td class="ok">ok</td><td>An alpha plane whose second half is a back-reference to its first.</td></tr>
+<tr><td><a href="alph-plane-lz77-past-start.txt"><code>alph-plane-lz77-past-start</code></a></td><td class="reject">reject</td><td>An alpha plane copying from before its own beginning.</td></tr>
+<tr><td><a href="alph-plane-meta-huffman.txt"><code>alph-plane-meta-huffman</code></a></td><td class="ok">ok</td><td>A palette-coded alpha plane with an entropy image inside it.</td></tr>
+<tr><td><a href="alph-plane-nontrivial-red.txt"><code>alph-plane-nontrivial-red</code></a></td><td class="ok">ok</td><td>A palette-coded alpha plane whose red code carries two symbols.</td></tr>
+<tr><td><a href="alph-plane-oversubscribed.txt"><code>alph-plane-oversubscribed</code></a></td><td class="reject">reject</td><td>An alpha plane whose green code is over-subscribed.</td></tr>
+<tr><td><a href="alph-plane-palette.txt"><code>alph-plane-palette</code></a></td><td class="ok">ok</td><td>A compressed alpha plane of three values, through a palette.</td></tr>
+<tr><td><a href="alph-plane-preprocessed.txt"><code>alph-plane-preprocessed</code></a></td><td class="ok">ok</td><td>A compressed alpha plane flagged as level-reduced.</td></tr>
+<tr><td><a href="alph-plane-two-transforms.txt"><code>alph-plane-two-transforms</code></a></td><td class="ok">ok</td><td>An alpha plane carrying a palette and a subtract-green transform.</td></tr>
 <tr><td><a href="alph-preprocessing-invalid.txt"><code>alph-preprocessing-invalid</code></a></td><td class="reject">reject</td><td>A pre-processing value of 2, past level reduction.</td></tr>
 <tr><td><a href="alph-raw-filter-gradient.txt"><code>alph-raw-filter-gradient</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the gradient filter.</td></tr>
 <tr><td><a href="alph-raw-filter-horizontal.txt"><code>alph-raw-filter-horizontal</code></a></td><td class="ok">ok</td><td>An uncompressed alpha plane under the horizontal filter.</td></tr>
@@ -38,6 +49,54 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="alph-raw-short.txt"><code>alph-raw-short</code></a></td><td class="reject">reject</td><td>An uncompressed plane one byte short of the picture.</td></tr>
 <tr><td><a href="alph-reserved-set.txt"><code>alph-reserved-set</code></a></td><td class="reject">reject</td><td>The two reserved bits of the ALPH header byte set.</td></tr>
 <tr><td><a href="alph-without-vp8x-flag.txt"><code>alph-without-vp8x-flag</code></a></td><td class="ok">ok</td><td>An ALPH chunk with the VP8X alpha flag left clear.</td></tr>
+<tr><td><a href="anim-alph-after-image.txt"><code>anim-alph-after-image</code></a></td><td class="reject">reject, anim_dump reject</td><td>A frame whose alpha chunk comes after its image.</td></tr>
+<tr><td><a href="anim-alpha-flag-missing.txt"><code>anim-alpha-flag-missing</code></a></td><td class="ok">reject, anim_dump ok, webpinfo reject</td><td>Frames with transparency in a file whose VP8X does not admit it.</td></tr>
+<tr><td><a href="anim-alpha-lossless-frame.txt"><code>anim-alpha-lossless-frame</code></a></td><td class="ok">reject, anim_dump ok</td><td>An animation frame whose alpha plane is a compressed image stream.</td></tr>
+<tr><td><a href="anim-alpha-raw-frame.txt"><code>anim-alpha-raw-frame</code></a></td><td class="ok">reject, anim_dump ok</td><td>An animation frame carrying an uncompressed ALPH chunk beside its lossy image.</td></tr>
+<tr><td><a href="anim-anim-chunk-padded.txt"><code>anim-anim-chunk-padded</code></a></td><td class="ok">reject, anim_dump ok, webpinfo reject</td><td>An ANIM chunk with four bytes of padding after its two fields.</td></tr>
+<tr><td><a href="anim-anim-chunk-short.txt"><code>anim-anim-chunk-short</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANIM chunk of two bytes.</td></tr>
+<tr><td><a href="anim-anmf-header-truncated.txt"><code>anim-anmf-header-truncated</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF chunk declaring fewer bytes than its own header needs.</td></tr>
+<tr><td><a href="anim-anmf-odd-size.txt"><code>anim-anmf-odd-size</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF chunk whose declared length is odd.</td></tr>
+<tr><td><a href="anim-anmf-size-past-end.txt"><code>anim-anmf-size-past-end</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF chunk claiming to be far longer than the file.</td></tr>
+<tr><td><a href="anim-anmf-size-short.txt"><code>anim-anmf-size-short</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF chunk declaring less than the image inside it takes up.</td></tr>
+<tr><td><a href="anim-background-color.txt"><code>anim-background-color</code></a></td><td class="ok">reject, anim_dump ok</td><td>A background colour that is neither white nor transparent.</td></tr>
+<tr><td><a href="anim-blend-none.txt"><code>anim-blend-none</code></a></td><td class="ok">reject, anim_dump ok</td><td>A half-transparent frame that says not to blend it.</td></tr>
+<tr><td><a href="anim-blend-over.txt"><code>anim-blend-over</code></a></td><td class="ok">reject, anim_dump ok</td><td>The same half-transparent frame, blended.</td></tr>
+<tr><td><a href="anim-blend-ranges.txt"><code>anim-blend-ranges</code></a></td><td class="ok">reject, anim_dump ok</td><td>Three frames arranged so the blended region is split in two.</td></tr>
+<tr><td><a href="anim-canvas-larger-than-frames.txt"><code>anim-canvas-larger-than-frames</code></a></td><td class="ok">reject, anim_dump ok</td><td>A canvas bigger than any frame in it.</td></tr>
+<tr><td><a href="anim-dispose-background.txt"><code>anim-dispose-background</code></a></td><td class="ok">reject, anim_dump ok</td><td>A partial frame that asks to be cleared away after it is shown.</td></tr>
+<tr><td><a href="anim-dispose-blend-matrix.txt"><code>anim-dispose-blend-matrix</code></a></td><td class="ok">reject, anim_dump ok</td><td>The four combinations of the disposal and blending bits, in one sequence.</td></tr>
+<tr><td><a href="anim-duplicate-anim.txt"><code>anim-duplicate-anim</code></a></td><td class="ok">reject, anim_dump ok</td><td>A second ANIM chunk between the frames.</td></tr>
+<tr><td><a href="anim-duration-extremes.txt"><code>anim-duration-extremes</code></a></td><td class="ok">reject, anim_dump ok</td><td>One frame of zero milliseconds and one of the longest the field can say.</td></tr>
+<tr><td><a href="anim-eight-frames.txt"><code>anim-eight-frames</code></a></td><td class="ok">reject, anim_dump ok</td><td>Eight frames, each a different flat colour.</td></tr>
+<tr><td><a href="anim-empty-frame.txt"><code>anim-empty-frame</code></a></td><td class="ok">reject, anim_dump ok, webpinfo reject</td><td>An ANMF chunk holding its header and nothing else, followed by a real frame.</td></tr>
+<tr><td><a href="anim-empty-frame-alone.txt"><code>anim-empty-frame-alone</code></a></td><td class="reject">reject, anim_dump reject</td><td>An animation whose only frame carries no image.</td></tr>
+<tr><td><a href="anim-frame-1x1.txt"><code>anim-frame-1x1</code></a></td><td class="ok">reject, anim_dump ok</td><td>A single-pixel frame in the middle of a canvas.</td></tr>
+<tr><td><a href="anim-frame-alpha-only.txt"><code>anim-frame-alpha-only</code></a></td><td class="reject">reject, anim_dump reject</td><td>A frame carrying an alpha chunk and no image.</td></tr>
+<tr><td><a href="anim-frame-area-overflow.txt"><code>anim-frame-area-overflow</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF header claiming a frame of sixteen million by sixteen million, inside a canvas of sixteen by sixteen.</td></tr>
+<tr><td><a href="anim-frame-image-past-canvas.txt"><code>anim-frame-image-past-canvas</code></a></td><td class="reject">reject, anim_dump reject</td><td>A frame whose header fits the canvas but whose image does not.</td></tr>
+<tr><td><a href="anim-frame-offsets.txt"><code>anim-frame-offsets</code></a></td><td class="ok">reject, anim_dump ok</td><td>A second frame smaller than the canvas, placed at an offset.</td></tr>
+<tr><td><a href="anim-frame-past-canvas.txt"><code>anim-frame-past-canvas</code></a></td><td class="reject">reject, anim_dump reject</td><td>A frame whose rectangle runs off the edge of the canvas.</td></tr>
+<tr><td><a href="anim-frame-reserved-bits.txt"><code>anim-frame-reserved-bits</code></a></td><td class="ok">reject, anim_dump ok</td><td>The six reserved bits of the ANMF flag byte all set.</td></tr>
+<tr><td><a href="anim-frame-size-mismatch.txt"><code>anim-frame-size-mismatch</code></a></td><td class="ok">reject, anim_dump ok, webpinfo reject</td><td>An ANMF header claiming a size its own image disagrees with.</td></tr>
+<tr><td><a href="anim-frames-without-flag.txt"><code>anim-frames-without-flag</code></a></td><td class="reject">reject, anim_dump reject</td><td>A full animation whose VP8X does not claim to be one.</td></tr>
+<tr><td><a href="anim-image-chunk-beside-frames.txt"><code>anim-image-chunk-beside-frames</code></a></td><td class="reject">reject, anim_dump reject</td><td>A top-level image chunk in a file that also has frames.</td></tr>
+<tr><td><a href="anim-loop-count-max.txt"><code>anim-loop-count-max</code></a></td><td class="ok">reject, anim_dump ok</td><td>Loop count 65535, the largest the field holds.</td></tr>
+<tr><td><a href="anim-lossy-frames.txt"><code>anim-lossy-frames</code></a></td><td class="ok">reject, anim_dump ok</td><td>Two lossy frames rather than lossless ones.</td></tr>
+<tr><td><a href="anim-metadata-chunks.txt"><code>anim-metadata-chunks</code></a></td><td class="ok">reject, anim_dump ok</td><td>An animation carrying an ICC profile and both metadata chunks.</td></tr>
+<tr><td><a href="anim-metadata-without-flags.txt"><code>anim-metadata-without-flags</code></a></td><td class="ok">reject, anim_dump ok, webpinfo reject</td><td>ICCP and EXIF chunks in an animation that declares neither.</td></tr>
+<tr><td><a href="anim-mixed-formats.txt"><code>anim-mixed-formats</code></a></td><td class="ok">reject, anim_dump ok</td><td>A lossy frame and a lossless one in the same animation.</td></tr>
+<tr><td><a href="anim-nested-anmf.txt"><code>anim-nested-anmf</code></a></td><td class="reject">reject, anim_dump reject</td><td>An ANMF chunk inside another ANMF chunk.</td></tr>
+<tr><td><a href="anim-no-anim-chunk.txt"><code>anim-no-anim-chunk</code></a></td><td class="reject">reject, anim_dump reject</td><td>Frames with no ANIM chunk in front of them.</td></tr>
+<tr><td><a href="anim-no-vp8x.txt"><code>anim-no-vp8x</code></a></td><td class="reject">reject, anim_dump reject</td><td>ANIM and ANMF chunks with no VP8X in front of them.</td></tr>
+<tr><td><a href="anim-riff-size-past-end.txt"><code>anim-riff-size-past-end</code></a></td><td class="reject">reject, anim_dump reject</td><td>A RIFF size claiming more bytes than the file has.</td></tr>
+<tr><td><a href="anim-riff-size-truncates-frames.txt"><code>anim-riff-size-truncates-frames</code></a></td><td class="reject">reject, anim_dump reject</td><td>A RIFF size that stops in the middle of the last frame.</td></tr>
+<tr><td><a href="anim-second-vp8x.txt"><code>anim-second-vp8x</code></a></td><td class="reject">reject, anim_dump reject</td><td>A second VP8X chunk after the frames have started.</td></tr>
+<tr><td><a href="anim-single-frame.txt"><code>anim-single-frame</code></a></td><td class="ok">reject, anim_dump ok</td><td>An animation of one frame.</td></tr>
+<tr><td><a href="anim-two-frames.txt"><code>anim-two-frames</code></a></td><td class="ok">reject, anim_dump ok</td><td>Two full-canvas lossless frames, the plain animation everything else here is a variation on.</td></tr>
+<tr><td><a href="anim-two-images-in-frame.txt"><code>anim-two-images-in-frame</code></a></td><td class="reject">reject, anim_dump reject</td><td>One ANMF carrying two image chunks.</td></tr>
+<tr><td><a href="anim-unknown-chunk-between-frames.txt"><code>anim-unknown-chunk-between-frames</code></a></td><td class="ok">reject, anim_dump ok</td><td>An unrecognised chunk sitting between two frames.</td></tr>
+<tr><td><a href="anim-vp8l-with-alph.txt"><code>anim-vp8l-with-alph</code></a></td><td class="reject">reject, anim_dump reject</td><td>A frame carrying both an alpha chunk and a lossless image.</td></tr>
 <tr><td><a href="cache-bits-0-invalid.txt"><code>cache-bits-0-invalid</code></a></td><td class="reject">reject</td><td>Color cache flagged as present but with 0 bits.</td></tr>
 <tr><td><a href="cache-bits-1.txt"><code>cache-bits-1</code></a></td><td class="ok">ok</td><td>Color cache with the minimum size, 1 bit (2 entries).</td></tr>
 <tr><td><a href="cache-bits-11.txt"><code>cache-bits-11</code></a></td><td class="ok">ok</td><td>Color cache with the maximum size, 11 bits (2048 entries).</td></tr>
@@ -84,6 +143,8 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="header-version-max.txt"><code>header-version-max</code></a></td><td class="reject">reject</td><td>Header with the 3-bit version field at 7, the largest it holds.</td></tr>
 <tr><td><a href="header-version-nonzero.txt"><code>header-version-nonzero</code></a></td><td class="reject">reject</td><td>Header with the 3-bit version field set to 1.</td></tr>
 <tr><td><a href="header-width-16384.txt"><code>header-width-16384</code></a></td><td class="ok">ok</td><td>Width 16384, one past WEBP_MAX_DIMENSION.</td></tr>
+<tr><td><a href="lossless-all-features.txt"><code>lossless-all-features</code></a></td><td class="ok">ok</td><td>Every optional part of the lossless format in one image.</td></tr>
+<tr><td><a href="lossless-plain.txt"><code>lossless-plain</code></a></td><td class="ok">ok</td><td>An ordinary lossless image, with none of the corners.</td></tr>
 <tr><td><a href="lossy-coeff-all-types.txt"><code>lossy-coeff-all-types</code></a></td><td class="ok">ok</td><td>All four coefficient types in one macroblock, and both luma types across two.</td></tr>
 <tr><td><a href="lossy-coeff-bands-chroma.txt"><code>lossy-coeff-bands-chroma</code></a></td><td class="ok">ok</td><td>The same sweep across the four blocks of a chroma plane.</td></tr>
 <tr><td><a href="lossy-coeff-bands-i16.txt"><code>lossy-coeff-bands-i16</code></a></td><td class="ok">ok</td><td>The same sweep for the two block kinds a 16x16 macroblock has: the Y2 block and the luma blocks that follow it.</td></tr>

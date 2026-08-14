@@ -1,0 +1,23 @@
+# note: A palette-coded alpha plane with an entropy image inside it.
+# expect: ok
+# roundtrip: no
+# exercises: The block loop of DecodeAlphaData(), which nothing else here
+#   reaches: with an entropy image the Huffman mask stops being ~0, so the
+#   decoder stops reading straight through to the last row and instead walks
+#   one tile-sized block at a time, asking GetHtreeGroupForPos() which group
+#   each one belongs to. Four tiles down the plane, alternating between two
+#   groups, and both groups keep their red, blue and alpha codes single so
+#   the 8-bit path still applies.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+meta_bits 2
+meta_tiles 0 1 0 1
+pixels 0x24 x16 0x12 x16 0x24 x16 0x12 x16

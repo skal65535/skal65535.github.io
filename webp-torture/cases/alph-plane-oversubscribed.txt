@@ -1,0 +1,17 @@
+# note: An alpha plane whose green code is over-subscribed.
+# expect: reject
+# roundtrip: no
+# exercises: A malformed Huffman code inside the alpha stream rather than
+#   inside a VP8L image. It fails in the same BuildHuffmanTable() as
+#   codelen-oversubscribed, but the error has to travel back out through
+#   VP8LDecodeAlphaHeader() and ALPHInit() to become the decoder's verdict.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+code green lengths 1 1 1
+pixels 0 1 2 x254

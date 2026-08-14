@@ -1,0 +1,24 @@
+# note: A second ANIM chunk between the frames.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The one place the demuxer silently drops a chunk rather than
+#   refusing the file: with anim_chunks already at one, the second ANIM
+#   takes the store_chunk = 0 path and is skipped by its declared length.
+#   Its loop count and background colour are not read, so the first ANIM
+#   still decides both.
+chunks VP8X ANIM ANMF ANIM ANMF
+loop_count 7
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

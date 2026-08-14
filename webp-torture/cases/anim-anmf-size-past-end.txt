@@ -1,0 +1,17 @@
+# note: An ANMF chunk claiming to be far longer than the file.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: SizeIsInvalid(), the test the walk makes before trusting any
+#   declared length: a chunk may not claim to extend past the end of the
+#   RIFF chunk it sits in. This one claims four kilobytes inside a file of
+#   about a hundred bytes, so it is refused before ParseAnimationFrame() is
+#   called at all.
+chunk_size ANMF 4096
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

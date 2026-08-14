@@ -1,0 +1,18 @@
+# note: A background colour that is neither white nor transparent.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: ANIM's first four bytes. The demuxer reads them into
+#   dmux->bgcolor and hands them to the caller, and that is all: the
+#   animation decoder zero-fills its canvas for a key frame rather than
+#   filling it with this, so the field cannot change a pixel of the output.
+#   Written so that a decoder that started obeying it would fail the hash.
+background_color 0x8040c020
+loop_count 3
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

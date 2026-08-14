@@ -1,0 +1,25 @@
+# note: A canvas bigger than any frame in it.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: Nothing requires a frame to reach the edges of the canvas. The
+#   16x16 frames sit in the corner of a 64x48 one and the rest stays as
+#   ZeroFillCanvas() left it -- transparent black -- for the whole sequence,
+#   so the output is mostly the canvas rather than the frames.
+canvas_width_minus_one 63
+canvas_height_minus_one 47
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_x 8
+frame_y 8
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

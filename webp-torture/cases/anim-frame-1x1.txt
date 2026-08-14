@@ -1,0 +1,26 @@
+# note: A single-pixel frame in the middle of a canvas.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The smallest frame the ANMF header can describe, since the size
+#   fields hold width - 1. Its rectangle is one pixel wide, which is what
+#   ZeroFillFrameRect() and the blend ranges are handed after it, and the
+#   copy from the previous canvas supplies every other pixel.
+canvas_width_minus_one 31
+canvas_height_minus_one 31
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 8
+frame_y 8
+frame_duration 100
+disposal_method 1
+lossless
+width 1
+height 1
+argb 0xffffff00

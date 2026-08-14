@@ -1,0 +1,22 @@
+# note: Loop count 65535, the largest the field holds.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: ANIM's loop count is read by ReadLE16s() into an int, so every
+#   value of the field is non-negative and the "loop_count < 0" test in
+#   IsValidExtendedFormat() can never fire. 0 means forever; this is the
+#   other end, and the decoder composes the frames the same either way.
+loop_count 65535
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

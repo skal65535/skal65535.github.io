@@ -1,0 +1,20 @@
+# note: A frame whose alpha chunk comes after its image.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: Both chunks are stored -- StoreFrame() has no opinion on their
+#   order -- and it is IsValidExtendedFormat() that compares the two offsets
+#   afterwards and requires the alpha to precede the image. The still-image
+#   form of the same mistake is alph-after-image, which libwebp's own
+#   decoder accepts, so the two layers do not agree about it.
+alpha 1
+frame
+frame_duration 100
+chunks VP8 ALPH
+alph_raw
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20

@@ -1,0 +1,22 @@
+# note: A lossy frame and a lossless one in the same animation.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: Nothing ties the frames of an animation to one format. The
+#   decoder re-reads the chunk tag per frame, so WebPDecode() switches
+#   between VP8 and VP8L mid-sequence, and both write into the same RGBA
+#   canvas.
+frame
+frame_duration 100
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff00c000 x1024

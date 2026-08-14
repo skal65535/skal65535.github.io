@@ -1,0 +1,16 @@
+# note: An ANMF chunk declaring fewer bytes than its own header needs.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: NewFrame()'s "actual_size < min_size" test. The sixteen bytes
+#   of ANMF header are the minimum a frame chunk can be, and the check is
+#   made against the declared length before a single field is read, so
+#   nothing here depends on what the chunk actually contains.
+chunk_size ANMF 10
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

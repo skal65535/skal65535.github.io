@@ -1,0 +1,25 @@
+# note: A second frame smaller than the canvas, placed at an offset.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The ANMF offset fields, which hold half the pixel offset:
+#   frame_x 4 puts the frame at x = 8. The frame covers part of the canvas,
+#   so the rest of it is whatever frame 1 left there -- CopyCanvas() rather
+#   than ZeroFillCanvas(), the only way a frame is not composed from scratch.
+alpha 1
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 4
+frame_y 6
+frame_duration 100
+lossless
+width 16
+height 8
+alpha_is_used 1
+argb 0xffff8000 x128

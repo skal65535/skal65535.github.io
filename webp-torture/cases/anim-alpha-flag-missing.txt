@@ -1,0 +1,27 @@
+# note: Frames with transparency in a file whose VP8X does not admit it.
+# expect: reject
+# anim: ok
+# info: reject
+# roundtrip: no
+# exercises: The reverse of container-vp8x-still-flags, which sets flags
+#   with nothing behind them. Here the data is there and the flag is not.
+#   Nothing in the demuxer compares the two, so the frames blend exactly as
+#   they would with the flag set; webpinfo refuses the file -- "Unexpected
+#   alpha data detected" -- which makes this the pair of cases where the two
+#   readers here disagree in opposite directions.
+alpha 0
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 2
+frame_y 2
+frame_duration 100
+lossless
+width 24
+height 24
+alpha_is_used 1
+argb 0x80ff0000 x576

@@ -1,0 +1,24 @@
+# note: An unrecognised chunk sitting between two frames.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The chunk walk between frames. A fourcc the demuxer knows
+#   nothing about is stored by offset and stepped over by its declared
+#   length, exactly as it would be in a still file, and the frame that
+#   follows is unaffected -- the frames of an animation need not be
+#   adjacent.
+chunks VP8X ANIM ANMF JUNK ANMF
+payload JUNK 00112233445566778899aabbccddeeff
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

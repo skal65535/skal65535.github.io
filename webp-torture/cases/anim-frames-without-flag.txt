@@ -1,0 +1,23 @@
+# note: A full animation whose VP8X does not claim to be one.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The animation flag is what makes the frames real. Without it
+#   ParseAnimationFrame() parses each ANMF, allocates a frame, and then
+#   throws it away rather than adding it, so a file with two frames in it
+#   ends with none and is refused for being empty. The ANIM chunk itself is
+#   read either way -- nothing checks the flag before that.
+animation 0
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff008000 x256

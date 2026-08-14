@@ -1,0 +1,26 @@
+# note: An animation frame carrying an uncompressed ALPH chunk beside its
+#   lossy image.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: An ANMF holds a chunk list, not a chunk: ALPH then VP8 is the
+#   same pair a still file uses, and StoreFrame() fills both slots of
+#   img_components. The alpha plane is stored one byte per pixel, so this is
+#   the animation route into ALPHInit() and the unfiltered plane.
+alpha 1
+frame
+frame_duration 100
+alph_filtering 0
+alph_raw
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff204060 x1024

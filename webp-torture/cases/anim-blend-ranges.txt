@@ -1,0 +1,38 @@
+# note: Three frames arranged so the blended region is split in two.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: FindBlendRangeAtRow(), which is only reached when the previous
+#   frame was disposed to background and the current one blends. Frame 3
+#   sticks out on both sides of frame 2's rectangle, so rows that cross it
+#   yield two ranges to blend and the strip between them is left alone;
+#   rows above and below frame 2 take the disjoint branch and blend whole.
+#   Neither frame 2 nor frame 3 is a key frame, which is what it takes to
+#   get here at all.
+alpha 1
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 4
+frame_y 4
+frame_duration 100
+disposal_method 1
+lossless
+width 8
+height 8
+alpha_is_used 1
+argb 0x60ff0000 x64
+frame
+frame_x 2
+frame_y 2
+frame_duration 100
+lossless
+width 24
+height 24
+alpha_is_used 1
+argb 0x9000ff00 x576

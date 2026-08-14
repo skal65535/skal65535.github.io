@@ -1,0 +1,16 @@
+# note: The six reserved bits of the ANMF flag byte all set.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The byte after the duration holds six reserved bits above the
+#   blending and disposal ones. Both readers take it with a mask -- bits & 1
+#   and bits & 2 -- so the rest is dropped rather than refused, and the
+#   frame composes as if the byte were zero.
+frame
+frame_duration 100
+frame_reserved 63
+lossless
+width 16
+height 16
+argb 0xff800000 x256

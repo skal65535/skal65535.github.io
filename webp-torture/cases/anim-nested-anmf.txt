@@ -1,0 +1,18 @@
+# note: An ANMF chunk inside another ANMF chunk.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: There is no nesting in the format: a frame holds image chunks
+#   and nothing else. StoreFrame() does not recognise the inner ANMF, so it
+#   rewinds and leaves the outer frame with no image, which drops it; the
+#   walk then meets the inner one as though it were a top-level frame, and
+#   that one declares a payload of nothing while an image follows it.
+frame
+frame_duration 100
+chunks ANMF VP8L
+payload ANMF 00000000000000000f0000000f00000064000000
+lossless
+width 16
+height 16
+argb 0xff800000 x256

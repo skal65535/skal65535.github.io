@@ -1,0 +1,23 @@
+# note: Two lossy frames rather than lossless ones.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: An ANMF may carry either image format. This is the VP8 side:
+#   StoreFrame() takes the MKFOURCC('V','P','8',' ') arm and WebPGetFeatures()
+#   reads the frame tag rather than the lossless header.
+frame
+frame_duration 100
+width 32
+height 32
+yac_qi 30
+macroblock
+coeffs y2 -20
+frame
+frame_duration 100
+width 32
+height 32
+yac_qi 60
+macroblock
+intra_y_mode V_PRED
+coeffs y2 12

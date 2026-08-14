@@ -1,0 +1,26 @@
+# note: The same half-transparent frame, blended.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: The pair to anim-blend-none. blending_method 0 with alpha and a
+#   frame that does not fill the canvas keeps IsKeyFrame() false, so
+#   BlendPixelRowNonPremult() runs over the previous canvas -- the
+#   non-premultiplied formula of BlendPixelNonPremult(), which is what
+#   MODE_RGBA output asks for.
+alpha 1
+frame
+frame_duration 100
+lossless
+width 32
+height 32
+argb 0xff102030 x1024
+frame
+frame_x 2
+frame_y 2
+frame_duration 100
+lossless
+width 24
+height 24
+alpha_is_used 1
+argb 0x80ff0000 x576

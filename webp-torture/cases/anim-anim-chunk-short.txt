@@ -1,0 +1,16 @@
+# note: An ANIM chunk of two bytes.
+# expect: reject
+# anim: reject
+# info: reject
+# roundtrip: no
+# exercises: The other side of anim-anim-chunk-padded. The demuxer treats
+#   six bytes as the minimum an ANIM chunk may be and refuses anything
+#   shorter outright, because the background colour and loop count it is
+#   about to read are not there. Longer is tolerated; shorter is not.
+payload ANIM 0011
+frame
+frame_duration 100
+lossless
+width 16
+height 16
+argb 0xff800000 x256

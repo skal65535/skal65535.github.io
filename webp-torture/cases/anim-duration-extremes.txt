@@ -1,0 +1,23 @@
+# note: One frame of zero milliseconds and one of the longest the field can
+#   say.
+# expect: reject
+# anim: ok
+# info: ok
+# roundtrip: no
+# exercises: Both ends of the 24-bit duration field in one file. Neither is
+#   refused: a zero-duration frame is legal and common as an interstitial,
+#   and 0xffffff is just under MAX_DURATION, so nothing in the field's range
+#   is out of range. The durations accumulate into the timestamp anim_dump
+#   reports, and change no pixel.
+frame
+frame_duration 0
+lossless
+width 16
+height 16
+argb 0xff800000 x256
+frame
+frame_duration 16777215
+lossless
+width 16
+height 16
+argb 0xff008000 x256

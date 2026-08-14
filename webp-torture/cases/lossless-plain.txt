@@ -1,0 +1,12 @@
+# note: An ordinary lossless image, with none of the corners.
+# expect: ok
+# exercises: The control. No transform, no colour cache, no entropy image:
+#   whole pixels straight through, which is the one shape every other
+#   lossless file here departs from. The four colours differ in all four
+#   channels, so the red, blue and alpha codes each carry several symbols
+#   and are read once per pixel -- the path a stream takes when
+#   is_trivial_literal is false, which a single-colour image never reaches.
+lossless
+width 8
+height 8
+argb 0xff102030 x16 0xc0405060 x16 0x80708090 x16 0x40a0b0c0 x16
