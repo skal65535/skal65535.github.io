@@ -249,33 +249,34 @@ def write_code(bw, huff):
         write_complex_code(bw, huff.lengths)
 
 
+CHANNEL_SHIFTS = (8, 16, 0, 24)   # green, red, blue, alpha
+
+
+def pixel_freqs(pixels, cache_bits=0):
+    """What a run of ARGB pixels asks of the five codes of a group."""
+    freqs = [[0] * alphabet_size(i, cache_bits) for i in range(5)]
+    for p in pixels:
+        for table, shift in zip(freqs, CHANNEL_SHIFTS):
+            table[(p >> shift) & 0xff] += 1
+    freqs[4][0] = 1                      # no back-references, but a code still
+    return freqs
+
+
 def write_subimage(bw, pixels):
     """A complete non-level0 image stream holding exactly 'pixels' (ARGB)."""
     # No transform bit and no meta-huffman bit here: DecodeImageStream() only
     # reads transforms at level 0, and ReadHuffmanCodes() short-circuits on
     # 'allow_recursion &&', so the meta bit is not in the stream either.
     bw.put(0, 1)  # no color cache
-    greens = [(p >> 8) & 0xff for p in pixels]
-    reds = [(p >> 16) & 0xff for p in pixels]
-    blues = [p & 0xff for p in pixels]
-    alphas = [(p >> 24) & 0xff for p in pixels]
-    codes = []
-    for vals, size in ((greens, alphabet_size(0)), (reds, 256),
-                       (blues, 256), (alphas, 256)):
-        freqs = [0] * size
-        for v in vals:
-            freqs[v] += 1
-        codes.append(Huffman.from_freqs(freqs))
-    codes.append(Huffman.single(0, NUM_DISTANCE_CODES))   # distances
+    codes = [Huffman.from_freqs(f) for f in pixel_freqs(pixels)]
     for c in codes:
         write_code(bw, c)
     trivial_literal = all(c.trivial for c in codes[1:4])
-    for i in range(len(pixels)):
-        codes[0].emit_symbol(bw, greens[i])
+    for p in pixels:
+        codes[0].emit_symbol(bw, (p >> 8) & 0xff)
         if not trivial_literal:
-            codes[1].emit_symbol(bw, reds[i])
-            codes[2].emit_symbol(bw, blues[i])
-            codes[3].emit_symbol(bw, alphas[i])
+            for code, shift in zip(codes[1:4], CHANNEL_SHIFTS[1:]):
+                code.emit_symbol(bw, (p >> shift) & 0xff)
 
 
 def delta_palette(colors):

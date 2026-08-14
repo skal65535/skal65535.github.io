@@ -32,6 +32,8 @@ pixel data -- so a case reads in that order too.
   predictor_bits 2          log2 of the tile size, 2..9
   predictor_tiles M...      one predictor index per tile
   cross_color_bits 2
+  cross_color_tiles A...    one multiplier triple per tile, as a color: the
+                            three live in its green, red and blue bytes
   palette_colors ARGB...    color_indexing's palette, written as colors: the
                             stream carries the per-byte deltas of these
   cache_bits N              the color cache, absent by default. 0 means
@@ -44,6 +46,8 @@ pixel data -- so a case reads in that order too.
   group_count N             how many groups to write, when that should differ
                             from what the entropy image asks for
   pixels ITEM...            what the green and distance codes encode
+  argb V...                 whole pixels, spelled as colors: every literal
+                            code carries one. 'V xN' repeats
 
 Repeating a directive appends to it, so a long list of tiles or colors can
 be laid out over as many lines as suits.
@@ -83,9 +87,17 @@ with green's 0x20 -- which costs no bits at all.
                             plane code themselves; the symbols and their
                             extra bits follow from those
 
-The pixel data is coded with group 0, and only its green and distance codes
-carry any of it: the red, blue and alpha codes of that group must hold a
-single symbol each, as they do in every case here.
+'argb' appends to the same stream, so the two interleave in the order the
+file gives them. Which of the two a case wants follows the format: the
+decoder reads the red, blue and alpha codes only when they do not all hold a
+single symbol, so a bare green symbol is a whole pixel exactly when they do,
+and 'argb' is needed as soon as one of them does not. Writing every pixel
+with 'argb' and letting the codes fall out of the colors is what an ordinary
+image looks like here.
+
+All of the pixel data is coded with group 0, so an entropy image that
+selects more than one group can only vary the codes, not what is coded with
+them.
 """
 
 import os
@@ -116,6 +128,7 @@ NUM_FIELDS = {'width': 'width', 'height': 'height', 'version': 'version',
               'group_count': 'group_count'}
 # name -> attribute, for the fields that are a list a repeat appends to.
 LIST_FIELDS = {'predictor_tiles': 'predictor_tiles',
+               'cross_color_tiles': 'cross_color_tiles',
                'meta_tiles': 'meta_tiles',
                'palette_colors': 'palette_colors',
                'transforms': 'transforms'}
@@ -192,6 +205,7 @@ class Image:
         self.predictor_bits = vp8l.MIN_TRANSFORM_BITS
         self.predictor_tiles = None
         self.cross_color_bits = vp8l.MIN_TRANSFORM_BITS
+        self.cross_color_tiles = None
         self.palette_colors = None
         self.cache_bits = None
         self.meta_bits = None
@@ -204,6 +218,7 @@ class Image:
         """What the pixel data asks of the green and distance codes."""
         green = [0] * vp8l.alphabet_size(0, self.cache_bits or 0)
         dist = [0] * vp8l.NUM_DISTANCE_CODES
+        literal = [[0] * 256 for _ in range(3)]      # red, blue, alpha
 
         def count(table, symbol, times=1):
             if symbol >= len(table):
@@ -214,6 +229,10 @@ class Image:
         for item in self.pixels:
             if item[0] == 'green':
                 count(green, item[1], item[2])
+            elif item[0] == 'argb':
+                count(green, (item[1] >> 8) & 0xff, item[2])
+                for table, shift in zip(literal, vp8l.CHANNEL_SHIFTS[1:]):
+                    count(table, (item[1] >> shift) & 0xff, item[2])
             elif item[0] == 'cache':
                 count(green, vp8l.NUM_LITERAL_CODES +
                       vp8l.NUM_LENGTH_CODES + item[1])
@@ -221,7 +240,7 @@ class Image:
                 count(green,
                       vp8l.NUM_LITERAL_CODES + vp8l.prefix_code(item[1])[0])
                 count(dist, vp8l.prefix_code(item[2])[0])
-        return [green, [0] * 256, [0] * 256, [0] * 256, dist]
+        return [green] + literal + [dist]
 
     def num_groups(self):
         if self.group_count is not None:
@@ -315,6 +334,16 @@ class Assembler:
 
     # -- the pixel data --------------------------------------------------
 
+    def do_argb(self, args):
+        """Whole pixels, spelled as colors: every literal code carries one."""
+        i = 0
+        while i < len(args):
+            value, i = self.num(args[i], 'color'), i + 1
+            repeat = 1
+            if i < len(args) and args[i].startswith('x'):
+                repeat, i = self.num(args[i][1:], 'repeat'), i + 1
+            self.img.pixels.append(('argb', value, repeat))
+
     def do_pixels(self, args):
         i = 0
         while i < len(args):
@@ -405,8 +434,9 @@ class Assembler:
             elif name == 'cross_color':
                 bw.put(img.cross_color_bits - vp8l.MIN_TRANSFORM_BITS, 3)
                 vp8l.write_subimage(
-                    bw, self.tiles(None, xsize, img.cross_color_bits,
-                                   'cross_color_tiles', default=0xff000000))
+                    bw, self.tiles(img.cross_color_tiles, xsize,
+                                   img.cross_color_bits, 'cross_color_tiles',
+                                   default=0xff000000))
         bw.put(0, 1)                     # no more transforms
         return xsize
 
@@ -457,13 +487,21 @@ class Assembler:
         # The decoder reads the other three literal codes only when they are
         # not all one symbol, so a bare green symbol is a whole pixel exactly
         # then.
-        if not all(h.trivial for h in huffs[1:4]):
-            raise AsmError('pixels needs the red, blue and alpha codes to '
-                           'hold a single symbol each')
+        trivial = all(h.trivial for h in huffs[1:4])
         for item in self.img.pixels:
             if item[0] == 'green':
+                if not trivial:
+                    raise AsmError('pixels: symbol %d leaves red, blue and '
+                                   'alpha unsaid; spell the whole pixel with '
+                                   '"argb"' % item[1])
                 for _ in range(item[2]):
                     green.emit_symbol(bw, item[1])
+            elif item[0] == 'argb':
+                for _ in range(item[2]):
+                    green.emit_symbol(bw, (item[1] >> 8) & 0xff)
+                    if not trivial:
+                        for h, at in zip(huffs[1:4], vp8l.CHANNEL_SHIFTS[1:]):
+                            h.emit_symbol(bw, (item[1] >> at) & 0xff)
             elif item[0] == 'cache':
                 green.emit_symbol(bw, vp8l.NUM_LITERAL_CODES +
                                   vp8l.NUM_LENGTH_CODES + item[1])
