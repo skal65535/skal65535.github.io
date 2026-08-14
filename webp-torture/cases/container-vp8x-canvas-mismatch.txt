@@ -1,6 +1,5 @@
 # note: A VP8X canvas of 64x64 in front of a 32x32 frame.
 # expect: reject
-# roundtrip: no
 # exercises: The "Validates image size coherency" check at the end of
 #   ParseHeadersInternal(): a VP8X chunk must agree with the frame behind it,
 #   in both dimensions. The container is the only place in the format where the

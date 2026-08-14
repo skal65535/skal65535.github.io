@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: reject
-# roundtrip: no
 # exercises: A metadata chunk whose flag is missing is not stored: the
 #   store_chunk test in ParseVP8XChunks() drops it, and the walk then skips
 #   its bytes by their declared length like any chunk it does not want. So

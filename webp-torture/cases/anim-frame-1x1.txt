@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The smallest frame the ANMF header can describe, since the size
 #   fields hold width - 1. Its rectangle is one pixel wide, which is what
 #   ZeroFillFrameRect() and the blend ranges are handed after it, and the

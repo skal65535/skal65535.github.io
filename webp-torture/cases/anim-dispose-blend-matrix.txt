@@ -3,7 +3,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: Both bits of the ANMF flag byte, in every combination, over
 #   partial frames with alpha so that each combination actually changes the
 #   canvas. Frame 1 is the opaque background; frames 2 to 5 are (dispose,

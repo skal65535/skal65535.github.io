@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: Where the demuxer parts company with the still decoder. It
 #   computes partial = (buffer < riff_end) up front and, unless the caller
 #   asked for partial parsing, refuses the file there and then -- before the

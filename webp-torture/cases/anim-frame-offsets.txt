@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The ANMF offset fields, which hold half the pixel offset:
 #   frame_x 4 puts the frame at x = 8. The frame covers part of the canvas,
 #   so the rest of it is whatever frame 1 left there -- CopyCanvas() rather

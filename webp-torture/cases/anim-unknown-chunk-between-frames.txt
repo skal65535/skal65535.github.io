@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The chunk walk between frames. A fourcc the demuxer knows
 #   nothing about is stored by offset and stepped over by its declared
 #   length, exactly as it would be in a still file, and the frame that

@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: ANIM's loop count is read by ReadLE16s() into an int, so every
 #   value of the field is non-negative and the "loop_count < 0" test in
 #   IsValidExtendedFormat() can never fire. 0 means forever; this is the

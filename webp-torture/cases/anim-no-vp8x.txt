@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: How far such a file gets, which is not far. An application
 #   reaches the demuxer through a format check first -- anim_util.c calls
 #   WebPGetInfo() -- and that is the still-image header walk, which looks

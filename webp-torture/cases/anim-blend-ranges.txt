@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: FindBlendRangeAtRow(), which is only reached when the previous
 #   frame was disposed to background and the current one blends. Frame 3
 #   sticks out on both sides of frame 2's rectangle, so rows that cross it

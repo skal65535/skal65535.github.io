@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: reject
-# roundtrip: no
 # exercises: Which of the two sizes wins. The ANMF header says 16x16 and the
 #   VP8L inside says 32x32; ParseAnimationFrame() takes the header's numbers
 #   and then SetFrameInfo() overwrites them with the image's, so the header

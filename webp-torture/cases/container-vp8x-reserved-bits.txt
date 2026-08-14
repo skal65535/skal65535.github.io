@@ -1,6 +1,5 @@
 # note: The reserved bits of the VP8X flags field all set.
 # expect: ok
-# roundtrip: no
 # exercises: Everything outside ALL_VALID_FLAGS (0x3e). The decoder reads the
 #   field as a whole and tests only the bits it knows, so the reserved ones
 #   ride through; the muxer is stricter than the decoder here.

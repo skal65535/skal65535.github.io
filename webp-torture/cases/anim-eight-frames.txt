@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: A longer frame list than anything else here: the demuxer chains
 #   eight Frame records and AddFrame() walks to the tail each time. Every one
 #   is a full-canvas opaque key frame, so the canvas is zero-filled and

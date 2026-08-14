@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The RIFF length is the ceiling every other length is measured
 #   against: the demuxer clamps its buffer to it, so the second frame's own
 #   header -- which is intact on disk, and correct -- now declares more

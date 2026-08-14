@@ -50,6 +50,8 @@ import vp8_dis
 import vp8l
 import vp8l_asm
 import vp8l_dis
+import webp_asm
+import webp_dis
 
 DWEBP = os.environ.get('DWEBP', 'dwebp')
 
@@ -209,21 +211,20 @@ def lossless_round_trip():
     """The lossless cases, the same way round.
 
     A case meant to be refused often cannot be read back at all -- that is
-    what it is for -- so those are counted rather than failed. Left out are
-    the one file that decodes to a gigabyte, and the cases marked
-    '# roundtrip: no', which for a lossless one means it is really a
-    container case: an animation frame and an alpha plane both carry a
-    lossless image, and vp8l_dis.py reads a VP8L chunk, not a file.
+    what it is for -- so those are counted rather than failed, and the one
+    file that decodes to a gigabyte is left out. A lossless image inside a
+    container -- an animation frame, an alpha plane -- belongs to
+    container_round_trip() instead: vp8l_dis.py reads a chunk, not a file.
     """
     bad = broken = skipped = 0
     done = 0
     for path in sorted(glob.glob('cases/*.txt')):
         with open(path) as fp:
             text = fp.read()
-        if not vp8l_asm.is_lossless(text):
+        if not vp8l_asm.is_lossless(text) or is_container(text):
             continue
         head = vp8_asm.parse_header(text, path)
-        if head.get('slow') == 'yes' or head['roundtrip'] == 'no':
+        if head.get('slow') == 'yes':
             skipped += 1
             continue
         done += 1
@@ -242,7 +243,66 @@ def lossless_round_trip():
               % (path, len(got) if got else 'unreadable', len(want)),
               file=sys.stderr)
         bad += 1
-    print('lossless %d cases, %d refused by the reader, %d not a bare image'
+    print('lossless %d cases, %d refused by the reader, %d too big to read'
+          % (done, broken, skipped))
+    return bad
+
+
+def is_container(text):
+    """Whether a case says anything the container layer owns.
+
+    Which reader owns a case follows from the case, not from a flag: a bare
+    frame is vp8_dis.py's, a bare image vp8l_dis.py's, and anything with a
+    chunk list, a container field or a block belongs to webp_dis.py.
+    """
+    for line in text.splitlines():
+        args = line.split('#')[0].split()
+        if args and (args[0] in webp_asm.DIRECTIVES or
+                     args[0] in webp_asm.BLOCKS):
+            return True
+    return False
+
+
+def container_round_trip():
+    """The container cases, through webp_dis.py: file -> text -> file.
+
+    This is the only round trip that sees a whole file rather than one
+    chunk of one, so it is the only one an animation or an alpha plane can
+    take. A case built to lie about its own lengths cannot survive it, by
+    construction, and says '# roundtrip: no'.
+    """
+    bad = broken = skipped = 0
+    done = 0
+    for path in sorted(glob.glob('cases/*.txt')):
+        with open(path) as fp:
+            text = fp.read()
+        if not is_container(text):
+            continue
+        head = vp8_asm.parse_header(text, path)
+        if head.get('slow') == 'yes':
+            skipped += 1
+            continue
+        done += 1
+        want = webp_asm.assemble_text(text)
+        try:
+            got = webp_asm.assemble_text(webp_dis.dump(want))
+        except (webp_dis.Truncated, vp8_dis.Truncated, vp8l_dis.Truncated,
+                vp8_asm.AsmError, IndexError):
+            got = None
+        if got == want:
+            if head['roundtrip'] == 'no':
+                print('%s: says roundtrip: no, but it round trips' % path,
+                      file=sys.stderr)
+                bad += 1
+            continue
+        if head['roundtrip'] == 'no':
+            broken += 1
+            continue
+        print('%s: reassembles to %s bytes, not %d'
+              % (path, len(got) if got else 'unreadable', len(want)),
+              file=sys.stderr)
+        bad += 1
+    print('container %d cases, %d unreadable by design, %d too big to read'
           % (done, broken, skipped))
     return bad
 
@@ -255,14 +315,16 @@ def case_round_trip():
     failed, as are the ones that say '# roundtrip: no' because what they
     pin is invisible to a reader. Everything else has to survive.
 
-    Lossless cases go through lossless_round_trip() instead.
+    Lossless cases go through lossless_round_trip(), container cases
+    through container_round_trip().
     """
     bad = broken = skipped = 0
     paths = []
     for path in sorted(glob.glob('cases/*.txt')):
         with open(path) as fp:
-            if not vp8l_asm.is_lossless(fp.read()):
-                paths.append(path)
+            text = fp.read()
+        if not vp8l_asm.is_lossless(text) and not is_container(text):
+            paths.append(path)
     for path in paths:
         with open(path) as fp:
             text = fp.read()
@@ -288,6 +350,61 @@ def case_round_trip():
         bad += 1
     print('cases    %d files, %d refused by the reader, %d unreadable by '
           'design' % (len(paths), broken, skipped))
+    return bad
+
+
+# The container shapes webpmux will build, as frame suffixes: duration,
+# offset, disposal, blending. '+b' blends, '-b' does not.
+ANIMATIONS = (
+    ('plain', ['+100', '+150']),
+    ('offsets', ['+100', '+100+8+6']),
+    ('dispose', ['+100+0+0+1', '+100+4+4+0']),
+    ('no-blend', ['+100+0+0+0-b', '+100+2+2+0+b']),
+    ('one-frame', ['+40']),
+)
+
+
+def animation_encodes():
+    """Animations built by webpmux, read back by webp_dis.py.
+
+    The container round trip over the corpus only proves this file against
+    the assembler beside it. These are files libwebp wrote, with chunk
+    order, padding and canvas size chosen by the muxer, so they are what
+    says the reader is right rather than merely self-consistent.
+    Needs $CWEBP and $WEBPMUX.
+    """
+    cwebp = os.environ.get('CWEBP', 'cwebp')
+    webpmux = os.environ.get('WEBPMUX', 'webpmux')
+    if shutil.which(cwebp) is None or shutil.which(webpmux) is None:
+        print('anim     skipped, no cwebp or webpmux')
+        return 0
+    bad = done = 0
+    tmp = tempfile.mkdtemp()
+    try:
+        srcs = sample_images(tmp)[:2] + sample_images(tmp)[-3:]
+        frames = []
+        for n, src in enumerate(srcs):
+            out = os.path.join(tmp, 'f%d.webp' % n)
+            opts = ['-lossless'] if n % 2 else ['-q', '80']
+            if subprocess.call([cwebp, '-quiet'] + opts + [src, '-o', out],
+                               stderr=subprocess.DEVNULL) == 0:
+                frames.append(out)
+        for name, suffixes in ANIMATIONS:
+            out = os.path.join(tmp, name + '.webp')
+            cmd = [webpmux]
+            for suffix, frame in zip(suffixes, frames):
+                cmd += ['-frame', frame, suffix]
+            cmd += ['-loop', '3', '-bgcolor', '255,0,0,128', '-o', out]
+            if subprocess.call(cmd, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL):
+                continue
+            done += 1
+            with open(out, 'rb') as f:
+                if not webp_dis.check(out, f.read()):
+                    bad += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print('anim     %d animations from webpmux' % done)
     return bad
 
 
@@ -475,6 +592,8 @@ def main(argv):
     bad += round_trip(sorted(glob.glob('sources/*.webp')) + argv[1:])
     bad += case_round_trip()
     bad += lossless_round_trip()
+    bad += container_round_trip()
+    bad += animation_encodes()
     bad += real_encodes()
     bad += levels()
     if shutil.which(DWEBP):

@@ -1,6 +1,5 @@
 # note: An alpha plane carrying a palette and a subtract-green transform.
 # expect: ok
-# roundtrip: no
 # exercises: The transform count, the other half of the 8-bit test: the
 #   decoder asks for exactly one transform and for it to be the palette, so
 #   a second one -- however harmless subtracting green from a plane that is

@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: Every optional chunk the format defines, around an animation
 #   rather than around a still frame: ICCP has to come before the image data
 #   and EXIF and XMP after it, and each is stored for the caller only

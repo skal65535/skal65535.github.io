@@ -115,6 +115,7 @@ describing how they fit together.
 | [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
 | [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction for a lossy frame. `--check` round trips one against libwebp. |
 | [`src/vp8l_dis.py`](src/vp8l_dis.py) | The other direction for a lossless image, the same way. |
+| [`src/webp_dis.py`](src/webp_dis.py) | The other direction for a whole file: chunks, animation frames and alpha planes, delegating each image to one of those two. |
 | [`src/grammar.py`](src/grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
 | [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
 | [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
@@ -160,6 +161,7 @@ Any one case, or any real encode read back into a case:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
+    ./src/webp_dis.py --check some-animation.webp
 
 [`files/`](files) is pure output and is wiped on every rebuild. The only
 input here that is not text is [`sources/`](sources), the four frames above:
@@ -204,13 +206,15 @@ says it, so upstream moving underneath a note is reported rather than
 discovered later. Three were already wrong when that check was written.
 
 Both writers are checked against libwebp rather than against themselves:
-`src/vp8_dis.py` and `src/vp8l_dis.py` read a file back into the text the
+the three disassemblers in `src/` read a file back into the text the
 assemblers take, so a real encode can be disassembled, reassembled and
 compared byte for byte. `vp8_selftest.py` runs that over `sources/`, over a
-spread of images it asks cwebp to encode both ways, and over the corpus
-itself; it also writes every coefficient magnitude the format allows, and
-pairs of frames that say the same thing two different ways and must decode
-alike.
+spread of images it asks cwebp to encode both ways, over animations it asks
+webpmux to build, and over the corpus itself; it also writes every
+coefficient magnitude the format allows, and pairs of frames that say the
+same thing two different ways and must decode alike. A case that cannot
+survive the trip says `roundtrip: no`, and the selftest fails a case that
+says so and then survives it anyway.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy

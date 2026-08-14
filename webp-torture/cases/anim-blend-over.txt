@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The pair to anim-blend-none. blending_method 0 with alpha and a
 #   frame that does not fill the canvas keeps IsKeyFrame() false, so
 #   BlendPixelRowNonPremult() runs over the previous canvas -- the

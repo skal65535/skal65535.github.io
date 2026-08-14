@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: There is no nesting in the format: a frame holds image chunks
 #   and nothing else. StoreFrame() does not recognise the inner ANMF, so it
 #   rewinds and leaves the outer frame with no image, which drops it; the

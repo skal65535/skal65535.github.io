@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The degenerate sequence. Nothing requires more than one ANMF,
 #   so the composition loop runs once and stops; the file is still an
 #   animation to every decoder, and still refused by the still one.

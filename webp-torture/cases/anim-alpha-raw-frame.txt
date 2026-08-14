@@ -3,7 +3,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: An ANMF holds a chunk list, not a chunk: ALPH then VP8 is the
 #   same pair a still file uses, and StoreFrame() fills both slots of
 #   img_components. The alpha plane is stored one byte per pixel, so this is

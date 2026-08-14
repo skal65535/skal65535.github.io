@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The other ALPH compression, inside an animation: the payload is
 #   a headerless VP8L stream read by VP8LDecodeAlphaHeader(), and this one is
 #   a palette of three alpha values, so it also takes the 8-bit decoding path

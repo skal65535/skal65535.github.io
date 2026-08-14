@@ -1,7 +1,6 @@
 # note: A RIFF header claiming 11 bytes, one less than the smallest legal
 #   value.
 # expect: reject
-# roundtrip: no
 # exercises: The "size < TAG_SIZE + CHUNK_HEADER_SIZE" test in ParseRIFF(): a
 #   RIFF size must leave room for "WEBP" and one chunk header. 11 is the last
 #   value that does not.

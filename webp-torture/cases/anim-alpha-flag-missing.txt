@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: reject
-# roundtrip: no
 # exercises: The reverse of container-vp8x-still-flags, which sets flags
 #   with nothing behind them. Here the data is there and the flag is not.
 #   Nothing in the demuxer compares the two, so the frames blend exactly as

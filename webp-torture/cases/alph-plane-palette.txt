@@ -1,6 +1,5 @@
 # note: A compressed alpha plane of three values, through a palette.
 # expect: ok
-# roundtrip: no
 # exercises: The shape that reaches DecodeAlphaData(): one transform, that
 #   transform colour-indexing, no colour cache, and the red, blue and alpha
 #   codes each a single symbol. Written rather than pasted from an encoder,

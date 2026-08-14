@@ -1,6 +1,5 @@
 # note: Two VP8 chunks, one after the other.
 # expect: ok
-# roundtrip: no
 # exercises: The walk stops at the first VP8 chunk, so the second is never
 #   looked at and whatever it holds is dead weight. Nothing rejects the
 #   duplicate.

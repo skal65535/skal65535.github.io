@@ -1,7 +1,6 @@
 # note: A VP8X canvas of 16777216 by 16777216, the largest the two 24-bit
 #   fields can describe.
 # expect: reject
-# roundtrip: no
 # exercises: The "width * height >= MAX_IMAGE_AREA" test in ParseVP8X(),
 #   computed in 64 bits precisely so this cannot wrap. Both fields are at their
 #   maximum, so the product is 2^48.

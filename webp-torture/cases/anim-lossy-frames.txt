@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: An ANMF may carry either image format. This is the VP8 side:
 #   StoreFrame() takes the MKFOURCC('V','P','8',' ') arm and WebPGetFeatures()
 #   reads the frame tag rather than the lossless header.

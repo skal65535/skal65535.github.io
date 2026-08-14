@@ -1,6 +1,5 @@
 # note: A compressed alpha plane flagged as level-reduced.
 # expect: ok
-# roundtrip: no
 # exercises: ALPHA_PREPROCESSED_LEVELS on a compressed plane. The bit makes
 #   the decoder take the "decode everything in one pass" branch rather than
 #   the row-by-row one, which here means the whole lossless stream is read

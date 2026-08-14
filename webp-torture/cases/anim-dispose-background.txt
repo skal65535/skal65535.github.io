@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: disposal_method 1 is DISPOSE_BACKGROUND: once frame 2 has been
 #   handed out, ZeroFillFrameRect() clears just its rectangle out of the
 #   canvas the next frame starts from, so frame 3 sees frame 1 everywhere

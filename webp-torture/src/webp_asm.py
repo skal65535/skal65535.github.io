@@ -159,7 +159,8 @@ class Chunks:
         elif name == 'alph_data':
             self.alph_data = bytes.fromhex(rest[0]) if rest else b''
         elif name == 'payload':
-            self.payloads[fourcc(rest[0])] = bytes.fromhex(rest[1])
+            self.payloads[fourcc(rest[0])] = bytes.fromhex(
+                rest[1]) if len(rest) > 1 else b''
         elif name == 'chunk_size':
             self.sizes[fourcc(rest[0])] = self.num(rest[1], name)
         else:

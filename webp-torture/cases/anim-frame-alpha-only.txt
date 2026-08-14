@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The ALPH arm of StoreFrame() sets frame_num where the image arm
 #   would have, so unlike anim-empty-frame this frame is kept: it has an
 #   alpha component, no image component, and the width and height the ANMF

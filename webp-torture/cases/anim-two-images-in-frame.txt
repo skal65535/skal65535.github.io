@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: How the walk leaves a frame it cannot finish. StoreFrame()
 #   takes the first VP8L, sees a second while image_chunks is already one,
 #   and jumps to the label that rewinds and stops -- leaving the reader

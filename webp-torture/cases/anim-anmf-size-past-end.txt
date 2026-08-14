@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: SizeIsInvalid(), the test the walk makes before trusting any
 #   declared length: a chunk may not claim to extend past the end of the
 #   RIFF chunk it sits in. This one claims four kilobytes inside a file of

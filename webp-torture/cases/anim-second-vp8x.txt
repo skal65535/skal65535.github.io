@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The one fourcc the chunk walk refuses on sight. VP8X is the
 #   header that started the walk and it carries the canvas size and the
 #   feature flags, so a second one would be re-declaring what has already

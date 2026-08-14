@@ -1,6 +1,5 @@
 # note: A palette-coded alpha plane whose red code carries two symbols.
 # expect: ok
-# roundtrip: no
 # exercises: The Huffman half of Is8bOptimizable(), which asks that the red,
 #   blue and alpha codes each hold a single symbol so their bits can be
 #   skipped entirely. Here the packed pixels vary in a channel the palette

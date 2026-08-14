@@ -1,7 +1,6 @@
 # note: An optional chunk with an odd-sized payload, and the pad byte that
 #   must follow it.
 # expect: ok
-# roundtrip: no
 # exercises: disk_chunk_size rounds a payload up to an even length, which
 #   only matters when something follows the chunk it rounded. Here a JUNK
 #   payload of three bytes sits in front of the image, so getting the

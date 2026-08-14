@@ -1,6 +1,5 @@
 # note: An uncompressed alpha plane under the horizontal filter.
 # expect: ok
-# roundtrip: no
 # exercises: WebPUnfilters[1], each byte a difference from the one to its
 #   left.
 chunks VP8X ALPH VP8

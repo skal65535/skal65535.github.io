@@ -258,6 +258,7 @@ Any one case, or any real encode read back into a case:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
+    ./src/webp_dis.py --check some-animation.webp
 
 [`files/`](files) is pure output and is wiped on every rebuild. The only
 input here that is not text is [`sources/`](sources), the four frames above:
@@ -302,13 +303,15 @@ says it, so upstream moving underneath a note is reported rather than
 discovered later. Three were already wrong when that check was written.
 
 Both writers are checked against libwebp rather than against themselves:
-`src/vp8_dis.py` and `src/vp8l_dis.py` read a file back into the text the
+the three disassemblers in `src/` read a file back into the text the
 assemblers take, so a real encode can be disassembled, reassembled and
 compared byte for byte. `vp8_selftest.py` runs that over `sources/`, over a
-spread of images it asks cwebp to encode both ways, and over the corpus
-itself; it also writes every coefficient magnitude the format allows, and
-pairs of frames that say the same thing two different ways and must decode
-alike.
+spread of images it asks cwebp to encode both ways, over animations it asks
+webpmux to build, and over the corpus itself; it also writes every
+coefficient magnitude the format allows, and pairs of frames that say the
+same thing two different ways and must decode alike. A case that cannot
+survive the trip says `roundtrip: no`, and the selftest fails a case that
+says so and then survives it anyway.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy
@@ -579,6 +582,9 @@ SRC = [
                        'round trips one against libwebp.'),
     ('src/vp8l_dis.py', 'The other direction for a lossless image, the same '
                         'way.'),
+    ('src/webp_dis.py', 'The other direction for a whole file: chunks, '
+                        'animation frames and alpha planes, delegating each '
+                        'image to one of those two.'),
     ('src/grammar.py', 'Every keyword and the range of every value, as data. '
                        '`SYNTAX.md` is generated from it.'),
     ('src/vp8_tables.py', 'The VP8 constant tables, extracted from libwebp.'),
@@ -657,7 +663,8 @@ list that is not the length the transform implies.
 
 The header keys are %(header)s. `expect` is `ok` or `reject`; `slow` marks
 the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
+be read back by whichever of the three disassemblers owns it; `anim` is
+the same verdict from the
 animation decoder, for the files a still one refuses on sight; `info` is
 webpinfo's, which is a second reader of the container and not always of the
 same opinion; `incremental` is the streaming decoder's, and is written down
@@ -808,11 +815,13 @@ Three layers, and a case only ever touches the top one:
   canonical Huffman codes, prefix codes, the sub-image streams. They
   validate nothing either.
 
-`vp8_dis.py` and `vp8l_dis.py` go the other way, and are what
-[`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writers against
-real encodes rather than against themselves: disassemble a file, reassemble
-from its own text, compare the bytes. `--check` does exactly that for any
-file you point it at.
+`vp8_dis.py`, `vp8l_dis.py` and `webp_dis.py` go the other way, and are
+what [`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writers
+against real encodes rather than against themselves: disassemble a file,
+reassemble from its own text, compare the bytes. `--check` does exactly that
+for any file you point it at. The first two read one chunk; `webp_dis.py`
+reads a whole file, which is the only way an animation or an alpha plane can
+be read at all.
 
 `grammar.py` is the third thing a case touches, though not at assembly time:
 it holds every keyword and the range of every value, and

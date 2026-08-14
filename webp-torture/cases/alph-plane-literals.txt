@@ -1,6 +1,5 @@
 # note: A compressed alpha plane written as plain green literals.
 # expect: ok
-# roundtrip: no
 # exercises: The simplest compressed plane there is: no transform, so
 #   Is8bOptimizable() is never consulted and the plane goes through
 #   DecodeImageData() with ExtractAlphaRows() pulling the green channel out

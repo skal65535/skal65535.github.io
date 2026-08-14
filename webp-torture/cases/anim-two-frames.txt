@@ -3,7 +3,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The whole ordinary path: VP8X with the animation flag, ANIM,
 #   then one ANMF per frame carrying a VP8L image the size of the canvas.
 #   Both frames are key frames -- frame 1 always is, and frame 2 is because

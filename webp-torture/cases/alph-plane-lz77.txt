@@ -1,6 +1,5 @@
 # note: An alpha plane whose second half is a back-reference to its first.
 # expect: ok
-# roundtrip: no
 # exercises: CopyBlock8b(), the byte-wide copy the 8-bit alpha path uses in
 #   place of the 32-bit one every other back-reference here goes through.
 #   The distance is a plane code, resolved against the packed width of the

@@ -1,6 +1,5 @@
 # note: An ALPH chunk in a RIFF file with no VP8X ahead of it.
 # expect: reject
-# roundtrip: no
 # exercises: The extended format is what an ALPH chunk lives in: libwebp only
 #   accepts a leading ALPH when there is no RIFF header at all, the bare stream
 #   case. With RIFF and no VP8X it is refused.

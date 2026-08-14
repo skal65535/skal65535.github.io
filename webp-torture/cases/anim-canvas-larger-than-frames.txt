@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: Nothing requires a frame to reach the edges of the canvas. The
 #   16x16 frames sit in the corner of a 64x48 one and the rest stays as
 #   ZeroFillCanvas() left it -- transparent black -- for the whole sequence,

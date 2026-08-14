@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The animation flag is what makes the frames real. Without it
 #   ParseAnimationFrame() parses each ANMF, allocates a frame, and then
 #   throws it away rather than adding it, so a file with two frames in it

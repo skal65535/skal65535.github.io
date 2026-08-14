@@ -1,6 +1,5 @@
 # note: A RIFF size that stops in the middle of the chunks behind it.
 # expect: reject
-# roundtrip: no
 # exercises: The "total_size > riff_size" test in ParseOptionalChunks(): the
 #   walk adds up what it has skipped and refuses to walk past what the RIFF
 #   header said was there.

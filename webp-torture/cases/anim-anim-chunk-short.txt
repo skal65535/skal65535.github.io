@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The other side of anim-anim-chunk-padded. The demuxer treats
 #   six bytes as the minimum an ANIM chunk may be and refuses anything
 #   shorter outright, because the background colour and loop count it is

@@ -1,6 +1,5 @@
 # note: A compressed alpha plane with the gradient filter on top.
 # expect: ok
-# roundtrip: no
 # exercises: The two alpha stages together. Filtering and compression are
 #   separate fields of the ALPH header byte and the raw cases sweep the
 #   filters on their own; here the plane is decompressed first and the

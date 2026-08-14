@@ -1,6 +1,5 @@
 # note: A palette-coded alpha plane that also declares a colour cache.
 # expect: ok
-# roundtrip: no
 # exercises: The first test in Is8bOptimizable(), and the only one that is
 #   about the stream rather than about its Huffman codes: any colour cache
 #   at all disqualifies the 8-bit path, because that path keeps one byte per

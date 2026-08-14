@@ -1,7 +1,6 @@
 # note: A losslessly compressed alpha plane carrying a predictor transform,
 #   from a cwebp encode of a gradient.
 # expect: ok
-# roundtrip: no
 # exercises: Compression method 1 hands the payload to the lossless decoder.
 #   A predictor transform leaves the red, blue and alpha codes non-trivial, so
 #   Is8bOptimizable() says no and the plane is decoded through

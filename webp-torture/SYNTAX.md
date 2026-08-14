@@ -24,7 +24,8 @@ list that is not the length the transform implies.
 
 The header keys are `anim`, `exercises`, `expect`, `incremental`, `info`, `note`, `roundtrip`, `slow`, `unique`. `expect` is `ok` or `reject`; `slow` marks
 the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
+be read back by whichever of the three disassemblers owns it; `anim` is
+the same verdict from the
 animation decoder, for the files a still one refuses on sight; `info` is
 webpinfo's, which is a second reader of the container and not always of the
 same opinion; `incremental` is the streaming decoder's, and is written down

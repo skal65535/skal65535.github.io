@@ -1,6 +1,5 @@
 # note: An uncompressed plane declaring the level-reduction pre-processing.
 # expect: ok
-# roundtrip: no
 # exercises: The one bit of ALPHA_PREPROCESSED_LEVELS: it makes the decoder
 #   take the "decode everything in one pass" branch and keeps alpha dithering
 #   alive instead of switching it off. The plane itself comes out the same as

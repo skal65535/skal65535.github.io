@@ -1,6 +1,5 @@
 # note: A VP8X chunk whose header claims 9 bytes rather than 10.
 # expect: reject
-# roundtrip: no
 # exercises: The "chunk_size != VP8X_CHUNK_SIZE" test in ParseVP8X(), which
 #   is an equality: a VP8X chunk is 10 bytes and no other length is tolerated,
 #   in either direction.

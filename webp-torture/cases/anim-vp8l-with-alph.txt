@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: "VP8L has its own alpha": the lossless format carries a fourth
 #   channel already, so an ALPH beside it is contradictory rather than
 #   redundant, and StoreFrame() refuses the pair outright as soon as it

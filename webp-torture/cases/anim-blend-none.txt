@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: blending_method 1 is NO_BLEND, and it changes two things at
 #   once: the frame is written over the canvas as it is, alpha and all, and
 #   IsKeyFrame() takes its second branch, because a full-canvas frame that

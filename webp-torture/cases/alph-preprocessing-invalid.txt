@@ -1,6 +1,5 @@
 # note: A pre-processing value of 2, past level reduction.
 # expect: reject
-# roundtrip: no
 # exercises: The second undefined value in the header byte, refused by the
 #   same condition in ALPHInit(). All four filter values are legal, so the
 #   filter field has no partner to this.

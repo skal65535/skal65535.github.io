@@ -3,7 +3,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The MAX_IMAGE_AREA test inside ParseAnimationFrame(), which
 #   runs on the header fields alone -- before the frame's own chunks are
 #   looked at, and before anything is allocated for it. Both size fields are

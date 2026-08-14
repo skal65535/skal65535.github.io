@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The other half of anim-frame-size-mismatch. The ANMF says 16x16
 #   at (16,16), which fits; the image inside is 32x32, and since that is the
 #   size CheckFrameBounds() ends up testing, the frame runs 16 pixels past

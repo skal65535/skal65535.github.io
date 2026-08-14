@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: ANIM's first four bytes. The demuxer reads them into
 #   dmux->bgcolor and hands them to the caller, and that is all: the
 #   animation decoder zero-fills its canvas for a key frame rather than

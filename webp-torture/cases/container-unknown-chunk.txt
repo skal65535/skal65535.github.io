@@ -1,6 +1,5 @@
 # note: A chunk with a fourcc the format does not define, ahead of the frame.
 # expect: ok
-# roundtrip: no
 # exercises: The same skip path as the metadata chunks, but with a tag no
 #   version of libwebp knows. An unknown chunk must be stepped over, not
 #   refused: that is what makes the format extensible.

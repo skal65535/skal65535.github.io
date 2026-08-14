@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: "check that this isn't an animation (all frames should be in an
 #   ANMF)". An animated file has no image of its own; the VP8 here sits
 #   beside the frames rather than inside one, and the walk refuses it on

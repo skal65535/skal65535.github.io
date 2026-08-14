@@ -1,6 +1,5 @@
 # note: An optional chunk declaring a zero-length payload.
 # expect: ok
-# roundtrip: no
 # exercises: disk_chunk_size is then just the 8-byte header, which is the
 #   smallest step the walk can take. A zero-length chunk is legal and must be
 #   stepped over like any other.

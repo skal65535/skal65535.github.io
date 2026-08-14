@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: The same silent drop as anim-empty-frame, with nothing left
 #   behind it. The frame list stays empty, and IsValidExtendedFormat()
 #   refuses a finished file with no frames at all -- so what the demuxer

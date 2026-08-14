@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: CheckFrameBounds() with exact = 0, the animation form: a frame
 #   need not fill the canvas, but x_offset + width must still fit inside it.
 #   16 wide at x = 48 in a 32-wide canvas does not, and the check runs after

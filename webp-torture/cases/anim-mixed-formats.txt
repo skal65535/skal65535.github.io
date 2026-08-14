@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: Nothing ties the frames of an animation to one format. The
 #   decoder re-reads the chunk tag per frame, so WebPDecode() switches
 #   between VP8 and VP8L mid-sequence, and both write into the same RGBA

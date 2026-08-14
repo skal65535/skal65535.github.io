@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: reject
-# roundtrip: no
 # exercises: The ANIM chunk is six bytes of content and the demuxer treats
 #   that as a minimum, not a size: it reads the background colour and loop
 #   count and then skips whatever else the chunk declares, the same

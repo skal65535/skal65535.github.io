@@ -1,6 +1,5 @@
 # note: The extended format: a VP8X chunk ahead of the frame.
 # expect: ok
-# roundtrip: no
 # exercises: ParseVP8X(). The canvas size is written as width and height
 #   less one, and here everything agrees: it is the shape each of the other
 #   container-vp8x-* cases breaks in one way.

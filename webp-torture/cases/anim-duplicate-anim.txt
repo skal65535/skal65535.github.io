@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The one place the demuxer silently drops a chunk rather than
 #   refusing the file: with anim_chunks already at one, the second ANIM
 #   takes the store_chunk = 0 path and is skipped by its declared length.

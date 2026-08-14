@@ -2,7 +2,6 @@
 # expect: reject
 # anim: reject
 # info: reject
-# roundtrip: no
 # exercises: Both chunks are stored -- StoreFrame() has no opinion on their
 #   order -- and it is IsValidExtendedFormat() that compares the two offsets
 #   afterwards and requires the alpha to precede the image. The still-image

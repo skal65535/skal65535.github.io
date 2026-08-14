@@ -3,7 +3,6 @@
 # expect: reject
 # anim: ok
 # info: reject
-# roundtrip: no
 # exercises: A frame with no image is dropped rather than refused, and
 #   quietly. StoreFrame() is handed a payload size of zero, reads the chunk
 #   header belonging to the next frame, rewinds and returns having stored

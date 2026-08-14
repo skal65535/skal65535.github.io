@@ -369,19 +369,18 @@ def parse(payload):
     return magic, width, height, alpha, version, Image(br, width, height, True)
 
 
-def dump(payload, note='disassembled by vp8l_dis.py'):
-    """The case text for one VP8L stream."""
-    magic, width, height, alpha, version, image = parse(payload)
-    out = ['# note: %s' % note, '# expect: ok',
-           '# exercises: whatever the file it came from does.',
-           '# roundtrip: no', 'lossless']
-    if magic != vp8l.MAGIC:
-        out.append('magic 0x%02x' % magic)
-    out += ['width %d' % width, 'height %d' % height]
-    if version:
-        out.append('version %d' % version)
-    if alpha:
-        out.append('alpha_is_used 1')
+def parse_alpha(payload, width, height):
+    """One headerless stream: an ALPH chunk's compressed plane.
+
+    VP8LDecodeAlphaHeader() knows the dimensions already and reads straight
+    into DecodeImageStream(), so there is no signature to skip.
+    """
+    return Image(BitReader(payload), width, height, True)
+
+
+def image_lines(image):
+    """The case lines for one parsed stream, header aside."""
+    out = []
     if image.transforms:
         out.append('transforms ' + ' '.join(n for n, _ in image.transforms))
     for name, params in image.transforms:
@@ -403,8 +402,23 @@ def dump(payload, note='disassembled by vp8l_dis.py'):
     for group in image.groups:
         out.append('group')
         out += group.lines()
-    out += pixel_lines(image.items)
-    return '\n'.join(out) + '\n'
+    return out + pixel_lines(image.items)
+
+
+def dump(payload, note='disassembled by vp8l_dis.py'):
+    """The case text for one VP8L stream."""
+    magic, width, height, alpha, version, image = parse(payload)
+    out = ['# note: %s' % note, '# expect: ok',
+           '# exercises: whatever the file it came from does.',
+           '# roundtrip: no', 'lossless']
+    if magic != vp8l.MAGIC:
+        out.append('magic 0x%02x' % magic)
+    out += ['width %d' % width, 'height %d' % height]
+    if version:
+        out.append('version %d' % version)
+    if alpha:
+        out.append('alpha_is_used 1')
+    return '\n'.join(out + image_lines(image)) + '\n'
 
 
 def expand_palette(pixels):

@@ -1,6 +1,5 @@
 # note: An uncompressed alpha plane under the none filter.
 # expect: ok
-# roundtrip: no
 # exercises: WebPUnfilters[0], stored as it is.
 chunks VP8X ALPH VP8
 alpha 1

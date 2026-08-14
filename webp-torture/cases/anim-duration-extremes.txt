@@ -3,7 +3,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: Both ends of the 24-bit duration field in one file. Neither is
 #   refused: a zero-duration frame is legal and common as an interstitial,
 #   and 0xffffff is just under MAX_DURATION, so nothing in the field's range

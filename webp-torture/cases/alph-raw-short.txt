@@ -1,6 +1,5 @@
 # note: An uncompressed plane one byte short of the picture.
 # expect: reject
-# roundtrip: no
 # exercises: The other side of that same test, one byte away: 255 bytes where
 #   a 16x16 picture needs 256.
 chunks VP8X ALPH VP8

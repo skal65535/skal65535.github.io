@@ -1,6 +1,5 @@
 # note: An alpha plane whose green code is over-subscribed.
 # expect: reject
-# roundtrip: no
 # exercises: A malformed Huffman code inside the alpha stream rather than
 #   inside a VP8L image. It fails in the same BuildHuffmanTable() as
 #   codelen-oversubscribed, but the error has to travel back out through

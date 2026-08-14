@@ -1,6 +1,5 @@
 # note: Bytes after the last chunk that the RIFF size does not account for.
 # expect: ok
-# roundtrip: no
 # exercises: The decoder stops at the image chunk and never looks past it, so
 #   junk at the end of the file is ignored rather than refused.
 chunks VP8X VP8

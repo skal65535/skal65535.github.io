@@ -2,7 +2,6 @@
 # expect: reject
 # anim: ok
 # info: ok
-# roundtrip: no
 # exercises: The byte after the duration holds six reserved bits above the
 #   blending and disposal ones. Both readers take it with a mask -- bits & 1
 #   and bits & 2 -- so the rest is dropped rather than refused, and the
