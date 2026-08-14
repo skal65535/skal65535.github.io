@@ -2,14 +2,10 @@
 
 Everything the scripts one directory up are built out of. Nothing here is
 run directly to produce the corpus -- [`../generate.py`](../generate.py)
-does that -- though each assembler doubles as a command that turns one case
-into one `.webp`. Run them from the directory above, where `cases/` is:
-
-    ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./src/vp8_dis.py some-photo.webp
-    ./src/vp8l_dis.py --check some-lossless.webp
+does that -- though each assembler and disassembler doubles as a command of
+its own, run from the directory above where `cases/` is.
+[`../HOWTO.md`](../HOWTO.md) is what to do with them; this is how they fit
+together.
 
 Three layers, and a case only ever touches the top one:
 

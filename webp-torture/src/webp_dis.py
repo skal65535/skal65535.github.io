@@ -39,6 +39,11 @@ class Truncated(Exception):
     pass
 
 
+# What a file that cannot be read back raises, whichever layer gives up.
+UNREADABLE = (Truncated, vp8_dis.Truncated, vp8l_dis.Truncated,
+              vp8_asm.AsmError, IndexError)
+
+
 def walk(data, at, end, loose=False):
     """(fourcc, payload) for each chunk between two offsets.
 
@@ -78,13 +83,17 @@ def image_lines(tag, payload):
     return [l for l in text.splitlines() if not l.startswith('#')]
 
 
-def image_size(tag, payload):
-    """(width, height) of an image chunk, without decoding its pixels."""
-    if tag == b'VP8L':
-        _, width, height, _, _, _ = vp8l_dis.parse(payload)
-        return width, height
-    frame, _ = vp8_dis.parse(payload)
-    return frame.width, frame.height
+def image_size(chunks):
+    """The size of the first image in a chunk list, for the fields that
+    default to it: the ANMF box, and the length of a stored alpha plane."""
+    for chunk in chunks:
+        if chunk.tag == b'VP8L':
+            _, width, height, _, _, _ = vp8l_dis.parse(chunk.payload)
+            return width, height
+        if chunk.tag == b'VP8 ':
+            frame = vp8_dis.parse(chunk.payload)[0]
+            return frame.width, frame.height
+    return 1, 1
 
 
 class Chunk:
@@ -175,11 +184,7 @@ def frame_lines(chunk):
               for i in range(5)]
     bits = head[15]
     out = ['frame']
-    size = (1, 1)
-    for inner in chunk.frame:
-        if inner.tag in (b'VP8 ', b'VP8L'):
-            size = image_size(inner.tag, inner.payload)
-            break
+    size = image_size(chunk.frame)
     for name, value in zip(webp_asm.ANMF_FIELDS, fields):
         want = {'frame_width_minus_one': size[0] - 1,
                 'frame_height_minus_one': size[1] - 1}.get(name, 0)
@@ -197,10 +202,7 @@ def frame_lines(chunk):
 def dump(data):
     """The case text for a whole file."""
     chunks, riff_size, trailing = group_frames(data)
-    size = (1, 1)
-    for chunk in chunks:
-        if chunk.tag in (b'VP8 ', b'VP8L'):
-            size = image_size(chunk.tag, chunk.payload)
+    size = image_size(chunks)
     frames = [c for c in chunks if c.tag == b'ANMF']
     out = list(HEADER)
     out.append('chunks ' + ' '.join(name_of(c.tag) for c in chunks))
@@ -215,6 +217,8 @@ def dump(data):
         if chunk.tag == b'VP8X' and len(chunk.payload) == 10:
             flags = int.from_bytes(chunk.payload[:4], 'little')
             for name, bit in webp_asm.FLAGS.items():
+                # a clear flag needs no line, except the animation one once
+                # there are frames: the assembler would turn it back on
                 if flags & bit or (name == 'animation' and frames):
                     out.append('%s %d' % (name, 1 if flags & bit else 0))
             if flags >> 8:
@@ -231,7 +235,7 @@ def dump(data):
         elif chunk.tag in (b'VP8X', b'ANIM'):
             out.append(('payload %s %s' % (name_of(chunk.tag),
                                            chunk.payload.hex())).rstrip())
-    more, blocks = contents(chunks, size, (b"VP8X", b"ANIM", b"ANMF"))
+    more, blocks = contents(chunks, size, (b'VP8X', b'ANIM', b'ANMF'))
     for chunk in frames:
         blocks += frame_lines(chunk)
     return '\n'.join(out + more + blocks) + '\n'
@@ -244,8 +248,7 @@ def check(path, data=None):
             data = f.read()
     try:
         text = dump(data)
-    except (Truncated, vp8_dis.Truncated, vp8l_dis.Truncated,
-            vp8_asm.AsmError, IndexError) as e:
+    except UNREADABLE as e:
         print('%-44s unreadable: %s' % (path, e))
         return False
     again = webp_asm.assemble_text(text)

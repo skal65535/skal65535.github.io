@@ -26,6 +26,12 @@ if [ ! -x "$DWEBP" ]; then
   exit 2
 fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+verdict() {                      # an exit status, in the words expected.txt uses
+  if [ "$1" -eq 0 ]; then echo ok; else echo reject; fi
+}
+recorded() {                     # the hash hashes.txt holds for a file, if any
+  [ -f hashes.txt ] && grep "^$1 " hashes.txt | awk '{print $2}'
+}
 fail=0; n=0; hashed=0; animated=0; skipped=0; walked=0; streamed=0
 # 'rest' is deliberate: with one variable per column, adding a column makes
 # the last one swallow it instead, silently. That cost an afternoon once.
@@ -33,17 +39,15 @@ while IFS='|' read -r name expect flag anim info incr rest; do
   [ -z "$name" ] && continue
   [ "$flag" = slow ] && [ -n "$SKIP_SLOW" ] && continue
   f=files/$name.webp
-  msg=$($DWEBP -quiet "$f" -pam -o "$TMP/out.pam" 2>&1); rc=$?
-  if [ $rc -eq 0 ]; then got=ok; else got=reject; fi
+  msg=$($DWEBP -quiet "$f" -pam -o "$TMP/out.pam" 2>&1); got=$(verdict $?)
   n=$((n+1))
   if [ "$got" != "$expect" ]; then
     echo "MISMATCH $name: expected $expect, got $got  ${msg}"; fail=1; continue
   fi
   # decoded-pixel regression, for the files that decode (except the huge one).
   # One hash per file, from whichever decoder the row names.
-  if [ "$got" = ok ] && [ -z "$anim" ] && [ "$flag" != slow ] &&
-     [ -f hashes.txt ]; then
-    want=$(grep "^$name " hashes.txt | awk '{print $2}')
+  if [ "$got" = ok ] && [ -z "$anim" ] && [ "$flag" != slow ]; then
+    want=$(recorded "$name")
     have=$(shasum -a 256 < "$TMP/out.pam" | awk '{print $1}')
     if [ -n "$want" ]; then
       hashed=$((hashed+1))
@@ -60,8 +64,8 @@ while IFS='|' read -r name expect flag anim info incr rest; do
   # the case says so, and that disagreement is what gets pinned.
   if [ -z "$anim" ] && [ "$flag" != slow ]; then
     want=${incr:-$expect}
-    msg=$($DWEBP -quiet -incremental "$f" -pam -o "$TMP/inc.pam" 2>&1); rc=$?
-    if [ $rc -eq 0 ]; then got=ok; else got=reject; fi
+    msg=$($DWEBP -quiet -incremental "$f" -pam -o "$TMP/inc.pam" 2>&1)
+    got=$(verdict $?)
     streamed=$((streamed+1))
     if [ "$got" != "$want" ]; then
       echo "MISMATCH $name: incremental expected $want, got $got  ${msg}"
@@ -75,8 +79,7 @@ while IFS='|' read -r name expect flag anim info incr rest; do
   # rules than the demuxer's; where the two disagree the notes say so, and
   # this is what keeps that true
   if [ -n "$info" ] && [ -x "$WEBPINFO" ]; then
-    msg=$($WEBPINFO -diag -quiet "$f" 2>&1); rc=$?
-    if [ $rc -eq 0 ]; then got=ok; else got=reject; fi
+    msg=$($WEBPINFO -diag -quiet "$f" 2>&1); got=$(verdict $?)
     walked=$((walked+1))
     if [ "$got" != "$info" ]; then
       echo "MISMATCH $name: webpinfo expected $info, got $got  ${msg}"; fail=1
@@ -87,13 +90,13 @@ while IFS='|' read -r name expect flag anim info incr rest; do
   [ -z "$anim" ] && continue
   if [ ! -x "$ANIM_DUMP" ]; then skipped=$((skipped+1)); continue; fi
   rm -rf "$TMP/f"; mkdir -p "$TMP/f"
-  msg=$($ANIM_DUMP -folder "$TMP/f" -prefix f_ -pam "$f" 2>&1); rc=$?
-  if [ $rc -eq 0 ]; then got=ok; else got=reject; fi
+  msg=$($ANIM_DUMP -folder "$TMP/f" -prefix f_ -pam "$f" 2>&1)
+  got=$(verdict $?)
   animated=$((animated+1))
   if [ "$got" != "$anim" ]; then
     echo "MISMATCH $name: anim_dump expected $anim, got $got  ${msg}"; fail=1
-  elif [ "$got" = ok ] && [ -f hashes.txt ]; then
-    want=$(grep "^$name " hashes.txt | awk '{print $2}')
+  elif [ "$got" = ok ]; then
+    want=$(recorded "$name")
     have=$(cat "$TMP"/f/f_*.pam | shasum -a 256 | awk '{print $1}')
     if [ -z "$want" ]; then
       echo "NOTE no hash recorded for $name"

@@ -5,22 +5,26 @@
 # that can be found in the COPYING file in the root of the source
 # tree.
 
-"""Checks the lossy writer against libwebp, four ways.
+"""Checks the writers against libwebp rather than against themselves.
 
     ./vp8_selftest.py [extra-real-encodes.webp...]
 
-  round trip   every .webp in sources/ (and any named on the command line)
-               is disassembled, reassembled from its own text, and compared
-               byte for byte. Anything the two disagree on shows up within a
-               byte or two, so this pins the whole syntax against files
-               libwebp itself produced.
+Everything here is the same trick: take bytes, read them into case text,
+assemble that text, and require the bytes back. What differs is where the
+bytes came from, and the ones that came from libwebp are the ones that
+prove anything.
+
+  sources      every .webp in sources/, and any named on the command line.
   encodes      a spread of images encoded both ways at every setting that
-               changes what cwebp writes, each disassembled and reassembled.
-               The only check starting from what libwebp wrote. Needs $CWEBP.
-  cases        the same, starting from the text in cases/ instead, lossy
-               then lossless. The
-               ones meant to be refused often cannot be read back at
-               all, which is the point of them; those are counted.
+               changes what cwebp writes. Needs $CWEBP.
+  anim         animations built by webpmux: chunk order, padding and canvas
+               size are its choices, not ours. Needs $CWEBP and $WEBPMUX.
+  cases        the corpus itself, routed by what each case is -- a bare
+               frame through vp8_dis.py, a bare image through vp8l_dis.py,
+               anything with a container through webp_dis.py. A case built
+               to be refused often cannot be read back at all, which is the
+               point of it; those say 'roundtrip: no' and are counted. A
+               case that says so and then round trips is an error.
   levels       every coefficient magnitude from 1 to 2114, the largest the
                category-6 escape can hold, written and read back. Real
                encodes stop well short of that.
@@ -286,8 +290,7 @@ def container_round_trip():
         want = webp_asm.assemble_text(text)
         try:
             got = webp_asm.assemble_text(webp_dis.dump(want))
-        except (webp_dis.Truncated, vp8_dis.Truncated, vp8l_dis.Truncated,
-                vp8_asm.AsmError, IndexError):
+        except webp_dis.UNREADABLE:
             got = None
         if got == want:
             if head['roundtrip'] == 'no':

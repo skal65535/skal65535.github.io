@@ -7,9 +7,11 @@
 """Generates the torture bitstreams. Run: python3 generate.py [outdir]
 
 Every file but the multi-partition ones comes from a text case in cases/,
-which carries its own note; this collects them into files/, expected.txt and
-README.md. 'expect' is what the reference decoder is supposed to do with a
-case: 'ok' or 'reject'.
+which carries its own note; this assembles them into files/ and writes
+everything that is derived from them -- expected.txt, README.md, SYNTAX.md,
+src/README.md and an index per directory. It also refuses to finish if a
+link does not resolve, a 'unique:' claim disagrees with coverage.txt, or an
+example in HOWTO.md does not assemble.
 """
 
 import glob
@@ -28,14 +30,16 @@ import webp_asm
 
 SLOW = set()      # the cases that allocate enough memory to be worth skipping
 
-# A row is (name, expect, note, exercises, size, anim, info, incremental).
-# 'anim' is the verdict of the animation decoder, and is empty for a file
-# that is not one: dwebp refuses every animated file before looking at a
-# frame, so 'expect' says nothing about those beyond that. 'info' is
-# webpinfo's verdict, which is worth recording where it disagrees, since it
-# is a second reader of the same container written to stricter rules.
-# 'incremental' is empty unless the streaming decoder disagrees with the
-# one-shot one, which is the whole point of writing it down.
+# A row is (name, expect, note, exercises, size, anim, info, incremental,
+# unique). The four after the size are what one decoder cannot say:
+#   anim         the animation decoder's verdict, empty for a still. dwebp
+#                refuses every animated file before looking at a frame, so
+#                'expect' says nothing about those beyond that.
+#   info         webpinfo's, worth recording where it disagrees since it
+#                reads the same container to stricter rules.
+#   incremental  the streaming decoder's, and only when it differs from
+#                'expect', which is the whole reason to write it down.
+#   unique       probes the case claims to be the only file reaching.
 ANIM, INFO, INCR, UNIQUE = 5, 6, 7, 8
 
 
@@ -184,11 +188,12 @@ emits, one layer of it at a time.
 
 **They are written, not captured.** Each one is a text case in
 [`cases/`](cases) naming bitstream fields, one per line, under the names the
-specification gives them; [`SYNTAX.md`](SYNTAX.md) is the grammar, generated
-from [`src/grammar.py`](src/grammar.py); and an assembler in [`src/`](src)
-turns the case into bytes. Nothing is checked on the way, so a case can say
-what no encoder would -- and the file it produces is readable as the text
-that describes it.
+specification gives them, and an assembler in [`src/`](src) turns the case
+into bytes. Nothing is checked on the way, so a case can say what no encoder
+would -- and the file it produces is readable back as the text that
+describes it. [`HOWTO.md`](HOWTO.md) is how to write one;
+[`SYNTAX.md`](SYNTAX.md) is the reference, generated from
+[`src/grammar.py`](src/grammar.py).
 
 * **%(vp8l)d lossless (VP8L) streams**
   ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
@@ -225,10 +230,12 @@ expected to do with it:
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
 
-An animation carries both verdicts, written `reject, anim_dump ok`. dwebp
-returns UNSUPPORTED_FEATURE for any file claiming animation, before it looks
-at a frame, so the first half of that is the same for every one of them and
-the second half is the one about the file.
+A file read by more than one decoder carries more than one verdict, and
+they do not always agree. An animation reads `reject, anim_dump ok`: dwebp
+returns UNSUPPORTED_FEATURE for anything claiming animation before it looks
+at a frame, so that half says nothing about the file and the second half is
+the one that does. Where `webpinfo` or the incremental decoder disagrees
+with the rest, it is named too, and `check.sh` holds all of them to it.
 
 %(files)s
 %(code)s
@@ -246,18 +253,11 @@ ask git for just that directory:
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
 Run the scripts above from `webp-torture/`.
 
-Every field of a case has a default, so it says only what it is about, and
-a value too big for its field loses its top bits rather than being refused.
-`./src/grammar.py` prints the grammar as JSON, which is what a generator
-should read rather than the prose.
-
-Any one case, or any real encode read back into a case:
+To write one of your own, or read a real encode back into a case,
+[`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
+reference. The short version:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./src/vp8_dis.py some-photo.webp
-    ./src/vp8l_dis.py --check some-lossless.webp
     ./src/webp_dis.py --check some-animation.webp
 
 [`files/`](files) is pure output and is wiped on every rebuild. The only
@@ -492,7 +492,7 @@ def check_links(outdir):
     page is served at all.
     """
     for doc, base in (('README.md', '.'), ('src/README.md', 'src'),
-                      ('SYNTAX.md', '.')):
+                      ('SYNTAX.md', '.'), ('HOWTO.md', '.')):
         with open(os.path.join(outdir, doc)) as f:
             text = f.read()
         for target in re.findall(r'\]\(([^)#][^)]*)\)', text):
@@ -504,6 +504,31 @@ def check_links(outdir):
                 assert any(os.path.exists(os.path.join(path, n))
                            for n in ('index.html', 'README.md')), \
                     '%s links %s/, which has no index' % (doc, target)
+
+
+def check_howto(outdir):
+    """Every worked example in HOWTO.md, assembled.
+
+    A document telling someone how to write a case is worth nothing if its
+    examples do not assemble, and prose is exactly where that rots. The
+    ```case blocks are run rather than read; so are the case files its
+    commands name.
+    """
+    path = os.path.join(outdir, 'HOWTO.md')
+    with open(path) as f:
+        text = f.read()
+    blocks = re.findall(r'(?m)^```case\n(.*?)^```', text, re.S)
+    assert blocks, 'HOWTO.md has no ```case examples left to check'
+    for n, block in enumerate(blocks, 1):
+        try:
+            webp_asm.assemble_text(block)
+        except vp8_asm.AsmError as e:
+            raise AssertionError('HOWTO.md example %d does not assemble: %s'
+                                 % (n, e))
+    for named in set(re.findall(r'cases/[\w-]+\.txt', text)):
+        assert os.path.exists(os.path.join(outdir, named)), \
+            'HOWTO.md names %s, which does not exist' % named
+    return len(blocks)
 
 
 def check_unique(outdir, rows):
@@ -599,6 +624,8 @@ SRC = [
 ]
 
 DATA = [
+    ('HOWTO.md', 'How to write a case, read a real file back into one, and '
+                 'add one here.'),
     ('SYNTAX.md', 'The whole case syntax, generated from `src/grammar.py`.'),
     ('expected.txt', 'Name and expected verdict, one line per file.'),
     ('hashes.txt', "SHA-256 of each decoding file's `-pam` output, so a "
@@ -789,14 +816,10 @@ SRC_README = """# webp-torture: the code
 
 Everything the scripts one directory up are built out of. Nothing here is
 run directly to produce the corpus -- [`../generate.py`](../generate.py)
-does that -- though each assembler doubles as a command that turns one case
-into one `.webp`. Run them from the directory above, where `cases/` is:
-
-    ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./src/vp8_dis.py some-photo.webp
-    ./src/vp8l_dis.py --check some-lossless.webp
+does that -- though each assembler and disassembler doubles as a command of
+its own, run from the directory above where `cases/` is.
+[`../HOWTO.md`](../HOWTO.md) is what to do with them; this is how they fit
+together.
 
 Three layers, and a case only ever touches the top one:
 
@@ -938,6 +961,7 @@ def main():
     write_readme(outdir, rows)
     check_links(outdir)
     check_unique(outdir, rows)
+    print('%d HOWTO.md examples assemble' % check_howto(outdir))
     return rows
 
 

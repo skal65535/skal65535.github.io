@@ -5,11 +5,12 @@ emits, one layer of it at a time.
 
 **They are written, not captured.** Each one is a text case in
 [`cases/`](cases) naming bitstream fields, one per line, under the names the
-specification gives them; [`SYNTAX.md`](SYNTAX.md) is the grammar, generated
-from [`src/grammar.py`](src/grammar.py); and an assembler in [`src/`](src)
-turns the case into bytes. Nothing is checked on the way, so a case can say
-what no encoder would -- and the file it produces is readable as the text
-that describes it.
+specification gives them, and an assembler in [`src/`](src) turns the case
+into bytes. Nothing is checked on the way, so a case can say what no encoder
+would -- and the file it produces is readable back as the text that
+describes it. [`HOWTO.md`](HOWTO.md) is how to write one;
+[`SYNTAX.md`](SYNTAX.md) is the reference, generated from
+[`src/grammar.py`](src/grammar.py).
 
 * **80 lossless (VP8L) streams**
   ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
@@ -46,10 +47,12 @@ expected to do with it:
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
 
-An animation carries both verdicts, written `reject, anim_dump ok`. dwebp
-returns UNSUPPORTED_FEATURE for any file claiming animation, before it looks
-at a frame, so the first half of that is the same for every one of them and
-the second half is the one about the file.
+A file read by more than one decoder carries more than one verdict, and
+they do not always agree. An animation reads `reject, anim_dump ok`: dwebp
+returns UNSUPPORTED_FEATURE for anything claiming animation before it looks
+at a frame, so that half says nothing about the file and the second half is
+the one that does. Where `webpinfo` or the incremental decoder disagrees
+with the rest, it is named too, and `check.sh` holds all of them to it.
 
 ## The bitstreams
 
@@ -128,6 +131,7 @@ describing how they fit together.
 
 | file | what it is |
 | --- | --- |
+| [`HOWTO.md`](HOWTO.md) | How to write a case, read a real file back into one, and add one here. |
 | [`SYNTAX.md`](SYNTAX.md) | The whole case syntax, generated from `src/grammar.py`. |
 | [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
 | [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output, so a silent change in decoded pixels fails too. |
@@ -149,18 +153,11 @@ ask git for just that directory:
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
 Run the scripts above from `webp-torture/`.
 
-Every field of a case has a default, so it says only what it is about, and
-a value too big for its field loses its top bits rather than being refused.
-`./src/grammar.py` prints the grammar as JSON, which is what a generator
-should read rather than the prose.
-
-Any one case, or any real encode read back into a case:
+To write one of your own, or read a real encode back into a case,
+[`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
+reference. The short version:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./src/vp8_dis.py some-photo.webp
-    ./src/vp8l_dis.py --check some-lossless.webp
     ./src/webp_dis.py --check some-animation.webp
 
 [`files/`](files) is pure output and is wiped on every rebuild. The only
