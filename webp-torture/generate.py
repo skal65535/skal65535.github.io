@@ -66,10 +66,10 @@ def wanted(row):
 
 GROUPS = [
     ('lossless-', 'Whole lossless images',
-     'The two ends of the format rather than one corner of it: an image with '
-     'nothing optional in it at all, and one with everything. Between them '
-     'they are what the rest of the lossless files here are a departure '
-     'from.'),
+     'One image with nothing optional in it, and one with all four '
+     'transforms, a colour cache, an entropy image and every kind of pixel '
+     'item. Every other lossless file here sets one field of those two to '
+     'something an encoder would not.'),
     ('simple-', 'Simple codes',
      'The 1-or-2-symbol shorthand a Huffman code can take. Its symbols are '
      'read as raw 8-bit values and are never checked against the alphabet '
@@ -108,26 +108,22 @@ GROUPS = [
      'an odd-sized one even on disk. Everything here is read by '
      'webp_dec.c before the frame is looked at.'),
     ('anim-', 'Animation',
-     'A sequence of frames rather than one image: an ANIM chunk with the '
-     'loop count, then an ANMF per frame carrying its own position, '
-     'duration, disposal and blending, and its own image chunks. None of it '
-     'is reachable through dwebp, which refuses any file claiming animation '
-     'before looking at a frame, so these are checked with anim_dump '
-     'instead -- the demuxer of demux.c, the composition of anim_decode.c, '
-     'and one decode per frame. The verdict quoted for each is that one; '
-     'every file here is still a reject to a still decoder.'),
+     'An ANIM chunk carrying the loop count, then an ANMF per frame with '
+     'its own position, duration, disposal and blending, and its own image '
+     'chunks. anim_dump is what reads these: the demuxer of demux.c, the '
+     'frame composition of anim_decode.c, and one decode per frame.'),
     ('alph-', 'The alpha chunk',
      'ALPH carries the alpha plane beside a lossy frame: a header byte of '
      'four two-bit fields, then the plane itself, either stored as it is or '
      'compressed with the lossless coder in its 8-bit mode. That mode is a '
      'separate path through vp8l_dec.c from the one every VP8L image here '
-     'takes, and an alpha chunk is the only thing that reaches it -- whether '
-     'it sits beside a still frame or inside an animation frame. Each of the '
-     'four filters has a routine of its own in dsp/filters.c, and the same '
-     'stored bytes come out as four different planes, so the pixel hash is '
-     'what tells those apart. A compressed plane is a lossless image stream '
-     'with its header left off, so the alph-plane cases write one from text '
-     'and can break each of the four conditions the 8-bit mode asks for.'),
+     'takes, and an alpha chunk is the only thing that reaches it, beside a '
+     'still frame or inside an animation frame alike. Each of the four '
+     'filters has a routine of its own in dsp/filters.c and turns the same '
+     'stored bytes into a different plane, so the pixel hash is what tells '
+     'those apart. A compressed plane is a lossless stream with its header '
+     'left off: the alph-plane files write one from text, and break each of '
+     'the four conditions the 8-bit mode asks for in turn.'),
     ('lossy-frame-', 'Lossy: frame tag and picture header',
      'The ten uncompressed bytes every lossy frame starts with: the profile, '
      'the visibility and key-frame bits, the length of partition 0, the '
@@ -945,18 +941,60 @@ def build_file_list(index):
     return '## The bitstreams\n\n' + wrap(
         'The whole set lives in **[`files/`](files)**, which lists each one '
         'with its size and expected verdict, and the text they are assembled '
-        'from is in **[`cases/`](cases)**. Every note below links to both.'
+        'from is in **[`cases/`](cases)**. Each row below links to both: '
+        'the line is what the case calls itself, and the case says the rest '
+        '-- which decoder path it reaches and why that is worth a file.'
     ) + '\n' + index
 
 
-def heading(outdir, row):
-    """One file's heading, with a link to the case text when there is one."""
-    name = row[0]
-    src = os.path.join('cases', name + '.txt')
-    out = '### [`%s.webp`](files/%s.webp) -- %s' % (name, name, verdict(row))
-    if os.path.exists(os.path.join(outdir, src)):
-        out += ' -- from [`%s.txt`](%s)' % (name, src)
-    return out + '\n'
+def cell(text):
+    return text.replace('|', '\\|').rstrip('.')
+
+
+def group_table(outdir, group):
+    """One group's files: the bytes, the text they came from, the verdict,
+    and the one line the case calls itself."""
+    out = ['| file | | what it is |', '| --- | --- | --- |']
+    for row in group:
+        name = row[0]
+        link = '[`%s`](files/%s.webp)' % (name, name)
+        if os.path.exists(os.path.join(outdir, 'cases', name + '.txt')):
+            link += ' [txt](cases/%s.txt)' % name
+        out.append('| %s | %s | %s |' % (link, verdict(row), cell(row[2])))
+    return '\n'.join(out) + '\n'
+
+
+def build_feature_index(outdir, rows):
+    """Every decoder path the probes measured, and what reaches it.
+
+    The other way round from everything else here, and the question someone
+    with a decoder actually has: not "what does this file do" but "which
+    file tests this". Generated from coverage.txt, so it is measurement
+    rather than a claim.
+    """
+    path = os.path.join(outdir, 'coverage.txt')
+    assert os.path.exists(path), 'no coverage.txt; run make_coverage.sh'
+    reached = {}
+    for line in open(path):
+        if line.startswith('#') or not line.strip():
+            continue
+        name, _, tags = line.partition(' ')
+        for tag in tags.split():
+            reached.setdefault(tag, []).append(name)
+    out = ['### What reaches what\n']
+    out.append(wrap(
+        'Every decoder path `src/probes.py` measures, and the files that '
+        'reach it -- the question a decoder leaves you with, which the list '
+        'above answers only backwards. Generated from `coverage.txt`.'))
+    out.append('\n| decoder path | files |')
+    out.append('| --- | --- |')
+    for tag in sorted(reached):
+        names = sorted(reached[tag])
+        shown = ', '.join('`%s`' % n for n in names[:6])
+        if len(names) > 6:
+            shown += ' +%d' % (len(names) - 6)
+        out.append('| `%s` | %s |' % (tag, shown))
+    return '\n'.join(out) + '\n'
 
 
 def write_readme(outdir, rows):
@@ -970,24 +1008,22 @@ def write_readme(outdir, rows):
                 break
         else:
             kinds['vp8l'] += 1
-    index = build_index(rows, GROUPS)
-    lines = [README_HEAD % dict(kinds,
-                                cover=build_coverage(kinds),
-                                env=build_env(),
-                                files=build_file_list(index),
-                                code=build_code_list(outdir))]
+    files = [build_file_list(build_index(rows, GROUPS))]
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
         group = [r for r in rows if r[0] not in used and
                  (prefix is None or r[0].startswith(prefix))]
         if not group:
             continue
-        lines.append('## %s\n\n%s' % (title, wrap(blurb)) if blurb
-                     else '## %s\n' % title)
-        for row in group:
-            used.add(row[0])
-            lines.append(heading(outdir, row))
-            lines.append(wrap(row[2]))
-            lines.append(wrap(row[3]))
+        files.append('### %s\n\n%s' % (title, wrap(blurb)) if blurb
+                     else '### %s\n' % title)
+        used.update(r[0] for r in group)
+        files.append(group_table(outdir, group))
+    files.append(build_feature_index(outdir, rows))
+    lines = [README_HEAD % dict(kinds,
+                                cover=build_coverage(kinds),
+                                env=build_env(),
+                                files='\n'.join(files),
+                                code=build_code_list(outdir))]
     total = sum(r[4] for r in rows)
     lines.append('---\n')
     lines.append(wrap(
