@@ -6,8 +6,8 @@
 #   A predictor transform leaves the red, blue and alpha codes non-trivial, so
 #   Is8bOptimizable() says no and the plane is decoded through
 #   DecodeImageData() with ExtractAlphaRows() pulling the green channel out
-#   afterwards. The 21 payload bytes are cwebp -q 60 output; nothing here can
-#   write one yet.
+#   afterwards. The 21 payload bytes are cwebp -q 60 output, kept as the
+#   control that a written plane is shaped like a real one.
 chunks VP8X ALPH VP8
 alpha 1
 alph_compression 1

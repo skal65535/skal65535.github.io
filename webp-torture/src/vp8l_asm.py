@@ -612,12 +612,18 @@ class Assembler:
         bw.put(0, 1)                     # no more transforms
         return xsize
 
-    def finish(self):
-        """The assembled VP8L chunk."""
+    def finish(self, header=True):
+        """The assembled VP8L chunk.
+
+        An alpha plane is the same stream without the five-byte header:
+        VP8LDecodeAlphaHeader() knows the dimensions already and reads
+        straight into DecodeImageStream().
+        """
         img = self.img
         bw = vp8l.BitWriter()
-        vp8l.write_header(bw, img.width, img.height, img.alpha, img.version,
-                          img.magic)
+        if header:
+            vp8l.write_header(bw, img.width, img.height, img.alpha,
+                              img.version, img.magic)
         xsize = self.write_transforms(bw)
         if img.cache_bits is None:
             bw.put(0, 1)

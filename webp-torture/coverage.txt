@@ -10,10 +10,10 @@
 alph-after-image                         coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-compression-invalid                 coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-empty-payload                       coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
-alph-lossless-byte-flipped               build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Could-not-decode-alpha-data. lz77_copy mb_i16 parts_1 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
-alph-lossless-palette                    alpha_8b_data alpha_8b_no_blocks build_single_value codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code mb_i16 palette_2 parts_1 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
-alph-lossless-predictor                  build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code lz77_copy mb_i16 parts_1 pred_first_row pred_mode_2 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
-alph-lossless-truncated                  build_single_value codelen_17 coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Alpha-decoder-initialization-failed. mb_i16 parts_1 simple_1sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-lossless-byte-flipped               build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Could-not-decode-alpha-data. literal_four_channels literal_trivial_code lz77_copy mb_i16 parts_1 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-lossless-palette                    alpha_8b_copy alpha_8b_data alpha_8b_no_blocks build_single_value codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code mb_i16 palette_2 parts_1 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_color_indexing uvmode_0 wht_dc_only ymode_0 
+alph-lossless-predictor                  build_single_value codelen_17 codelen_18 codelen_18_max_run coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code literal_four_channels literal_trivial_code lz77_copy mb_i16 parts_1 pred_first_row pred_mode_2 simple_1sym simple_2sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
+alph-lossless-truncated                  build_single_value codelen_17 coeff_cat4 coeff_v3_4 coeff_v5_6 complex_code error:Alpha-decoder-initialization-failed. literal_trivial_code mb_i16 parts_1 simple_1sym simple_sym_1bit subimage_stream tf_bits_max tf_predictor uvmode_0 wht_dc_only ymode_0 
 alph-no-vp8x                             info:bad-signature reject_signature_magic 
 alph-preprocessing-invalid               coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-raw-filter-gradient                 coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
@@ -26,12 +26,12 @@ alph-raw-short                           coeff_cat4 coeff_v3_4 coeff_v5_6 error:
 alph-reserved-set                        coeff_cat4 coeff_v3_4 coeff_v5_6 error:Alpha-decoder-initialization-failed. mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 alph-without-vp8x-flag                   coeff_cat4 coeff_v3_4 coeff_v5_6 mb_i16 parts_1 uvmode_0 wht_dc_only ymode_0 
 cache-bits-0-invalid                     reject_cache_bits 
-cache-bits-1                             build_single_value cache_bits_min simple_1sym 
-cache-bits-11                            build_single_value cache_bits_max simple_1sym 
+cache-bits-1                             build_single_value cache_bits_min literal_trivial_code simple_1sym 
+cache-bits-11                            build_single_value cache_bits_max literal_trivial_code simple_1sym 
 cache-bits-12-invalid                    reject_cache_bits 
 cache-index-literal                      build_single_value cache_bits_min cache_index codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
 codelen-all-zero-lengths                 build_empty_code build_single_value codelen_18 complex_code num_codes_min simple_1sym 
-codelen-depth-15                         build_depth_15 build_single_value build_two_level codelen_18 codelen_18_max_run complex_code num_codes_max simple_1sym 
+codelen-depth-15                         build_depth_15 build_single_value build_two_level codelen_18 codelen_18_max_run complex_code literal_trivial_arb num_codes_max simple_1sym 
 codelen-incomplete                       build_single_value codelen_18 complex_code reject_incomplete simple_1sym 
 codelen-max-symbol-early-stop            build_single_value complex_code max_symbol_early_stop num_codes_min simple_1sym use_length 
 codelen-max-symbol-too-big               build_single_value complex_code num_codes_min reject_max_symbol_too_big simple_1sym use_length 
@@ -43,8 +43,8 @@ codelen-repeat-past-end                  build_single_value codelen_18 codelen_1
 codelen-repeat16-no-previous             build_single_value codelen_16 codelen_16_default_prev codelen_18 complex_code simple_1sym 
 codelen-repeat17-short-zeros             build_single_value codelen_17 codelen_17_max_run complex_code num_codes_min simple_1sym 
 codelen-repeat18-138-zeros               build_single_value codelen_18 codelen_18_max_run complex_code num_codes_min simple_1sym 
-codelen-single-symbol-complex-form       build_single_value codelen_18 complex_code num_codes_min simple_1sym 
-codelen-two-level-table                  build_single_value build_two_level codelen_18 codelen_18_max_run complex_code simple_1sym 
+codelen-single-symbol-complex-form       build_single_value codelen_18 complex_code literal_trivial_code num_codes_min simple_1sym 
+codelen-two-level-table                  build_single_value build_two_level codelen_18 codelen_18_max_run complex_code literal_trivial_arb simple_1sym 
 container-chunk-header-truncated         
 container-duplicate-image-chunk          coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
 container-metadata-chunks                coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
@@ -64,13 +64,13 @@ container-vp8x-still-flags               coeff_cat3 coeff_cat4 coeff_v2 coeff_v3
 container-vp8x-wrong-size                
 container-vp8x                           coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
 container-zero-size-chunk                coeff_cat3 coeff_cat4 coeff_v2 coeff_v3_4 mb_i16 parts_1 uvmode_0 wht_dc_only wht_empty ymode_0 ymode_2 
-header-alpha-is-used                     alpha_is_used build_single_value simple_1sym 
+header-alpha-is-used                     alpha_is_used build_single_value literal_trivial_code simple_1sym 
 header-magic-wrong                       reject_signature_magic 
-header-max-area-bomb                     build_single_value header_huge_area header_width_16384 simple_1sym 
+header-max-area-bomb                     build_single_value header_huge_area header_width_16384 literal_trivial_code simple_1sym 
 header-max-area-truncated                build_empty_code complex_code header_huge_area header_width_16384 num_codes_min 
 header-version-max                       reject_signature_version 
 header-version-nonzero                   reject_signature_version 
-header-width-16384                       build_single_value header_width_16384 simple_1sym 
+header-width-16384                       build_single_value header_width_16384 literal_trivial_code simple_1sym 
 lossy-1-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_1 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
 lossy-2-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_2 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
 lossy-4-partitions                       bmode_0 bmode_1 bmode_2 bmode_3 bmode_4 bmode_5 bmode_6 bmode_7 bmode_8 bmode_9 coeff_cat3 coeff_cat4 coeff_cat6 coeff_v2 coeff_v3_4 coeff_v5_6 coeff_v7_10 mb_i16 mb_i4x4 parts_4 proba_update proba_zero quant_delta quant_segment_absolute segment_id_0 segment_id_1 segment_id_2 segment_id_3 uvmode_0 uvmode_2 uvmode_3 wht_dc_only wht_full ymode_0 ymode_1 ymode_2 ymode_3 
@@ -160,46 +160,46 @@ lz77-max-length-symbol                   build_single_value codelen_18 codelen_1
 lz77-plane-code-1                        build_single_value codelen_18 codelen_18_max_run complex_code dist_plane_code_1 lz77_copy num_codes_min simple_1sym 
 lz77-plane-code-120                      build_single_value codelen_17 codelen_17_max_run codelen_18 codelen_18_max_run complex_code dist_plane_code_120 lz77_copy num_codes_min simple_1sym 
 lz77-plane-code-clamped-to-1             build_single_value codelen_18 codelen_18_max_run complex_code dist_clamped_to_1 lz77_copy num_codes_min simple_1sym 
-meta-huffman-1001-groups                 build_single_value meta_group_switch meta_groups_over_1000 meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym subimage_stream 
+meta-huffman-1001-groups                 build_single_value literal_trivial_code meta_group_switch meta_groups_over_1000 meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym subimage_stream 
 meta-huffman-groups-truncated            build_empty_code build_single_value complex_code meta_huffman meta_precision_min num_codes_min simple_1sym simple_2sym subimage_stream 
 meta-huffman-per-tile-data               build_single_value meta_group_switch meta_huffman meta_precision_min simple_1sym simple_2sym subimage_stream 
-meta-huffman-precision-max               build_single_value meta_huffman meta_precision_max simple_1sym subimage_stream 
-meta-huffman-precision-min               build_single_value meta_huffman meta_precision_min simple_1sym subimage_stream 
-meta-huffman-sparse-groups               build_single_value meta_group_switch meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym subimage_stream 
-meta-huffman-two-groups                  build_single_value meta_group_switch meta_huffman meta_precision_min simple_1sym simple_2sym subimage_stream 
-predictor-all-16-modes                   build_single_value complex_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_14 pred_mode_15 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-mode-11-select                 build_single_value pred_first_row pred_mode_11 simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-mode-13-clamp-half             build_single_value pred_first_row pred_mode_13 simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-mode-14-undefined              build_single_value pred_first_row pred_mode_14 simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-mode-15-undefined              build_single_value pred_first_row pred_mode_15 simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-single-row                     build_single_value pred_first_row simple_1sym subimage_stream tf_bits_min tf_predictor 
-predictor-tile-bits-min                  build_single_value complex_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
+meta-huffman-precision-max               build_single_value literal_trivial_code meta_huffman meta_precision_max simple_1sym subimage_stream 
+meta-huffman-precision-min               build_single_value literal_trivial_code meta_huffman meta_precision_min simple_1sym subimage_stream 
+meta-huffman-sparse-groups               build_single_value literal_trivial_code meta_group_switch meta_huffman meta_mapping_path meta_precision_min meta_unused_group simple_1sym simple_2sym subimage_stream 
+meta-huffman-two-groups                  build_single_value literal_trivial_code meta_group_switch meta_huffman meta_precision_min simple_1sym simple_2sym subimage_stream 
+predictor-all-16-modes                   build_single_value complex_code literal_trivial_arb literal_trivial_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_14 pred_mode_15 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-mode-11-select                 build_single_value literal_trivial_code pred_first_row pred_mode_11 simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-mode-13-clamp-half             build_single_value literal_trivial_code pred_first_row pred_mode_13 simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-mode-14-undefined              build_single_value literal_trivial_code pred_first_row pred_mode_14 simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-mode-15-undefined              build_single_value literal_trivial_code pred_first_row pred_mode_15 simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-single-row                     build_single_value literal_trivial_code pred_first_row simple_1sym subimage_stream tf_bits_min tf_predictor 
+predictor-tile-bits-min                  build_single_value complex_code literal_trivial_arb literal_trivial_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
 simple-dist-1sym-oob                     build_empty_code build_single_value simple_1sym simple_sym1_oob 
 simple-dist-2sym-both-oob                build_empty_code build_single_value simple_1sym simple_2sym simple_sym1_oob simple_sym2_oob 
-simple-dist-2sym-duplicate               build_single_value simple_1sym simple_2sym 
-simple-dist-2sym-first-oob               build_single_value simple_1sym simple_2sym simple_sym1_oob 
-simple-dist-2sym-second-oob              build_single_value simple_1sym simple_2sym simple_sym2_oob 
-simple-dist-sym-39-last-valid            build_single_value simple_1sym 
+simple-dist-2sym-duplicate               build_single_value literal_trivial_code simple_1sym simple_2sym 
+simple-dist-2sym-first-oob               build_single_value literal_trivial_code simple_1sym simple_2sym simple_sym1_oob 
+simple-dist-2sym-second-oob              build_single_value literal_trivial_code simple_1sym simple_2sym simple_sym2_oob 
+simple-dist-sym-39-last-valid            build_single_value literal_trivial_code simple_1sym 
 simple-dist-sym-40-first-oob             build_empty_code build_single_value simple_1sym simple_sym1_oob 
-simple-green-1bit-symbol                 build_single_value simple_1sym simple_sym_1bit 
+simple-green-1bit-symbol                 build_single_value literal_trivial_code simple_1sym simple_sym_1bit 
 simple-green-2sym-1bit-each              build_single_value simple_1sym simple_2sym 
 subimage-cache-12-invalid                reject_cache_bits subimage_cache subimage_stream tf_bits_min tf_predictor 
-subimage-cache-entropy-image             build_single_value meta_group_switch meta_huffman meta_precision_min simple_1sym simple_2sym subimage_cache subimage_stream 
-subimage-cache-palette-max               build_single_value cache_bits_max palette_2 simple_1sym simple_2sym subimage_cache subimage_stream tf_color_indexing 
-subimage-cache-predictor-min             build_single_value cache_bits_min pred_first_row pred_mode_2 simple_1sym subimage_cache subimage_stream tf_bits_min tf_predictor 
+subimage-cache-entropy-image             build_single_value literal_trivial_code meta_group_switch meta_huffman meta_precision_min simple_1sym simple_2sym subimage_cache subimage_stream 
+subimage-cache-palette-max               build_single_value cache_bits_max literal_trivial_code palette_2 simple_1sym simple_2sym subimage_cache subimage_stream tf_color_indexing 
+subimage-cache-predictor-min             build_single_value cache_bits_min literal_trivial_code pred_first_row pred_mode_2 simple_1sym subimage_cache subimage_stream tf_bits_min tf_predictor 
 subimage-cache-zero-invalid              reject_cache_bits subimage_cache subimage_stream tf_bits_min tf_cross_color 
-subimage-code-complex-form               build_single_value codelen_18 codelen_18_max_run complex_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_14 pred_mode_15 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
+subimage-code-complex-form               build_single_value codelen_18 codelen_18_max_run complex_code literal_trivial_arb literal_trivial_code pred_first_row pred_mode_0 pred_mode_1 pred_mode_10 pred_mode_11 pred_mode_12 pred_mode_13 pred_mode_14 pred_mode_15 pred_mode_2 pred_mode_3 pred_mode_4 pred_mode_5 pred_mode_6 pred_mode_7 pred_mode_8 pred_mode_9 simple_1sym subimage_stream tf_bits_min tf_predictor 
 subimage-code-empty                      build_empty_code codelen_18 codelen_18_max_run complex_code num_codes_min subimage_stream tf_bits_min tf_predictor 
-subimage-code-max-symbol                 build_single_value complex_code max_symbol_early_stop num_codes_min pred_first_row pred_mode_1 simple_1sym subimage_stream tf_bits_min tf_predictor use_length 
+subimage-code-max-symbol                 build_single_value complex_code literal_trivial_code max_symbol_early_stop num_codes_min pred_first_row pred_mode_1 simple_1sym subimage_stream tf_bits_min tf_predictor use_length 
 subimage-code-oversubscribed             codelen_18 codelen_18_max_run complex_code reject_oversubscribed subimage_stream tf_bits_min tf_predictor 
-transform-all-four                       build_single_value palette_2 pred_first_row simple_1sym simple_2sym subimage_stream tf_bits_min tf_color_indexing tf_cross_color tf_predictor tf_subtract_green 
-transform-cross-color-bits-max           build_single_value simple_1sym subimage_stream tf_bits_max tf_cross_color 
-transform-cross-color-multipliers        build_single_value cross_color_multipliers simple_1sym subimage_stream tf_bits_min tf_cross_color 
-transform-palette-1-color                build_single_value palette_1 palette_black_tail simple_1sym subimage_stream tf_color_indexing 
+transform-all-four                       build_single_value literal_trivial_code palette_2 pred_first_row simple_1sym simple_2sym subimage_stream tf_bits_min tf_color_indexing tf_cross_color tf_predictor tf_subtract_green 
+transform-cross-color-bits-max           build_single_value literal_trivial_code simple_1sym subimage_stream tf_bits_max tf_cross_color 
+transform-cross-color-multipliers        build_single_value cross_color_multipliers literal_trivial_code simple_1sym subimage_stream tf_bits_min tf_cross_color 
+transform-palette-1-color                build_single_value literal_trivial_code palette_1 palette_black_tail simple_1sym subimage_stream tf_color_indexing 
 transform-palette-16-colors              build_single_value complex_code palette_16 simple_1sym simple_2sym subimage_stream tf_color_indexing 
-transform-palette-2-colors               build_single_value palette_2 simple_1sym simple_2sym subimage_stream tf_color_indexing 
-transform-palette-256-colors             build_single_value palette_256 simple_1sym simple_2sym subimage_stream tf_color_indexing 
-transform-palette-3-colors               build_single_value complex_code palette_3 palette_black_tail simple_1sym simple_2sym subimage_stream tf_color_indexing 
-transform-palette-index-past-end         build_single_value complex_code palette_3 palette_black_tail simple_1sym simple_2sym subimage_stream tf_color_indexing 
-transform-predictor-bits-max             build_single_value pred_first_row pred_mode_0 simple_1sym subimage_stream tf_bits_max tf_predictor 
+transform-palette-2-colors               build_single_value literal_trivial_code palette_2 simple_1sym simple_2sym subimage_stream tf_color_indexing 
+transform-palette-256-colors             build_single_value literal_trivial_code palette_256 simple_1sym simple_2sym subimage_stream tf_color_indexing 
+transform-palette-3-colors               build_single_value complex_code literal_four_channels literal_trivial_code palette_3 palette_black_tail simple_1sym simple_2sym subimage_stream tf_color_indexing 
+transform-palette-index-past-end         build_single_value complex_code literal_four_channels palette_3 palette_black_tail simple_1sym simple_2sym subimage_stream tf_color_indexing 
+transform-predictor-bits-max             build_single_value literal_trivial_code pred_first_row pred_mode_0 simple_1sym subimage_stream tf_bits_max tf_predictor 
 transform-repeated                       reject_transform_repeated tf_subtract_green 

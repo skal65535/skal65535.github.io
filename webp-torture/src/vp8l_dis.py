@@ -289,7 +289,12 @@ class Image:
             group = self.groups[0] if self.tiles is None else self.groups[
                 vp8l.tile_at(self.tiles, at, self.xsize, self.meta_bits)]
             if group.trivial_code:
+                # No bits are read, but the pixel still has to be written
+                # down: the group a later item belongs to is decided by how
+                # many pixels came before it, so leaving these out would
+                # move every group boundary after them.
                 literal = group.codes[0].decoder.trivial
+                self.items.append(('green', literal))
                 self.pixels.append(self.arb(group) | (literal << 8))
                 at += 1
                 continue

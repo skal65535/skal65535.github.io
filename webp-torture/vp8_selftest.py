@@ -209,8 +209,11 @@ def lossless_round_trip():
     """The lossless cases, the same way round.
 
     A case meant to be refused often cannot be read back at all -- that is
-    what it is for -- so those are counted rather than failed, and the one
-    file that decodes to a gigabyte is left out.
+    what it is for -- so those are counted rather than failed. Left out are
+    the one file that decodes to a gigabyte, and the cases marked
+    '# roundtrip: no', which for a lossless one means it is really a
+    container case: an animation frame and an alpha plane both carry a
+    lossless image, and vp8l_dis.py reads a VP8L chunk, not a file.
     """
     bad = broken = skipped = 0
     done = 0
@@ -220,7 +223,7 @@ def lossless_round_trip():
         if not vp8l_asm.is_lossless(text):
             continue
         head = vp8_asm.parse_header(text, path)
-        if head.get('slow') == 'yes':
+        if head.get('slow') == 'yes' or head['roundtrip'] == 'no':
             skipped += 1
             continue
         done += 1
@@ -239,7 +242,7 @@ def lossless_round_trip():
               % (path, len(got) if got else 'unreadable', len(want)),
               file=sys.stderr)
         bad += 1
-    print('lossless %d cases, %d refused by the reader, %d too big to read'
+    print('lossless %d cases, %d refused by the reader, %d not a bare image'
           % (done, broken, skipped))
     return bad
 

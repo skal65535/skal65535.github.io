@@ -154,7 +154,8 @@ MB_FIELDS = {'segment_id': 'segment', 'mb_skip_coeff': 'skip'}
 
 
 HEADER_KEYS = {'note': True, 'expect': True, 'exercises': True,
-               'roundtrip': False, 'slow': False}   # value is 'required?'
+               'roundtrip': False, 'slow': False,
+               'anim': False, 'info': False}        # value is 'required?'
 
 
 class AsmError(Exception):
@@ -190,6 +191,10 @@ def parse_header(text, what='case'):
     if fields.setdefault('roundtrip', 'yes') not in ('yes', 'no'):
         raise AsmError('%s: roundtrip is %r, not yes or no'
                        % (what, fields['roundtrip']))
+    for key in ('anim', 'info'):
+        if fields.setdefault(key, '') not in ('', 'ok', 'reject'):
+            raise AsmError('%s: %s is %r, not ok or reject'
+                           % (what, key, fields[key]))
     return fields
 
 

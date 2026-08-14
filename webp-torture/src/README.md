@@ -16,7 +16,10 @@ Three layers, and a case only ever touches the top one:
 * **`webp_asm.py`** reads the case, splits the container directives from the
   image ones, and hands the image to whichever assembler owns it: a case
   saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It
-  then wraps the result in RIFF.
+  then wraps the result in RIFF. It also owns the two places the format
+  nests: a `frame` block is an animation frame with an image of its own, and
+  an `alph_plane` block is a compressed alpha plane, which is a lossless
+  image stream with its header left off.
 * **`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into the fields of a
   bitstream. Their docstrings are the format: every keyword, its default and
   what it writes. Nothing is validated or clamped -- a value too big for its

@@ -30,7 +30,12 @@ that describes it.
 * **18 alpha chunks**, where the plane is either stored one byte per
   pixel or compressed with the lossless coder in its 8-bit mode -- a
   different path through the decoder from the one every VP8L file here
-  takes.
+  takes. A compressed plane is a lossless image stream without a header, so
+  `vp8l_asm.py` writes those too.
+* **0 animations** ([`webp_asm.py`](src/webp_asm.py) again): an ANIM
+  chunk and one ANMF per frame, each frame carrying its own image, position,
+  duration, disposal and blending. No still decoder will open one, so these
+  are checked with `anim_dump` instead.
 
 Each note below is its case's own, and says what the reference decoder is
 expected to do with it:
@@ -40,6 +45,11 @@ expected to do with it:
 * **reject** -- must fail cleanly and report a status, with no crash and no
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
+
+An animation carries both verdicts, written `reject, anim_dump ok`. dwebp
+returns UNSUPPORTED_FEATURE for any file claiming animation, before it looks
+at a frame, so the first half of that is the same for every one of them and
+the second half is the one about the file.
 
 ## The bitstreams
 
@@ -82,7 +92,7 @@ it.
 
 | file | what it is |
 | --- | --- |
-| [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels. The one to run. |
+| [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels, through `dwebp` or -- for the animations -- `$ANIM_DUMP` and `$WEBPINFO`. The one to run. |
 | [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
 | [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md`, and an `index.html` for each directory that needs one. |
 | [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
@@ -155,18 +165,35 @@ nothing in this directory can write them, only the encoder can.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
-`dwebp` is on `$PATH`. `make_coverage.sh` and `make_vp8_tables.py` need
-`$LIBWEBP` set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file
-that allocates a gigabyte.
+`dwebp` is on `$PATH`. The animation files need two more: `$ANIM_DUMP` for
+`check.sh` and `make_hashes.sh`, which `asan_sweep.sh` instead looks for
+beside `$ASAN_DWEBP`, and `$WEBPINFO` for `check.sh`. `webpinfo` ships with
+libwebp; `anim_dump` does not, and is built with `cmake --build . --target
+anim_dump`. Without either, `check.sh` carries on and says what it skipped.
+`make_coverage.sh` and `make_vp8_tables.py` need `$LIBWEBP` set to a libwebp
+git checkout. `SKIP_SLOW=1` skips the one file that allocates a gigabyte.
 
 ## How they were verified
 
 Verdicts alone prove little -- a file can be rejected for the wrong reason,
 and several of these were before being corrected. Every file is also run
-against a decoder instrumented with probes on the exact lines the notes
+against decoders instrumented with probes on the exact lines the notes
 name; `coverage.txt` records which paths each one actually reached, and
 `make_coverage.sh` regenerates it from `src/probes.py` in a throwaway
-worktree. The notes are written from that output, not from reading the code.
+worktree, through `dwebp` and -- for the animations, which dwebp cannot
+open -- `anim_dump`. The notes are written from that output, not from
+reading the code. Two were rewritten because of it: an ANMF with no image
+turned out to be dropped rather than refused, and a frame claiming an
+impossible area was being caught by the canvas check one layer up.
+
+The animation files are read a third time, by `webpinfo`, which walks every
+chunk of the container and decodes nothing. Its verdict is recorded beside
+the others and checked with them, so a file the two readers disagree about
+is a checked fact rather than a remark, and its heading says so. The
+disagreements all have one shape -- webpinfo tests something the demuxer
+does not look at: a frame whose ANMF header size disagrees with the image
+inside it, an alpha frame in a file that does not set the alpha flag, an
+ANIM chunk with padding after its two fields.
 
 The source line numbers the notes quote are only meaningful against one
 revision of libwebp: the one stamped at the top of `coverage.txt`.
@@ -187,9 +214,20 @@ What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy
 frame header is written at both ends of its range, every reachable
 (coefficient type, band, context) probability cell is read, and every pair
-of optional tools appears together in some frame. The only probes nothing
-reaches are the magic-byte and version tests inside `ReadImageInfo()`, which
-`VP8LCheckSignature()` has already made by the time they run.
+of optional tools appears together in some frame.
+
+What the probes do *not* reach is worth naming, because all of it turned out
+to be checks that cannot fire. The magic-byte and version tests inside
+`ReadImageInfo()` have already been made by `VP8LCheckSignature()` by the
+time they run. In `demux.c`: a negative loop count, which a 16-bit unsigned
+field cannot produce; a complete frame carrying neither an image nor an
+alpha chunk, which is the one thing that stops a frame being added at all,
+so it can never be found later; and a second frame in a file without the
+animation flag, which cannot be reached because nothing without that flag
+ever numbers a frame past the first. One more, the master-chunk table
+matching nothing, is real but out of reach from here: every tool checks the
+format with `WebPGetInfo()` first, and that refuses such a file before the
+demuxer is called.
 
 **The counts are deliberately not repeated here.** They change with every
 file added, and prose does not: `check.sh`, `vp8_selftest.py` and
@@ -198,20 +236,16 @@ file added, and prose does not: `check.sh`, `vp8_selftest.py` and
 
 ## What is not covered
 
-Animation: there is no real ANIM or ANMF chunk, only the VP8X flag that
-claims one, and nothing here goes near the demux API a sequence of frames
-would need. No inter frames either -- libwebp refuses them outright, so
-there is nothing to pin beyond the one file that checks it does.
+No inter frames -- libwebp refuses them outright, so there is nothing to pin
+beyond the one file that checks it does. Nothing on the encoding side
+either: `WebPAnimEncoder` builds animations and no file here is written to
+be read back by it.
 
-The two compressed alpha planes are cwebp output pasted in, so that path has
-two points rather than a swept range: one reaches the lossless decoder's
-8-bit loop and one misses it. `vp8l_asm.py` could write them now -- an alpha
-plane is a VP8L image whose green channel carries the values -- and then
-they could be malformed like every other lossless case here.
-
-No ordinary lossless image either: all 78 of them are exotic, so
-nothing here is a control. A plain one would go through the same code with
-none of the corners, and `argb` makes it a few lines of text.
+Partial parsing. The demuxer can be asked to accept a file it has not seen
+all of, and a caller that streams one uses that; every tool here hands it
+the whole file, so the only thing these reach is the refusal that follows
+when it is not complete. The same goes for `libwebpmux`'s own reader, which
+is a third implementation of this container that nothing here runs.
 
 What is left inside a lossy key frame is what libwebp does not act on. The
 profile picks the reconstruction and loop filters in RFC 6386 and libwebp
@@ -1014,10 +1048,13 @@ other.
 ALPH carries the alpha plane beside a lossy frame: a header byte of four two-
 bit fields, then the plane itself, either stored as it is or compressed with
 the lossless coder in its 8-bit mode. That mode is a separate path through
-vp8l_dec.c from the one every VP8L file here takes, and these are the only
-files that reach it. Each of the four filters has a routine of its own in
+vp8l_dec.c from the one every VP8L image here takes, and an alpha chunk is the
+only thing that reaches it -- whether it sits beside a still frame or inside an
+animation frame. Each of the four filters has a routine of its own in
 dsp/filters.c, and the same stored bytes come out as four different planes, so
-the pixel hash is what tells those apart.
+the pixel hash is what tells those apart. A compressed plane is a lossless
+image stream with its header left off, so the alph-plane cases write one from
+text and can break each of the four conditions the 8-bit mode asks for.
 
 ### [`alph-after-image.webp`](files/alph-after-image.webp) -- ok -- from [`alph-after-image.txt`](cases/alph-after-image.txt)
 
@@ -1058,9 +1095,9 @@ encode of a two-valued plane.
 The one shape that reaches DecodeAlphaData(): exactly one transform, that
 transform colour-indexing, no colour cache, and the red, blue and alpha codes
 each a single symbol. That is the lossless decoder's 8-bit mode, a different
-loop from the one every VP8L file here takes, and this is the only file in the
-corpus that runs it. Its partner alph-lossless-predictor is the same feature
-failing the same test.
+loop from the one every VP8L file here takes. This one is real encoder output,
+which is what it is for: the alph-plane-* cases reach the same loop from a
+written case, and can be made to miss it one condition at a time.
 
 ### [`alph-lossless-predictor.webp`](files/alph-lossless-predictor.webp) -- ok -- from [`alph-lossless-predictor.txt`](cases/alph-lossless-predictor.txt)
 
@@ -1071,7 +1108,8 @@ Compression method 1 hands the payload to the lossless decoder. A predictor
 transform leaves the red, blue and alpha codes non-trivial, so
 Is8bOptimizable() says no and the plane is decoded through DecodeImageData()
 with ExtractAlphaRows() pulling the green channel out afterwards. The 21
-payload bytes are cwebp -q 60 output; nothing here can write one yet.
+payload bytes are cwebp -q 60 output, kept as the control that a written plane
+is shaped like a real one.
 
 ### [`alph-lossless-truncated.webp`](files/alph-lossless-truncated.webp) -- reject -- from [`alph-lossless-truncated.txt`](cases/alph-lossless-truncated.txt)
 

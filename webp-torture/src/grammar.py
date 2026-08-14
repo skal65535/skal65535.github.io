@@ -254,7 +254,33 @@ CONTAINER = {
                  'that many bytes of uncompressed alpha plane'),
     'alph_data': (1, [HEX], 'container',
                   'the bytes after the ALPH header byte, spelled out'),
+    'alph_plane': (0, [], 'container',
+                   'opens a block: the ALPH payload as a lossless image '
+                   'stream, with no signature of its own'),
 }
+
+# The animation chunks, and the frames they hold.
+ANIMATION = {
+    'frame': (0, [], 'animation',
+              'opens a block: one ANMF chunk, with its own image and its own '
+              'chunk list'),
+    'loop_count': (1, [uint(16)], 'animation', '0 means forever'),
+    'background_color': (1, [uint(32)], 'animation',
+                         'ARGB; read back out again and never drawn'),
+    'frame_x': (1, [uint(24)], 'animation',
+                'the offset field: the pixel offset is twice it'),
+    'frame_y': (1, [uint(24)], 'animation', ''),
+    'frame_width_minus_one': (1, [uint(24)], 'animation',
+                              "default is the frame's own image"),
+    'frame_height_minus_one': (1, [uint(24)], 'animation', ''),
+    'frame_duration': (1, [uint(24)], 'animation', 'milliseconds'),
+    'disposal_method': (1, [uint(1)], 'animation',
+                        "1 clears the frame's area to the background"),
+    'blending_method': (1, [uint(1)], 'animation', "1 is 'do not blend'"),
+    'frame_reserved': (1, [uint(6)], 'animation',
+                       'the six bits above those two'),
+}
+CONTAINER.update(ANIMATION)
 for _name in webp_asm.FLAGS:
     CONTAINER[_name] = (1, [uint(1)], 'container', 'a VP8X feature flag')
 for _name in webp_asm.ALPH_FIELDS:
@@ -318,7 +344,8 @@ def build():
 
 # Which module's docstring is the reference for a keyword of that scope.
 OWNER = {'frame': vp8_asm, 'macroblock': vp8_asm, 'frame, image': vp8l_asm,
-         'image': vp8l_asm, 'group': vp8l_asm, 'container': webp_asm}
+         'image': vp8l_asm, 'group': vp8l_asm, 'container': webp_asm,
+         'animation': webp_asm}
 
 
 def check():
@@ -327,6 +354,7 @@ def check():
     tool's own reference."""
     known = set(vp8_asm.FRAME_FIELDS) | set(vp8_asm.QUANT_DELTAS) | \
         set(vp8_asm.MB_FIELDS) | set(webp_asm.DIRECTIVES) | \
+        set(webp_asm.BLOCKS) | \
         set(vp8l_asm.NUM_FIELDS) | set(vp8l_asm.LIST_FIELDS)
     for cls in (vp8_asm.Assembler, vp8l_asm.Assembler):
         known |= {n[3:] for n in dir(cls) if n.startswith('do_')}

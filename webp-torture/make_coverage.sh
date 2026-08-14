@@ -4,8 +4,10 @@
 # Use of this source code is governed by a BSD-style license
 # that can be found in the COPYING file in the root of the source
 # tree.
-# Regenerates coverage.txt: builds an instrumented dwebp in a throwaway git
-# worktree, runs every file through it, and records the probes each one hits.
+# Regenerates coverage.txt: builds an instrumented dwebp and anim_dump in a
+# throwaway git worktree, runs every file through them, and records the probes
+# each one hits. dwebp does not link the demuxer, so the animation files are
+# run through anim_dump as well and the two sets of probes are merged.
 # The source tree is never modified.
 set -e
 if [ -z "$LIBWEBP" ] || [ ! -d "$LIBWEBP/.git" ]; then
@@ -21,7 +23,8 @@ trap cleanup EXIT
 
 python3 "$HERE/src/probes.py" "$WT"
 cmake -S "$WT" -B "$WT/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
-make -C "$WT/build" -j8 dwebp >/dev/null
+make -C "$WT/build" -j8 dwebp anim_dump >/dev/null
+DUMP=$(mktemp -d)
 
 # the notes point at lines in this same checkout
 LIBWEBP="$LIBWEBP" python3 "$HERE/src/check_refs.py" || \
@@ -40,8 +43,16 @@ REV=$(git -C "$LIBWEBP" rev-parse --short HEAD)
   echo
   for f in "$HERE"/files/*.webp; do
     n=$(basename "$f" .webp)
-    tags=$("$WT/build/dwebp" -quiet "$f" -o /dev/null 2>&1 |
-             grep '^PROBE:' | sed 's/PROBE://' | sort -u | tr '\n' ' ')
+    # most of the corpus is meant to be refused, so a non-zero exit here is
+    # the normal case rather than a failure
+    out=$("$WT/build/dwebp" -quiet "$f" -o /dev/null 2>&1 || true)
+    if awk -F'|' -v n="$n" '$1==n && $4!=""{found=1} END{exit !found}' \
+         "$HERE/expected.txt"; then
+      out="$out
+$("$WT/build/anim_dump" -folder "$DUMP" -pam "$f" 2>&1 || true)"
+    fi
+    tags=$(echo "$out" | grep '^PROBE:' | sed 's/PROBE://' | sort -u |
+             tr '\n' ' ')
     printf "%-40s %s\n" "$n" "$tags"
   done
 } > "$HERE/coverage.txt"

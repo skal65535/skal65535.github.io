@@ -20,7 +20,12 @@ import sys
 
 MACROS = ('#include <stdio.h>\n'
           '#define PROBE(t) fprintf(stderr, "PROBE:%s\\n", t)\n'
-          '#define PROBE1(f, v) fprintf(stderr, "PROBE:" f "\\n", v)\n')
+          '#define PROBE1(f, v) fprintf(stderr, "PROBE:" f "\\n", v)\n'
+          # For a probe on a per-pixel path: the output is collected into one
+          # shell variable, and the file that decodes to a gigabyte would put
+          # 268 million lines in it.
+          '#define PROBE_ONCE(t) do { static int probed_;'
+          ' if (!probed_) { probed_ = 1; PROBE(t); } } while (0)\n')
 
 VP8L = [
     # simple codes
@@ -174,10 +179,36 @@ VP8L = [
       if (htree_group->is_trivial_literal) {"""),
     # The 8-bit path, which only an ALPH chunk with a compressed plane
     # reaches: every VP8L file in the corpus goes through DecodeImageData.
+    # Which of the three literal shapes a pixel takes: the whole ARGB from
+    # the group with no bits read at all, the green symbol over a fixed
+    # arb, or all four channels read one after another.
+    ("""    if (htree_group->is_trivial_code) {
+      *src = htree_group->literal_arb;""",
+     """    if (htree_group->is_trivial_code) {
+      PROBE_ONCE("literal_trivial_code");
+      *src = htree_group->literal_arb;"""),
+    ("""      if (htree_group->is_trivial_literal) {
+        if (VP8LIsEndOfStream(br)) break;""",
+     """      if (htree_group->is_trivial_literal) {
+        PROBE_ONCE("literal_trivial_arb");
+        if (VP8LIsEndOfStream(br)) break;"""),
+    ("""        int red, blue, alpha;
+        red = ReadSymbol(htree_group->htrees[RED], br);""",
+     """        int red, blue, alpha;
+        PROBE_ONCE("literal_four_channels");
+        red = ReadSymbol(htree_group->htrees[RED], br);"""),
     ("""  assert(Is8bOptimizable(hdr));""",
      """  assert(Is8bOptimizable(hdr));
   PROBE("alpha_8b_data");
-  if (mask == ~0) PROBE("alpha_8b_no_blocks");"""),
+  if (mask == ~0) PROBE("alpha_8b_no_blocks"); else PROBE("alpha_8b_blocks");"""),
+    ("""          CopyBlock8b(src, dist, length);
+        } else {
+          ok = 0;""",
+     """          PROBE("alpha_8b_copy");
+          CopyBlock8b(src, dist, length);
+        } else {
+          PROBE("alpha_8b_copy_oob");
+          ok = 0;"""),
     ("""  if (plane_code > CODE_TO_PLANE_CODES) {
     return plane_code - CODE_TO_PLANE_CODES;""",
      """  if (plane_code > CODE_TO_PLANE_CODES) {
@@ -408,9 +439,196 @@ DSP = [
   if (y_start == 0) {  // First Row follows the L (mode=1) mode."""),
 ]
 
+# The demuxer, which dwebp does not link at all: every probe below is
+# reachable only through anim_dump, and only for a file with an animation
+# column in expected.txt.
+DEMUX = [
+    # a frame's own chunk list
+    ("""      case MKFOURCC('A', 'L', 'P', 'H'):
+        if (alpha_chunks == 0) {""",
+     """      case MKFOURCC('A', 'L', 'P', 'H'):
+        PROBE("demux_frame_alph");
+        if (alpha_chunks == 0) {"""),
+    ("""        if (alpha_chunks > 0) return PARSE_ERROR;  // VP8L has its own alpha""",
+     """        if (alpha_chunks > 0) {
+          PROBE("demux_vp8l_with_alph");
+          return PARSE_ERROR;  // VP8L has its own alpha
+        }"""),
+    ("""      Done:
+      default:""",
+     """      Done:
+        PROBE("demux_frame_chunk_done");
+      default:"""),
+    # the ANMF header
+    ("""  if (actual_size < min_size) return PARSE_ERROR;""",
+     """  if (actual_size < min_size) {
+    PROBE("demux_frame_too_small");
+    return PARSE_ERROR;
+  }"""),
+    ("""  if (frame->width * (uint64_t)frame->height >= MAX_IMAGE_AREA) {""",
+     """  if (frame->width * (uint64_t)frame->height >= MAX_IMAGE_AREA) {
+    PROBE("demux_frame_area_overflow");"""),
+    ("""    if (status != PARSE_ERROR &&
+        mem->start - start_offset > anmf_payload_size) {
+      status = PARSE_ERROR;
+    }""",
+     """    if (status != PARSE_ERROR &&
+        mem->start - start_offset > anmf_payload_size) {
+      PROBE("demux_frame_overran_payload");
+      status = PARSE_ERROR;
+    }"""),
+    ("""  if (status != PARSE_ERROR && is_animation && frame->frame_num > 0) {""",
+     """  if (status != PARSE_ERROR && is_animation && frame->frame_num == 0) {
+    PROBE("demux_frame_dropped");
+  }
+  if (status != PARSE_ERROR && is_animation && frame->frame_num > 0) {
+    PROBE("demux_frame_added");"""),
+    # the top-level walk
+    ("""      case MKFOURCC('V', 'P', '8', 'X'): {
+        return PARSE_ERROR;
+      }""",
+     """      case MKFOURCC('V', 'P', '8', 'X'): {
+        PROBE("demux_second_vp8x");
+        return PARSE_ERROR;
+      }"""),
+    ("""        if (anim_chunks > 0 || is_animation) return PARSE_ERROR;""",
+     """        if (anim_chunks > 0 || is_animation) {
+          PROBE("demux_image_in_animation");
+          return PARSE_ERROR;
+        }"""),
+    ("""        if (chunk_size_padded < ANIM_CHUNK_SIZE) return PARSE_ERROR;""",
+     """        if (chunk_size_padded < ANIM_CHUNK_SIZE) {
+          PROBE("demux_anim_too_small");
+          return PARSE_ERROR;
+        }
+        if (chunk_size_padded > ANIM_CHUNK_SIZE) PROBE("demux_anim_padded");"""),
+    ("""        } else {
+          store_chunk = 0;
+          goto Skip;
+        }""",
+     """        } else {
+          PROBE("demux_anim_duplicate");
+          store_chunk = 0;
+          goto Skip;
+        }"""),
+    ("""        if (anim_chunks == 0) return PARSE_ERROR;  // 'ANIM' precedes frames.""",
+     """        if (anim_chunks == 0) {
+          PROBE("demux_frame_before_anim");
+          return PARSE_ERROR;  // 'ANIM' precedes frames.
+        }"""),
+    ("""      Skip:
+      default: {""",
+     """      Skip:
+        if (!store_chunk) PROBE("demux_chunk_flagless");
+      default: {"""),
+    # validation, once the whole file has been walked
+    ("""  if (dmux->loop_count < 0) return 0;""",
+     """  if (dmux->loop_count < 0) { PROBE("demux_loop_negative"); return 0; }"""),
+    ("""  if (dmux->state == WEBP_DEMUX_DONE && dmux->frames == NULL) return 0;""",
+     """  if (dmux->state == WEBP_DEMUX_DONE && dmux->frames == NULL) {
+    PROBE("demux_no_frames");
+    return 0;
+  }"""),
+    ("""      if (!is_animation && f->frame_num > 1) return 0;""",
+     """      if (!is_animation && f->frame_num > 1) {
+        PROBE("demux_frames_without_flag");
+        return 0;
+      }"""),
+    ("""        if (alpha->size == 0 && image->size == 0) return 0;""",
+     """        if (alpha->size == 0 && image->size == 0) {
+          PROBE("demux_frame_empty");
+          return 0;
+        }"""),
+    ("""        if (alpha->size > 0 && alpha->offset > image->offset) {
+          return 0;
+        }""",
+     """        if (alpha->size > 0 && alpha->offset > image->offset) {
+          PROBE("demux_alph_after_image");
+          return 0;
+        }"""),
+    ("""    if (frame->width + frame->x_offset > canvas_width) return 0;
+    if (frame->height + frame->y_offset > canvas_height) return 0;""",
+     """    PROBE("demux_bounds_inexact");
+    if (frame->width + frame->x_offset > canvas_width) {
+      PROBE("demux_frame_past_canvas");
+      return 0;
+    }
+    if (frame->height + frame->y_offset > canvas_height) {
+      PROBE("demux_frame_past_canvas");
+      return 0;
+    }"""),
+    ("""  if (!allow_partial && partial) return NULL;""",
+     """  if (!allow_partial && partial) { PROBE("demux_partial"); return NULL; }"""),
+    ("""  if (state != NULL) *state = dmux->state;""",
+     """  if (status == PARSE_ERROR && dmux->state == WEBP_DEMUX_PARSING_HEADER) {
+    PROBE("demux_no_master_chunk");
+  }
+  if (state != NULL) *state = dmux->state;"""),
+]
+
+# Frame composition: what the demuxer hands over is one image per frame, and
+# this is everything that turns those into a canvas.
+ANIM = [
+    ("""  dec->blend_func = (mode == MODE_RGBA || mode == MODE_BGRA)""",
+     """  PROBE((mode == MODE_RGBA || mode == MODE_BGRA) ? "anim_blend_nonpremult"
+                                                 : "anim_blend_premult");
+  dec->blend_func = (mode == MODE_RGBA || mode == MODE_BGRA)"""),
+    ("""  if (curr->frame_num == 1) {
+    return 1;
+  } else if ((!curr->has_alpha || curr->blend_method == WEBP_MUX_NO_BLEND) &&""",
+     """  if (curr->frame_num == 1) {
+    PROBE("anim_key_first_frame");
+    return 1;
+  } else if ((!curr->has_alpha || curr->blend_method == WEBP_MUX_NO_BLEND) &&"""),
+    ("""                         canvas_height)) {
+    return 1;
+  } else {""",
+     """                         canvas_height)) {
+    PROBE("anim_key_opaque_full_frame");
+    return 1;
+  } else {
+    PROBE("anim_key_from_prev_dispose");"""),
+    ("""  if (is_key_frame) {
+    if (!ZeroFillCanvas(dec->curr_frame, width, height)) {""",
+     """  PROBE(is_key_frame ? "anim_key_frame" : "anim_inter_frame");
+  if (is_key_frame) {
+    if (!ZeroFillCanvas(dec->curr_frame, width, height)) {"""),
+    ("""    if (dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_NONE) {
+      int y;""",
+     """    if (dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_NONE) {
+      int y;
+      PROBE("anim_blend_whole_rows");"""),
+    ("""      assert(dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_BACKGROUND);""",
+     """      assert(dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_BACKGROUND);
+      PROBE("anim_blend_around_prev");"""),
+    ("""    *left1 = src->x_offset;
+    *width1 = src->width;
+    return;""",
+     """    PROBE("anim_range_disjoint");
+    *left1 = src->x_offset;
+    *width1 = src->width;
+    return;"""),
+    ("""  if (src->x_offset < dst->x_offset) {
+    *left1 = src->x_offset;""",
+     """  if (src->x_offset < dst->x_offset) {
+    PROBE("anim_range_left");
+    *left1 = src->x_offset;"""),
+    ("""  if (src_max_x > dst_max_x) {
+    *left2 = dst_max_x;""",
+     """  if (src_max_x > dst_max_x) {
+    PROBE("anim_range_right");
+    *left2 = dst_max_x;"""),
+    ("""  if (dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_BACKGROUND) {
+    ZeroFillFrameRect(""",
+     """  if (dec->prev_iter.dispose_method == WEBP_MUX_DISPOSE_BACKGROUND) {
+    PROBE("anim_dispose_background");
+    ZeroFillFrameRect("""),
+]
+
 FILES = [('src/dec/vp8l_dec.c', VP8L), ('src/utils/huffman_utils.c', HUFFMAN),
          ('src/dec/vp8_dec.c', VP8), ('src/dec/tree_dec.c', TREE),
-         ('src/dec/quant_dec.c', QUANT), ('src/dsp/lossless.c', DSP)]
+         ('src/dec/quant_dec.c', QUANT), ('src/dsp/lossless.c', DSP),
+         ('src/demux/demux.c', DEMUX), ('src/demux/anim_decode.c', ANIM)]
 
 
 def main():

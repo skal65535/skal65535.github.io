@@ -22,13 +22,18 @@ the point. The handful of things the assemblers do refuse are the ones they
 could not write at all -- a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.
 
-The header keys are `exercises`, `expect`, `note`, `roundtrip`, `slow`. `expect` is `ok` or `reject`; `slow` marks
+The header keys are `anim`, `exercises`, `expect`, `info`, `note`, `roundtrip`, `slow`. `expect` is `ok` or `reject`; `slow` marks
 the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by `src/vp8_dis.py`.
+be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
+animation decoder, for the files a still one refuses on sight; `info` is
+webpinfo's, which is a second reader of the container and not always of the
+same opinion.
 
 Which assembler owns a case follows from its keywords: a case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container
-keywords may be added to either.
+keywords may be added to either. Two keywords open a block -- `frame` and
+`alph_plane` -- and everything after one belongs to it until the next block
+or the end of the case; that is the only nesting there is.
 
 A value is written as a plain number -- `12`, `0x0c`, `0b1100` all work --
 except where the table says otherwise. `-` in place of a number means the
@@ -141,13 +146,16 @@ holds five codes: green, red, blue, alpha and dist.
 ## The RIFF container (RFC 9649)
 
 A case that says nothing here gets a plain `RIFF....WEBP` around its one image
-chunk. A fourcc is padded to four characters, so `VP8` means `'VP8 '`.
+chunk. A fourcc is padded to four characters, so `VP8` means `'VP8 '`. A
+payload spelled out with `payload` replaces whatever this would otherwise have
+built for that chunk.
 
 | keyword | values | range | what it is |
 | --- | --- | --- | --- |
 | `alph_compression` | 1 | `0`..`3` | an ALPH header field |
 | `alph_data` | 1 | hex digits | the bytes after the ALPH header byte, spelled out |
 | `alph_filtering` | 1 | `0`..`3` | an ALPH header field |
+| `alph_plane` | 0 | -- | opens a block: the ALPH payload as a lossless image stream, with no signature of its own |
 | `alph_preprocessing` | 1 | `0`..`3` | an ALPH header field |
 | `alph_raw` | 1 | `0`..`4294967295` | that many bytes of uncompressed alpha plane |
 | `alph_reserved` | 1 | `0`..`3` | an ALPH header field |
@@ -164,6 +172,28 @@ chunk. A fourcc is padded to four characters, so `VP8` means `'VP8 '`.
 | `trailing` | 1 | hex digits | bytes after the last chunk |
 | `vp8x_reserved` | 1 | `0`..`16777215` | the two reserved bits and the reserved byte, raw |
 | `xmp_metadata` | 1 | `0`..`1` | a VP8X feature flag |
+
+## Animation (ANIM and ANMF)
+
+`frame` opens a block, and everything after it belongs to that frame until the
+next block or the end of the case: its ANMF header fields, its chunk list, and
+the image it carries. A file with frames in it defaults to `VP8X ANIM ANMF...`
+with the animation flag set and a canvas the frames fit in, so a case says only
+what it is changing.
+
+| keyword | values | range | what it is |
+| --- | --- | --- | --- |
+| `background_color` | 1 | `0`..`4294967295` | ARGB; read back out again and never drawn |
+| `blending_method` | 1 | `0`..`1` | 1 is 'do not blend' |
+| `disposal_method` | 1 | `0`..`1` | 1 clears the frame's area to the background |
+| `frame` | 0 | -- | opens a block: one ANMF chunk, with its own image and its own chunk list |
+| `frame_duration` | 1 | `0`..`16777215` | milliseconds |
+| `frame_height_minus_one` | 1 | `0`..`16777215` |  |
+| `frame_reserved` | 1 | `0`..`63` | the six bits above those two |
+| `frame_width_minus_one` | 1 | `0`..`16777215` | default is the frame's own image |
+| `frame_x` | 1 | `0`..`16777215` | the offset field: the pixel offset is twice it |
+| `frame_y` | 1 | `0`..`16777215` |  |
+| `loop_count` | 1 | `0`..`65535` | 0 means forever |
 
 ## The forms a Huffman code takes
 

@@ -28,8 +28,40 @@ import webp_asm
 
 SLOW = set()      # the cases that allocate enough memory to be worth skipping
 
+# A row is (name, expect, note, exercises, size, anim, info). 'anim' is the
+# verdict of the animation decoder, and is empty for a file that is not one:
+# dwebp refuses every animated file before looking at a frame, so 'expect'
+# says nothing about those beyond that. 'info' is webpinfo's verdict, which
+# is worth recording where it disagrees, since it is a second reader of the
+# same container written to stricter rules.
+ANIM, INFO = 5, 6
+
+
+def verdict(row):
+    """What a decoder must do with one file, in the words of the table.
+
+    webpinfo is named only when it disagrees: it walks the container without
+    decoding, so on its own it says less than the other two.
+    """
+    if not row[ANIM]:
+        return row[1]
+    out = '%s, anim_dump %s' % (row[1], row[ANIM])
+    if row[INFO] and row[INFO] != row[ANIM]:
+        out += ', webpinfo %s' % row[INFO]
+    return out
+
+
+def wanted(row):
+    """The verdict that is about the file rather than about dwebp."""
+    return row[ANIM] or row[1]
+
 
 GROUPS = [
+    ('lossless-', 'Whole lossless images',
+     'The two ends of the format rather than one corner of it: an image with '
+     'nothing optional in it at all, and one with everything. Between them '
+     'they are what the rest of the lossless files here are a departure '
+     'from.'),
     ('simple-', 'Simple codes',
      'The 1-or-2-symbol shorthand a Huffman code can take. Its symbols are '
      'read as raw 8-bit values and are never checked against the alphabet '
@@ -67,15 +99,27 @@ GROUPS = [
      'over by their declared length alone, and the padding rule that makes '
      'an odd-sized one even on disk. Everything here is read by '
      'webp_dec.c before the frame is looked at.'),
+    ('anim-', 'Animation',
+     'A sequence of frames rather than one image: an ANIM chunk carrying the '
+     'loop count, then an ANMF per frame carrying its own position, duration, '
+     'disposal and blending, and its own image chunks. None of it is reachable '
+     'through dwebp, which refuses any file claiming animation before looking '
+     'at a frame, so these are checked with anim_dump instead -- the demuxer '
+     'of demux.c, the composition of anim_decode.c, and one decode per frame. '
+     'The verdict quoted for each is that one; every file here is still a '
+     'reject to a still decoder.'),
     ('alph-', 'The alpha chunk',
      'ALPH carries the alpha plane beside a lossy frame: a header byte of '
      'four two-bit fields, then the plane itself, either stored as it is or '
      'compressed with the lossless coder in its 8-bit mode. That mode is a '
-     'separate path through vp8l_dec.c from the one every VP8L file here '
-     'takes, and these are the only files that reach it. Each of the four '
-     'filters has a routine of its own in dsp/filters.c, and the same stored '
-     'bytes come out as four different planes, so the pixel hash is what '
-     'tells those apart.'),
+     'separate path through vp8l_dec.c from the one every VP8L image here '
+     'takes, and an alpha chunk is the only thing that reaches it -- whether '
+     'it sits beside a still frame or inside an animation frame. Each of the '
+     'four filters has a routine of its own in dsp/filters.c, and the same '
+     'stored bytes come out as four different planes, so the pixel hash is '
+     'what tells those apart. A compressed plane is a lossless image stream '
+     'with its header left off, so the alph-plane cases write one from text '
+     'and can break each of the four conditions the 8-bit mode asks for.'),
     ('lossy-frame-', 'Lossy: frame tag and picture header',
      'The ten uncompressed bytes every lossy frame starts with: the profile, '
      'the visibility and key-frame bits, the length of partition 0, the '
@@ -161,7 +205,12 @@ that describes it.
 * **%(alpha)d alpha chunks**, where the plane is either stored one byte per
   pixel or compressed with the lossless coder in its 8-bit mode -- a
   different path through the decoder from the one every VP8L file here
-  takes.
+  takes. A compressed plane is a lossless image stream without a header, so
+  `vp8l_asm.py` writes those too.
+* **%(anim)d animations** ([`webp_asm.py`](src/webp_asm.py) again): an ANIM
+  chunk and one ANMF per frame, each frame carrying its own image, position,
+  duration, disposal and blending. No still decoder will open one, so these
+  are checked with `anim_dump` instead.
 
 Each note below is its case's own, and says what the reference decoder is
 expected to do with it:
@@ -171,6 +220,11 @@ expected to do with it:
 * **reject** -- must fail cleanly and report a status, with no crash and no
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
+
+An animation carries both verdicts, written `reject, anim_dump ok`. dwebp
+returns UNSUPPORTED_FEATURE for any file claiming animation, before it looks
+at a frame, so the first half of that is the same for every one of them and
+the second half is the one about the file.
 
 %(files)s
 %(code)s
@@ -207,18 +261,35 @@ nothing in this directory can write them, only the encoder can.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
-`dwebp` is on `$PATH`. `make_coverage.sh` and `make_vp8_tables.py` need
-`$LIBWEBP` set to a libwebp git checkout. `SKIP_SLOW=1` skips the one file
-that allocates a gigabyte.
+`dwebp` is on `$PATH`. The animation files need two more: `$ANIM_DUMP` for
+`check.sh` and `make_hashes.sh`, which `asan_sweep.sh` instead looks for
+beside `$ASAN_DWEBP`, and `$WEBPINFO` for `check.sh`. `webpinfo` ships with
+libwebp; `anim_dump` does not, and is built with `cmake --build . --target
+anim_dump`. Without either, `check.sh` carries on and says what it skipped.
+`make_coverage.sh` and `make_vp8_tables.py` need `$LIBWEBP` set to a libwebp
+git checkout. `SKIP_SLOW=1` skips the one file that allocates a gigabyte.
 
 ## How they were verified
 
 Verdicts alone prove little -- a file can be rejected for the wrong reason,
 and several of these were before being corrected. Every file is also run
-against a decoder instrumented with probes on the exact lines the notes
+against decoders instrumented with probes on the exact lines the notes
 name; `coverage.txt` records which paths each one actually reached, and
 `make_coverage.sh` regenerates it from `src/probes.py` in a throwaway
-worktree. The notes are written from that output, not from reading the code.
+worktree, through `dwebp` and -- for the animations, which dwebp cannot
+open -- `anim_dump`. The notes are written from that output, not from
+reading the code. Two were rewritten because of it: an ANMF with no image
+turned out to be dropped rather than refused, and a frame claiming an
+impossible area was being caught by the canvas check one layer up.
+
+The animation files are read a third time, by `webpinfo`, which walks every
+chunk of the container and decodes nothing. Its verdict is recorded beside
+the others and checked with them, so a file the two readers disagree about
+is a checked fact rather than a remark, and its heading says so. The
+disagreements all have one shape -- webpinfo tests something the demuxer
+does not look at: a frame whose ANMF header size disagrees with the image
+inside it, an alpha frame in a file that does not set the alpha flag, an
+ANIM chunk with padding after its two fields.
 
 The source line numbers the notes quote are only meaningful against one
 revision of libwebp: the one stamped at the top of `coverage.txt`.
@@ -239,9 +310,20 @@ What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy
 frame header is written at both ends of its range, every reachable
 (coefficient type, band, context) probability cell is read, and every pair
-of optional tools appears together in some frame. The only probes nothing
-reaches are the magic-byte and version tests inside `ReadImageInfo()`, which
-`VP8LCheckSignature()` has already made by the time they run.
+of optional tools appears together in some frame.
+
+What the probes do *not* reach is worth naming, because all of it turned out
+to be checks that cannot fire. The magic-byte and version tests inside
+`ReadImageInfo()` have already been made by `VP8LCheckSignature()` by the
+time they run. In `demux.c`: a negative loop count, which a 16-bit unsigned
+field cannot produce; a complete frame carrying neither an image nor an
+alpha chunk, which is the one thing that stops a frame being added at all,
+so it can never be found later; and a second frame in a file without the
+animation flag, which cannot be reached because nothing without that flag
+ever numbers a frame past the first. One more, the master-chunk table
+matching nothing, is real but out of reach from here: every tool checks the
+format with `WebPGetInfo()` first, and that refuses such a file before the
+demuxer is called.
 
 **The counts are deliberately not repeated here.** They change with every
 file added, and prose does not: `check.sh`, `vp8_selftest.py` and
@@ -250,20 +332,16 @@ file added, and prose does not: `check.sh`, `vp8_selftest.py` and
 
 ## What is not covered
 
-Animation: there is no real ANIM or ANMF chunk, only the VP8X flag that
-claims one, and nothing here goes near the demux API a sequence of frames
-would need. No inter frames either -- libwebp refuses them outright, so
-there is nothing to pin beyond the one file that checks it does.
+No inter frames -- libwebp refuses them outright, so there is nothing to pin
+beyond the one file that checks it does. Nothing on the encoding side
+either: `WebPAnimEncoder` builds animations and no file here is written to
+be read back by it.
 
-The two compressed alpha planes are cwebp output pasted in, so that path has
-two points rather than a swept range: one reaches the lossless decoder's
-8-bit loop and one misses it. `vp8l_asm.py` could write them now -- an alpha
-plane is a VP8L image whose green channel carries the values -- and then
-they could be malformed like every other lossless case here.
-
-No ordinary lossless image either: all %(vp8l)d of them are exotic, so
-nothing here is a control. A plain one would go through the same code with
-none of the corners, and `argb` makes it a few lines of text.
+Partial parsing. The demuxer can be asked to accept a file it has not seen
+all of, and a caller that streams one uses that; every tool here hands it
+the whole file, so the only thing these reach is the refusal that follows
+when it is not complete. The same goes for `libwebpmux`'s own reader, which
+is a third implementation of this container that nothing here runs.
 
 What is left inside a lossy key frame is what libwebp does not act on. The
 profile picks the reconstruction and loop filters in RFC 6386 and libwebp
@@ -294,10 +372,10 @@ def build_index(rows, groups):
         seen.update(r[0] for r in group)
         if not group:
             continue
-        ok = sum(1 for r in group if r[1] == 'ok')
+        ok = sum(1 for r in group if wanted(r) == 'ok')
         out.append('| %s | %d | %d | %d |' %
                    (title, len(group), ok, len(group) - ok))
-    ok = sum(1 for r in rows if r[1] == 'ok')
+    ok = sum(1 for r in rows if wanted(r) == 'ok')
     out.append('| **total** | **%d** | **%d** | **%d** |' %
                (len(rows), ok, len(rows) - ok))
     return '\n'.join(out) + '\n'
@@ -353,11 +431,12 @@ conforming decoder must refuse it.</p>
 def write_files_index(outdir, rows):
     """files/index.html -- GitHub Pages serves no directory listing."""
     lines = [FILES_INDEX_HEAD % {'count': len(rows)}]
-    for name, expect, _note, _exercises, size in sorted(rows):
+    for row in sorted(rows):
         lines.append('<tr><td><a href="%s.webp"><code>%s.webp</code></a></td>'
                      '<td class="n">%d</td><td class="%s">%s</td></tr>'
-                     % (name, name, size,
-                        'reject' if expect == 'reject' else 'ok', expect))
+                     % (row[0], row[0], row[4],
+                        'reject' if wanted(row) == 'reject' else 'ok',
+                        verdict(row)))
     lines.append('</table>')
     with open(os.path.join(outdir, 'files', 'index.html'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
@@ -381,15 +460,17 @@ def write_cases_index(outdir, rows):
     """cases/index.html -- same reason, and the README links cases/."""
     lines = [CASES_INDEX_HEAD]
     n = 0
-    for name, expect, note, _exercises, _size in sorted(rows):
+    for row in sorted(rows):
+        name = row[0]
         if not os.path.exists(os.path.join(outdir, 'cases',
                                            name + '.txt')):
             continue                    # patched from sources/, not assembled
         n += 1
         lines.append('<tr><td><a href="%s.txt"><code>%s</code></a></td>'
                      '<td class="%s">%s</td><td>%s</td></tr>'
-                     % (name, name, 'reject' if expect == 'reject' else 'ok',
-                        expect, html_escape(note)))
+                     % (name, name,
+                        'reject' if wanted(row) == 'reject' else 'ok',
+                        verdict(row), html_escape(row[2])))
     lines.append('</table>')
     lines[0] = CASES_INDEX_HEAD % {'count': n}
     with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
@@ -427,8 +508,9 @@ def html_escape(text):
 # The two that answer "does my decoder survive this?" come first; the rest
 # are for changing the corpus, not for using it.
 RUN = [
-    ('check.sh', 'Decodes every file and checks the verdict and the pixels. '
-                 'The one to run.'),
+    ('check.sh', 'Decodes every file and checks the verdict and the pixels, '
+                 'through `dwebp` or -- for the animations -- `$ANIM_DUMP` '
+                 'and `$WEBPINFO`. The one to run.'),
     ('asan_sweep.sh', 'The same, in 14 output modes under a sanitizer build. '
                       'Point `$ASAN_DWEBP` at one.'),
     ('generate.py', 'Rebuilds `files/` from `cases/`, and writes '
@@ -535,11 +617,16 @@ list that is not the length the transform implies.
 
 The header keys are %(header)s. `expect` is `ok` or `reject`; `slow` marks
 the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by `src/vp8_dis.py`.
+be read back by `src/vp8_dis.py`; `anim` is the same verdict from the
+animation decoder, for the files a still one refuses on sight; `info` is
+webpinfo's, which is a second reader of the container and not always of the
+same opinion.
 
 Which assembler owns a case follows from its keywords: a case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container
-keywords may be added to either.
+keywords may be added to either. Two keywords open a block -- `frame` and
+`alph_plane` -- and everything after one belongs to it until the next block
+or the end of the case; that is the only nesting there is.
 
 """
 
@@ -597,7 +684,14 @@ SYNTAX_SCOPES = [
     ('container', 'The RIFF container (RFC 9649)',
      'A case that says nothing here gets a plain `RIFF....WEBP` around its '
      'one image chunk. A fourcc is padded to four characters, so `VP8` means '
-     "`'VP8 '`."),
+     "`'VP8 '`. A payload spelled out with `payload` replaces whatever this "
+     'would otherwise have built for that chunk.'),
+    ('animation', 'Animation (ANIM and ANMF)',
+     '`frame` opens a block, and everything after it belongs to that frame '
+     'until the next block or the end of the case: its ANMF header fields, '
+     'its chunk list, and the image it carries. A file with frames in it '
+     'defaults to `VP8X ANIM ANMF...` with the animation flag set and a '
+     'canvas the frames fit in, so a case says only what it is changing.'),
 ]
 
 
@@ -659,7 +753,10 @@ Three layers, and a case only ever touches the top one:
 * **`webp_asm.py`** reads the case, splits the container directives from the
   image ones, and hands the image to whichever assembler owns it: a case
   saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It
-  then wraps the result in RIFF.
+  then wraps the result in RIFF. It also owns the two places the format
+  nests: a `frame` block is an animation frame with an image of its own, and
+  an `alph_plane` block is a compressed alpha plane, which is a lossless
+  image stream with its header left off.
 * **`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into the fields of a
   bitstream. Their docstrings are the format: every keyword, its default and
   what it writes. Nothing is validated or clamped -- a value too big for its
@@ -704,7 +801,8 @@ def build_cases(outdir):
         with open(os.path.join(outdir, 'files', name + '.webp'), 'wb') as f:
             f.write(data)
         rows.append((name, fields['expect'], fields['note'],
-                     fields['exercises'], len(data)))
+                     fields['exercises'], len(data), fields['anim'],
+                     fields['info']))
         print('%-40s %-7s %5d bytes' % (name, fields['expect'], len(data)))
     return rows
 
@@ -718,10 +816,11 @@ def build_file_list(index):
         'to the file it is about.') + '\n' + index
 
 
-def heading(outdir, name, expect):
+def heading(outdir, row):
     """One file's heading, with a link to the case text when there is one."""
+    name = row[0]
     src = os.path.join('cases', name + '.txt')
-    out = '### [`%s.webp`](files/%s.webp) -- %s' % (name, name, expect)
+    out = '### [`%s.webp`](files/%s.webp) -- %s' % (name, name, verdict(row))
     if os.path.exists(os.path.join(outdir, src)):
         out += ' -- from [`%s.txt`](%s)' % (name, src)
     return out + '\n'
@@ -729,10 +828,10 @@ def heading(outdir, name, expect):
 
 def write_readme(outdir, rows):
     used = set()
-    kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'vp8l': 0}
+    kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'anim': 0, 'vp8l': 0}
     for r in rows:
         for prefix, kind in (('lossy-', 'lossy'), ('container-', 'container'),
-                             ('alph-', 'alpha')):
+                             ('alph-', 'alpha'), ('anim-', 'anim')):
             if r[0].startswith(prefix):
                 kinds[kind] += 1
                 break
@@ -749,11 +848,11 @@ def write_readme(outdir, rows):
             continue
         lines.append('## %s\n\n%s' % (title, wrap(blurb)) if blurb
                      else '## %s\n' % title)
-        for name, expect, note, exercises, size in group:
-            used.add(name)
-            lines.append(heading(outdir, name, expect))
-            lines.append(wrap(note))
-            lines.append(wrap(exercises))
+        for row in group:
+            used.add(row[0])
+            lines.append(heading(outdir, row))
+            lines.append(wrap(row[2]))
+            lines.append(wrap(row[3]))
     total = sum(r[4] for r in rows)
     lines.append('---\n')
     lines.append(wrap(
@@ -779,9 +878,10 @@ def main():
         os.remove(os.path.join(files, stale))
     rows = lossy_parts.build(outdir) + build_cases(outdir)
     with open(os.path.join(outdir, 'expected.txt'), 'w') as f:
-        for name, expect, _, _, _ in rows:
-            f.write('%s|%s|%s\n' % (name, expect,
-                                     'slow' if name in SLOW else ''))
+        for row in rows:
+            f.write('%s|%s|%s|%s|%s\n' % (row[0], row[1],
+                                          'slow' if row[0] in SLOW else '',
+                                          row[ANIM], row[INFO]))
     write_readme(outdir, rows)
     check_links(outdir)
     return rows
