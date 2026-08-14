@@ -146,7 +146,6 @@ ask git for just that directory:
     cd skal65535.github.io
     git sparse-checkout set webp-torture
 
-That fetches about 2MB instead of the ~90MB the rest of the site comes to.
 Run the scripts above from `webp-torture/`.
 
 To write one of your own, or read a real encode back into a case,
