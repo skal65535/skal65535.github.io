@@ -3,7 +3,7 @@
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time:
 
-* **62 lossless (VP8L) streams**, assembled by
+* **78 lossless (VP8L) streams**, assembled by
   [`vp8l_asm.py`](vp8l_asm.py) from a text description of the bitstream: the
   header, the transforms, the Huffman codes down to the code-length stream
   that describes them, and the pixel data.
@@ -45,13 +45,14 @@ expected verdict; the notes further down say what each targets.
 | --- | ---: | ---: | ---: |
 | Simple codes | 9 | 6 | 3 |
 | The code-length code | 15 | 9 | 6 |
-| Meta Huffman / entropy image | 5 | 5 | 0 |
+| Meta Huffman / entropy image | 7 | 6 | 1 |
 | Color cache | 5 | 3 | 2 |
+| Sub-images | 9 | 5 | 4 |
 | Palette packing | 6 | 6 | 0 |
-| Transforms | 3 | 2 | 1 |
+| Transforms | 5 | 4 | 1 |
 | Back-references | 8 | 6 | 2 |
 | Predictor modes | 7 | 7 | 0 |
-| Frame header | 4 | 2 | 2 |
+| Frame header | 7 | 3 | 4 |
 | The RIFF container | 19 | 9 | 10 |
 | The alpha chunk | 18 | 10 | 8 |
 | Lossy: frame tag and picture header | 16 | 8 | 8 |
@@ -65,7 +66,7 @@ expected verdict; the notes further down say what each targets.
 | Lossy: token partitions | 5 | 2 | 3 |
 | Lossy: truncation | 4 | 1 | 3 |
 | Lossy: partition sizes, from real encodes | 8 | 5 | 3 |
-| **total** | **180** | **129** | **51** |
+| **total** | **196** | **138** | **58** |
 
 **Simple codes** — [simple-dist-1sym-oob](files/simple-dist-1sym-oob.webp) ·
  [simple-dist-2sym-both-oob](files/simple-dist-2sym-both-oob.webp) ·
@@ -96,6 +97,8 @@ expected verdict; the notes further down say what each targets.
 
 **Meta Huffman / entropy image** —
  [meta-huffman-1001-groups](files/meta-huffman-1001-groups.webp) ·
+ [meta-huffman-groups-truncated](files/meta-huffman-groups-truncated.webp) ·
+ [meta-huffman-per-tile-data](files/meta-huffman-per-tile-data.webp) ·
  [meta-huffman-precision-max](files/meta-huffman-precision-max.webp) ·
  [meta-huffman-precision-min](files/meta-huffman-precision-min.webp) ·
  [meta-huffman-sparse-groups](files/meta-huffman-sparse-groups.webp) ·
@@ -107,6 +110,17 @@ expected verdict; the notes further down say what each targets.
  [cache-bits-12-invalid](files/cache-bits-12-invalid.webp) ·
  [cache-index-literal](files/cache-index-literal.webp)
 
+**Sub-images** —
+ [subimage-cache-12-invalid](files/subimage-cache-12-invalid.webp) ·
+ [subimage-cache-entropy-image](files/subimage-cache-entropy-image.webp) ·
+ [subimage-cache-palette-max](files/subimage-cache-palette-max.webp) ·
+ [subimage-cache-predictor-min](files/subimage-cache-predictor-min.webp) ·
+ [subimage-cache-zero-invalid](files/subimage-cache-zero-invalid.webp) ·
+ [subimage-code-complex-form](files/subimage-code-complex-form.webp) ·
+ [subimage-code-empty](files/subimage-code-empty.webp) ·
+ [subimage-code-max-symbol](files/subimage-code-max-symbol.webp) ·
+ [subimage-code-oversubscribed](files/subimage-code-oversubscribed.webp)
+
 **Palette packing** —
  [transform-palette-1-color](files/transform-palette-1-color.webp) ·
  [transform-palette-16-colors](files/transform-palette-16-colors.webp) ·
@@ -116,6 +130,8 @@ expected verdict; the notes further down say what each targets.
  [transform-palette-index-past-end](files/transform-palette-index-past-end.webp)
 
 **Transforms** — [transform-all-four](files/transform-all-four.webp) ·
+ [transform-cross-color-bits-max](files/transform-cross-color-bits-max.webp) ·
+ [transform-cross-color-multipliers](files/transform-cross-color-multipliers.webp) ·
  [transform-predictor-bits-max](files/transform-predictor-bits-max.webp) ·
  [transform-repeated](files/transform-repeated.webp)
 
@@ -137,8 +153,11 @@ expected verdict; the notes further down say what each targets.
  [predictor-single-row](files/predictor-single-row.webp) ·
  [predictor-tile-bits-min](files/predictor-tile-bits-min.webp)
 
-**Frame header** — [header-max-area-bomb](files/header-max-area-bomb.webp) ·
+**Frame header** — [header-alpha-is-used](files/header-alpha-is-used.webp) ·
+ [header-magic-wrong](files/header-magic-wrong.webp) ·
+ [header-max-area-bomb](files/header-max-area-bomb.webp) ·
  [header-max-area-truncated](files/header-max-area-truncated.webp) ·
+ [header-version-max](files/header-version-max.webp) ·
  [header-version-nonzero](files/header-version-nonzero.webp) ·
  [header-width-16384](files/header-width-16384.webp)
 
@@ -616,6 +635,27 @@ arbitrary limit.
 Crosses the num_htree_groups_max > 1000 test at vp8l_dec.c:409, which forces
 the mapping[] path even when the count is plausible.
 
+### [`meta-huffman-groups-truncated.webp`](files/meta-huffman-groups-truncated.webp) -- reject -- from [`meta-huffman-groups-truncated.txt`](cases/meta-huffman-groups-truncated.txt)
+
+An entropy image naming group 1 when only one group of codes follows.
+
+num_htree_groups is derived from the entropy image rather than declared, so the
+decoder reads a second group out of a stream that carries none and takes
+whatever the pixel data happens to say as a Huffman code. It comes out empty,
+which BuildHuffmanTable() refuses -- a clean failure on data that was never a
+code at all.
+
+### [`meta-huffman-per-tile-data.webp`](files/meta-huffman-per-tile-data.webp) -- ok -- from [`meta-huffman-per-tile-data.txt`](cases/meta-huffman-per-tile-data.txt)
+
+Two Huffman groups that both carry real data, so the code in use changes four
+pixels into every row.
+
+Every other meta-Huffman file here has groups whose codes cost no bits, so none
+of them proves the entropy image is consulted at all. Here each group holds two
+symbols of one bit and the halves of a row decode to different values, so a
+decoder that used group 0 throughout would come out with the wrong pixels
+rather than the right ones by luck.
+
 ### [`meta-huffman-precision-max.webp`](files/meta-huffman-precision-max.webp) -- ok -- from [`meta-huffman-precision-max.txt`](cases/meta-huffman-precision-max.txt)
 
 Meta Huffman with the largest tile size (precision 9, 512x512 pixels).
@@ -680,6 +720,92 @@ A pixel coded as a color-cache index rather than as a literal.
 Green symbols >= NUM_LITERAL_CODES + NUM_LENGTH_CODES address the cache. Pixel
 2 replays pixel 1 through cache slot 0.
 
+## Sub-images
+
+A lossless file carries whole image streams inside itself: one for each
+transform that needs a per-tile parameter, and one for the entropy image. Each
+is read by the same DecodeImageStream() as the outer image, minus the
+transforms and the entropy image it is not allowed to have of its own -- so
+each has a color cache and five Huffman codes that a file can say something
+about, and that cwebp always writes the same dull way.
+
+### [`subimage-cache-12-invalid.webp`](files/subimage-cache-12-invalid.webp) -- reject -- from [`subimage-cache-12-invalid.txt`](cases/subimage-cache-12-invalid.txt)
+
+A sub-image color cache of 12 bits, one past MAX_CACHE_BITS.
+
+Upper bound of the same check, one level down. The 4-bit field can hold up to
+15.
+
+### [`subimage-cache-entropy-image.webp`](files/subimage-cache-entropy-image.webp) -- ok -- from [`subimage-cache-entropy-image.txt`](cases/subimage-cache-entropy-image.txt)
+
+A color cache inside the entropy image itself.
+
+The entropy image is read by DecodeImageStream() through ReadHuffmanCodes(), so
+it too may declare a cache. The image it selects groups for has none.
+
+### [`subimage-cache-palette-max.webp`](files/subimage-cache-palette-max.webp) -- ok -- from [`subimage-cache-palette-max.txt`](cases/subimage-cache-palette-max.txt)
+
+A color cache of 11 bits inside the palette sub-image of the color-indexing
+transform.
+
+MAX_CACHE_BITS one level down, which stretches that stream's green alphabet to
+280 + 2048 symbols in order to describe two palette entries. The outer image
+has no cache, so the two alphabets differ within one file.
+
+### [`subimage-cache-predictor-min.webp`](files/subimage-cache-predictor-min.webp) -- ok -- from [`subimage-cache-predictor-min.txt`](cases/subimage-cache-predictor-min.txt)
+
+A color cache declared inside the predictor transform's sub-image, 1 bit.
+
+DecodeImageStream() reads the cache flag at every level, so a sub-image may
+carry one of its own. cwebp never writes one there. Verified to decode to the
+same pixels as the same transform without it.
+
+### [`subimage-cache-zero-invalid.webp`](files/subimage-cache-zero-invalid.webp) -- reject -- from [`subimage-cache-zero-invalid.txt`](cases/subimage-cache-zero-invalid.txt)
+
+A sub-image color cache flagged present but with 0 bits.
+
+The cache_bits >= 1 test sits in DecodeImageStream() at vp8l_dec.c:1576, so it
+guards every level. Partner of cache-bits-0-invalid, which trips the same line
+at level 0.
+
+### [`subimage-code-complex-form.webp`](files/subimage-code-complex-form.webp) -- ok -- from [`subimage-code-complex-form.txt`](cases/subimage-code-complex-form.txt)
+
+The predictor sub-image's green code written with the code-length repeat
+escapes.
+
+A sub-image's five codes are a full ReadHuffmanCode() each, with nothing
+special-cased about them. The form the automatic path picks spells all 280
+lengths out one by one; this one says the same thing in 18 symbols, two of them
+code 18 skipping 138 and 126 unused entries. 32 bytes shorter than predictor-
+all-16-modes and verified to decode to the same pixels.
+
+### [`subimage-code-empty.webp`](files/subimage-code-empty.webp) -- reject -- from [`subimage-code-empty.txt`](cases/subimage-code-empty.txt)
+
+A sub-image code-length stream that really does assign length 0 to all 280
+symbols.
+
+Empty code inside the predictor sub-image, and a third route into the rejection
+codelen-all-zero-lengths and simple-dist-1sym-oob reach from level 0. Getting
+there took saying it in full: a shorter run leaves the rest of the alphabet
+unread, and the decoder trips over the next code instead.
+
+### [`subimage-code-max-symbol.webp`](files/subimage-code-max-symbol.webp) -- ok -- from [`subimage-code-max-symbol.txt`](cases/subimage-code-max-symbol.txt)
+
+A sub-image code using the explicit max_symbol early stop.
+
+ReadHuffmanCodeLengths()'s use_length branch, reached through a transform sub-
+image rather than at level 0. cwebp emits it nowhere.
+
+### [`subimage-code-oversubscribed.webp`](files/subimage-code-oversubscribed.webp) -- reject -- from [`subimage-code-oversubscribed.txt`](cases/subimage-code-oversubscribed.txt)
+
+A sub-image Huffman code with lengths 1, 2, 2, 2, which over-subscribes the
+tree.
+
+The same defect as codelen-oversubscribed, one level down: BuildHuffmanTable()
+fails inside the predictor sub-image, and the failure has to travel back out
+through DecodeImageStream() and ReadTransform() rather than being noticed at
+the top.
+
 ## Palette packing
 
 Index width follows the palette size, and the map is padded out to the packing
@@ -737,6 +863,22 @@ All four transforms present in one stream.
 
 NUM_TRANSFORMS in a row: color-indexing, subtract-green, cross-color and
 predictor, each with its own sub-image.
+
+### [`transform-cross-color-bits-max.webp`](files/transform-cross-color-bits-max.webp) -- ok -- from [`transform-cross-color-bits-max.txt`](cases/transform-cross-color-bits-max.txt)
+
+Cross-color transform with bits = 9, the largest tile size.
+
+MIN_TRANSFORM_BITS + 7, so one tile covers any image up to 512x512. Partner of
+transform-all-four, which uses the minimum.
+
+### [`transform-cross-color-multipliers.webp`](files/transform-cross-color-multipliers.webp) -- ok -- from [`transform-cross-color-multipliers.txt`](cases/transform-cross-color-multipliers.txt)
+
+A cross-color transform with real multipliers rather than the identity.
+
+The three signed multipliers live in the blue, green and red bytes of a tile
+(lossless.c:284), and here they turn a stored 0xff404060 into 0xff604080. Every
+other file leaves them at zero, so this is the only one where
+ColorTransformDelta() and its two chained additions do anything.
 
 ### [`transform-predictor-bits-max.webp`](files/transform-predictor-bits-max.webp) -- ok -- from [`transform-predictor-bits-max.txt`](cases/transform-predictor-bits-max.txt)
 
@@ -870,6 +1012,24 @@ changes every four pixels.
 
 The 14-bit dimension fields and the version escape.
 
+### [`header-alpha-is-used.webp`](files/header-alpha-is-used.webp) -- ok -- from [`header-alpha-is-used.txt`](cases/header-alpha-is-used.txt)
+
+The alpha_is_used hint set on an image whose every pixel is opaque.
+
+ReadImageInfo() reads the bit at vp8l_dec.c:119 and VP8LDecodeHeader() drops it
+on the floor; only VP8LGetInfo() passes it out. A decoder that started
+believing it over the pixels would fail this hash rather than pass unnoticed.
+
+### [`header-magic-wrong.webp`](files/header-magic-wrong.webp) -- reject -- from [`header-magic-wrong.txt`](cases/header-magic-wrong.txt)
+
+Signature byte 0x2e instead of the 0x2f the format defines.
+
+Refused by VP8LCheckSignature() at vp8l_dec.c:110, which runs before a bit of
+the stream is read. ReadImageInfo() tests the same byte again at vp8l_dec.c:116
+and can never see a wrong one: like the version field beside it, that second
+test is dead for anything that reaches the decoder through the public API, and
+coverage.txt records both as the only probes here nothing hits.
+
 ### [`header-max-area-bomb.webp`](files/header-max-area-bomb.webp) -- ok -- from [`header-max-area-bomb.txt`](cases/header-max-area-bomb.txt)
 
 34 bytes declaring 16384x16384, every pixel one color.
@@ -886,6 +1046,14 @@ The same 16384x16384 header, cut off before the Huffman codes.
 Must fail on the missing data rather than allocating the gigabyte first.
 Partner of header-max-area-bomb: together they say where the allocation sits
 relative to the parse.
+
+### [`header-version-max.webp`](files/header-version-max.webp) -- reject -- from [`header-version-max.txt`](cases/header-version-max.txt)
+
+Header with the 3-bit version field at 7, the largest it holds.
+
+Upper bound of the field header-version-nonzero takes at 1. Both are refused by
+the same (data[4] >> 5) test at vp8l_dec.c:111, which never looks at which non-
+zero value it is.
 
 ### [`header-version-nonzero.webp`](files/header-version-nonzero.webp) -- reject -- from [`header-version-nonzero.txt`](cases/header-version-nonzero.txt)
 
@@ -1928,6 +2096,6 @@ features that never met anywhere else.
 
 ---
 
-180 files, 46988 bytes total. Rebuild with `generate.py`: it assembles
+196 files, 47674 bytes total. Rebuild with `generate.py`: it assembles
 everything in `cases/` through `webp_asm.py`, which hands each case to
 `vp8l_asm.py` or `vp8_asm.py`, and those to `vp8l.py` and `vp8.py`.

@@ -1,0 +1,9 @@
+# note: A sub-image color cache of 12 bits, one past MAX_CACHE_BITS.
+# expect: reject
+# exercises: Upper bound of the same check, one level down. The 4-bit field
+#   can hold up to 15.
+lossless
+width 16
+height 4
+transforms predictor
+subimage_cache_bits predictor 12

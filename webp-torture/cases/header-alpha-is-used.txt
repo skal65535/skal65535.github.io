@@ -1,0 +1,10 @@
+# note: The alpha_is_used hint set on an image whose every pixel is opaque.
+# expect: ok
+# exercises: ReadImageInfo() reads the bit at vp8l_dec.c:119 and
+#   VP8LDecodeHeader() drops it on the floor; only VP8LGetInfo() passes it
+#   out. A decoder that started believing it over the pixels would fail this
+#   hash rather than pass unnoticed.
+lossless
+width 4
+height 4
+alpha_is_used 1

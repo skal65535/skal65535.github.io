@@ -1,0 +1,15 @@
+# note: A color cache inside the entropy image itself.
+# expect: ok
+# exercises: The entropy image is read by DecodeImageStream() through
+#   ReadHuffmanCodes(), so it too may declare a cache. The image it selects
+#   groups for has none.
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 1
+subimage_cache_bits meta 4
+group
+code green 0x20
+group
+code green 0xd0

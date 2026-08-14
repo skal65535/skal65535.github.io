@@ -81,16 +81,42 @@ VP8L = [
   }"""),
     ("""  return (size >= VP8L_FRAME_HEADER_SIZE && data[0] == VP8L_MAGIC_BYTE &&
           (data[4] >> 5) == 0);  // version""",
-     """  if (size >= VP8L_FRAME_HEADER_SIZE && data[0] == VP8L_MAGIC_BYTE &&
+     """  if (size >= VP8L_FRAME_HEADER_SIZE && data[0] != VP8L_MAGIC_BYTE) {
+    PROBE("reject_signature_magic");
+  }
+  if (size >= VP8L_FRAME_HEADER_SIZE && data[0] == VP8L_MAGIC_BYTE &&
       (data[4] >> 5) != 0) {
     PROBE("reject_signature_version");
   }
   return (size >= VP8L_FRAME_HEADER_SIZE && data[0] == VP8L_MAGIC_BYTE &&
           (data[4] >> 5) == 0);  // version"""),
+    # the entropy image, consulted again part-way along a row
+    ("""    if ((col & mask) == 0) {
+      htree_group = GetHtreeGroupForPos(hdr, col, row);
+    }""",
+     """    if ((col & mask) == 0) {
+      const HTreeGroup* const previous = htree_group;
+      htree_group = GetHtreeGroupForPos(hdr, col, row);
+      if (htree_group != previous) PROBE("meta_group_switch");
+    }"""),
+    # the signature byte, tested a second time as the stream is read
+    ("""  if (VP8LReadBits(br, 8) != VP8L_MAGIC_BYTE) return 0;""",
+     """  {
+    const int magic = VP8LReadBits(br, 8);
+    if (magic != VP8L_MAGIC_BYTE) { PROBE("reject_magic"); return 0; }
+  }"""),
+    ("""  *has_alpha = VP8LReadBits(br, 1);""",
+     """  *has_alpha = VP8LReadBits(br, 1);
+  if (*has_alpha) PROBE("alpha_is_used");"""),
+    # sub-images: the same reader, one level down
+    ("""  int color_cache_bits = 0;""",
+     """  int color_cache_bits = 0;
+  if (!is_level0) PROBE("subimage_stream");"""),
     # color cache
     ("""    color_cache_bits = VP8LReadBits(br, 4);
     ok = (color_cache_bits >= 1 && color_cache_bits <= MAX_CACHE_BITS);""",
      """    color_cache_bits = VP8LReadBits(br, 4);
+    if (!is_level0) PROBE("subimage_cache");
     if (color_cache_bits == 1) PROBE("cache_bits_min");
     if (color_cache_bits == MAX_CACHE_BITS) PROBE("cache_bits_max");
     ok = (color_cache_bits >= 1 && color_cache_bits <= MAX_CACHE_BITS);
@@ -370,6 +396,13 @@ DSP = [
         const VP8LPredictorAddSubFunc pred_func =
             VP8LPredictorsAdd[((*pred_mode_src++) >> 8) & 0xf];
         PROBE1("pred_mode_%d", pred_mode);"""),
+    ("""      ColorCodeToMultipliers(*pred++, &m);
+      VP8LTransformColorInverse(&m, src, tile_width, dst);""",
+     """      ColorCodeToMultipliers(*pred++, &m);
+      if (m.green_to_red | m.green_to_blue | m.red_to_blue) {
+        PROBE("cross_color_multipliers");
+      }
+      VP8LTransformColorInverse(&m, src, tile_width, dst);"""),
     ("""  if (y_start == 0) {  // First Row follows the L (mode=1) mode.""",
      """  if (y_start == 0) PROBE("pred_first_row");
   if (y_start == 0) {  // First Row follows the L (mode=1) mode."""),

@@ -1,0 +1,13 @@
+# note: A color cache of 11 bits inside the palette sub-image of the
+#   color-indexing transform.
+# expect: ok
+# exercises: MAX_CACHE_BITS one level down, which stretches that stream's
+#   green alphabet to 280 + 2048 symbols in order to describe two palette
+#   entries. The outer image has no cache, so the two alphabets differ
+#   within one file.
+lossless
+width 8
+transforms color_indexing
+palette_colors 0xff0000ff 0xff00ff00
+subimage_cache_bits palette 11
+code green 0xaa

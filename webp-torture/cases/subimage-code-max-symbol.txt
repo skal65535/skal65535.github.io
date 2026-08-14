@@ -1,0 +1,13 @@
+# note: A sub-image code using the explicit max_symbol early stop.
+# expect: ok
+# exercises: ReadHuffmanCodeLengths()'s use_length branch, reached through a
+#   transform sub-image rather than at level 0. cwebp emits it nowhere.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 1 1 1 1
+subimage predictor
+code green lengths 1:1
+code green codelen 0 1
+code green max_symbol 2

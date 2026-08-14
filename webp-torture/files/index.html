@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-torture bitstreams</h1>
-<p>180 WebP files that exercise corners of the format a normal encoder
+<p>196 WebP files that exercise corners of the format a normal encoder
 never emits, most of them assembled from the text in
 <a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
 one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
@@ -75,8 +75,11 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="container-vp8x-still-flags.webp"><code>container-vp8x-still-flags.webp</code></a></td><td class="n">70</td><td class="ok">ok</td></tr>
 <tr><td><a href="container-vp8x-wrong-size.webp"><code>container-vp8x-wrong-size.webp</code></a></td><td class="n">71</td><td class="reject">reject</td></tr>
 <tr><td><a href="container-zero-size-chunk.webp"><code>container-zero-size-chunk.webp</code></a></td><td class="n">78</td><td class="ok">ok</td></tr>
+<tr><td><a href="header-alpha-is-used.webp"><code>header-alpha-is-used.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
+<tr><td><a href="header-magic-wrong.webp"><code>header-magic-wrong.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="header-max-area-bomb.webp"><code>header-max-area-bomb.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
 <tr><td><a href="header-max-area-truncated.webp"><code>header-max-area-truncated.webp</code></a></td><td class="n">26</td><td class="reject">reject</td></tr>
+<tr><td><a href="header-version-max.webp"><code>header-version-max.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="header-version-nonzero.webp"><code>header-version-nonzero.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="header-width-16384.webp"><code>header-width-16384.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
 <tr><td><a href="lossy-1-partitions.webp"><code>lossy-1-partitions.webp</code></a></td><td class="n">2494</td><td class="ok">ok</td></tr>
@@ -169,6 +172,8 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="lz77-plane-code-120.webp"><code>lz77-plane-code-120.webp</code></a></td><td class="n">92</td><td class="ok">ok</td></tr>
 <tr><td><a href="lz77-plane-code-clamped-to-1.webp"><code>lz77-plane-code-clamped-to-1.webp</code></a></td><td class="n">38</td><td class="ok">ok</td></tr>
 <tr><td><a href="meta-huffman-1001-groups.webp"><code>meta-huffman-1001-groups.webp</code></a></td><td class="n">6918</td><td class="ok">ok</td></tr>
+<tr><td><a href="meta-huffman-groups-truncated.webp"><code>meta-huffman-groups-truncated.webp</code></a></td><td class="n">42</td><td class="reject">reject</td></tr>
+<tr><td><a href="meta-huffman-per-tile-data.webp"><code>meta-huffman-per-tile-data.webp</code></a></td><td class="n">54</td><td class="ok">ok</td></tr>
 <tr><td><a href="meta-huffman-precision-max.webp"><code>meta-huffman-precision-max.webp</code></a></td><td class="n">40</td><td class="ok">ok</td></tr>
 <tr><td><a href="meta-huffman-precision-min.webp"><code>meta-huffman-precision-min.webp</code></a></td><td class="n">40</td><td class="ok">ok</td></tr>
 <tr><td><a href="meta-huffman-sparse-groups.webp"><code>meta-huffman-sparse-groups.webp</code></a></td><td class="n">6230</td><td class="ok">ok</td></tr>
@@ -189,7 +194,18 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="simple-dist-sym-40-first-oob.webp"><code>simple-dist-sym-40-first-oob.webp</code></a></td><td class="n">34</td><td class="reject">reject</td></tr>
 <tr><td><a href="simple-green-1bit-symbol.webp"><code>simple-green-1bit-symbol.webp</code></a></td><td class="n">32</td><td class="ok">ok</td></tr>
 <tr><td><a href="simple-green-2sym-1bit-each.webp"><code>simple-green-2sym-1bit-each.webp</code></a></td><td class="n">34</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-cache-12-invalid.webp"><code>subimage-cache-12-invalid.webp</code></a></td><td class="n">42</td><td class="reject">reject</td></tr>
+<tr><td><a href="subimage-cache-entropy-image.webp"><code>subimage-cache-entropy-image.webp</code></a></td><td class="n">50</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-cache-palette-max.webp"><code>subimage-cache-palette-max.webp</code></a></td><td class="n">46</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-cache-predictor-min.webp"><code>subimage-cache-predictor-min.webp</code></a></td><td class="n">42</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-cache-zero-invalid.webp"><code>subimage-cache-zero-invalid.webp</code></a></td><td class="n">42</td><td class="reject">reject</td></tr>
+<tr><td><a href="subimage-code-complex-form.webp"><code>subimage-code-complex-form.webp</code></a></td><td class="n">54</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-code-empty.webp"><code>subimage-code-empty.webp</code></a></td><td class="n">44</td><td class="reject">reject</td></tr>
+<tr><td><a href="subimage-code-max-symbol.webp"><code>subimage-code-max-symbol.webp</code></a></td><td class="n">42</td><td class="ok">ok</td></tr>
+<tr><td><a href="subimage-code-oversubscribed.webp"><code>subimage-code-oversubscribed.webp</code></a></td><td class="n">46</td><td class="reject">reject</td></tr>
 <tr><td><a href="transform-all-four.webp"><code>transform-all-four.webp</code></a></td><td class="n">60</td><td class="ok">ok</td></tr>
+<tr><td><a href="transform-cross-color-bits-max.webp"><code>transform-cross-color-bits-max.webp</code></a></td><td class="n">40</td><td class="ok">ok</td></tr>
+<tr><td><a href="transform-cross-color-multipliers.webp"><code>transform-cross-color-multipliers.webp</code></a></td><td class="n">40</td><td class="ok">ok</td></tr>
 <tr><td><a href="transform-palette-1-color.webp"><code>transform-palette-1-color.webp</code></a></td><td class="n">42</td><td class="ok">ok</td></tr>
 <tr><td><a href="transform-palette-16-colors.webp"><code>transform-palette-16-colors.webp</code></a></td><td class="n">90</td><td class="ok">ok</td></tr>
 <tr><td><a href="transform-palette-2-colors.webp"><code>transform-palette-2-colors.webp</code></a></td><td class="n">46</td><td class="ok">ok</td></tr>

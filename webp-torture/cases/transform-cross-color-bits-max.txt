@@ -1,0 +1,9 @@
+# note: Cross-color transform with bits = 9, the largest tile size.
+# expect: ok
+# exercises: MIN_TRANSFORM_BITS + 7, so one tile covers any image up to
+#   512x512. Partner of transform-all-four, which uses the minimum.
+lossless
+width 8
+height 8
+transforms cross_color
+cross_color_bits 9

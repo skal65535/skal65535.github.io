@@ -1,0 +1,9 @@
+# note: Header with the 3-bit version field at 7, the largest it holds.
+# expect: reject
+# exercises: Upper bound of the field header-version-nonzero takes at 1.
+#   Both are refused by the same (data[4] >> 5) test at vp8l_dec.c:111,
+#   which never looks at which non-zero value it is.
+lossless
+width 4
+height 4
+version 7

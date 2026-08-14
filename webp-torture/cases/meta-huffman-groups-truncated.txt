@@ -1,0 +1,14 @@
+# note: An entropy image naming group 1 when only one group of codes
+#   follows.
+# expect: reject
+# exercises: num_htree_groups is derived from the entropy image rather than
+#   declared, so the decoder reads a second group out of a stream that
+#   carries none and takes whatever the pixel data happens to say as a
+#   Huffman code. It comes out empty, which BuildHuffmanTable() refuses -- a
+#   clean failure on data that was never a code at all.
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 1
+group_count 1

@@ -1,0 +1,15 @@
+# note: A sub-image code-length stream that really does assign length 0 to
+#   all 280 symbols.
+# expect: reject
+# exercises: Empty code inside the predictor sub-image, and a third route
+#   into the rejection codelen-all-zero-lengths and simple-dist-1sym-oob
+#   reach from level 0. Getting there took saying it in full: a shorter run
+#   leaves the rest of the alphabet unread, and the decoder trips over the
+#   next code instead.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 0 0 0 0
+subimage predictor
+code green codelen 18x138 18x138 0 0 0 0

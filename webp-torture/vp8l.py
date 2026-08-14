@@ -262,23 +262,6 @@ def pixel_freqs(pixels, cache_bits=0):
     return freqs
 
 
-def write_subimage(bw, pixels):
-    """A complete non-level0 image stream holding exactly 'pixels' (ARGB)."""
-    # No transform bit and no meta-huffman bit here: DecodeImageStream() only
-    # reads transforms at level 0, and ReadHuffmanCodes() short-circuits on
-    # 'allow_recursion &&', so the meta bit is not in the stream either.
-    bw.put(0, 1)  # no color cache
-    codes = [Huffman.from_freqs(f) for f in pixel_freqs(pixels)]
-    for c in codes:
-        write_code(bw, c)
-    trivial_literal = all(c.trivial for c in codes[1:4])
-    for p in pixels:
-        codes[0].emit_symbol(bw, (p >> 8) & 0xff)
-        if not trivial_literal:
-            for code, shift in zip(codes[1:4], CHANNEL_SHIFTS[1:]):
-                code.emit_symbol(bw, (p >> shift) & 0xff)
-
-
 def delta_palette(colors):
     """ExpandColorMap() accumulates entries, so store per-byte deltas."""
     out = [colors[0]]
@@ -298,8 +281,8 @@ def palette_bits(num_colors):
         2 if num_colors > 2 else 3
 
 
-def write_header(bw, width, height, alpha=0, version=0):
-    bw.put(MAGIC, 8)
+def write_header(bw, width, height, alpha=0, version=0, magic=MAGIC):
+    bw.put(magic, 8)
     bw.put(width - 1, IMAGE_SIZE_BITS)
     bw.put(height - 1, IMAGE_SIZE_BITS)
     bw.put(alpha, 1)

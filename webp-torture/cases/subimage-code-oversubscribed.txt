@@ -1,0 +1,14 @@
+# note: A sub-image Huffman code with lengths 1, 2, 2, 2, which
+#   over-subscribes the tree.
+# expect: reject
+# exercises: The same defect as codelen-oversubscribed, one level down:
+#   BuildHuffmanTable() fails inside the predictor sub-image, and the
+#   failure has to travel back out through DecodeImageStream() and
+#   ReadTransform() rather than being noticed at the top.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 0 1 2 3
+subimage predictor
+code green lengths 1 2 2 2

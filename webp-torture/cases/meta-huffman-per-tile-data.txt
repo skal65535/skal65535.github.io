@@ -1,0 +1,21 @@
+# note: Two Huffman groups that both carry real data, so the code in use
+#   changes four pixels into every row.
+# expect: ok
+# exercises: Every other meta-Huffman file here has groups whose codes cost
+#   no bits, so none of them proves the entropy image is consulted at all.
+#   Here each group holds two symbols of one bit and the halves of a row
+#   decode to different values, so a decoder that used group 0 throughout
+#   would come out with the wrong pixels rather than the right ones by luck.
+lossless
+width 8
+height 4
+meta_bits 2
+meta_tiles 0 1
+group
+code green 0x10 0x20
+group
+code green 0xd0 0xe0
+pixels 0x10 0x20 0x10 0x20 0xd0 0xe0 0xd0 0xe0
+pixels 0x20 0x10 0x20 0x10 0xe0 0xd0 0xe0 0xd0
+pixels 0x10 0x10 0x20 0x20 0xd0 0xd0 0xe0 0xe0
+pixels 0x20 0x20 0x10 0x10 0xe0 0xe0 0xd0 0xd0

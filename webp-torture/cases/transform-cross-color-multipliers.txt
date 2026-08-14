@@ -1,0 +1,14 @@
+# note: A cross-color transform with real multipliers rather than the
+#   identity.
+# expect: ok
+# exercises: The three signed multipliers live in the blue, green and red
+#   bytes of a tile (lossless.c:284), and here they turn a stored 0xff404060
+#   into 0xff604080. Every other file leaves them at zero, so this is the
+#   only one where ColorTransformDelta() and its two chained additions do
+#   anything.
+lossless
+width 8
+height 8
+transforms cross_color
+cross_color_tiles 0xff20e010 0xff20e010 0xff20e010 0xff20e010
+code green 0x40

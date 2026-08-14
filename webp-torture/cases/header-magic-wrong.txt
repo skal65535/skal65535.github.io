@@ -1,0 +1,10 @@
+# note: Signature byte 0x2e instead of the 0x2f the format defines.
+# expect: reject
+# exercises: Refused by VP8LCheckSignature() at vp8l_dec.c:110, which runs
+#   before a bit of the stream is read. ReadImageInfo() tests the same byte
+#   again at vp8l_dec.c:116 and can never see a wrong one: like the version
+#   field beside it, that second test is dead for anything that reaches the
+#   decoder through the public API, and coverage.txt records both as the
+#   only probes here nothing hits.
+lossless
+magic 0x2e

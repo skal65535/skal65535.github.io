@@ -1,0 +1,10 @@
+# note: A sub-image color cache flagged present but with 0 bits.
+# expect: reject
+# exercises: The cache_bits >= 1 test sits in DecodeImageStream() at
+#   vp8l_dec.c:1576, so it guards every level. Partner of
+#   cache-bits-0-invalid, which trips the same line at level 0.
+lossless
+width 8
+height 8
+transforms cross_color
+subimage_cache_bits cross_color 0

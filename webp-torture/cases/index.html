@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-torture cases</h1>
-<p>173 text cases, each assembled into the .webp of the same name in
+<p>189 text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
 names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
 &mdash; and carries its own note on what it is for; the
@@ -77,8 +77,11 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="container-vp8x-still-flags.txt"><code>container-vp8x-still-flags</code></a></td><td class="ok">ok</td><td>The four still-image VP8X flags set, with none of the chunks they promise.</td></tr>
 <tr><td><a href="container-vp8x-wrong-size.txt"><code>container-vp8x-wrong-size</code></a></td><td class="reject">reject</td><td>A VP8X chunk whose header claims 9 bytes rather than 10.</td></tr>
 <tr><td><a href="container-zero-size-chunk.txt"><code>container-zero-size-chunk</code></a></td><td class="ok">ok</td><td>An optional chunk declaring a zero-length payload.</td></tr>
+<tr><td><a href="header-alpha-is-used.txt"><code>header-alpha-is-used</code></a></td><td class="ok">ok</td><td>The alpha_is_used hint set on an image whose every pixel is opaque.</td></tr>
+<tr><td><a href="header-magic-wrong.txt"><code>header-magic-wrong</code></a></td><td class="reject">reject</td><td>Signature byte 0x2e instead of the 0x2f the format defines.</td></tr>
 <tr><td><a href="header-max-area-bomb.txt"><code>header-max-area-bomb</code></a></td><td class="ok">ok</td><td>34 bytes declaring 16384x16384, every pixel one color.</td></tr>
 <tr><td><a href="header-max-area-truncated.txt"><code>header-max-area-truncated</code></a></td><td class="reject">reject</td><td>The same 16384x16384 header, cut off before the Huffman codes.</td></tr>
+<tr><td><a href="header-version-max.txt"><code>header-version-max</code></a></td><td class="reject">reject</td><td>Header with the 3-bit version field at 7, the largest it holds.</td></tr>
 <tr><td><a href="header-version-nonzero.txt"><code>header-version-nonzero</code></a></td><td class="reject">reject</td><td>Header with the 3-bit version field set to 1.</td></tr>
 <tr><td><a href="header-width-16384.txt"><code>header-width-16384</code></a></td><td class="ok">ok</td><td>Width 16384, one past WEBP_MAX_DIMENSION.</td></tr>
 <tr><td><a href="lossy-coeff-all-types.txt"><code>lossy-coeff-all-types</code></a></td><td class="ok">ok</td><td>All four coefficient types in one macroblock, and both luma types across two.</td></tr>
@@ -164,6 +167,8 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="lz77-plane-code-120.txt"><code>lz77-plane-code-120</code></a></td><td class="ok">ok</td><td>Plane code 120, the last entry of the 2-D offset table.</td></tr>
 <tr><td><a href="lz77-plane-code-clamped-to-1.txt"><code>lz77-plane-code-clamped-to-1</code></a></td><td class="ok">ok</td><td>Plane code 4 on a 1-pixel-wide image, where the 2-D offset computes to 0.</td></tr>
 <tr><td><a href="meta-huffman-1001-groups.txt"><code>meta-huffman-1001-groups</code></a></td><td class="ok">ok</td><td>Entropy image whose highest group index is 1000, one past the decoder's arbitrary limit.</td></tr>
+<tr><td><a href="meta-huffman-groups-truncated.txt"><code>meta-huffman-groups-truncated</code></a></td><td class="reject">reject</td><td>An entropy image naming group 1 when only one group of codes follows.</td></tr>
+<tr><td><a href="meta-huffman-per-tile-data.txt"><code>meta-huffman-per-tile-data</code></a></td><td class="ok">ok</td><td>Two Huffman groups that both carry real data, so the code in use changes four pixels into every row.</td></tr>
 <tr><td><a href="meta-huffman-precision-max.txt"><code>meta-huffman-precision-max</code></a></td><td class="ok">ok</td><td>Meta Huffman with the largest tile size (precision 9, 512x512 pixels).</td></tr>
 <tr><td><a href="meta-huffman-precision-min.txt"><code>meta-huffman-precision-min</code></a></td><td class="ok">ok</td><td>Meta Huffman with the smallest tile size (precision 2, 4x4 pixels).</td></tr>
 <tr><td><a href="meta-huffman-sparse-groups.txt"><code>meta-huffman-sparse-groups</code></a></td><td class="ok">ok</td><td>Entropy image referencing groups 0 and 900 only, leaving a 900-entry hole.</td></tr>
@@ -184,7 +189,18 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="simple-dist-sym-40-first-oob.txt"><code>simple-dist-sym-40-first-oob</code></a></td><td class="reject">reject</td><td>Distance code: single symbol 40, the first out-of-range value.</td></tr>
 <tr><td><a href="simple-green-1bit-symbol.txt"><code>simple-green-1bit-symbol</code></a></td><td class="ok">ok</td><td>Green code: simple form with first_symbol_len_code = 0, so the symbol is 1 bit wide.</td></tr>
 <tr><td><a href="simple-green-2sym-1bit-each.txt"><code>simple-green-2sym-1bit-each</code></a></td><td class="ok">ok</td><td>Green code with two real symbols, so every pixel costs exactly 1 bit.</td></tr>
+<tr><td><a href="subimage-cache-12-invalid.txt"><code>subimage-cache-12-invalid</code></a></td><td class="reject">reject</td><td>A sub-image color cache of 12 bits, one past MAX_CACHE_BITS.</td></tr>
+<tr><td><a href="subimage-cache-entropy-image.txt"><code>subimage-cache-entropy-image</code></a></td><td class="ok">ok</td><td>A color cache inside the entropy image itself.</td></tr>
+<tr><td><a href="subimage-cache-palette-max.txt"><code>subimage-cache-palette-max</code></a></td><td class="ok">ok</td><td>A color cache of 11 bits inside the palette sub-image of the color-indexing transform.</td></tr>
+<tr><td><a href="subimage-cache-predictor-min.txt"><code>subimage-cache-predictor-min</code></a></td><td class="ok">ok</td><td>A color cache declared inside the predictor transform's sub-image, 1 bit.</td></tr>
+<tr><td><a href="subimage-cache-zero-invalid.txt"><code>subimage-cache-zero-invalid</code></a></td><td class="reject">reject</td><td>A sub-image color cache flagged present but with 0 bits.</td></tr>
+<tr><td><a href="subimage-code-complex-form.txt"><code>subimage-code-complex-form</code></a></td><td class="ok">ok</td><td>The predictor sub-image's green code written with the code-length repeat escapes.</td></tr>
+<tr><td><a href="subimage-code-empty.txt"><code>subimage-code-empty</code></a></td><td class="reject">reject</td><td>A sub-image code-length stream that really does assign length 0 to all 280 symbols.</td></tr>
+<tr><td><a href="subimage-code-max-symbol.txt"><code>subimage-code-max-symbol</code></a></td><td class="ok">ok</td><td>A sub-image code using the explicit max_symbol early stop.</td></tr>
+<tr><td><a href="subimage-code-oversubscribed.txt"><code>subimage-code-oversubscribed</code></a></td><td class="reject">reject</td><td>A sub-image Huffman code with lengths 1, 2, 2, 2, which over-subscribes the tree.</td></tr>
 <tr><td><a href="transform-all-four.txt"><code>transform-all-four</code></a></td><td class="ok">ok</td><td>All four transforms present in one stream.</td></tr>
+<tr><td><a href="transform-cross-color-bits-max.txt"><code>transform-cross-color-bits-max</code></a></td><td class="ok">ok</td><td>Cross-color transform with bits = 9, the largest tile size.</td></tr>
+<tr><td><a href="transform-cross-color-multipliers.txt"><code>transform-cross-color-multipliers</code></a></td><td class="ok">ok</td><td>A cross-color transform with real multipliers rather than the identity.</td></tr>
 <tr><td><a href="transform-palette-1-color.txt"><code>transform-palette-1-color</code></a></td><td class="ok">ok</td><td>Palette with a single color, the smallest the 8-bit field can express.</td></tr>
 <tr><td><a href="transform-palette-16-colors.txt"><code>transform-palette-16-colors</code></a></td><td class="ok">ok</td><td>Palette of 16 colors, so indices are 4 bits and 2 pixels share a byte.</td></tr>
 <tr><td><a href="transform-palette-2-colors.txt"><code>transform-palette-2-colors</code></a></td><td class="ok">ok</td><td>Color-indexing transform with 2 colors, so 8 pixels are packed per byte.</td></tr>

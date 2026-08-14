@@ -1,0 +1,12 @@
+# note: A color cache declared inside the predictor transform's sub-image, 1
+#   bit.
+# expect: ok
+# exercises: DecodeImageStream() reads the cache flag at every level, so a
+#   sub-image may carry one of its own. cwebp never writes one there.
+#   Verified to decode to the same pixels as the same transform without it.
+lossless
+width 16
+height 4
+transforms predictor
+predictor_tiles 2 2 2 2
+subimage_cache_bits predictor 1
