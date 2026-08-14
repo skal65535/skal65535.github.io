@@ -84,7 +84,7 @@ it.
 | --- | --- |
 | [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels. The one to run. |
 | [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
-| [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md` and the three `index.html` listings. |
+| [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md`, and an `index.html` for each directory that needs one. |
 | [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
 | [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
 | [`vp8_selftest.py`](vp8_selftest.py) | Checks the assemblers themselves, not the corpus: only needed if you change them. |
@@ -1215,14 +1215,14 @@ it.
 A horizontal upscaling hint of 1 and a vertical one of 3.
 
 Two of the four values of the two 2-bit scale fields; lossy-frame-scaled has 3
-and 2 and lossy-frame-scale-2 the rest, so between the three every value of
-both is written. libwebp reads them into pic_hdr and acts on neither.
+and 2 and lossy-frame-scale-2 the rest, so between them every value of both is
+written. libwebp reads them into pic_hdr and acts on neither.
 
 ### [`lossy-frame-scale-2.webp`](files/lossy-frame-scale-2.webp) -- ok -- from [`lossy-frame-scale-2.txt`](cases/lossy-frame-scale-2.txt)
 
 A horizontal upscaling hint of 2 and a vertical one of 1.
 
-The two values the other two scale cases leave out, so all four are seen in
+The values the other scale cases leave out, so every one of the four is seen in
 each field. A decoder that started honouring the hint would resize the output
 and fail the hash rather than the verdict.
 
@@ -1244,7 +1244,7 @@ pixels.
 
 ### [`lossy-frame-version-2.webp`](files/lossy-frame-version-2.webp) -- ok -- from [`lossy-frame-version-2.txt`](cases/lossy-frame-version-2.txt)
 
-Profile 2, the value between the two the corpus already had.
+Profile 2, one of the four values the decoder accepts.
 
 One of the four values "profile > 3" lets through. libwebp reads the field only
 to refuse the others, so what this pins is that it does not act on the value.
@@ -1851,8 +1851,8 @@ Every optional tool switched on in one frame at once.
 Segmentation with a map, the loop filter with per-segment strengths and mode
 deltas, four token partitions, the skip flag, a probability update, and both
 macroblock types. Each of those has a file of its own that isolates it; this is
-the one that makes them interact, and it is what covers the eight pairs of
-features that never met anywhere else.
+the one that makes them interact, and it is what covers the pairs of features
+that meet nowhere else.
 
 ---
 

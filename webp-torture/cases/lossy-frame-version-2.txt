@@ -1,4 +1,4 @@
-# note: Profile 2, the value between the two the corpus already had.
+# note: Profile 2, one of the four values the decoder accepts.
 # expect: ok
 # exercises: One of the four values "profile > 3" lets through. libwebp
 #   reads the field only to refuse the others, so what this pins is that it

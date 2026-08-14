@@ -2,8 +2,8 @@
 # expect: ok
 # exercises: Two of the four values of the two 2-bit scale fields;
 #   lossy-frame-scaled has 3 and 2 and lossy-frame-scale-2 the rest, so
-#   between the three every value of both is written. libwebp reads them
-#   into pic_hdr and acts on neither.
+#   between them every value of both is written. libwebp reads them into
+#   pic_hdr and acts on neither.
 horizontal_scale 1
 vertical_scale 3
 width 32

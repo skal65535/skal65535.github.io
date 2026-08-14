@@ -433,7 +433,7 @@ RUN = [
                       'Point `$ASAN_DWEBP` at one.'),
     ('generate.py', 'Rebuilds `files/` from `cases/`, and writes '
                     '`expected.txt`, this README, `SYNTAX.md`, '
-                    '`src/README.md` and the three `index.html` listings.'),
+                    '`src/README.md`, and an `index.html` for each directory that needs one.'),
     ('make_hashes.sh', 'Rewrites `hashes.txt`, once the new output is known '
                        'to be right.'),
     ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),

@@ -2,9 +2,9 @@
 # expect: ok
 # exercises: Segmentation with a map, the loop filter with per-segment
 #   strengths and mode deltas, four token partitions, the skip flag, a
-#   probability update, and both macroblock types. Each of those has a file of
-#   its own that isolates it; this is the one that makes them interact, and it
-#   is what covers the eight pairs of features that never met anywhere else.
+#   probability update, and both macroblock types. Each of those has a file
+#   of its own that isolates it; this is the one that makes them interact,
+#   and it is what covers the pairs of features that meet nowhere else.
 width 64
 height 64
 loop_filter_level 28

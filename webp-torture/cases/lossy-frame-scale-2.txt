@@ -1,8 +1,8 @@
 # note: A horizontal upscaling hint of 2 and a vertical one of 1.
 # expect: ok
-# exercises: The two values the other two scale cases leave out, so all four
-#   are seen in each field. A decoder that started honouring the hint would
-#   resize the output and fail the hash rather than the verdict.
+# exercises: The values the other scale cases leave out, so every one of the
+#   four is seen in each field. A decoder that started honouring the hint
+#   would resize the output and fail the hash rather than the verdict.
 horizontal_scale 2
 vertical_scale 1
 width 32
