@@ -186,56 +186,33 @@ README_HEAD = """# WebP torture bitstreams
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
 
-**They are written, not captured.** Each one is a text case in
-[`cases/`](cases) naming bitstream fields, one per line, under the names the
-specification gives them, and an assembler in [`src/`](src) turns the case
-into bytes. Nothing is checked on the way, so a case can say what no encoder
-would -- and the file it produces is readable back as the text that
-describes it. [`HOWTO.md`](HOWTO.md) is how to write one;
-[`SYNTAX.md`](SYNTAX.md) is the reference, generated from
-[`src/grammar.py`](src/grammar.py).
+**They are written, not captured.** Each is a text file naming bitstream
+fields, one per line. Nothing is validated on the way, so a case can say
+what no encoder ever would.
 
-* **%(vp8l)d lossless (VP8L) streams**
-  ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
-  Huffman codes down to the code-length stream that describes them, and the
-  pixel data.
-* **%(lossy)d lossy VP8 frames** ([`vp8_asm.py`](src/vp8_asm.py)), under the
-  field names [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives
-  them. Seven of them are the exception to the paragraph above: a frame may
-  carry up to eight token partitions and cwebp emits only one, so
-  [`make_partition_sources.c`](src/make_partition_sources.c) makes four
-  through the encoder API into [`sources/`](sources), and
-  [`lossy_parts.py`](src/lossy_parts.py) turns those into seven -- the four
-  as they are, plus three with the partition-size table rewritten.
-* **%(container)d RIFF containers** ([`webp_asm.py`](src/webp_asm.py)), in
-  [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
-  extended-format VP8X chunk, the optional chunks a decoder must step over,
-  and sizes that lie about what is behind them.
-* **%(alpha)d alpha chunks**, where the plane is either stored one byte per
-  pixel or compressed with the lossless coder in its 8-bit mode -- a
-  different path through the decoder from the one every VP8L file here
-  takes. A compressed plane is a lossless image stream without a header, so
-  `vp8l_asm.py` writes those too.
-* **%(anim)d animations** ([`webp_asm.py`](src/webp_asm.py) again): an ANIM
-  chunk and one ANMF per frame, each frame carrying its own image, position,
-  duration, disposal and blending. No still decoder will open one, so these
-  are checked with `anim_dump` instead.
+The names are the specifications' own:
+[RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) for the lossy
+bitstream, [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html) for the
+container.
 
-Each note below is its case's own, and says what the reference decoder is
-expected to do with it:
+What they reach:
+
+%(cover)s
+Every file carries a verdict, which is what a decoder must do with it:
 
 * **ok** -- must decode, and must keep decoding to the same pixels. Several
   are not something cwebp can produce, so nothing else pins the behaviour.
+
 * **reject** -- must fail cleanly and report a status, with no crash and no
   out-of-bounds access. Which status varies: a malformed Huffman code gives
   BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
 
 A file read by more than one decoder carries more than one verdict, and
-they do not always agree. An animation reads `reject, anim_dump ok`: dwebp
-returns UNSUPPORTED_FEATURE for anything claiming animation before it looks
-at a frame, so that half says nothing about the file and the second half is
-the one that does. Where `webpinfo` or the incremental decoder disagrees
-with the rest, it is named too, and `check.sh` holds all of them to it.
+they do not always agree. An animation reads `reject, anim_dump ok`: a
+still decoder refuses anything claiming animation before it looks at a
+frame, so that half says nothing about the file and the second half is the
+one that does. `webpinfo` and the incremental decoder are named where they
+disagree, and `check.sh` holds all of them to it.
 
 %(files)s
 %(code)s
@@ -261,8 +238,10 @@ reference. The short version:
     ./src/webp_dis.py --check some-animation.webp
 
 [`files/`](files) is pure output and is wiped on every rebuild. The only
-input here that is not text is [`sources/`](sources), the four frames above:
-nothing in this directory can write them, only the encoder can.
+input that is not text is [`sources/`](sources): four lossy frames made
+through the encoder API, because a frame may carry up to eight token
+partitions and cwebp emits only one. Nothing in this directory can write
+them.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
@@ -366,6 +345,42 @@ generators, the scripts and the bitstreams in `files/` alike.
 def wrap(text, indent=''):
     return '\n'.join(textwrap.wrap(text, 79, initial_indent=indent,
                                    subsequent_indent=indent)) + '\n'
+
+
+# What each family of files is for, in the order the README lists them. The
+# counts are substituted, so these are wrapped here rather than written out:
+# '80' and '148' are not the same width.
+COVERAGE = [
+    ('vp8l', 'lossless (VP8L) streams',
+     'Huffman codes and the code-length code that describes them, colour '
+     'caches, back-references, the four transforms, and the entropy image '
+     'that changes codes mid-row.'),
+    ('lossy', 'lossy VP8 frames',
+     'every field of the frame header, the segmentation, loop-filter and '
+     'quantizer records, the coefficient token coder out to its escape '
+     'categories, and the 1, 2, 4 or 8 token partitions.'),
+    ('container', 'RIFF containers',
+     'the VP8X chunk and the canvas it declares, the optional chunks a '
+     'decoder must step over by their declared length alone, and headers '
+     'that lie about what sits behind them.'),
+    ('alpha', 'alpha chunks',
+     'the plane stored a byte per pixel through each of the four filters, '
+     'and the plane compressed by the lossless coder in an 8-bit mode '
+     'nothing else here reaches.'),
+    ('anim', 'animations',
+     'frame position, duration, disposal and blending, composed over a '
+     'canvas one frame at a time. No still decoder will open one of these '
+     'at all.'),
+]
+
+
+def build_coverage(kinds):
+    """The opening list: what each family of files is for."""
+    return '\n'.join(
+        '\n'.join(textwrap.wrap('**%d %s** -- %s' % (kinds[key], title, what),
+                                79, initial_indent='* ',
+                                subsequent_indent='  ')) + '\n'
+        for key, title, what in COVERAGE)
 
 
 def build_index(rows, groups):
@@ -893,8 +908,9 @@ def build_file_list(index):
     note further down, and listed with its size in files/."""
     return '## The bitstreams\n\n' + wrap(
         'The whole set lives in **[`files/`](files)**, which lists each one '
-        'with its size and expected verdict. Every note below links straight '
-        'to the file it is about.') + '\n' + index
+        'with its size and expected verdict, and the text they are assembled '
+        'from is in **[`cases/`](cases)**. Every note below links to both.'
+    ) + '\n' + index
 
 
 def heading(outdir, row):
@@ -920,6 +936,7 @@ def write_readme(outdir, rows):
             kinds['vp8l'] += 1
     index = build_index(rows, GROUPS)
     lines = [README_HEAD % dict(kinds,
+                                cover=build_coverage(kinds),
                                 files=build_file_list(index),
                                 code=build_code_list(outdir))]
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
