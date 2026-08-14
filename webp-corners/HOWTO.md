@@ -157,6 +157,10 @@ then:
    actually reached. **Write the `exercises` line from that output, not from
    reading the source.** Several notes here were wrong until this was run.
 4. `./make_hashes.sh` -- once the decoded output is known to be right.
+5. `LIBWEBP=... ./coverage.sh` -- optional, and the test of whether the case
+   earned its place: it says how much of `src/dec` and `src/demux` the whole
+   corpus reaches. One that moves nothing is covering ground another file
+   already holds.
 
 The other header keys are optional and each says something no one can infer:
 `roundtrip: no` for a case no disassembler can reproduce, `anim` and `info`

@@ -1,0 +1,13 @@
+# note: A ten-pixel back-reference at distance 3.
+# expect: ok
+# unique: copy32b_overlap
+# exercises: The 32-bit copy's third case. Distances of 1 and 2 become a
+#   repeated pattern and a copy shorter than its distance becomes a memcpy;
+#   this one overlaps its own source without being a pattern, so it is left
+#   to the pixel-at-a-time loop.
+lossless
+width 16
+height 2
+code green complex
+code dist complex
+pixels 0x33 x5 0x77 0x99 0xaa copy 10 123 0x33 x14

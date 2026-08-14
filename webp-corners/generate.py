@@ -275,6 +275,14 @@ rests on having read the code.
   `src/check_refs.py` records what each cited line said and checks it still
   says it. Three were already wrong when it was written.
 
+* **How much of the decoder this reaches is a number, not a hope.**
+  `coverage.sh` reports `src/dec` and `src/demux` line by line, and then
+  reports the same files again driven through every `dwebp` knob and every
+  entry point libwebp exports. The distance between the two is the part no
+  bitstream decides -- output formats, rescaling, allocation failures -- and
+  keeping the two apart is what stops the corpus from being blamed for
+  paths a file cannot reach.
+
 Where that leaves the corpus: every field of the lossy frame header is
 written at both ends of its range, every reachable (coefficient type, band,
 context) probability cell is read, and every pair of optional tools appears
@@ -366,8 +374,11 @@ ENV = [
                        'puts it.'),
     ('ASAN_OPTIONS', 'Passed through to those two; `detect_leaks=0` unless '
                      'you say otherwise.'),
-    ('LIBWEBP', 'A libwebp git checkout, for `make_coverage.sh` and '
-                '`make_vp8_tables.py`.'),
+    ('LIBWEBP', 'A libwebp git checkout, for `make_coverage.sh`, '
+                '`coverage.sh` and `make_vp8_tables.py`.'),
+    ('PROFDATA', '`llvm-profdata`, for `coverage.sh`. Taken from `$PATH` or '
+                 '`xcrun` when unset.'),
+    ('COV', '`llvm-cov`, likewise.'),
     ('SKIP_SLOW', 'Set it to skip the one file that allocates a gigabyte.'),
 ]
 
@@ -628,6 +639,11 @@ RUN = [
                  'and `$WEBPINFO`. The one to run.'),
     ('asan_sweep.sh', 'The same, in 14 output modes under a sanitizer build. '
                       'Point `$ASAN_DWEBP` at one.'),
+    ('coverage.sh', 'How much of `src/dec` and `src/demux` these files '
+                    'reach, from an instrumented build in a throwaway '
+                    'worktree. Also reports how much further a caller can '
+                    'get with the same files, which is how you tell a gap in '
+                    'the corpus from a path no bitstream controls.'),
     ('generate.py', 'Rebuilds `files/` from `cases/`, and writes '
                     '`expected.txt`, this README, `SYNTAX.md`, '
                     '`src/README.md`, and an `index.html` for each directory that needs one.'),
@@ -666,6 +682,11 @@ SRC = [
     ('src/make_partition_sources.c', 'Rebuilds `sources/`: cwebp cannot emit '
                                      'more than one token partition.'),
     ('src/probes.py', 'The `fprintf` probes `make_coverage.sh` patches in.'),
+    ('src/api_sweep.c', 'Every decoding entry point libwebp exports, for '
+                        '`coverage.sh`: the incremental decoder fed a few '
+                        'bytes at a time, caller-allocated buffers, the '
+                        'colorspaces dwebp cannot ask for, the demuxer\'s '
+                        'iterators.'),
     ('src/check_refs.py', 'Checks that the source lines the notes point at '
                           'still say what the notes claim.'),
 ]

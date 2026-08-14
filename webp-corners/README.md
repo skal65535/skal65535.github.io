@@ -14,7 +14,7 @@ container.
 
 What they reach:
 
-* **80 lossless (VP8L) streams** -- Huffman codes and the code-length code that
+* **82 lossless (VP8L) streams** -- Huffman codes and the code-length code that
   describes them, colour caches, back-references, the four transforms, and the
   entropy image that changes codes mid-row.
 
@@ -26,7 +26,7 @@ What they reach:
   optional chunks a decoder must step over by their declared length alone, and
   headers that lie about what sits behind them.
 
-* **29 alpha chunks** -- the plane stored a byte per pixel through each of the
+* **33 alpha chunks** -- the plane stored a byte per pixel through each of the
   four filters, and the plane compressed by the lossless coder in an 8-bit mode
   nothing else here reaches.
 
@@ -60,6 +60,7 @@ it.
 | --- | --- |
 | [`check.sh`](check.sh) | Decodes every file and checks the verdict and the pixels, through `dwebp` or -- for the animations -- `$ANIM_DUMP` and `$WEBPINFO`. The one to run. |
 | [`asan_sweep.sh`](asan_sweep.sh) | The same, in 14 output modes under a sanitizer build. Point `$ASAN_DWEBP` at one. |
+| [`coverage.sh`](coverage.sh) | How much of `src/dec` and `src/demux` these files reach, from an instrumented build in a throwaway worktree. Also reports how much further a caller can get with the same files, which is how you tell a gap in the corpus from a path no bitstream controls. |
 | [`generate.py`](generate.py) | Rebuilds `files/` from `cases/`, and writes `expected.txt`, this README, `SYNTAX.md`, `src/README.md`, and an `index.html` for each directory that needs one. |
 | [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt`, once the new output is known to be right. |
 | [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
@@ -86,6 +87,7 @@ describing how they fit together.
 | [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
 | [`src/make_partition_sources.c`](src/make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
 | [`src/probes.py`](src/probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+| [`src/api_sweep.c`](src/api_sweep.c) | Every decoding entry point libwebp exports, for `coverage.sh`: the incremental decoder fed a few bytes at a time, caller-allocated buffers, the colorspaces dwebp cannot ask for, the demuxer's iterators. |
 | [`src/check_refs.py`](src/check_refs.py) | Checks that the source lines the notes point at still say what the notes claim. |
 
 ## The data
@@ -118,12 +120,12 @@ why that is worth a file.
 | Sub-images | 9 | 5 | 4 |
 | Palette packing | 6 | 6 | 0 |
 | Transforms | 5 | 4 | 1 |
-| Back-references | 8 | 6 | 2 |
+| Back-references | 10 | 8 | 2 |
 | Predictor modes | 7 | 7 | 0 |
 | Frame header | 7 | 3 | 4 |
 | The RIFF container | 19 | 9 | 10 |
 | Animation | 48 | 27 | 21 |
-| The alpha chunk | 29 | 19 | 10 |
+| The alpha chunk | 33 | 23 | 10 |
 | Lossy: frame tag and picture header | 16 | 8 | 8 |
 | Lossy: segmentation | 7 | 7 | 0 |
 | Lossy: loop filter | 6 | 6 | 0 |
@@ -135,7 +137,7 @@ why that is worth a file.
 | Lossy: token partitions | 5 | 2 | 3 |
 | Lossy: truncation | 4 | 1 | 3 |
 | Lossy: partition sizes, from real encodes | 8 | 5 | 3 |
-| **total** | **257** | **176** | **81** |
+| **total** | **263** | **182** | **81** |
 
 ### Whole lossless images
 
@@ -272,6 +274,8 @@ Copy lengths and distances.
 | file | | what it is |
 | --- | --- | --- |
 | [`lz77-distance-1-run`](files/lz77-distance-1-run.webp) [txt](cases/lz77-distance-1-run.txt) | ok | A single literal followed by a length-8 copy at distance 1 |
+| [`lz77-distance-2-pattern`](files/lz77-distance-2-pattern.webp) [txt](cases/lz77-distance-2-pattern.txt) | ok | A back-reference at distance 2, five pixels long |
+| [`lz77-distance-3-overlap`](files/lz77-distance-3-overlap.webp) [txt](cases/lz77-distance-3-overlap.txt) | ok | A ten-pixel back-reference at distance 3 |
 | [`lz77-distance-direct-121`](files/lz77-distance-direct-121.webp) [txt](cases/lz77-distance-direct-121.txt) | ok | Plane code 121, the first value past the table |
 | [`lz77-distance-past-start`](files/lz77-distance-past-start.webp) [txt](cases/lz77-distance-past-start.txt) | reject | A back-reference pointing further back than the pixels decoded so far |
 | [`lz77-length-past-end`](files/lz77-length-past-end.webp) [txt](cases/lz77-length-past-end.txt) | reject | A copy whose length runs past the last pixel of the image |
@@ -422,7 +426,11 @@ conditions the 8-bit mode asks for in turn.
 | [`alph-plane-cache`](files/alph-plane-cache.webp) [txt](cases/alph-plane-cache.txt) | ok | A palette-coded alpha plane that also declares a colour cache |
 | [`alph-plane-filtered`](files/alph-plane-filtered.webp) [txt](cases/alph-plane-filtered.txt) | ok | A compressed alpha plane with the gradient filter on top |
 | [`alph-plane-literals`](files/alph-plane-literals.webp) [txt](cases/alph-plane-literals.txt) | ok | A compressed alpha plane written as plain green literals |
+| [`alph-plane-lz77-dist-2`](files/alph-plane-lz77-dist-2.webp) [txt](cases/alph-plane-lz77-dist-2.txt) | ok | An alpha plane back-reference at distance 2 |
+| [`alph-plane-lz77-dist-4`](files/alph-plane-lz77-dist-4.webp) [txt](cases/alph-plane-lz77-dist-4.txt) | ok | An alpha plane back-reference at distance 4 |
 | [`alph-plane-lz77-past-start`](files/alph-plane-lz77-past-start.webp) [txt](cases/alph-plane-lz77-past-start.txt) | reject | An alpha plane copying from before its own beginning |
+| [`alph-plane-lz77-plain`](files/alph-plane-lz77-plain.webp) [txt](cases/alph-plane-lz77-plain.txt) | ok | Two alpha-plane back-references that take neither pattern arm: one at distance 3, one shorter than its own distance |
+| [`alph-plane-lz77-unaligned`](files/alph-plane-lz77-unaligned.webp) [txt](cases/alph-plane-lz77-unaligned.txt) | ok | An alpha plane back-reference starting one byte off a word boundary |
 | [`alph-plane-lz77`](files/alph-plane-lz77.webp) [txt](cases/alph-plane-lz77.txt) | ok | An alpha plane whose second half is a back-reference to its first |
 | [`alph-plane-meta-huffman`](files/alph-plane-meta-huffman.webp) [txt](cases/alph-plane-meta-huffman.txt) | ok | A palette-coded alpha plane with an entropy image inside it |
 | [`alph-plane-nontrivial-red`](files/alph-plane-nontrivial-red.webp) [txt](cases/alph-plane-nontrivial-red.txt) | ok | A palette-coded alpha plane whose red code carries two symbols |
@@ -633,10 +641,10 @@ backwards. Generated from `coverage.txt`.
 | decoder path | files |
 | --- | --- |
 | `alpha_8b_blocks` | `alph-plane-meta-huffman` |
-| `alpha_8b_copy` | `alph-lossless-palette`, `alph-plane-lz77` |
+| `alpha_8b_copy` | `alph-lossless-palette`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-plain`, `alph-plane-lz77-unaligned` |
 | `alpha_8b_copy_oob` | `alph-plane-lz77-past-start` |
-| `alpha_8b_data` | `alph-lossless-palette`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-meta-huffman`, `alph-plane-palette` +2 |
-| `alpha_8b_no_blocks` | `alph-lossless-palette`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-palette`, `alph-plane-preprocessed` +1 |
+| `alpha_8b_data` | `alph-lossless-palette`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start` +6 |
+| `alpha_8b_no_blocks` | `alph-lossless-palette`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start` +5 |
 | `alpha_is_used` | `anim-alpha-flag-missing`, `anim-blend-none`, `anim-blend-over`, `anim-blend-ranges`, `anim-dispose-background`, `anim-dispose-blend-matrix` +2 |
 | `anim_blend_around_prev` | `anim-blend-ranges` |
 | `anim_blend_nonpremult` | `anim-alph-after-image`, `anim-alpha-flag-missing`, `anim-alpha-lossless-frame`, `anim-alpha-raw-frame`, `anim-anim-chunk-padded`, `anim-anim-chunk-short` +41 |
@@ -662,19 +670,19 @@ backwards. Generated from `coverage.txt`.
 | `bmode_9` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-coeff-all-types` +7 |
 | `build_depth_15` | `codelen-depth-15` |
 | `build_empty_code` | `codelen-all-zero-lengths`, `header-max-area-truncated`, `meta-huffman-groups-truncated`, `simple-dist-1sym-oob`, `simple-dist-2sym-both-oob`, `simple-dist-sym-40-first-oob` +1 |
-| `build_single_value` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +103 |
+| `build_single_value` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +109 |
 | `build_two_level` | `codelen-depth-15`, `codelen-two-level-table` |
 | `cache_bits_max` | `cache-bits-11`, `subimage-cache-palette-max` |
 | `cache_bits_min` | `cache-bits-1`, `cache-index-literal`, `subimage-cache-predictor-min` |
 | `cache_index` | `cache-index-literal`, `lossless-all-features` |
 | `codelen_16` | `codelen-repeat16-no-previous` |
 | `codelen_16_default_prev` | `codelen-repeat16-no-previous` |
-| `codelen_17` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-lz77-past-start`, `codelen-repeat17-short-zeros`, `lz77-plane-code-120` |
+| `codelen_17` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start`, `alph-plane-lz77-plain` +2 |
 | `codelen_17_max_run` | `alph-plane-lz77-past-start`, `codelen-repeat17-short-zeros`, `lz77-plane-code-120` |
-| `codelen_18` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-oversubscribed` +25 |
-| `codelen_18_max_run` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-oversubscribed` +17 |
+| `codelen_18` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4` +31 |
+| `codelen_18_max_run` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-past-start` +20 |
 | `coeff_cat3` | `anim-lossy-frames`, `container-duplicate-image-chunk`, `container-metadata-chunks`, `container-odd-chunk-payload`, `container-trailing-bytes`, `container-unknown-chunk` +39 |
-| `coeff_cat4` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +68 |
+| `coeff_cat4` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +72 |
 | `coeff_cat5` | `lossy-coeff-cat5` |
 | `coeff_cat6` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-coeff-cat6`, `lossy-coeff-cat6-max` +1 |
 | `coeff_max` | `lossy-coeff-cat6-max`, `lossy-quant-dequant-overflow` |
@@ -682,7 +690,17 @@ backwards. Generated from `coverage.txt`.
 | `coeff_v3_4` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +65 |
 | `coeff_v5_6` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +43 |
 | `coeff_v7_10` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-coeff-all-types`, `lossy-coeff-full-block` +17 |
-| `complex_code` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-lz77` +45 |
+| `complex_code` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-lz77` +51 |
+| `copy32b_dist_2` | `lz77-distance-2-pattern` |
+| `copy32b_overlap` | `lz77-distance-3-overlap` |
+| `copy32b_tail` | `lz77-distance-2-pattern` |
+| `copy8b_dist_1` | `alph-plane-lz77`, `alph-plane-lz77-unaligned` |
+| `copy8b_dist_2` | `alph-plane-lz77-dist-2` |
+| `copy8b_dist_4` | `alph-plane-lz77-dist-4` |
+| `copy8b_memcpy` | `alph-plane-lz77-plain` |
+| `copy8b_no_pattern` | `alph-plane-lz77-plain` |
+| `copy8b_tail` | `alph-plane-lz77-unaligned` |
+| `copy8b_unaligned` | `alph-plane-lz77-unaligned` |
 | `cross_color_multipliers` | `transform-cross-color-multipliers` |
 | `demux_alph_after_image` | `anim-alph-after-image` |
 | `demux_anim_duplicate` | `anim-duplicate-anim` |
@@ -705,7 +723,7 @@ backwards. Generated from `coverage.txt`.
 | `demux_second_vp8x` | `anim-second-vp8x` |
 | `demux_vp8l_with_alph` | `anim-vp8l-with-alph` |
 | `dist_clamped_to_1` | `lz77-plane-code-clamped-to-1` |
-| `dist_direct` | `lz77-distance-direct-121`, `lz77-length-past-end` |
+| `dist_direct` | `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-plain`, `alph-plane-lz77-unaligned`, `lz77-distance-2-pattern`, `lz77-distance-3-overlap` +2 |
 | `dist_plane_code_1` | `lz77-distance-past-start`, `lz77-plane-code-1` |
 | `dist_plane_code_120` | `lz77-plane-code-120` |
 | `error:Alpha-decoder-initialization-failed.` | `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-truncated`, `alph-plane-oversubscribed`, `alph-preprocessing-invalid`, `alph-raw-short` +1 |
@@ -724,12 +742,12 @@ backwards. Generated from `coverage.txt`.
 | `info:unknown-profile` | `lossy-frame-version-4`, `lossy-frame-version-7` |
 | `info:zero-dimension` | `lossy-frame-zero-width` |
 | `literal_four_channels` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `lossless-plain`, `transform-palette-3-colors`, `transform-palette-index-past-end` |
-| `literal_trivial_arb` | `codelen-depth-15`, `codelen-two-level-table`, `predictor-all-16-modes`, `predictor-tile-bits-min`, `subimage-code-complex-form` |
+| `literal_trivial_arb` | `codelen-depth-15`, `codelen-two-level-table`, `lz77-distance-2-pattern`, `lz77-distance-3-overlap`, `predictor-all-16-modes`, `predictor-tile-bits-min` +1 |
 | `literal_trivial_code` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-literals`, `alph-plane-two-transforms` +62 |
-| `lz77_copy` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `lossless-all-features`, `lz77-distance-1-run`, `lz77-distance-direct-121`, `lz77-distance-past-start` +5 |
+| `lz77_copy` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `lossless-all-features`, `lz77-distance-1-run`, `lz77-distance-2-pattern`, `lz77-distance-3-overlap` +7 |
 | `lz77_max_len_sym` | `lz77-max-length-symbol` |
 | `max_symbol_early_stop` | `codelen-max-symbol-early-stop`, `subimage-code-max-symbol` |
-| `mb_i16` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +87 |
+| `mb_i16` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +91 |
 | `mb_i4x4` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-coeff-all-types` +21 |
 | `mb_skip_flag` | `lossy-combo-all-features`, `lossy-proba-refresh-and-skip-zero`, `lossy-skip-all`, `lossy-skip-i4x4-nz-dc`, `lossy-skip-mixed`, `lossy-truncated-short-modes` |
 | `mb_skipped` | `lossy-combo-all-features`, `lossy-proba-refresh-and-skip-zero`, `lossy-skip-all`, `lossy-skip-i4x4-nz-dc`, `lossy-skip-mixed`, `lossy-truncated-short-modes` |
@@ -741,14 +759,14 @@ backwards. Generated from `coverage.txt`.
 | `meta_precision_min` | `alph-plane-meta-huffman`, `lossless-all-features`, `meta-huffman-1001-groups`, `meta-huffman-groups-truncated`, `meta-huffman-per-tile-data`, `meta-huffman-precision-min` +3 |
 | `meta_unused_group` | `meta-huffman-1001-groups`, `meta-huffman-sparse-groups` |
 | `num_codes_max` | `codelen-depth-15`, `codelen-num-codes-19` |
-| `num_codes_min` | `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-oversubscribed`, `cache-index-literal`, `codelen-all-zero-lengths`, `codelen-max-symbol-early-stop` +20 |
+| `num_codes_min` | `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start`, `alph-plane-lz77-plain`, `alph-plane-lz77-unaligned` +26 |
 | `palette_1` | `transform-palette-1-color` |
 | `palette_16` | `transform-palette-16-colors` |
 | `palette_2` | `alph-lossless-palette`, `subimage-cache-palette-max`, `transform-all-four`, `transform-palette-2-colors` |
 | `palette_256` | `transform-palette-256-colors` |
-| `palette_3` | `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-meta-huffman`, `alph-plane-nontrivial-red` +6 |
-| `palette_black_tail` | `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-meta-huffman`, `alph-plane-nontrivial-red` +7 |
-| `parts_1` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +95 |
+| `palette_3` | `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start` +10 |
+| `palette_black_tail` | `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-past-start` +11 |
+| `parts_1` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +99 |
 | `parts_2` | `lossy-2-partitions`, `lossy-parts-2-wrap` |
 | `parts_4` | `lossy-4-partitions`, `lossy-combo-all-features`, `lossy-parts-last-empty`, `lossy-parts-size-past-end` |
 | `parts_8` | `lossy-8-partitions`, `lossy-8-partitions-size-overflow`, `lossy-8-partitions-sizes-sum-past-end`, `lossy-8-partitions-zero-sizes`, `lossy-parts-8-rows`, `lossy-parts-table-too-small` |
@@ -797,7 +815,7 @@ backwards. Generated from `coverage.txt`.
 | `segment_id_1` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-combo-all-features`, `lossy-segment-delta-quantizers` +5 |
 | `segment_id_2` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-combo-all-features` +6 |
 | `segment_id_3` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-combo-all-features` +6 |
-| `simple_1sym` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +103 |
+| `simple_1sym` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +109 |
 | `simple_2sym` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-plane-filtered`, `alph-plane-meta-huffman`, `alph-plane-nontrivial-red` +19 |
 | `simple_sym1_oob` | `simple-dist-1sym-oob`, `simple-dist-2sym-both-oob`, `simple-dist-2sym-first-oob`, `simple-dist-sym-40-first-oob` |
 | `simple_sym2_oob` | `simple-dist-2sym-both-oob`, `simple-dist-2sym-second-oob` |
@@ -805,22 +823,22 @@ backwards. Generated from `coverage.txt`.
 | `skip_i4x4_keeps_nz_dc` | `lossy-skip-i4x4-nz-dc` |
 | `skip_proba` | `lossy-combo-all-features`, `lossy-proba-refresh-and-skip-zero`, `lossy-proba-skip-extremes`, `lossy-skip-all`, `lossy-skip-i4x4-nz-dc`, `lossy-skip-mixed` +1 |
 | `subimage_cache` | `subimage-cache-12-invalid`, `subimage-cache-entropy-image`, `subimage-cache-palette-max`, `subimage-cache-predictor-min`, `subimage-cache-zero-invalid` |
-| `subimage_stream` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +42 |
+| `subimage_stream` | `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor`, `alph-lossless-truncated`, `alph-plane-cache`, `alph-plane-filtered` +46 |
 | `tf_bits_max` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `alph-lossless-truncated`, `transform-cross-color-bits-max`, `transform-predictor-bits-max` |
 | `tf_bits_min` | `lossless-all-features`, `predictor-all-16-modes`, `predictor-mode-11-select`, `predictor-mode-13-clamp-half`, `predictor-mode-14-undefined`, `predictor-mode-15-undefined` +11 |
-| `tf_color_indexing` | `alph-lossless-palette`, `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-past-start`, `alph-plane-meta-huffman` +14 |
+| `tf_color_indexing` | `alph-lossless-palette`, `alph-plane-cache`, `alph-plane-filtered`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4` +18 |
 | `tf_cross_color` | `lossless-all-features`, `subimage-cache-zero-invalid`, `transform-all-four`, `transform-cross-color-bits-max`, `transform-cross-color-multipliers` |
 | `tf_predictor` | `alph-lossless-byte-flipped`, `alph-lossless-predictor`, `alph-lossless-truncated`, `lossless-all-features`, `predictor-all-16-modes`, `predictor-mode-11-select` +13 |
 | `tf_subtract_green` | `alph-plane-two-transforms`, `lossless-all-features`, `transform-all-four`, `transform-repeated` |
 | `use_length` | `codelen-max-symbol-early-stop`, `codelen-max-symbol-too-big`, `subimage-code-max-symbol` |
-| `uvmode_0` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +102 |
+| `uvmode_0` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +106 |
 | `uvmode_1` | `lossy-coeff-all-types`, `lossy-combo-all-features`, `lossy-filter-lf-delta`, `lossy-filter-normal-max`, `lossy-filter-simple-max`, `lossy-mode-mixed` +5 |
 | `uvmode_2` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-filter-lf-delta`, `lossy-filter-normal-max` +6 |
 | `uvmode_3` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-combo-all-features` +18 |
-| `wht_dc_only` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +75 |
+| `wht_dc_only` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +79 |
 | `wht_empty` | `anim-alpha-lossless-frame`, `anim-alpha-raw-frame`, `anim-lossy-frames`, `anim-mixed-formats`, `container-duplicate-image-chunk`, `container-metadata-chunks` +34 |
 | `wht_full` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-coeff-all-types`, `lossy-coeff-bands-i16` +8 |
-| `ymode_0` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +87 |
+| `ymode_0` | `alph-after-image`, `alph-compression-invalid`, `alph-empty-payload`, `alph-lossless-byte-flipped`, `alph-lossless-palette`, `alph-lossless-predictor` +91 |
 | `ymode_1` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-8-partitions-zero-sizes`, `lossy-combo-all-features` +12 |
 | `ymode_2` | `anim-lossy-frames`, `container-duplicate-image-chunk`, `container-metadata-chunks`, `container-odd-chunk-payload`, `container-trailing-bytes`, `container-unknown-chunk` +33 |
 | `ymode_3` | `lossy-1-partitions`, `lossy-2-partitions`, `lossy-4-partitions`, `lossy-8-partitions`, `lossy-filter-normal-max`, `lossy-filter-simple-max` +9 |
@@ -864,7 +882,9 @@ in the environment, so the thing under test is always the one you meant.
 | `$ASAN_DWEBP` | A sanitizer build, for `asan_sweep.sh`. |
 | `$ASAN_ANIM_DUMP` | The same for the animations. Looked for beside `$ASAN_DWEBP` when unset, which is where the build puts it. |
 | `$ASAN_OPTIONS` | Passed through to those two; `detect_leaks=0` unless you say otherwise. |
-| `$LIBWEBP` | A libwebp git checkout, for `make_coverage.sh` and `make_vp8_tables.py`. |
+| `$LIBWEBP` | A libwebp git checkout, for `make_coverage.sh`, `coverage.sh` and `make_vp8_tables.py`. |
+| `$PROFDATA` | `llvm-profdata`, for `coverage.sh`. Taken from `$PATH` or `xcrun` when unset. |
+| `$COV` | `llvm-cov`, likewise. |
 | `$SKIP_SLOW` | Set it to skip the one file that allocates a gigabyte. |
 
 A missing tool is reported and skipped, never silently passed over.
@@ -899,6 +919,14 @@ rests on having read the code.
   against the libwebp revision stamped in `coverage.txt`, so
   `src/check_refs.py` records what each cited line said and checks it still
   says it. Three were already wrong when it was written.
+
+* **How much of the decoder this reaches is a number, not a hope.**
+  `coverage.sh` reports `src/dec` and `src/demux` line by line, and then
+  reports the same files again driven through every `dwebp` knob and every
+  entry point libwebp exports. The distance between the two is the part no
+  bitstream decides -- output formats, rescaling, allocation failures -- and
+  keeping the two apart is what stops the corpus from being blamed for
+  paths a file cannot reach.
 
 Where that leaves the corpus: every field of the lossy frame header is
 written at both ends of its range, every reachable (coefficient type, band,
@@ -939,6 +967,6 @@ generators, the scripts and the bitstreams in `files/` alike.
 
 ---
 
-257 files, 57387 bytes total. Rebuild with `generate.py`: it assembles
+263 files, 58061 bytes total. Rebuild with `generate.py`: it assembles
 everything in `cases/` through `webp_asm.py`, which hands each case to
 `vp8l_asm.py` or `vp8_asm.py`, and those to `vp8l.py` and `vp8.py`.

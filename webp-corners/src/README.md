@@ -55,4 +55,5 @@ drift from the code.
 | [`lossy_parts.py`](lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
 | [`make_partition_sources.c`](make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
 | [`probes.py`](probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+| [`api_sweep.c`](api_sweep.c) | Every decoding entry point libwebp exports, for `coverage.sh`: the incremental decoder fed a few bytes at a time, caller-allocated buffers, the colorspaces dwebp cannot ask for, the demuxer's iterators. |
 | [`check_refs.py`](check_refs.py) | Checks that the source lines the notes point at still say what the notes claim. |

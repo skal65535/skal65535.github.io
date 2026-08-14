@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-corners: cases</h1>
-<p>250 text cases, each assembled into the .webp of the same name in
+<p>256 text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
 names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
 &mdash; and carries its own note on what it is for; the
@@ -32,7 +32,11 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="alph-plane-filtered.txt"><code>alph-plane-filtered</code></a></td><td class="ok">ok</td><td>A compressed alpha plane with the gradient filter on top.</td></tr>
 <tr><td><a href="alph-plane-literals.txt"><code>alph-plane-literals</code></a></td><td class="ok">ok</td><td>A compressed alpha plane written as plain green literals.</td></tr>
 <tr><td><a href="alph-plane-lz77.txt"><code>alph-plane-lz77</code></a></td><td class="ok">ok</td><td>An alpha plane whose second half is a back-reference to its first.</td></tr>
+<tr><td><a href="alph-plane-lz77-dist-2.txt"><code>alph-plane-lz77-dist-2</code></a></td><td class="ok">ok</td><td>An alpha plane back-reference at distance 2.</td></tr>
+<tr><td><a href="alph-plane-lz77-dist-4.txt"><code>alph-plane-lz77-dist-4</code></a></td><td class="ok">ok</td><td>An alpha plane back-reference at distance 4.</td></tr>
 <tr><td><a href="alph-plane-lz77-past-start.txt"><code>alph-plane-lz77-past-start</code></a></td><td class="reject">reject</td><td>An alpha plane copying from before its own beginning.</td></tr>
+<tr><td><a href="alph-plane-lz77-plain.txt"><code>alph-plane-lz77-plain</code></a></td><td class="ok">ok</td><td>Two alpha-plane back-references that take neither pattern arm: one at distance 3, one shorter than its own distance.</td></tr>
+<tr><td><a href="alph-plane-lz77-unaligned.txt"><code>alph-plane-lz77-unaligned</code></a></td><td class="ok">ok</td><td>An alpha plane back-reference starting one byte off a word boundary.</td></tr>
 <tr><td><a href="alph-plane-meta-huffman.txt"><code>alph-plane-meta-huffman</code></a></td><td class="ok">ok</td><td>A palette-coded alpha plane with an entropy image inside it.</td></tr>
 <tr><td><a href="alph-plane-nontrivial-red.txt"><code>alph-plane-nontrivial-red</code></a></td><td class="ok">ok</td><td>A palette-coded alpha plane whose red code carries two symbols.</td></tr>
 <tr><td><a href="alph-plane-oversubscribed.txt"><code>alph-plane-oversubscribed</code></a></td><td class="reject">reject</td><td>An alpha plane whose green code is over-subscribed.</td></tr>
@@ -220,6 +224,8 @@ conforming decoder must refuse it.</p>
 <tr><td><a href="lossy-truncated-short-modes.txt"><code>lossy-truncated-short-modes</code></a></td><td class="ok">ok</td><td>Mode data for 15 macroblocks in a frame whose dimensions call for 16.</td></tr>
 <tr><td><a href="lossy-truncated-tokens.txt"><code>lossy-truncated-tokens</code></a></td><td class="reject">reject</td><td>Partition 0 intact, the token partition cut in half.</td></tr>
 <tr><td><a href="lz77-distance-1-run.txt"><code>lz77-distance-1-run</code></a></td><td class="ok">ok</td><td>A single literal followed by a length-8 copy at distance 1.</td></tr>
+<tr><td><a href="lz77-distance-2-pattern.txt"><code>lz77-distance-2-pattern</code></a></td><td class="ok">ok</td><td>A back-reference at distance 2, five pixels long.</td></tr>
+<tr><td><a href="lz77-distance-3-overlap.txt"><code>lz77-distance-3-overlap</code></a></td><td class="ok">ok</td><td>A ten-pixel back-reference at distance 3.</td></tr>
 <tr><td><a href="lz77-distance-direct-121.txt"><code>lz77-distance-direct-121</code></a></td><td class="ok">ok</td><td>Plane code 121, the first value past the table.</td></tr>
 <tr><td><a href="lz77-distance-past-start.txt"><code>lz77-distance-past-start</code></a></td><td class="reject">reject</td><td>A back-reference pointing further back than the pixels decoded so far.</td></tr>
 <tr><td><a href="lz77-length-past-end.txt"><code>lz77-length-past-end</code></a></td><td class="reject">reject</td><td>A copy whose length runs past the last pixel of the image.</td></tr>

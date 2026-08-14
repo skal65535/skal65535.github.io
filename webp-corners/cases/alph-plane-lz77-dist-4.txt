@@ -1,0 +1,19 @@
+# note: An alpha plane back-reference at distance 4.
+# expect: ok
+# unique: copy8b_dist_4
+# exercises: The four-byte arm of CopyBlock8b()'s pattern switch, where the
+#   pattern is one whole word and the write loop needs no shifting at all.
+#   The last arm of the three; anything else goes to the plain copy.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+code green complex
+code dist complex
+pixels 0x24 x28 0x49 0x92 0x06 0x21 copy 32 124

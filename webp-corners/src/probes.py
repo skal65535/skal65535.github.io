@@ -209,6 +209,76 @@ VP8L = [
         } else {
           PROBE("alpha_8b_copy_oob");
           ok = 0;"""),
+    # Which arm of each copy the back-reference takes. Both functions write
+    # words rather than bytes where the distance lets them, so the same copy
+    # is four different pieces of code depending on its distance, its length
+    # and where it starts.
+    ("""  while ((uintptr_t)dst & 3) {
+    *dst++ = *src++;""",
+     """  while ((uintptr_t)dst & 3) {
+    PROBE_ONCE("copy8b_unaligned");
+    *dst++ = *src++;"""),
+    ("""  for (i <<= 2; i < length; ++i) {
+    dst[i] = src[i];
+  }""",
+     """  for (i <<= 2; i < length; ++i) {
+    PROBE_ONCE("copy8b_tail");
+    dst[i] = src[i];
+  }"""),
+    ("""      case 1:
+        pattern = src[0];""",
+     """      case 1:
+        PROBE("copy8b_dist_1");
+        pattern = src[0];"""),
+    ("""      case 2:
+#if !defined(WORDS_BIGENDIAN)""",
+     """      case 2:
+        PROBE("copy8b_dist_2");
+#if !defined(WORDS_BIGENDIAN)"""),
+    ("""      case 4:
+        WEBP_UNSAFE_MEMCPY(&pattern, src, sizeof(uint32_t));
+        break;
+      default:
+        goto Copy;""",
+     """      case 4:
+        PROBE("copy8b_dist_4");
+        WEBP_UNSAFE_MEMCPY(&pattern, src, sizeof(uint32_t));
+        break;
+      default:
+        PROBE("copy8b_no_pattern");
+        goto Copy;"""),
+    ("""Copy:
+  if (dist >= length) {  // no overlap -> use WEBP_UNSAFE_MEMCPY()
+    WEBP_UNSAFE_MEMCPY(dst, src, length * sizeof(*dst));""",
+     """Copy:
+  if (dist >= length) {  // no overlap -> use WEBP_UNSAFE_MEMCPY()
+    PROBE("copy8b_memcpy");
+    WEBP_UNSAFE_MEMCPY(dst, src, length * sizeof(*dst));"""),
+    ("""  if (length & 1) {  // Finish with left-over.
+    dst[i << 1] = src[i << 1];""",
+     """  if (length & 1) {  // Finish with left-over.
+    PROBE("copy32b_tail");
+    dst[i << 1] = src[i << 1];"""),
+    ("""    } else {
+      WEBP_UNSAFE_MEMCPY(&pattern, src, sizeof(pattern));
+    }""",
+     """    } else {
+      PROBE("copy32b_dist_2");
+      WEBP_UNSAFE_MEMCPY(&pattern, src, sizeof(pattern));
+    }"""),
+    ("""  } else if (dist >= length) {  // no overlap
+    WEBP_UNSAFE_MEMCPY(dst, src, length * sizeof(*dst));
+  } else {
+    int i;
+    for (i = 0; i < length; ++i) dst[i] = src[i];
+  }""",
+     """  } else if (dist >= length) {  // no overlap
+    WEBP_UNSAFE_MEMCPY(dst, src, length * sizeof(*dst));
+  } else {
+    int i;
+    PROBE("copy32b_overlap");
+    for (i = 0; i < length; ++i) dst[i] = src[i];
+  }"""),
     ("""  if (plane_code > CODE_TO_PLANE_CODES) {
     return plane_code - CODE_TO_PLANE_CODES;""",
      """  if (plane_code > CODE_TO_PLANE_CODES) {

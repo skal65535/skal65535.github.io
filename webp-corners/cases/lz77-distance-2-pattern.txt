@@ -1,0 +1,13 @@
+# note: A back-reference at distance 2, five pixels long.
+# expect: ok
+# unique: copy32b_dist_2 copy32b_tail
+# exercises: The 32-bit copy's two-pixel pattern, which it writes eight
+#   bytes at a time, and the odd pixel that leaves. lz77-distance-1-run
+#   takes the one-pixel form of the same path, whose pattern is a single
+#   value repeated rather than a pair.
+lossless
+width 16
+height 2
+code green complex
+code dist complex
+pixels 0x33 x6 0x77 0x99 copy 5 122 0x33 x19

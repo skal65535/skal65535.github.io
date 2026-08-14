@@ -1,0 +1,19 @@
+# note: An alpha plane back-reference at distance 2.
+# expect: ok
+# unique: copy8b_dist_2
+# exercises: The two-byte arm of CopyBlock8b()'s pattern switch. It reads a
+#   uint16_t and squares it into a word, then writes the plane four bytes at
+#   a time. alph-plane-lz77 takes the distance-1 arm next to it.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+code green complex
+code dist complex
+pixels 0x24 x31 0x49 copy 32 122

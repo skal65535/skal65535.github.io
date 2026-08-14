@@ -11,7 +11,7 @@
  code { font-size: 90%; }
 </style>
 <h1>webp-corners: bitstreams</h1>
-<p>257 WebP files that exercise corners of the format a normal encoder
+<p>263 WebP files that exercise corners of the format a normal encoder
 never emits, most of them assembled from the text in
 <a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
 one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
@@ -30,7 +30,11 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="alph-plane-filtered.webp"><code>alph-plane-filtered.webp</code></a></td><td class="n">88</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-literals.webp"><code>alph-plane-literals.webp</code></a></td><td class="n">80</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-lz77.webp"><code>alph-plane-lz77.webp</code></a></td><td class="n">136</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-lz77-dist-2.webp"><code>alph-plane-lz77-dist-2.webp</code></a></td><td class="n">140</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-lz77-dist-4.webp"><code>alph-plane-lz77-dist-4.webp</code></a></td><td class="n">146</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-lz77-past-start.webp"><code>alph-plane-lz77-past-start.webp</code></a></td><td class="n">134</td><td class="reject">reject</td></tr>
+<tr><td><a href="alph-plane-lz77-plain.webp"><code>alph-plane-lz77-plain.webp</code></a></td><td class="n">146</td><td class="ok">ok</td></tr>
+<tr><td><a href="alph-plane-lz77-unaligned.webp"><code>alph-plane-lz77-unaligned.webp</code></a></td><td class="n">144</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-meta-huffman.webp"><code>alph-plane-meta-huffman.webp</code></a></td><td class="n">140</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-nontrivial-red.webp"><code>alph-plane-nontrivial-red.webp</code></a></td><td class="n">134</td><td class="ok">ok</td></tr>
 <tr><td><a href="alph-plane-oversubscribed.webp"><code>alph-plane-oversubscribed.webp</code></a></td><td class="n">114</td><td class="reject">reject</td></tr>
@@ -225,6 +229,8 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><td><a href="lossy-truncated-short-modes.webp"><code>lossy-truncated-short-modes.webp</code></a></td><td class="n">62</td><td class="ok">ok</td></tr>
 <tr><td><a href="lossy-truncated-tokens.webp"><code>lossy-truncated-tokens.webp</code></a></td><td class="n">58</td><td class="reject">reject</td></tr>
 <tr><td><a href="lz77-distance-1-run.webp"><code>lz77-distance-1-run.webp</code></a></td><td class="n">42</td><td class="ok">ok</td></tr>
+<tr><td><a href="lz77-distance-2-pattern.webp"><code>lz77-distance-2-pattern.webp</code></a></td><td class="n">48</td><td class="ok">ok</td></tr>
+<tr><td><a href="lz77-distance-3-overlap.webp"><code>lz77-distance-3-overlap.webp</code></a></td><td class="n">50</td><td class="ok">ok</td></tr>
 <tr><td><a href="lz77-distance-direct-121.webp"><code>lz77-distance-direct-121.webp</code></a></td><td class="n">44</td><td class="ok">ok</td></tr>
 <tr><td><a href="lz77-distance-past-start.webp"><code>lz77-distance-past-start.webp</code></a></td><td class="n">38</td><td class="reject">reject</td></tr>
 <tr><td><a href="lz77-length-past-end.webp"><code>lz77-length-past-end.webp</code></a></td><td class="n">40</td><td class="reject">reject</td></tr>

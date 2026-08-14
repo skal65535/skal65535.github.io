@@ -1,0 +1,22 @@
+# note: Two alpha-plane back-references that take neither pattern arm: one
+#   at distance 3, one shorter than its own distance.
+# expect: ok
+# unique: copy8b_no_pattern copy8b_memcpy
+# exercises: Both ways out of CopyBlock8b()'s pattern switch. A distance of
+#   3 has no word-sized pattern, so it falls through to the plain copy; and
+#   a copy shorter than 8 never enters the switch at all, where a distance
+#   at least as long as the copy means the two ranges do not overlap and it
+#   becomes a memcpy.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+code green complex
+code dist complex
+pixels 0x24 x32 copy 16 123 copy 4 128 0x49 x12

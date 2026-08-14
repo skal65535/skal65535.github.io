@@ -16,7 +16,11 @@ alph-no-vp8x|reject||||
 alph-plane-cache|ok||||
 alph-plane-filtered|ok||||
 alph-plane-literals|ok||||
+alph-plane-lz77-dist-2|ok||||
+alph-plane-lz77-dist-4|ok||||
 alph-plane-lz77-past-start|reject||||
+alph-plane-lz77-plain|ok||||
+alph-plane-lz77-unaligned|ok||||
 alph-plane-lz77|ok||||
 alph-plane-meta-huffman|ok||||
 alph-plane-nontrivial-red|ok||||
@@ -205,6 +209,8 @@ lossy-truncated-modes|reject||||
 lossy-truncated-short-modes|ok||||
 lossy-truncated-tokens|reject||||
 lz77-distance-1-run|ok||||
+lz77-distance-2-pattern|ok||||
+lz77-distance-3-overlap|ok||||
 lz77-distance-direct-121|ok||||
 lz77-distance-past-start|reject||||
 lz77-length-past-end|reject||||

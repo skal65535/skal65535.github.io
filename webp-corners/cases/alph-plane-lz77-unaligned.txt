@@ -1,0 +1,21 @@
+# note: An alpha plane back-reference starting one byte off a word boundary.
+# expect: ok
+# unique: copy8b_unaligned copy8b_tail
+# exercises: CopySmallPattern8b()'s two ends. It writes whole words, so a
+#   copy that does not start on a word boundary is walked byte by byte
+#   first, rotating the pattern along the way; a length that is not a
+#   multiple of four leaves a tail behind at the other end. 33 bytes in and
+#   13 long, so both run.
+chunks VP8X ALPH VP8
+alpha 1
+width 16
+height 16
+yac_qi 30
+macroblock
+coeffs y2 -20
+alph_plane
+transforms color_indexing
+palette_colors 0x00000000 0x0000c800 0x0000ff00
+code green complex
+code dist complex
+pixels 0x24 x33 copy 13 121 0x49 x18
