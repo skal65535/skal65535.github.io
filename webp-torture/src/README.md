@@ -28,6 +28,11 @@ Three layers, and a case only ever touches the top one:
 [`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writer against
 real encodes rather than against itself. There is no VP8L disassembler yet.
 
+`grammar.py` is the third thing a case touches, though not at assembly time:
+it holds every keyword and the range of every value, and
+[`../SYNTAX.md`](../SYNTAX.md) is generated from it, so the reference cannot
+drift from the code.
+
 ## The files
 
 | file | what it is |
@@ -38,6 +43,7 @@ real encodes rather than against itself. There is no VP8L disassembler yet.
 | [`vp8_asm.py`](vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
 | [`webp_asm.py`](webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
 | [`vp8_dis.py`](vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
+| [`grammar.py`](grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
 | [`vp8_tables.py`](vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
 | [`make_vp8_tables.py`](make_vp8_tables.py) | Extracts them, so they are never retyped. |
 | [`lossy_parts.py`](lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |

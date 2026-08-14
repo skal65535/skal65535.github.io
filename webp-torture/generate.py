@@ -21,6 +21,7 @@ import textwrap
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'src'))
 
+import grammar
 import lossy_parts
 import vp8_asm
 import webp_asm
@@ -122,9 +123,9 @@ Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time:
 
 * **%(vp8l)d lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the bitstream: the
-  header, the transforms, the Huffman codes down to the code-length stream
-  that describes them, and the pixel data.
+  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the
+  bitstream: the header, the transforms, the Huffman codes down to the
+  code-length stream that describes them, and the pixel data.
 * **%(lossy)d lossy VP8 frames**. All but seven are assembled the same way by
   [`vp8_asm.py`](src/vp8_asm.py), under the field names
   [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
@@ -193,6 +194,9 @@ back out as text to start from:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
 
+[`SYNTAX.md`](SYNTAX.md) is the whole vocabulary in one place, generated
+from [`src/grammar.py`](src/grammar.py); `./src/grammar.py` prints the same
+thing as JSON, which is what a generator should read rather than the prose.
 Each tool's docstring is the reference for the fields it owns:
 `vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
 `webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
@@ -400,6 +404,8 @@ SRC = [
                         'belongs to.'),
     ('src/vp8_dis.py', 'The other direction: a lossy .webp back into that '
                        'text. `--check` round trips one against libwebp.'),
+    ('src/grammar.py', 'Every keyword and the range of every value, as data. '
+                       '`SYNTAX.md` is generated from it.'),
     ('src/vp8_tables.py', 'The VP8 constant tables, extracted from libwebp.'),
     ('src/make_vp8_tables.py', 'Extracts them, so they are never retyped.'),
     ('src/lossy_parts.py', 'The multi-partition lossy cases, patched from '
@@ -410,6 +416,7 @@ SRC = [
 ]
 
 DATA = [
+    ('SYNTAX.md', 'The whole case syntax, generated from `src/grammar.py`.'),
     ('expected.txt', 'Name and expected verdict, one line per file.'),
     ('hashes.txt', "SHA-256 of each decoding file's `-pam` output."),
     ('coverage.txt', 'Which decoder path each file actually reached.'),
@@ -437,6 +444,138 @@ def build_code_list(outdir):
                    'The layers underneath, in **[`src/`](src)**, which has '
                    'its own README describing how they fit together.'),
         code_table(outdir, DATA, 'The data')))
+
+
+SYNTAX_HEAD = """# The case syntax
+
+Every file in [`files/`](files) but seven is assembled from one text case in
+[`cases/`](cases). This is the whole vocabulary those cases use, generated
+from [`src/grammar.py`](src/grammar.py), which is also where a generator
+should read it from -- `./src/grammar.py` prints the same thing as JSON.
+
+A case is a keyed comment header, then one field per line, `#` starting a
+comment. Every field has a default, so a case says only what it is about:
+
+    # note: what this file is
+    # expect: ok
+    # exercises: which decoder path it reaches, and why that matters
+    lossless
+    width 16
+    code dist 200 3
+
+**Nothing is validated or clamped.** The ranges below are what the
+*bitstream field* holds, not what a decoder accepts: a value past one loses
+its top bits rather than being refused, which for a torture case is usually
+the point. The handful of things the assemblers do refuse are the ones they
+could not write at all -- a symbol a declared code has no entry for, a tile
+list that is not the length the transform implies.
+
+The header keys are %(header)s. `expect` is `ok` or `reject`; `slow` marks
+the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
+be read back by `src/vp8_dis.py`.
+
+Which assembler owns a case follows from its keywords: a case saying
+`lossless` is a VP8L image, anything else a lossy VP8 frame, and container
+keywords may be added to either.
+
+"""
+
+VALUE_NOTE = """
+A value is written as a plain number -- `12`, `0x0c`, `0b1100` all work --
+except where the table says otherwise. `-` in place of a number means the
+field is *absent*, which is not the same as zero: it writes the flag alone.
+"""
+
+
+def value_range(v):
+    """One value's type and range, for the table."""
+    kind = v['kind']
+    if kind == 'opt':
+        return value_range(v['of']) + ', or `-`'
+    if kind in ('uint', 'sint'):
+        return '`%d`..`%d`' % (v['min'], v['max'])
+    if kind == 'enum':
+        return ', '.join('`%s`' % n for n in v['names'])
+    return {'hex': 'hex digits', 'token': 'a word'}[kind]
+
+
+def syntax_rows(keywords, scope):
+    out = ['| keyword | values | range | what it is |',
+           '| --- | --- | --- | --- |']
+    for name in sorted(keywords):
+        entry = keywords[name]
+        if entry['scope'] != scope:
+            continue
+        arity = entry['arity']
+        kinds = ' / '.join(sorted({value_range(v) for v in entry['values']}))
+        out.append('| `%s` | %s | %s | %s |'
+                   % (name, 'any' if arity == 'list' else arity,
+                      kinds or '--', entry['doc'] or ''))
+    return '\n'.join(out) + '\n'
+
+
+SYNTAX_SCOPES = [
+    ('image', 'The lossless image (VP8L)',
+     'Written in the order the format carries them: the header, the '
+     'transforms, the color cache and entropy image, the Huffman codes, then '
+     'the pixel data.'),
+    ('frame', 'The lossy frame (VP8)',
+     "RFC 6386's field names, section by section, so a case reads against "
+     'the specification rather than against the decoder.'),
+    ('frame, image', 'Both',
+     'The two image formats spell these the same way.'),
+    ('macroblock', 'Inside a macroblock',
+     '`macroblock` opens one; these fill it in. Macroblocks are laid out in '
+     'raster order, and any the frame still needs at the end are added with '
+     'default everything.'),
+    ('group', 'Inside a group of Huffman codes',
+     'A lossless image has one group per entry of its entropy image, and '
+     'each group holds five codes: green, red, blue, alpha and dist.'),
+    ('container', 'The RIFF container (RFC 9649)',
+     'A case that says nothing here gets a plain `RIFF....WEBP` around its '
+     'one image chunk. A fourcc is padded to four characters, so `VP8` means '
+     "`'VP8 '`."),
+]
+
+
+def build_syntax(outdir):
+    """SYNTAX.md, from src/grammar.py rather than from prose."""
+    g = grammar.build()
+    keys = ', '.join('`%s`' % k for k in sorted(g['header_keys']))
+    out = [SYNTAX_HEAD % {'header': keys}, VALUE_NOTE]
+    for scope, title, blurb in SYNTAX_SCOPES:
+        out.append('## %s\n' % title)
+        out.append(wrap(blurb))
+        out.append(syntax_rows(g['keywords'], scope))
+    out.append('## The forms a Huffman code takes\n')
+    out.append(wrap(
+        "`code NAME ...` names one of %s, and the word after it picks what "
+        'the rest of the line means. A code the case says nothing about '
+        'covers whatever the pixel data asks of it.'
+        % ', '.join('`%s`' % n for n in g['enums']['code'])))
+    out.append('| form | values | range | what it is |')
+    out.append('| --- | --- | --- | --- |')
+    for name in sorted(g['code_forms']):
+        f = g['code_forms'][name]
+        kinds = ' / '.join(sorted({value_range(v) for v in f['values']}))
+        out.append('| `code NAME %s` | %s | %s | %s |'
+                   % (name, 'any' if f['arity'] == 'list' else f['arity'],
+                      kinds or '--', f['doc']))
+    out.append('\n## The items a pixel list takes\n')
+    out.append(wrap(
+        '`pixels` lists symbols of the green code, in order. `argb` spells '
+        'whole pixels instead, and the two append to the same stream.'))
+    out.append('| item | what it is |')
+    out.append('| --- | --- |')
+    for name in sorted(g['pixel_items']):
+        out.append('| `%s` | %s |' % (name, g['pixel_items'][name]['doc']))
+    out.append('\n## Constants\n')
+    out.append('| name | value |')
+    out.append('| --- | --- |')
+    for name in sorted(g['constants']):
+        out.append('| `%s` | %d |' % (name, g['constants'][name]))
+    with open(os.path.join(outdir, 'SYNTAX.md'), 'w') as f:
+        f.write(re.sub(r'\n{3,}', '\n\n', '\n'.join(out)) + '\n')
 
 
 SRC_README = """# webp-torture: the code
@@ -468,6 +607,11 @@ Three layers, and a case only ever touches the top one:
 `vp8_dis.py` goes the other way, lossy only, and is what
 [`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writer against
 real encodes rather than against itself. There is no VP8L disassembler yet.
+
+`grammar.py` is the third thing a case touches, though not at assembly time:
+it holds every keyword and the range of every value, and
+[`../SYNTAX.md`](../SYNTAX.md) is generated from it, so the reference cannot
+drift from the code.
 
 %(files)s"""
 
@@ -573,6 +717,7 @@ def write_readme(outdir, rows):
     write_files_index(outdir, rows)
     write_cases_index(outdir, rows)
     write_src_readme(outdir)
+    build_syntax(outdir)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
     with open(os.path.join(outdir, 'README.md'), 'w') as f:
         f.write(text)

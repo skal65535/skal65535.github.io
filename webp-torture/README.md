@@ -4,9 +4,9 @@ Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time:
 
 * **78 lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the bitstream: the
-  header, the transforms, the Huffman codes down to the code-length stream
-  that describes them, and the pixel data.
+  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the
+  bitstream: the header, the transforms, the Huffman codes down to the
+  code-length stream that describes them, and the pixel data.
 * **81 lossy VP8 frames**. All but seven are assembled the same way by
   [`vp8_asm.py`](src/vp8_asm.py), under the field names
   [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
@@ -327,6 +327,7 @@ describing how they fit together.
 | [`src/vp8_asm.py`](src/vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
 | [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
 | [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
+| [`src/grammar.py`](src/grammar.py) | Every keyword and the range of every value, as data. `SYNTAX.md` is generated from it. |
 | [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
 | [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
 | [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
@@ -337,6 +338,7 @@ describing how they fit together.
 
 | file | what it is |
 | --- | --- |
+| [`SYNTAX.md`](SYNTAX.md) | The whole case syntax, generated from `src/grammar.py`. |
 | [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
 | [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output. |
 | [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
@@ -380,6 +382,9 @@ back out as text to start from:
     ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
     ./src/vp8_dis.py some-photo.webp
 
+[`SYNTAX.md`](SYNTAX.md) is the whole vocabulary in one place, generated
+from [`src/grammar.py`](src/grammar.py); `./src/grammar.py` prints the same
+thing as JSON, which is what a generator should read rather than the prose.
 Each tool's docstring is the reference for the fields it owns:
 `vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
 `webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
