@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>webp-torture bitstreams</title>
+<style>
+ body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 54rem;
+        padding: 0 1rem; }
+ table { border-collapse: collapse; width: 100%; }
+ th, td { text-align: left; padding: .25rem .6rem; border-bottom: 1px solid #ddd; }
+ td.n { text-align: right; font-variant-numeric: tabular-nums; }
+ .reject { color: #a33; }
+ code { font-size: 90%; }
+</style>
+<h1>webp-torture sources</h1>
+<p>Real encoder output, not assembled: 4 lossy frames carrying 1, 2, 4
+and 8 token partitions, made through the encoder API by
+<a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
+because cwebp cannot emit more than one. The multi-partition cases in
+<a href="../files/">files/</a> are these with their partition-size table
+rewritten; <a href="../">the notes</a> say how.</p>
+<table>
+<tr><th>file</th><th>bytes</th></tr>
+
+<tr><td><a href="lossy-1-partitions.webp"><code>lossy-1-partitions.webp</code></a></td><td class="n">2494</td></tr>
+<tr><td><a href="lossy-2-partitions.webp"><code>lossy-2-partitions.webp</code></a></td><td class="n">2500</td></tr>
+<tr><td><a href="lossy-4-partitions.webp"><code>lossy-4-partitions.webp</code></a></td><td class="n">2510</td></tr>
+<tr><td><a href="lossy-8-partitions.webp"><code>lossy-8-partitions.webp</code></a></td><td class="n">2532</td></tr>
+</table>

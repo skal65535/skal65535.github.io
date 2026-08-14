@@ -120,20 +120,28 @@ GROUPS = [
 README_HEAD = """# WebP torture bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
-emits, one layer of it at a time:
+emits, one layer of it at a time.
 
-* **%(vp8l)d lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the
-  bitstream: the header, the transforms, the Huffman codes down to the
-  code-length stream that describes them, and the pixel data.
-* **%(lossy)d lossy VP8 frames**. All but seven are assembled the same way by
-  [`vp8_asm.py`](src/vp8_asm.py), under the field names
-  [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
-  other seven start from an encoder-API call
-  ([`make_partition_sources.c`](src/make_partition_sources.c)) and are patched
-  by [`lossy_parts.py`](src/lossy_parts.py).
-* **%(container)d RIFF containers**, wrapped by
-  [`webp_asm.py`](src/webp_asm.py) in
+**They are written, not captured.** Each one is a text case in
+[`cases/`](cases) naming bitstream fields, one per line, under the names the
+specification gives them; [`SYNTAX.md`](SYNTAX.md) is the grammar, generated
+from [`src/grammar.py`](src/grammar.py); and an assembler in [`src/`](src)
+turns the case into bytes. Nothing is checked on the way, so a case can say
+what no encoder would -- and the file it produces is readable as the text
+that describes it.
+
+* **%(vp8l)d lossless (VP8L) streams**
+  ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
+  Huffman codes down to the code-length stream that describes them, and the
+  pixel data.
+* **%(lossy)d lossy VP8 frames** ([`vp8_asm.py`](src/vp8_asm.py)), under the
+  field names [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives
+  them. Seven are the exception to all of the above: they start from an
+  encoder-API call
+  ([`make_partition_sources.c`](src/make_partition_sources.c)) into
+  [`sources/`](sources), and [`lossy_parts.py`](src/lossy_parts.py) patches
+  those.
+* **%(container)d RIFF containers** ([`webp_asm.py`](src/webp_asm.py)), in
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
   and sizes that lie about what is behind them.
@@ -167,12 +175,9 @@ ask git for just that directory:
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
 Run the scripts above from `webp-torture/`.
 
-A case is a text file, one field per line under the name the specification
-gives it, so it reads against the format rather than against the decoder
-under test. Every field has a default, so a case says only what it is about,
-and nothing is validated or clamped: a value too big for its field loses its
-top bits, which is usually the point. [`SYNTAX.md`](SYNTAX.md) is the whole
-vocabulary; `./src/grammar.py` prints it as JSON, which is what a generator
+Every field of a case has a default, so it says only what it is about, and
+a value too big for its field loses its top bits rather than being refused.
+`./src/grammar.py` prints the grammar as JSON, which is what a generator
 should read rather than the prose.
 
 Any one case, or any real encode read back into a case:
@@ -183,11 +188,10 @@ Any one case, or any real encode read back into a case:
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
 
-`files/` is pure output and is wiped on every rebuild. The four lossy encodes
-the multi-partition cases are patched from live in `sources/` --
-[1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
-[4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
-partitions -- and are themselves rebuilt by `make_partition_sources.c`.
+[`files/`](files) is pure output and is wiped on every rebuild.
+[`sources/`](sources) is the opposite: four real encodes, checked in, that
+the multi-partition cases are patched from, and that
+[`make_partition_sources.c`](src/make_partition_sources.c) rebuilds.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
@@ -309,6 +313,17 @@ one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
 <tr><th>file</th><th>bytes</th><th>expected</th></tr>
 """
 
+SOURCES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture sources</h1>
+<p>Real encoder output, not assembled: %(count)d lossy frames carrying 1, 2, 4
+and 8 token partitions, made through the encoder API by
+<a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
+because cwebp cannot emit more than one. The multi-partition cases in
+<a href="../files/">files/</a> are these with their partition-size table
+rewritten; <a href="../">the notes</a> say how.</p>
+<table>
+<tr><th>file</th><th>bytes</th></tr>
+"""
+
 CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-torture cases</h1>
 <p>%(count)d text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
@@ -334,6 +349,20 @@ def write_files_index(outdir, rows):
         f.write('\n'.join(lines) + '\n')
 
 
+def write_sources_index(outdir):
+    """sources/index.html, so the directory can be linked like the others."""
+    names = sorted(f for f in os.listdir(os.path.join(outdir, 'sources'))
+                   if f.endswith('.webp'))
+    lines = [SOURCES_INDEX_HEAD % {'count': len(names)}]
+    for name in names:
+        size = os.path.getsize(os.path.join(outdir, 'sources', name))
+        lines.append('<tr><td><a href="%s"><code>%s</code></a></td>'
+                     '<td class="n">%d</td></tr>' % (name, name, size))
+    lines.append('</table>')
+    with open(os.path.join(outdir, 'sources', 'index.html'), 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+
 def write_cases_index(outdir, rows):
     """cases/index.html -- same reason, and the README links cases/."""
     lines = [CASES_INDEX_HEAD]
@@ -351,6 +380,28 @@ def write_cases_index(outdir, rows):
     lines[0] = CASES_INDEX_HEAD % {'count': n}
     with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
+
+
+def check_links(outdir):
+    """Every relative link in the generated docs resolves.
+
+    GitHub Pages serves no directory listing, so a linked directory needs an
+    index of its own; Jekyll renders a README.md into one, which is how this
+    page is served at all.
+    """
+    for doc, base in (('README.md', '.'), ('src/README.md', 'src'),
+                      ('SYNTAX.md', '.')):
+        with open(os.path.join(outdir, doc)) as f:
+            text = f.read()
+        for target in re.findall(r'\]\(([^)#][^)]*)\)', text):
+            if target.startswith(('http', 'mailto')):
+                continue
+            path = os.path.normpath(os.path.join(outdir, base, target))
+            assert os.path.exists(path), '%s links %s' % (doc, target)
+            if os.path.isdir(path):
+                assert any(os.path.exists(os.path.join(path, n))
+                           for n in ('index.html', 'README.md')), \
+                    '%s links %s/, which has no index' % (doc, target)
 
 
 def html_escape(text):
@@ -690,6 +741,7 @@ def write_readme(outdir, rows):
         '`vp8.py`.' % (len(rows), total)))
     write_files_index(outdir, rows)
     write_cases_index(outdir, rows)
+    write_sources_index(outdir)
     write_src_readme(outdir)
     build_syntax(outdir)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
@@ -709,6 +761,7 @@ def main():
             f.write('%s|%s|%s\n' % (name, expect,
                                      'slow' if name in SLOW else ''))
     write_readme(outdir, rows)
+    check_links(outdir)
     return rows
 
 

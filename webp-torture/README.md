@@ -1,20 +1,28 @@
 # WebP torture bitstreams
 
 Small WebP files that exercise corners of the format a normal encoder never
-emits, one layer of it at a time:
+emits, one layer of it at a time.
 
-* **78 lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the
-  bitstream: the header, the transforms, the Huffman codes down to the
-  code-length stream that describes them, and the pixel data.
-* **81 lossy VP8 frames**. All but seven are assembled the same way by
-  [`vp8_asm.py`](src/vp8_asm.py), under the field names
-  [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
-  other seven start from an encoder-API call
-  ([`make_partition_sources.c`](src/make_partition_sources.c)) and are patched
-  by [`lossy_parts.py`](src/lossy_parts.py).
-* **19 RIFF containers**, wrapped by
-  [`webp_asm.py`](src/webp_asm.py) in
+**They are written, not captured.** Each one is a text case in
+[`cases/`](cases) naming bitstream fields, one per line, under the names the
+specification gives them; [`SYNTAX.md`](SYNTAX.md) is the grammar, generated
+from [`src/grammar.py`](src/grammar.py); and an assembler in [`src/`](src)
+turns the case into bytes. Nothing is checked on the way, so a case can say
+what no encoder would -- and the file it produces is readable as the text
+that describes it.
+
+* **78 lossless (VP8L) streams**
+  ([`vp8l_asm.py`](src/vp8l_asm.py)): the header, the transforms, the
+  Huffman codes down to the code-length stream that describes them, and the
+  pixel data.
+* **81 lossy VP8 frames** ([`vp8_asm.py`](src/vp8_asm.py)), under the
+  field names [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives
+  them. Seven are the exception to all of the above: they start from an
+  encoder-API call
+  ([`make_partition_sources.c`](src/make_partition_sources.c)) into
+  [`sources/`](sources), and [`lossy_parts.py`](src/lossy_parts.py) patches
+  those.
+* **19 RIFF containers** ([`webp_asm.py`](src/webp_asm.py)), in
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
   and sizes that lie about what is behind them.
@@ -121,12 +129,9 @@ ask git for just that directory:
 That fetches about 2MB instead of the ~90MB the rest of the site comes to.
 Run the scripts above from `webp-torture/`.
 
-A case is a text file, one field per line under the name the specification
-gives it, so it reads against the format rather than against the decoder
-under test. Every field has a default, so a case says only what it is about,
-and nothing is validated or clamped: a value too big for its field loses its
-top bits, which is usually the point. [`SYNTAX.md`](SYNTAX.md) is the whole
-vocabulary; `./src/grammar.py` prints it as JSON, which is what a generator
+Every field of a case has a default, so it says only what it is about, and
+a value too big for its field loses its top bits rather than being refused.
+`./src/grammar.py` prints the grammar as JSON, which is what a generator
 should read rather than the prose.
 
 Any one case, or any real encode read back into a case:
@@ -137,11 +142,10 @@ Any one case, or any real encode read back into a case:
     ./src/vp8_dis.py some-photo.webp
     ./src/vp8l_dis.py --check some-lossless.webp
 
-`files/` is pure output and is wiped on every rebuild. The four lossy encodes
-the multi-partition cases are patched from live in `sources/` --
-[1](sources/lossy-1-partitions.webp), [2](sources/lossy-2-partitions.webp),
-[4](sources/lossy-4-partitions.webp), [8](sources/lossy-8-partitions.webp)
-partitions -- and are themselves rebuilt by `make_partition_sources.c`.
+[`files/`](files) is pure output and is wiped on every rebuild.
+[`sources/`](sources) is the opposite: four real encodes, checked in, that
+the multi-partition cases are patched from, and that
+[`make_partition_sources.c`](src/make_partition_sources.c) rebuilds.
 
 `check.sh`, `make_hashes.sh` and `vp8_selftest.py` honour `$DWEBP`,
 `asan_sweep.sh` honours `$ASAN_DWEBP`, and both fall back to whatever
