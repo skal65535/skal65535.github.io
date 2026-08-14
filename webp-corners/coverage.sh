@@ -118,4 +118,24 @@ for s in corpus options api; do
 done
 echo
 echo "per file, the corpus on its own:"
-report corpus | awk '$1 ~ /\.c$/ {printf "  %-22s regions %7s  lines %7s  branches %7s\n", $1, $4, $10, $13}'
+report corpus |
+  awk '$1 ~ /\.c$/ {printf "  %-22s regions %7s  lines %7s  branches %7s\n",
+                           $1, $4, $10, $13}'
+
+# README.md quotes these four, so they are a claim like any other here: say
+# when they have moved rather than letting the prose drift away from the
+# measurement. The sentence lives in generate.py, which writes the README.
+round() {  # a percentage column of the report, to the nearest whole number
+  report "$1" | tail -1 | awk -v c="$2" '{printf "%.0f", $c}'
+}
+echo
+said="At $(git -C "$LIBWEBP" rev-parse --short HEAD) that is \
+$(round corpus 4)% of regions and $(round corpus 10)% of lines from the \
+files alone, $(round api 4)% and $(round api 10)% with a caller driving them"
+# the README wraps, so compare against it with its line breaks flattened
+if [[ $(tr -s ' \n' '  ' < "$HERE/README.md") == *"$said"* ]]; then
+  echo "README.md still says: $said."
+else
+  echo "README.md no longer says: $said."
+  echo "  ^ fix the paragraph in generate.py, then rerun it"
+fi

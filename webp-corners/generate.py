@@ -275,13 +275,19 @@ rests on having read the code.
   `src/check_refs.py` records what each cited line said and checks it still
   says it. Three were already wrong when it was written.
 
-* **How much of the decoder this reaches is a number, not a hope.**
-  `coverage.sh` reports `src/dec` and `src/demux` line by line, and then
-  reports the same files again driven through every `dwebp` knob and every
-  entry point libwebp exports. The distance between the two is the part no
-  bitstream decides -- output formats, rescaling, allocation failures -- and
-  keeping the two apart is what stops the corpus from being blamed for
-  paths a file cannot reach.
+* **How much of the decoder this reaches is a number.** `LIBWEBP=...
+  ./coverage.sh` builds an instrumented libwebp in a throwaway worktree and
+  reports `src/dec` and `src/demux` three times over: the corpus as
+  `check.sh` runs it, the same files through every `dwebp` output and
+  scaling knob, and then through every entry point libwebp exports. At
+  0be8ddd1 that is 61%% of regions and 68%% of lines from the files alone,
+  81%% and 92%% with a caller driving them. The distance between the two is
+  the part no bitstream decides -- output formats, rescaling, allocation
+  failures -- and keeping them apart is what stops the corpus being blamed
+  for paths a file cannot reach. `dec/quant_dec.c` and `dec/tree_dec.c` are
+  at 100%% from the files alone; `dec/io_dec.c`, which is output format and
+  nothing else, is at 26%% and belongs there. `coverage.sh` says when the
+  numbers in this paragraph have moved.
 
 Where that leaves the corpus: every field of the lossy frame header is
 written at both ends of its range, every reachable (coefficient type, band,
