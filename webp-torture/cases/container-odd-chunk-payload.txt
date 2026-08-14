@@ -2,10 +2,10 @@
 #   must follow it.
 # expect: ok
 # roundtrip: no
-# exercises: disk_chunk_size rounds a payload up to an even length. Every
-#   lossy file in the corpus has an odd image chunk and so pads incidentally,
-#   but this is the only one where the padded chunk has something after it,
-#   which is where getting the rounding wrong would show.
+# exercises: disk_chunk_size rounds a payload up to an even length, which
+#   only matters when something follows the chunk it rounded. Here a JUNK
+#   payload of three bytes sits in front of the image, so getting the
+#   rounding wrong moves the frame rather than the end of the file.
 chunks VP8X JUNK VP8
 payload JUNK 010203
 width 32

@@ -2,7 +2,7 @@
 #   to 0.
 # expect: ok
 # exercises: kCodeToPlane[3] is 0x19: yoffset 1, xoffset -1, so dist = xsize
-#   - 1 = 0 and the "dist < 1 ? 1" clamp at vp8l_dec.c:173 fires. Only
+#   - 1 = 0 and the "dist < 1 ? 1" clamp at vp8l_dec.c:172 fires. Only
 #   reachable at xsize 1.
 lossless
 width 1

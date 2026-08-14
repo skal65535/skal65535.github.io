@@ -1,7 +1,7 @@
 # note: Predictor 11 (Select) over the whole image.
 # expect: ok
 # exercises: The only predictor with a data-dependent branch, Select() at
-#   lossless.c:100.
+#   lossless.c:102.
 lossless
 width 16
 height 4

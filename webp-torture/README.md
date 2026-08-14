@@ -105,6 +105,7 @@ describing how they fit together.
 | [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
 | [`src/make_partition_sources.c`](src/make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
 | [`src/probes.py`](src/probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+| [`src/check_refs.py`](src/check_refs.py) | Checks that the source lines the notes point at still say what the notes claim. |
 
 ## The data
 
@@ -114,6 +115,7 @@ describing how they fit together.
 | [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
 | [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output, so a silent change in decoded pixels fails too. |
 | [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
+| [`refs.txt`](refs.txt) | What each line a note points at said when it was written. |
 | [`COPYING`](COPYING) | BSD 3-clause, the same as libwebp. |
 
 ## Using them
@@ -156,61 +158,62 @@ that allocates a gigabyte.
 ## How they were verified
 
 Verdicts alone prove little -- a file can be rejected for the wrong reason,
-and several of these were before being corrected. Each file was also run
-against a decoder instrumented with probes on the exact lines the notes below
-refer to; `coverage.txt` records which paths each file actually reached, and
-`make_coverage.sh` regenerates it from `probes.py` in a throwaway worktree.
-The notes are written from that output, not from reading the code.
+and several of these were before being corrected. Every file is also run
+against a decoder instrumented with probes on the exact lines the notes
+name; `coverage.txt` records which paths each one actually reached, and
+`make_coverage.sh` regenerates it from `src/probes.py` in a throwaway
+worktree. The notes are written from that output, not from reading the code.
 
-The source line numbers they quote (`vp8l_dec.c:111` and friends) are only
-meaningful against one revision of libwebp: the one recorded at the top of
-`coverage.txt`, which `make_coverage.sh` stamps automatically. If those two
-disagree, trust `coverage.txt`.
+The source line numbers the notes quote are only meaningful against one
+revision of libwebp: the one stamped at the top of `coverage.txt`.
+`src/check_refs.py` records what each cited line said and checks it still
+says it, so upstream moving underneath a note is reported rather than
+discovered later. Three were already wrong when that check was written.
 
 Both writers are checked against libwebp rather than against themselves:
-`vp8_dis.py` and `vp8l_dis.py` read a file back into the text the assemblers
-take, so a real encode can be disassembled, reassembled and compared byte
-for byte. `vp8_selftest.py` runs it.
-
-* Lossy: every file in `sources/`, and encodes from 1x1 to 128x128 across
-  the whole quality range -- 596 macroblocks, all four 16x16 modes, all ten
-  4x4 modes, every escape category.
-* Lossless: 84 `cwebp` encodes -- a dozen images from 1x1 to 256x256, flat,
-  gradient, noise, palettised and with alpha, at seven settings each --
-  transforms, back-references, colour caches and entropy images included.
-* Both, over the corpus itself, bar the cases whose point is to be
-  unreadable and the one that decodes to a gigabyte.
-
-It also writes every coefficient magnitude up to the format's largest, and a
-handful of frames that say the same thing two different ways and must decode
+`src/vp8_dis.py` and `src/vp8l_dis.py` read a file back into the text the
+assemblers take, so a real encode can be disassembled, reassembled and
+compared byte for byte. `vp8_selftest.py` runs that over `sources/`, over a
+spread of images it asks cwebp to encode both ways, and over the corpus
+itself; it also writes every coefficient magnitude the format allows, and
+pairs of frames that say the same thing two different ways and must decode
 alike.
 
 What the corpus reaches is measured rather than assumed, and the measurement
 is what says where to add files next. As it stands: every field of the lossy
-frame header is written at both ends of its range; all 93 reachable
-(coefficient type, band, context) probability cells are read, which is the
-whole grid bar the three that no bitstream can select; all 28 pairs of
-optional tools appear together in some frame; and two probes out of 95 are
-unreached, the magic-byte and version tests inside `ReadImageInfo()`, both of
-which `VP8LCheckSignature()` has already made by the time they run.
+frame header is written at both ends of its range, every reachable
+(coefficient type, band, context) probability cell is read, and every pair
+of optional tools appears together in some frame. The only probes nothing
+reaches are the magic-byte and version tests inside `ReadImageInfo()`, which
+`VP8LCheckSignature()` has already made by the time they run.
+
+**The counts are deliberately not repeated here.** They change with every
+file added, and prose does not: `check.sh`, `vp8_selftest.py` and
+`make_coverage.sh` each print what they covered, and `coverage.txt`,
+`hashes.txt` and `expected.txt` are the record.
 
 ## What is not covered
 
-Animation. There is no real ANIM or ANMF chunk, only the VP8X flag that
-claims one, and nothing here goes near the demux API that would be needed to
-walk a sequence of frames. No inter frames either, which libwebp refuses
-outright, so there is little to pin beyond the one file that checks it does.
+Animation: there is no real ANIM or ANMF chunk, only the VP8X flag that
+claims one, and nothing here goes near the demux API a sequence of frames
+would need. No inter frames either -- libwebp refuses them outright, so
+there is nothing to pin beyond the one file that checks it does.
 
 The two compressed alpha planes are cwebp output pasted in, so that path has
-two points in it rather than a swept range: one that reaches the lossless
-decoder's 8-bit loop and one that misses it. `vp8l_asm.py` could write them
--- an alpha plane is a VP8L image whose green channel carries the values --
-and then they could be malformed like every other lossless case here.
+two points rather than a swept range: one reaches the lossless decoder's
+8-bit loop and one misses it. `vp8l_asm.py` could write them now -- an alpha
+plane is a VP8L image whose green channel carries the values -- and then
+they could be malformed like every other lossless case here.
 
-Within a lossy key frame, what is left is what the decoder does not read:
-the profile selects no reconstruction filter, and the entropy-refresh bit is
-parsed and dropped. Both are written anyway, so a decoder that started
-acting on either would fail a pixel hash rather than pass unnoticed.
+No ordinary lossless image either: all 78 of them are exotic, so
+nothing here is a control. A plain one would go through the same code with
+none of the corners, and `argb` makes it a few lines of text.
+
+What is left inside a lossy key frame is what libwebp does not act on. The
+profile picks the reconstruction and loop filters in RFC 6386 and libwebp
+reads it only to refuse a value above 3; the entropy-refresh bit is parsed
+and dropped. Both are written anyway, so a decoder that started obeying
+either would fail a pixel hash rather than pass unnoticed.
 
 ## License
 
@@ -724,7 +727,7 @@ distance is 120. Upper bound of the mapped range.
 Plane code 4 on a 1-pixel-wide image, where the 2-D offset computes to 0.
 
 kCodeToPlane[3] is 0x19: yoffset 1, xoffset -1, so dist = xsize - 1 = 0 and the
-"dist < 1 ? 1" clamp at vp8l_dec.c:173 fires. Only reachable at xsize 1.
+"dist < 1 ? 1" clamp at vp8l_dec.c:172 fires. Only reachable at xsize 1.
 
 ## Predictor modes
 
@@ -742,7 +745,7 @@ are reachable even though the format defines only 0..13.
 
 Predictor 11 (Select) over the whole image.
 
-The only predictor with a data-dependent branch, Select() at lossless.c:100.
+The only predictor with a data-dependent branch, Select() at lossless.c:102.
 
 ### [`predictor-mode-13-clamp-half.webp`](files/predictor-mode-13-clamp-half.webp) -- ok -- from [`predictor-mode-13-clamp-half.txt`](cases/predictor-mode-13-clamp-half.txt)
 
@@ -756,7 +759,7 @@ likely to differ between the C and SIMD paths.
 Every tile selects predictor 14, which the format does not define.
 
 Must decode, not crash: VP8LPredictorsAdd[14] is a padding sentinel pointing at
-PredictorAdd0_C (lossless.c:653), so the tile comes out as mode 0. Shrink the
+PredictorAdd0_C (lossless.c:654), so the tile comes out as mode 0. Shrink the
 table to 14 entries and this is an out-of-bounds indirect call instead.
 
 ### [`predictor-mode-15-undefined.webp`](files/predictor-mode-15-undefined.webp) -- ok -- from [`predictor-mode-15-undefined.txt`](cases/predictor-mode-15-undefined.txt)
@@ -894,10 +897,10 @@ odd-chunk-payload: same chunk, one byte shorter.
 An optional chunk with an odd-sized payload, and the pad byte that must follow
 it.
 
-disk_chunk_size rounds a payload up to an even length. Every lossy file in the
-corpus has an odd image chunk and so pads incidentally, but this is the only
-one where the padded chunk has something after it, which is where getting the
-rounding wrong would show.
+disk_chunk_size rounds a payload up to an even length, which only matters when
+something follows the chunk it rounded. Here a JUNK payload of three bytes sits
+in front of the image, so getting the rounding wrong moves the frame rather
+than the end of the file.
 
 ### [`container-riff-size-past-end.webp`](files/container-riff-size-past-end.webp) -- reject -- from [`container-riff-size-past-end.txt`](cases/container-riff-size-past-end.txt)
 
@@ -1805,8 +1808,8 @@ path. The modes all parse, so the decoder gets several rows in before it fails.
 
 The four files behind these are genuine encoder output, made through the
 encoder API rather than cwebp, and the broken ones rewrite the raw size table
-that follows partition 0. They carry 256 macroblocks of real coefficients,
-which the assembled cases do not.
+that follows partition 0. They carry a whole frame of real coefficients, which
+the assembled cases do not.
 
 ### [`lossy-1-partitions.webp`](files/lossy-1-partitions.webp) -- ok
 

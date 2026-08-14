@@ -23,6 +23,10 @@ python3 "$HERE/src/probes.py" "$WT"
 cmake -S "$WT" -B "$WT/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
 make -C "$WT/build" -j8 dwebp >/dev/null
 
+# the notes point at lines in this same checkout
+LIBWEBP="$LIBWEBP" python3 "$HERE/src/check_refs.py" || \
+  echo "  ^ fix the notes, then: LIBWEBP=... ./src/check_refs.py --write"
+
 REV=$(git -C "$LIBWEBP" rev-parse --short HEAD)
 {
   echo "# Decoder paths each file actually reaches."

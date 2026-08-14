@@ -1,0 +1,28 @@
+# What each line a note points at said when it was
+# written. Checked by src/check_refs.py, rewritten by
+# make_coverage.sh against the revision coverage.txt
+# stamps.
+codelen-max-symbol-early-stop.txt|vp8l_dec.c:284|if (max_symbol-- == 0) break;
+codelen-max-symbol-too-big.txt|vp8l_dec.c:273|if (max_symbol > num_symbols) {
+codelen-repeat-past-end.txt|vp8l_dec.c:298|if (symbol + repeat > num_symbols) {
+codelen-repeat16-no-previous.txt|vp8l_dec.c:254|int prev_code_len = DEFAULT_CODE_LENGTH;
+header-alpha-is-used.txt|vp8l_dec.c:119|*has_alpha = VP8LReadBits(br, 1);
+header-magic-wrong.txt|vp8l_dec.c:110|return (size >= VP8L_FRAME_HEADER_SIZE && data[0] == VP8L_MAGIC_BYTE &&
+header-magic-wrong.txt|vp8l_dec.c:116|if (VP8LReadBits(br, 8) != VP8L_MAGIC_BYTE) return 0;
+header-max-area-bomb.txt|webp_dec.c:138|if (width * (uint64_t)height >= MAX_IMAGE_AREA) {
+header-max-area-bomb.txt|utils.c:185|if ((uint64_t)size > WEBP_MAX_ALLOCABLE_MEMORY / nmemb) return 0;
+header-version-max.txt|vp8l_dec.c:111|(data[4] >> 5) == 0);  // version
+header-version-nonzero.txt|vp8l_dec.c:111|(data[4] >> 5) == 0);  // version
+header-width-16384.txt|webp_enc.c:347|if (pic->width > WEBP_MAX_DIMENSION || pic->height > WEBP_MAX_DIMENSION) {
+lossy-filter-lf-delta.txt|syntax_enc.c:226|VP8PutBits(bw, 0, 4);
+lossy-segment-delta-quantizers.txt|syntax_enc.c:196|VP8PutBitUniform(bw, 1);  // (segment_feature_mode = 1. Paragraph 9.3.)
+lz77-plane-code-clamped-to-1.txt|vp8l_dec.c:172|return (dist >= 1) ? dist : 1;  // dist<1 can happen if xsize is very small
+meta-huffman-1001-groups.txt|vp8l_dec.c:409|if (num_htree_groups_max > 1000 || num_htree_groups_max > xsize * ysize) {
+predictor-all-16-modes.txt|lossless.c:247|VP8LPredictorsAdd[((*pred_mode_src++) >> 8) & 0xf];
+predictor-mode-11-select.txt|lossless.c:102|static WEBP_INLINE uint32_t Select(uint32_t a, uint32_t b, uint32_t c) {
+predictor-mode-14-undefined.txt|lossless.c:654|(OUT)[14] = IN##0_C; /* <- padding security sentinels*/ \
+predictor-single-row.txt|lossless.c:223|if (y_start == 0) {  // First Row follows the L (mode=1) mode.
+subimage-cache-zero-invalid.txt|vp8l_dec.c:1576|ok = (color_cache_bits >= 1 && color_cache_bits <= MAX_CACHE_BITS);
+transform-cross-color-multipliers.txt|lossless.c:284|m->green_to_red = (color_code >> 0) & 0xff;
+transform-palette-index-past-end.txt|vp8l_dec.c:1412|new_data[i] = 0;  // black tail.
+generate.py|webp_enc.c:124|enc->num_parts = 1;  // doesn't work with multi-partition

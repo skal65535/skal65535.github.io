@@ -1,7 +1,7 @@
 # note: Every tile selects predictor 14, which the format does not define.
 # expect: ok
 # exercises: Must decode, not crash: VP8LPredictorsAdd[14] is a padding
-#   sentinel pointing at PredictorAdd0_C (lossless.c:653), so the tile comes
+#   sentinel pointing at PredictorAdd0_C (lossless.c:654), so the tile comes
 #   out as mode 0. Shrink the table to 14 entries and this is an
 #   out-of-bounds indirect call instead.
 lossless

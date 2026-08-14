@@ -14,6 +14,9 @@
                byte for byte. Anything the two disagree on shows up within a
                byte or two, so this pins the whole syntax against files
                libwebp itself produced.
+  encodes      a spread of images encoded both ways at every setting that
+               changes what cwebp writes, each disassembled and reassembled.
+               The only check starting from what libwebp wrote. Needs $CWEBP.
   cases        the same, starting from the text in cases/ instead, lossy
                then lossless. The
                ones meant to be refused often cannot be read back at
@@ -30,11 +33,13 @@
 
 import glob
 import hashlib
+import struct
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 'src'))
@@ -42,10 +47,29 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 import vp8
 import vp8_asm
 import vp8_dis
+import vp8l
 import vp8l_asm
 import vp8l_dis
 
 DWEBP = os.environ.get('DWEBP', 'dwebp')
+
+
+def image_chunk(data):
+    """Which image chunk a file carries: b'VP8 ', b'VP8L', or None.
+
+    Not a guess at the first bytes -- a lossy file with alpha puts VP8X and
+    ALPH in front of its frame.
+    """
+    if data[:4] != b'RIFF':
+        return b'VP8L' if data[:1] == bytes([vp8l.MAGIC]) else b'VP8 '
+    at = 12
+    while at + 8 <= len(data):
+        tag = data[at:at + 4]
+        if tag in (b'VP8 ', b'VP8L'):
+            return tag
+        size = int.from_bytes(data[at + 4:at + 8], 'little')
+        at += 8 + size + (size & 1)
+    return None
 
 
 def round_trip(paths):
@@ -58,13 +82,126 @@ def round_trip(paths):
     for path in paths:
         with open(path, 'rb') as fp:
             data = fp.read()
-        if b'VP8 ' in data[:20]:
+        tag = image_chunk(data)
+        if tag == b'VP8 ':
             lossy += 1
             bad += bool(vp8_dis.check(path, data))
-        elif b'VP8L' in data[:20]:
+        elif tag == b'VP8L':
             lossless += 1
             bad += bool(vp8l_dis.check(path, data))
     print('sources  %d lossy, %d lossless' % (lossy, lossless))
+    return bad
+
+
+def png(path, w, h, pixels):
+    """A minimal RGBA PNG, so the encoder has something to chew on."""
+    raw = b''.join(b'\x00' + bytes(pixels[y * w * 4:(y + 1) * w * 4])
+                   for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack('>I', len(data)) + tag + data +
+                struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+
+    with open(path, 'wb') as f:
+        f.write(b'\x89PNG\r\n\x1a\n' +
+                chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) +
+                chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+
+def sample_images(where):
+    """A dozen images an encoder treats differently: sizes down to 1x1, flat,
+    gradient, noise, palettised, striped, and one with real alpha."""
+    def flat(w, h, rgba):
+        return list(rgba) * (w * h)
+
+    out = []
+    for w, h in ((1, 1), (1, 17), (17, 1), (32, 32), (64, 48), (129, 97),
+                 (256, 256)):
+        out.append(('grad-%dx%d' % (w, h), w, h,
+                    [c for y in range(h) for x in range(w)
+                     for c in ((x * 7) % 256, (y * 5) % 256, (x ^ y) % 256,
+                               255)]))
+    w = h = 64
+    seed, noise = 12345, []
+    for _ in range(w * h):
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff
+        noise += [(seed >> 7) & 0xff, (seed >> 15) & 0xff,
+                  (seed >> 3) & 0xff, 255]
+    out.append(('noise', w, h, noise))
+    out.append(('flat', w, h, flat(w, h, (30, 90, 200, 255))))
+    out.append(('alpha', w, h,
+                [c for y in range(h) for x in range(w)
+                 for c in (x * 4 % 256, y * 4 % 256, 128, (x * y) % 256)]))
+    out.append(('palette', w, h,
+                [c for y in range(h) for x in range(w)
+                 for i in [(x // 7 + y // 5) % 8]
+                 for c in (i * 31 % 256, i * 57 % 256, i * 13 % 256, 255)]))
+    out.append(('stripes', w, h,
+                [c for y in range(h) for x in range(w)
+                 for c in ((255, 0, 0, 255) if (x // 3) % 2
+                           else (0, 0, 255, 255))]))
+    paths = []
+    for name, iw, ih, pixels in out:
+        png(os.path.join(where, name + '.png'), iw, ih, pixels)
+        paths.append(os.path.join(where, name + '.png'))
+    return paths
+
+
+# settings that change what cwebp writes, either way
+LOSSLESS = (['-lossless'], ['-z', '0'], ['-z', '3'], ['-z', '9'],
+            ['-lossless', '-m', '6', '-q', '100'],
+            ['-lossless', '-near_lossless', '60'], ['-lossless', '-exact'])
+LOSSY = (['-q', '0'], ['-q', '50'], ['-q', '95'], ['-q', '100'],
+         ['-q', '75', '-m', '6'], ['-q', '75', '-segments', '1'],
+         ['-q', '75', '-f', '0'])
+SETTINGS = LOSSLESS + LOSSY
+
+
+def real_encodes():
+    """Encode a spread of images every way cwebp will, and round trip each.
+
+    The only check on the assemblers that starts from something libwebp
+    wrote rather than from this corpus. Needs $CWEBP.
+    """
+    cwebp = os.environ.get('CWEBP', 'cwebp')
+    if shutil.which(cwebp) is None:
+        print('encodes  skipped, no cwebp')
+        return 0
+    bad = done = lossy = 0
+    tmp = tempfile.mkdtemp()
+    try:
+        for src in sample_images(tmp):
+            for n, opts in enumerate(SETTINGS):
+                out = '%s.%d.webp' % (src[:-4], n)
+                if subprocess.call([cwebp, '-quiet'] + opts + [src, '-o', out],
+                                   stderr=subprocess.DEVNULL):
+                    continue
+                done += 1
+                with open(out, 'rb') as f:
+                    data = f.read()
+                if image_chunk(data) != b'VP8L':
+                    lossy += 1
+                    bad += bool(vp8_dis.check(out, data))
+                    continue
+                want = vp8l_dis.vp8l_chunk(data)
+                try:
+                    got = vp8l_dis.vp8l_chunk(
+                        vp8l_asm.assemble_text(vp8l_dis.dump(want)))
+                except (vp8l_dis.Truncated, vp8_asm.AsmError) as e:
+                    print('%s: %s' % (os.path.basename(out), e),
+                          file=sys.stderr)
+                    bad += 1
+                    continue
+                if got != want:
+                    print('%s: reassembles to %d bytes, not %d'
+                          % (os.path.basename(out), len(got), len(want)),
+                          file=sys.stderr)
+                    bad += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print('encodes  %d from cwebp, %d lossy and %d lossless, over %d images'
+          % (done, lossy, done - lossy, len(SETTINGS) and
+             done // len(SETTINGS)))
     return bad
 
 
@@ -335,6 +472,7 @@ def main(argv):
     bad += round_trip(sorted(glob.glob('sources/*.webp')) + argv[1:])
     bad += case_round_trip()
     bad += lossless_round_trip()
+    bad += real_encodes()
     bad += levels()
     if shutil.which(DWEBP):
         bad += pixels()
