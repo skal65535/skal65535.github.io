@@ -1,6 +1,6 @@
 # Decoder paths each file actually reaches.
 #
-# Regenerate with ./make_coverage.sh, which applies probes.py to a
+# Regenerate with ./make_coverage.sh, which applies src/probes.py to a
 # throwaway worktree. Every probe sits on the line a README note
 # refers to, so this is the evidence behind those notes: a file can
 # reject for the wrong reason, and several did before being fixed.

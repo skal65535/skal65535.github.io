@@ -35,6 +35,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'src'))
+
 import vp8
 import vp8_asm
 import vp8_dis

@@ -4,17 +4,17 @@ Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time:
 
 * **78 lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](vp8l_asm.py) from a text description of the bitstream: the
+  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the bitstream: the
   header, the transforms, the Huffman codes down to the code-length stream
   that describes them, and the pixel data.
 * **81 lossy VP8 frames**. All but seven are assembled the same way by
-  [`vp8_asm.py`](vp8_asm.py), under the field names
+  [`vp8_asm.py`](src/vp8_asm.py), under the field names
   [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
   other seven start from an encoder-API call
-  ([`make_partition_sources.c`](make_partition_sources.c)) and are patched
-  by [`lossy_parts.py`](lossy_parts.py).
+  ([`make_partition_sources.c`](src/make_partition_sources.c)) and are patched
+  by [`lossy_parts.py`](src/lossy_parts.py).
 * **19 RIFF containers**, wrapped by
-  [`webp_asm.py`](webp_asm.py) in
+  [`webp_asm.py`](src/webp_asm.py) in
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
   and sizes that lie about what is behind them.
@@ -303,27 +303,40 @@ expected verdict; the notes further down say what each targets.
  [lossy-8-partitions-sizes-sum-past-end](files/lossy-8-partitions-sizes-sum-past-end.webp) ·
  [lossy-combo-all-features](files/lossy-combo-all-features.webp)
 
-## The code
+## What to run
 
 | file | what it is |
 | --- | --- |
-| [`vp8l.py`](vp8l.py) | VP8L lossless bitstream writer: bit packing, canonical Huffman codes, prefix coding, sub-images. |
-| [`vp8l_asm.py`](vp8l_asm.py) | Assembles a lossless image from a text case. Its docstring is the format. |
-| [`generate.py`](generate.py) | Assembles every case in `cases/` and produces `expected.txt`, this README and the two `index.html` listings. |
-| [`vp8.py`](vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
-| [`vp8_asm.py`](vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
-| [`webp_asm.py`](webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
-| [`vp8_dis.py`](vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
-| [`vp8_selftest.py`](vp8_selftest.py) | Round trips real encodes through both, and checks what cwebp cannot emit against dwebp. |
-| [`vp8_tables.py`](vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
-| [`make_vp8_tables.py`](make_vp8_tables.py) | Extracts them, so they are never retyped. |
-| [`lossy_parts.py`](lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
-| [`make_partition_sources.c`](make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
+| [`generate.py`](generate.py) | Assembles every case in `cases/` and produces `expected.txt`, this README, `src/README.md` and the two `index.html` listings. |
 | [`check.sh`](check.sh) | Decodes every file; checks the verdict and the pixels. |
 | [`make_hashes.sh`](make_hashes.sh) | Rewrites `hashes.txt` when the new output is known to be right. |
-| [`asan_sweep.sh`](asan_sweep.sh) | Decodes every file in 14 modes, under a sanitizer build. |
-| [`probes.py`](probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
 | [`make_coverage.sh`](make_coverage.sh) | Rebuilds `coverage.txt` in a throwaway worktree. |
+| [`asan_sweep.sh`](asan_sweep.sh) | Decodes every file in 14 modes, under a sanitizer build. |
+| [`vp8_selftest.py`](vp8_selftest.py) | Round trips real encodes through the lossy writer and reader, and checks what cwebp cannot emit against dwebp. |
+
+## The code
+
+The layers underneath, in **[`src/`](src)**, which has its own README
+describing how they fit together.
+
+| file | what it is |
+| --- | --- |
+| [`src/vp8l.py`](src/vp8l.py) | VP8L lossless bitstream writer: bit packing, canonical Huffman codes, prefix coding, sub-images. |
+| [`src/vp8l_asm.py`](src/vp8l_asm.py) | Assembles a lossless image from a text case. Its docstring is the format. |
+| [`src/vp8.py`](src/vp8.py) | VP8 lossy bitstream writer: the boolean coder, the frame header, the mode trees, the coefficients. |
+| [`src/vp8_asm.py`](src/vp8_asm.py) | Assembles a lossy frame from a text case, in RFC 6386's field names. Its docstring is the format. |
+| [`src/webp_asm.py`](src/webp_asm.py) | Wraps either in a RIFF container, in RFC 9649's field names, and picks which assembler a case belongs to. |
+| [`src/vp8_dis.py`](src/vp8_dis.py) | The other direction: a lossy .webp back into that text. `--check` round trips one against libwebp. |
+| [`src/vp8_tables.py`](src/vp8_tables.py) | The VP8 constant tables, extracted from libwebp. |
+| [`src/make_vp8_tables.py`](src/make_vp8_tables.py) | Extracts them, so they are never retyped. |
+| [`src/lossy_parts.py`](src/lossy_parts.py) | The multi-partition lossy cases, patched from `sources/`. |
+| [`src/make_partition_sources.c`](src/make_partition_sources.c) | Rebuilds `sources/`: cwebp cannot emit more than one token partition. |
+| [`src/probes.py`](src/probes.py) | The `fprintf` probes `make_coverage.sh` patches in. |
+
+## The data
+
+| file | what it is |
+| --- | --- |
 | [`expected.txt`](expected.txt) | Name and expected verdict, one line per file. |
 | [`hashes.txt`](hashes.txt) | SHA-256 of each decoding file's `-pam` output. |
 | [`coverage.txt`](coverage.txt) | Which decoder path each file actually reached. |
@@ -357,19 +370,20 @@ to be under test. Every field has a default, so a case says only what it is
 about, and nothing is validated or clamped: a value too big for its field
 loses its top bits, which is usually the point.
 
-`webp_asm.py` assembles any of them. It hands the image part to
-`vp8l_asm.py` if the case says `lossless` and to `vp8_asm.py` if it does
-not; use any of the three directly, or read an existing lossy frame back out
-as text to start from:
+`src/webp_asm.py` assembles any of them. It hands the image part to
+`src/vp8l_asm.py` if the case says `lossless` and to `src/vp8_asm.py` if it
+does not; use any of the three directly, or read an existing lossy frame
+back out as text to start from:
 
-    ./webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./vp8_dis.py some-photo.webp
+    ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
+    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
+    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
+    ./src/vp8_dis.py some-photo.webp
 
 Each tool's docstring is the reference for the fields it owns:
 `vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
-`webp_asm.py` for the container and the alpha chunk.
+`webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
+README of its own saying how the three layers fit together.
 
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
 the multi-partition cases are patched from live in `sources/` --

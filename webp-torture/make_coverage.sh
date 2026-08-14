@@ -19,7 +19,7 @@ git -C "$LIBWEBP" worktree add -q --detach "$WT" HEAD
 cleanup() { git -C "$LIBWEBP" worktree remove --force "$WT" >/dev/null 2>&1; }
 trap cleanup EXIT
 
-python3 "$HERE/probes.py" "$WT"
+python3 "$HERE/src/probes.py" "$WT"
 cmake -S "$WT" -B "$WT/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
 make -C "$WT/build" -j8 dwebp >/dev/null
 
@@ -27,7 +27,7 @@ REV=$(git -C "$LIBWEBP" rev-parse --short HEAD)
 {
   echo "# Decoder paths each file actually reaches."
   echo "#"
-  echo "# Regenerate with ./make_coverage.sh, which applies probes.py to a"
+  echo "# Regenerate with ./make_coverage.sh, which applies src/probes.py to a"
   echo "# throwaway worktree. Every probe sits on the line a README note"
   echo "# refers to, so this is the evidence behind those notes: a file can"
   echo "# reject for the wrong reason, and several did before being fixed."

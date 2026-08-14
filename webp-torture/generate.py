@@ -18,6 +18,9 @@ import re
 import sys
 import textwrap
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'src'))
+
 import lossy_parts
 import vp8_asm
 import webp_asm
@@ -119,17 +122,17 @@ Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time:
 
 * **%(vp8l)d lossless (VP8L) streams**, assembled by
-  [`vp8l_asm.py`](vp8l_asm.py) from a text description of the bitstream: the
+  [`vp8l_asm.py`](src/vp8l_asm.py) from a text description of the bitstream: the
   header, the transforms, the Huffman codes down to the code-length stream
   that describes them, and the pixel data.
 * **%(lossy)d lossy VP8 frames**. All but seven are assembled the same way by
-  [`vp8_asm.py`](vp8_asm.py), under the field names
+  [`vp8_asm.py`](src/vp8_asm.py), under the field names
   [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) gives them. The
   other seven start from an encoder-API call
-  ([`make_partition_sources.c`](make_partition_sources.c)) and are patched
-  by [`lossy_parts.py`](lossy_parts.py).
+  ([`make_partition_sources.c`](src/make_partition_sources.c)) and are patched
+  by [`lossy_parts.py`](src/lossy_parts.py).
 * **%(container)d RIFF containers**, wrapped by
-  [`webp_asm.py`](webp_asm.py) in
+  [`webp_asm.py`](src/webp_asm.py) in
   [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html)'s names: the
   extended-format VP8X chunk, the optional chunks a decoder must step over,
   and sizes that lie about what is behind them.
@@ -180,19 +183,20 @@ to be under test. Every field has a default, so a case says only what it is
 about, and nothing is validated or clamped: a value too big for its field
 loses its top bits, which is usually the point.
 
-`webp_asm.py` assembles any of them. It hands the image part to
-`vp8l_asm.py` if the case says `lossless` and to `vp8_asm.py` if it does
-not; use any of the three directly, or read an existing lossy frame back out
-as text to start from:
+`src/webp_asm.py` assembles any of them. It hands the image part to
+`src/vp8l_asm.py` if the case says `lossless` and to `src/vp8_asm.py` if it
+does not; use any of the three directly, or read an existing lossy frame
+back out as text to start from:
 
-    ./webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
-    ./vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
-    ./vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
-    ./vp8_dis.py some-photo.webp
+    ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
+    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
+    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
+    ./src/vp8_dis.py some-photo.webp
 
 Each tool's docstring is the reference for the fields it owns:
 `vp8l_asm.py` for the lossless image, `vp8_asm.py` for the lossy frame, and
-`webp_asm.py` for the container and the alpha chunk.
+`webp_asm.py` for the container and the alpha chunk. [`src/`](src) has a
+README of its own saying how the three layers fit together.
 
 `files/` is pure output and is wiped on every rebuild. The four lossy encodes
 the multi-partition cases are patched from live in `sources/` --
@@ -365,37 +369,47 @@ def html_escape(text):
     return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-CODE = [
-    ('vp8l.py', 'VP8L lossless bitstream writer: bit packing, canonical '
-                'Huffman codes, prefix coding, sub-images.'),
-    ('vp8l_asm.py', 'Assembles a lossless image from a text case. Its '
-                    'docstring is the format.'),
+# What lives where: the things you run stay at the top, the code they are
+# built out of sits in src/. Paths are relative to this directory.
+RUN = [
     ('generate.py', 'Assembles every case in `cases/` and produces '
-                    '`expected.txt`, this README and the two `index.html` '
-                    'listings.'),
-    ('vp8.py', 'VP8 lossy bitstream writer: the boolean coder, the frame '
-               'header, the mode trees, the coefficients.'),
-    ('vp8_asm.py', 'Assembles a lossy frame from a text case, in RFC 6386\'s '
-                   'field names. Its docstring is the format.'),
-    ('webp_asm.py', 'Wraps either in a RIFF container, in RFC 9649\'s field '
-                    'names, and picks which assembler a case belongs to.'),
-    ('vp8_dis.py', 'The other direction: a lossy .webp back into that text. '
-                   '`--check` round trips one against libwebp.'),
-    ('vp8_selftest.py', 'Round trips real encodes through both, and checks '
-                        'what cwebp cannot emit against dwebp.'),
-    ('vp8_tables.py', 'The VP8 constant tables, extracted from libwebp.'),
-    ('make_vp8_tables.py', 'Extracts them, so they are never retyped.'),
-    ('lossy_parts.py', 'The multi-partition lossy cases, patched from '
-                       '`sources/`.'),
-    ('make_partition_sources.c', 'Rebuilds `sources/`: cwebp cannot emit more '
-                                 'than one token partition.'),
+                    '`expected.txt`, this README, `src/README.md` and the two '
+                    '`index.html` listings.'),
     ('check.sh', 'Decodes every file; checks the verdict and the pixels.'),
     ('make_hashes.sh', 'Rewrites `hashes.txt` when the new output is known '
                        'to be right.'),
+    ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
     ('asan_sweep.sh', 'Decodes every file in 14 modes, under a sanitizer '
                       'build.'),
-    ('probes.py', 'The `fprintf` probes `make_coverage.sh` patches in.'),
-    ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
+    ('vp8_selftest.py', 'Round trips real encodes through the lossy writer '
+                        'and reader, and checks what cwebp cannot emit '
+                        'against dwebp.'),
+]
+
+SRC = [
+    ('src/vp8l.py', 'VP8L lossless bitstream writer: bit packing, canonical '
+                    'Huffman codes, prefix coding, sub-images.'),
+    ('src/vp8l_asm.py', 'Assembles a lossless image from a text case. Its '
+                        'docstring is the format.'),
+    ('src/vp8.py', 'VP8 lossy bitstream writer: the boolean coder, the frame '
+                   'header, the mode trees, the coefficients.'),
+    ('src/vp8_asm.py', 'Assembles a lossy frame from a text case, in RFC '
+                       "6386's field names. Its docstring is the format."),
+    ('src/webp_asm.py', 'Wraps either in a RIFF container, in RFC 9649\'s '
+                        'field names, and picks which assembler a case '
+                        'belongs to.'),
+    ('src/vp8_dis.py', 'The other direction: a lossy .webp back into that '
+                       'text. `--check` round trips one against libwebp.'),
+    ('src/vp8_tables.py', 'The VP8 constant tables, extracted from libwebp.'),
+    ('src/make_vp8_tables.py', 'Extracts them, so they are never retyped.'),
+    ('src/lossy_parts.py', 'The multi-partition lossy cases, patched from '
+                           '`sources/`.'),
+    ('src/make_partition_sources.c', 'Rebuilds `sources/`: cwebp cannot emit '
+                                     'more than one token partition.'),
+    ('src/probes.py', 'The `fprintf` probes `make_coverage.sh` patches in.'),
+]
+
+DATA = [
     ('expected.txt', 'Name and expected verdict, one line per file.'),
     ('hashes.txt', "SHA-256 of each decoding file's `-pam` output."),
     ('coverage.txt', 'Which decoder path each file actually reached.'),
@@ -403,13 +417,66 @@ CODE = [
 ]
 
 
-def build_code_list(outdir):
-    """A linked table of the generators, scripts and data files."""
-    out = ['## The code\n', '| file | what it is |', '| --- | --- |']
-    for name, what in CODE:
+def code_table(outdir, entries, title, intro=None):
+    """A linked table of files, each one asserted to exist."""
+    out = ['## %s\n' % title]
+    if intro:
+        out.append(wrap(intro))
+    out += ['| file | what it is |', '| --- | --- |']
+    for name, what in entries:
         assert os.path.exists(os.path.join(outdir, name)), name
         out.append('| [`%s`](%s) | %s |' % (name, name, what))
     return '\n'.join(out) + '\n'
+
+
+def build_code_list(outdir):
+    """The three tables that go into the top-level README."""
+    return '\n'.join((
+        code_table(outdir, RUN, 'What to run'),
+        code_table(outdir, SRC, 'The code',
+                   'The layers underneath, in **[`src/`](src)**, which has '
+                   'its own README describing how they fit together.'),
+        code_table(outdir, DATA, 'The data')))
+
+
+SRC_README = """# webp-torture: the code
+
+Everything the scripts one directory up are built out of. Nothing here is
+run directly to produce the corpus -- [`../generate.py`](../generate.py)
+does that -- though each assembler doubles as a command that turns one case
+into one `.webp`. Run them from the directory above, where `cases/` is:
+
+    ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
+    ./src/vp8l_asm.py cases/codelen-depth-15.txt /tmp/out.webp
+    ./src/vp8_asm.py cases/lossy-coeff-cat6.txt /tmp/out.webp
+    ./src/vp8_dis.py some-photo.webp
+
+Three layers, and a case only ever touches the top one:
+
+* **`webp_asm.py`** reads the case, splits the container directives from the
+  image ones, and hands the image to whichever assembler owns it: a case
+  saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It
+  then wraps the result in RIFF.
+* **`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into the fields of a
+  bitstream. Their docstrings are the format: every keyword, its default and
+  what it writes. Nothing is validated or clamped -- a value too big for its
+  field loses its top bits, which is usually the point.
+* **`vp8l.py`** and **`vp8.py`** do the bit-level work: the boolean coder,
+  canonical Huffman codes, prefix codes, the sub-image streams. They
+  validate nothing either.
+
+`vp8_dis.py` goes the other way, lossy only, and is what
+[`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writer against
+real encodes rather than against itself. There is no VP8L disassembler yet.
+
+%(files)s"""
+
+
+def write_src_readme(outdir):
+    table = code_table(outdir, SRC, 'The files')
+    text = SRC_README % {'files': table.replace('src/', '')}
+    with open(os.path.join(outdir, 'src', 'README.md'), 'w') as f:
+        f.write(text)
 
 
 def build_cases(outdir):
@@ -505,6 +572,7 @@ def write_readme(outdir, rows):
         '`vp8.py`.' % (len(rows), total)))
     write_files_index(outdir, rows)
     write_cases_index(outdir, rows)
+    write_src_readme(outdir)
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines))
     with open(os.path.join(outdir, 'README.md'), 'w') as f:
         f.write(text)
