@@ -182,6 +182,7 @@ README_HEAD = """# WebP stress bitstreams
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
 
+%(toc)s
 **They are written, not captured.** Each is a text file naming bitstream
 fields, one per line. Nothing is validated on the way, so a case can say
 what no encoder ever would.
@@ -194,6 +195,11 @@ container.
 What they reach:
 
 %(cover)s
+For the files one at a time -- what each one is, and which decoder path it
+was written to reach -- see **[`BITSTREAMS.md`](BITSTREAMS.md)**;
+**[`REACHES.md`](REACHES.md)** is the same set indexed the other way round,
+by the path rather than by the file.
+
 Every file carries a verdict, which is what a decoder must do with it:
 
 * **ok** -- must decode, and must keep decoding to the same pixels. Several
@@ -328,9 +334,35 @@ generators, the scripts and the bitstreams in `files/` alike.
 """
 
 
+TOC_MARK = '<!--contents-->'
+
+
 def wrap(text, indent=''):
     return '\n'.join(textwrap.wrap(text, 79, initial_indent=indent,
                                    subsequent_indent=indent)) + '\n'
+
+
+def slug(title):
+    """A heading's anchor, as both renderers derive it from the heading text.
+
+    Only while the heading stays alphabetic: past that the two slugify by
+    rules they do not share, which is what check_toc() holds them to.
+    """
+    return title.lower().replace(' ', '-')
+
+
+def build_toc(text):
+    """The page's own sections, as one line of links.
+
+    Read off the rendered page rather than kept in a list beside it, so a
+    section that is added, renamed or dropped cannot leave this behind.
+    """
+    links = ['[%s](#%s)' % (h, slug(h))
+             for h in re.findall(r'^## (.+)$', text, re.M)]
+    # wrap between the links and never inside one: a heading has spaces in it
+    return wrap('**Contents:** '
+                + ' | '.join(l.replace(' ', '\0') for l in links)
+                ).replace('\0', ' ')
 
 
 # What each family of files is for, in the order the README lists them. The
@@ -588,6 +620,26 @@ def check_details(outdir):
                 '%s: a <details> closed with no blank line above it' % doc
             n += 1
     return n
+
+
+def check_toc(outdir):
+    """The contents line names every section of README.md and nothing else.
+
+    Generated from the page, so the two can only differ by an anchor neither
+    renderer would produce -- which is a heading carrying punctuation, since
+    GitHub and kramdown strip it by different rules.
+    """
+    with open(os.path.join(outdir, 'README.md')) as f:
+        text = f.read()
+    heads = re.findall(r'^## (.+)$', text, re.M)
+    for title in heads:
+        assert re.match(r'^[A-Za-z0-9 ]+$', title), \
+            'README.md: "%s" needs an anchor the two renderers agree on' \
+            % title
+    assert [(t, slug(t)) for t in heads] \
+        == re.findall(r'\[([^]]+)\]\(#([^)]+)\)', text), \
+        'README.md: the contents line and the sections have drifted'
+    return len(heads)
 
 
 def check_howto(outdir):
@@ -999,12 +1051,12 @@ def build_file_list(index):
         'size and expected verdict, and the text they are assembled from is '
         'in **[`cases/`](cases)**.'
     ) + '\n' + index + '\n' + wrap(
-        'Two lists go with that, both generated: '
-        '**[`BITSTREAMS.md`](BITSTREAMS.md)** is every file with the line '
-        'its case calls itself, grouped as above, and '
-        '**[`REACHES.md`](REACHES.md)** turns that around -- every decoder '
+        '**[`BITSTREAMS.md`](BITSTREAMS.md)** takes those groups a file at a '
+        'time, with the line each case calls itself, and '
+        '**[`REACHES.md`](REACHES.md)** turns them round -- every decoder '
         'path the probes measure, and which files reach it, which is the '
-        'question someone holding a decoder actually has.')
+        'question someone holding a decoder actually has. Both are '
+        'generated.')
 
 
 def cell(text):
@@ -1109,12 +1161,16 @@ def write_readme(outdir, rows):
     write_bitstreams(outdir, rows)
     with open(os.path.join(outdir, 'REACHES.md'), 'w') as f:
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
-    lines = [README_HEAD % dict(kinds,
-                                cover=build_coverage(kinds),
-                                env=build_env(),
-                                files=build_file_list(
-                                    build_index(rows, GROUPS)),
-                                code=build_code_list(outdir))]
+    body = README_HEAD % dict(kinds,
+                              toc=TOC_MARK,
+                              cover=build_coverage(kinds),
+                              env=build_env(),
+                              files=build_file_list(
+                                  build_index(rows, GROUPS)),
+                              code=build_code_list(outdir))
+    # the sections come from the pieces above as much as from the template,
+    # so the contents line is written once the page is whole
+    lines = [body.replace(TOC_MARK, build_toc(body))]
     total = sum(r[4] for r in rows)
     lines.append('---\n')
     lines.append(wrap(
@@ -1148,8 +1204,9 @@ def main():
     check_links(outdir)
     check_unique(outdir, rows)
     print('%d HOWTO.md examples assemble, %d environment knobs documented, '
-          '%d folded groups render both ways'
-          % (check_howto(outdir), check_env(outdir), check_details(outdir)))
+          '%d folded groups render both ways, %d sections in the contents line'
+          % (check_howto(outdir), check_env(outdir), check_details(outdir),
+             check_toc(outdir)))
     return rows
 
 

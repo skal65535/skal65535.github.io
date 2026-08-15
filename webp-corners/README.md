@@ -3,6 +3,11 @@
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
 
+**Contents:** [What to run](#what-to-run) | [The code](#the-code) |
+[The data](#the-data) | [The bitstreams](#the-bitstreams) |
+[Using them](#using-them) | [How they were verified](#how-they-were-verified) |
+[What is not covered](#what-is-not-covered) | [License](#license)
+
 **They are written, not captured.** Each is a text file naming bitstream
 fields, one per line. Nothing is validated on the way, so a case can say
 what no encoder ever would.
@@ -33,6 +38,11 @@ What they reach:
 * **48 animations** -- frame position, duration, disposal and blending,
   composed over a canvas one frame at a time. No still decoder will open one of
   these at all.
+
+For the files one at a time -- what each one is, and which decoder path it
+was written to reach -- see **[`BITSTREAMS.md`](BITSTREAMS.md)**;
+**[`REACHES.md`](REACHES.md)** is the same set indexed the other way round,
+by the path rather than by the file.
 
 Every file carries a verdict, which is what a decoder must do with it:
 
@@ -139,11 +149,10 @@ expected verdict, and the text they are assembled from is in
 | Lossy: partition sizes, from real encodes | 8 | 5 | 3 |
 | **total** | **263** | **182** | **81** |
 
-Two lists go with that, both generated: **[`BITSTREAMS.md`](BITSTREAMS.md)** is
-every file with the line its case calls itself, grouped as above, and
-**[`REACHES.md`](REACHES.md)** turns that around -- every decoder path the
-probes measure, and which files reach it, which is the question someone holding
-a decoder actually has.
+**[`BITSTREAMS.md`](BITSTREAMS.md)** takes those groups a file at a time, with
+the line each case calls itself, and **[`REACHES.md`](REACHES.md)** turns them
+round -- every decoder path the probes measure, and which files reach it, which
+is the question someone holding a decoder actually has. Both are generated.
 
 ## Using them
 
