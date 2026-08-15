@@ -3,10 +3,16 @@
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
 
-**Contents:** [What to run](#what-to-run) | [The code](#the-code) |
-[The data](#the-data) | [The bitstreams](#the-bitstreams) |
-[Using them](#using-them) | [How they were verified](#how-they-were-verified) |
-[What is not covered](#what-is-not-covered) | [License](#license)
+**Contents:**
+
+* [What to run](#what-to-run)
+* [The code](#the-code)
+* [The data](#the-data)
+* [The bitstreams](#the-bitstreams)
+* [Using them](#using-them)
+* [How they were verified](#how-they-were-verified)
+* [What is not covered](#what-is-not-covered)
+* [License](#license)
 
 **They are written, not captured.** Each is a text file naming bitstream
 fields, one per line. Nothing is validated on the way, so a case can say

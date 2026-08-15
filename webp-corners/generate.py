@@ -182,6 +182,8 @@ README_HEAD = """# WebP stress bitstreams
 Small WebP files that exercise corners of the format a normal encoder never
 emits, one layer of it at a time.
 
+**Contents:**
+
 %(toc)s
 **They are written, not captured.** Each is a text file naming bitstream
 fields, one per line. Nothing is validated on the way, so a case can say
@@ -352,17 +354,13 @@ def slug(title):
 
 
 def build_toc(text):
-    """The page's own sections, as one line of links.
+    """The page's own sections, as a list of links.
 
     Read off the rendered page rather than kept in a list beside it, so a
     section that is added, renamed or dropped cannot leave this behind.
     """
-    links = ['[%s](#%s)' % (h, slug(h))
-             for h in re.findall(r'^## (.+)$', text, re.M)]
-    # wrap between the links and never inside one: a heading has spaces in it
-    return wrap('**Contents:** '
-                + ' | '.join(l.replace(' ', '\0') for l in links)
-                ).replace('\0', ' ')
+    return '\n'.join('* [%s](#%s)' % (h, slug(h))
+                     for h in re.findall(r'^## (.+)$', text, re.M)) + '\n'
 
 
 # What each family of files is for, in the order the README lists them. The
@@ -623,7 +621,7 @@ def check_details(outdir):
 
 
 def check_toc(outdir):
-    """The contents line names every section of README.md and nothing else.
+    """The contents list names every section of README.md and nothing else.
 
     Generated from the page, so the two can only differ by an anchor neither
     renderer would produce -- which is a heading carrying punctuation, since
@@ -638,7 +636,7 @@ def check_toc(outdir):
             % title
     assert [(t, slug(t)) for t in heads] \
         == re.findall(r'\[([^]]+)\]\(#([^)]+)\)', text), \
-        'README.md: the contents line and the sections have drifted'
+        'README.md: the contents list and the sections have drifted'
     return len(heads)
 
 
@@ -1169,7 +1167,7 @@ def write_readme(outdir, rows):
                                   build_index(rows, GROUPS)),
                               code=build_code_list(outdir))
     # the sections come from the pieces above as much as from the template,
-    # so the contents line is written once the page is whole
+    # so the contents list is written once the page is whole
     lines = [body.replace(TOC_MARK, build_toc(body))]
     total = sum(r[4] for r in rows)
     lines.append('---\n')
@@ -1204,7 +1202,7 @@ def main():
     check_links(outdir)
     check_unique(outdir, rows)
     print('%d HOWTO.md examples assemble, %d environment knobs documented, '
-          '%d folded groups render both ways, %d sections in the contents line'
+          '%d folded groups render both ways, %d sections in the contents list'
           % (check_howto(outdir), check_env(outdir), check_details(outdir),
              check_toc(outdir)))
     return rows
