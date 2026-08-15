@@ -566,6 +566,30 @@ def check_links(outdir):
                     '%s links %s/, which has no index' % (doc, target)
 
 
+def check_details(outdir):
+    """Every folded group is written the way both renderers need.
+
+    kramdown, which GitHub Pages runs, passes a raw HTML block straight
+    through unless it carries markdown="block": without it the table inside
+    comes out as literal pipes. GitHub's own renderer drops the attribute and
+    needs only the blank lines around the content. Neither one complains, and
+    the two are checked in different places, so nothing but this notices.
+    """
+    n = 0
+    for doc in ('README.md', 'BITSTREAMS.md', 'REACHES.md', 'HOWTO.md'):
+        with open(os.path.join(outdir, doc)) as f:
+            text = f.read()
+        for block in re.findall(r'<details.*?</details>', text, re.S):
+            assert 'markdown="block"' in block, \
+                '%s: a <details> without markdown="block"' % doc
+            assert '</summary>\n\n' in block, \
+                '%s: a <details> with no blank line under its summary' % doc
+            assert block.endswith('\n\n</details>'), \
+                '%s: a <details> closed with no blank line above it' % doc
+            n += 1
+    return n
+
+
 def check_howto(outdir):
     """Every worked example in HOWTO.md, assembled.
 
@@ -1047,15 +1071,26 @@ def write_bitstreams(outdir, rows):
         'which decoder path it reaches and why that is worth a file. '
         '[`REACHES.md`](REACHES.md) indexes the same set the other way '
         'round, and the [notes](README.md) say what all of it is.'))
+    out.append(wrap(
+        'The groups are folded shut. Click one to open it.'))
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
         group = [r for r in rows if r[0] not in used and
                  (prefix is None or r[0].startswith(prefix))]
         if not group:
             continue
-        out.append('## %s\n\n%s' % (title, wrap(blurb)) if blurb
-                   else '## %s\n' % title)
+        ok = sum(1 for r in group if wanted(r) == 'ok')
+        # markdown="block" is what makes the table inside render on GitHub
+        # Pages: kramdown otherwise passes the whole element through and the
+        # rows come out as literal pipes. GitHub's own renderer ignores the
+        # attribute and needs only the blank lines. Both were checked.
+        out.append('<details markdown="block">')
+        out.append('<summary><b>%s</b> -- %d files, %d ok, %d reject'
+                   '</summary>\n' % (title, len(group), ok, len(group) - ok))
+        if blurb:
+            out.append(wrap(blurb) + '\n')
         used.update(r[0] for r in group)
         out.append(group_table(outdir, group))
+        out.append('</details>\n')
     text = re.sub(r'\n{3,}', '\n\n', '\n'.join(out))
     with open(os.path.join(outdir, 'BITSTREAMS.md'), 'w') as f:
         f.write(text)
@@ -1112,8 +1147,9 @@ def main():
     write_readme(outdir, rows)
     check_links(outdir)
     check_unique(outdir, rows)
-    print('%d HOWTO.md examples assemble, %d environment knobs documented'
-          % (check_howto(outdir), check_env(outdir)))
+    print('%d HOWTO.md examples assemble, %d environment knobs documented, '
+          '%d folded groups render both ways'
+          % (check_howto(outdir), check_env(outdir), check_details(outdir)))
     return rows
 
 

@@ -6,7 +6,10 @@ in `cases/`. The case says the rest -- which decoder path it reaches and why
 that is worth a file. [`REACHES.md`](REACHES.md) indexes the same set the other
 way round, and the [notes](README.md) say what all of it is.
 
-## Whole lossless images
+The groups are folded shut. Click one to open it.
+
+<details markdown="block">
+<summary><b>Whole lossless images</b> -- 2 files, 2 ok, 0 reject</summary>
 
 One image with nothing optional in it, and one with all four transforms, a
 colour cache, an entropy image and every kind of pixel item. Every other
@@ -18,7 +21,10 @@ not.
 | [`lossless-all-features`](files/lossless-all-features.webp) [txt](cases/lossless-all-features.txt) | ok | Every optional part of the lossless format in one image |
 | [`lossless-plain`](files/lossless-plain.webp) [txt](cases/lossless-plain.txt) | ok | An ordinary lossless image, with none of the corners |
 
-## Simple codes
+</details>
+
+<details markdown="block">
+<summary><b>Simple codes</b> -- 9 files, 6 ok, 3 reject</summary>
 
 The 1-or-2-symbol shorthand a Huffman code can take. Its symbols are read as
 raw 8-bit values and are never checked against the alphabet size, so this is
@@ -36,7 +42,10 @@ where a stream can say things an encoder cannot.
 | [`simple-green-1bit-symbol`](files/simple-green-1bit-symbol.webp) [txt](cases/simple-green-1bit-symbol.txt) | ok | Green code: simple form with first_symbol_len_code = 0, so the symbol is 1 bit wide |
 | [`simple-green-2sym-1bit-each`](files/simple-green-2sym-1bit-each.webp) [txt](cases/simple-green-2sym-1bit-each.txt) | ok | Green code with two real symbols, so every pixel costs exactly 1 bit |
 
-## The code-length code
+</details>
+
+<details markdown="block">
+<summary><b>The code-length code</b> -- 15 files, 9 ok, 6 reject</summary>
 
 The Huffman code that describes the lengths of another Huffman code, plus its
 repeat escapes (16, 17, 18) and the optional max_symbol field. cwebp only ever
@@ -60,7 +69,10 @@ emits a narrow slice of this.
 | [`codelen-single-symbol-complex-form`](files/codelen-single-symbol-complex-form.webp) [txt](cases/codelen-single-symbol-complex-form.txt) | ok | The complex form used to describe a code with exactly one symbol |
 | [`codelen-two-level-table`](files/codelen-two-level-table.webp) [txt](cases/codelen-two-level-table.txt) | ok | A green code with depths up to 10, past the 8-bit root table |
 
-## Meta Huffman / entropy image
+</details>
+
+<details markdown="block">
+<summary><b>Meta Huffman / entropy image</b> -- 7 files, 6 ok, 1 reject</summary>
 
 The sub-image that picks one of several code groups per tile, and the remapping
 the decoder does when the group count looks implausible.
@@ -75,7 +87,10 @@ the decoder does when the group count looks implausible.
 | [`meta-huffman-sparse-groups`](files/meta-huffman-sparse-groups.webp) [txt](cases/meta-huffman-sparse-groups.txt) | ok | Entropy image referencing groups 0 and 900 only, leaving a 900-entry hole |
 | [`meta-huffman-two-groups`](files/meta-huffman-two-groups.webp) [txt](cases/meta-huffman-two-groups.txt) | ok | Two Huffman groups selected per tile by the entropy image |
 
-## Color cache
+</details>
+
+<details markdown="block">
+<summary><b>Color cache</b> -- 5 files, 3 ok, 2 reject</summary>
 
 Size bounds, and cache-index literals.
 
@@ -87,7 +102,10 @@ Size bounds, and cache-index literals.
 | [`cache-bits-12-invalid`](files/cache-bits-12-invalid.webp) [txt](cases/cache-bits-12-invalid.txt) | reject | Color cache with 12 bits, one past MAX_CACHE_BITS |
 | [`cache-index-literal`](files/cache-index-literal.webp) [txt](cases/cache-index-literal.txt) | ok | A pixel coded as a color-cache index rather than as a literal |
 
-## Sub-images
+</details>
+
+<details markdown="block">
+<summary><b>Sub-images</b> -- 9 files, 5 ok, 4 reject</summary>
 
 A lossless file carries whole image streams inside itself: one for each
 transform that needs a per-tile parameter, and one for the entropy image. Each
@@ -108,7 +126,10 @@ about, and that cwebp always writes the same dull way.
 | [`subimage-code-max-symbol`](files/subimage-code-max-symbol.webp) [txt](cases/subimage-code-max-symbol.txt) | ok | A sub-image code using the explicit max_symbol early stop |
 | [`subimage-code-oversubscribed`](files/subimage-code-oversubscribed.webp) [txt](cases/subimage-code-oversubscribed.txt) | reject | A sub-image Huffman code with lengths 1, 2, 2, 2, which over-subscribes the tree |
 
-## Palette packing
+</details>
+
+<details markdown="block">
+<summary><b>Palette packing</b> -- 6 files, 6 ok, 0 reject</summary>
 
 Index width follows the palette size, and the map is padded out to the packing
 capacity with black.
@@ -122,7 +143,10 @@ capacity with black.
 | [`transform-palette-3-colors`](files/transform-palette-3-colors.webp) [txt](cases/transform-palette-3-colors.txt) | ok | Palette of 3 colors, so indices are 2 bits and 4 pixels share a byte |
 | [`transform-palette-index-past-end`](files/transform-palette-index-past-end.webp) [txt](cases/transform-palette-index-past-end.txt) | ok | Palette of 3 colors addressed with index 3, which does not exist |
 
-## Transforms
+</details>
+
+<details markdown="block">
+<summary><b>Transforms</b> -- 5 files, 4 ok, 1 reject</summary>
 
 Presence, repetition and tile sizes.
 
@@ -134,7 +158,10 @@ Presence, repetition and tile sizes.
 | [`transform-predictor-bits-max`](files/transform-predictor-bits-max.webp) [txt](cases/transform-predictor-bits-max.txt) | ok | Predictor transform with bits = 9, the maximum tile size |
 | [`transform-repeated`](files/transform-repeated.webp) [txt](cases/transform-repeated.txt) | reject | The subtract-green transform declared twice |
 
-## Back-references
+</details>
+
+<details markdown="block">
+<summary><b>Back-references</b> -- 10 files, 8 ok, 2 reject</summary>
 
 Copy lengths and distances.
 
@@ -151,7 +178,10 @@ Copy lengths and distances.
 | [`lz77-plane-code-120`](files/lz77-plane-code-120.webp) [txt](cases/lz77-plane-code-120.txt) | ok | Plane code 120, the last entry of the 2-D offset table |
 | [`lz77-plane-code-clamped-to-1`](files/lz77-plane-code-clamped-to-1.webp) [txt](cases/lz77-plane-code-clamped-to-1.txt) | ok | Plane code 4 on a 1-pixel-wide image, where the 2-D offset computes to 0 |
 
-## Predictor modes
+</details>
+
+<details markdown="block">
+<summary><b>Predictor modes</b> -- 7 files, 7 ok, 0 reject</summary>
 
 The per-tile predictor index. It is read as a 4-bit field, so all 16 values are
 reachable, but the format only defines 14 of them.
@@ -166,7 +196,10 @@ reachable, but the format only defines 14 of them.
 | [`predictor-single-row`](files/predictor-single-row.webp) [txt](cases/predictor-single-row.txt) | ok | A predictor transform on a one-row image |
 | [`predictor-tile-bits-min`](files/predictor-tile-bits-min.webp) [txt](cases/predictor-tile-bits-min.txt) | ok | Predictor tiles of 4x4 pixels, the smallest the format allows |
 
-## Frame header
+</details>
+
+<details markdown="block">
+<summary><b>Frame header</b> -- 7 files, 3 ok, 4 reject</summary>
 
 The 14-bit dimension fields and the version escape.
 
@@ -180,7 +213,10 @@ The 14-bit dimension fields and the version escape.
 | [`header-version-nonzero`](files/header-version-nonzero.webp) [txt](cases/header-version-nonzero.txt) | reject | Header with the 3-bit version field set to 1 |
 | [`header-width-16384`](files/header-width-16384.webp) [txt](cases/header-width-16384.txt) | ok | Width 16384, one past WEBP_MAX_DIMENSION |
 
-## The RIFF container
+</details>
+
+<details markdown="block">
+<summary><b>The RIFF container</b> -- 19 files, 9 ok, 10 reject</summary>
 
 The layer above the image: the RIFF header, the extended-format VP8X chunk and
 its canvas size, the optional chunks a decoder must step over by their declared
@@ -209,7 +245,10 @@ Everything here is read by webp_dec.c before the frame is looked at.
 | [`container-vp8x`](files/container-vp8x.webp) [txt](cases/container-vp8x.txt) | ok | The extended format: a VP8X chunk ahead of the frame |
 | [`container-zero-size-chunk`](files/container-zero-size-chunk.webp) [txt](cases/container-zero-size-chunk.txt) | ok | An optional chunk declaring a zero-length payload |
 
-## Animation
+</details>
+
+<details markdown="block">
+<summary><b>Animation</b> -- 48 files, 27 ok, 21 reject</summary>
 
 An ANIM chunk carrying the loop count, then an ANMF per frame with its own
 position, duration, disposal and blending, and its own image chunks. anim_dump
@@ -267,7 +306,10 @@ anim_decode.c, and one decode per frame.
 | [`anim-unknown-chunk-between-frames`](files/anim-unknown-chunk-between-frames.webp) [txt](cases/anim-unknown-chunk-between-frames.txt) | reject, anim_dump ok | An unrecognised chunk sitting between two frames |
 | [`anim-vp8l-with-alph`](files/anim-vp8l-with-alph.webp) [txt](cases/anim-vp8l-with-alph.txt) | reject, anim_dump reject | A frame carrying both an alpha chunk and a lossless image |
 
-## The alpha chunk
+</details>
+
+<details markdown="block">
+<summary><b>The alpha chunk</b> -- 33 files, 23 ok, 10 reject</summary>
 
 ALPH carries the alpha plane beside a lossy frame: a header byte of four two-
 bit fields, then the plane itself, either stored as it is or compressed with
@@ -316,7 +358,10 @@ conditions the 8-bit mode asks for in turn.
 | [`alph-reserved-set`](files/alph-reserved-set.webp) [txt](cases/alph-reserved-set.txt) | reject | The two reserved bits of the ALPH header byte set |
 | [`alph-without-vp8x-flag`](files/alph-without-vp8x-flag.webp) [txt](cases/alph-without-vp8x-flag.txt) | ok | An ALPH chunk with the VP8X alpha flag left clear |
 
-## Lossy: frame tag and picture header
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: frame tag and picture header</b> -- 16 files, 8 ok, 8 reject</summary>
 
 The ten uncompressed bytes every lossy frame starts with: the profile, the
 visibility and key-frame bits, the length of partition 0, the start code and
@@ -341,7 +386,10 @@ the two 14-bit dimensions.
 | [`lossy-frame-width-16383`](files/lossy-frame-width-16383.webp) [txt](cases/lossy-frame-width-16383.txt) | ok | The widest frame the 14-bit field can describe, one macroblock tall |
 | [`lossy-frame-zero-width`](files/lossy-frame-zero-width.webp) [txt](cases/lossy-frame-zero-width.txt) | reject | A frame whose width field is zero, with a height of 32 |
 
-## Lossy: segmentation
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: segmentation</b> -- 7 files, 7 ok, 0 reject</summary>
 
 Up to four segments, each with its own quantizer and loop-filter strength, and
 a per-macroblock map saying which is which. cwebp uses the feature but only
@@ -357,7 +405,10 @@ ever writes absolute values, and always writes the map and the data together.
 | [`lossy-segment-prob-extremes`](files/lossy-segment-prob-extremes.webp) [txt](cases/lossy-segment-prob-extremes.txt) | ok | Segment probabilities of 0 and 255, and loop-filter updates at both ends of their range |
 | [`lossy-segment-quant-extremes`](files/lossy-segment-quant-extremes.webp) [txt](cases/lossy-segment-quant-extremes.txt) | ok | Segment quantizers at 127, -127, 0 and absent |
 
-## Lossy: loop filter
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: loop filter</b> -- 6 files, 6 ok, 0 reject</summary>
 
 The in-loop deblocking filter: simple or normal, its level and sharpness, and
 the per-reference and per-mode deltas. PrecomputeFilterStrengths() shifts the
@@ -374,7 +425,10 @@ of.
 | [`lossy-filter-sharpness-5`](files/lossy-filter-sharpness-5.webp) [txt](cases/lossy-filter-sharpness-5.txt) | ok | Sharpness 5, the first level that quarters it |
 | [`lossy-filter-simple-max`](files/lossy-filter-simple-max.webp) [txt](cases/lossy-filter-simple-max.txt) | ok | The simple loop filter at level 63 and sharpness 7 |
 
-## Lossy: quantizer
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: quantizer</b> -- 6 files, 6 ok, 0 reject</summary>
 
 The frame quantizer index and the five deltas around it, one per plane and
 coefficient kind, with clamps that are not all the same.
@@ -388,7 +442,10 @@ coefficient kind, with clamps that are not all the same.
 | [`lossy-quant-min`](files/lossy-quant-min.webp) [txt](cases/lossy-quant-min.txt) | ok | The frame quantizer at 0, the finest the format allows |
 | [`lossy-quant-uv-dc-clamp`](files/lossy-quant-uv-dc-clamp.webp) [txt](cases/lossy-quant-uv-dc-clamp.txt) | ok | A chroma DC quantizer index pushed past 117, where it is clamped rather than at 127 |
 
-## Lossy: coefficient probabilities
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: coefficient probabilities</b> -- 5 files, 5 ok, 0 reject</summary>
 
 The 1056 probabilities that drive the coefficient coder, each one optionally
 replaced in the frame header, plus the skip probability.
@@ -401,7 +458,10 @@ replaced in the frame header, plus the skip probability.
 | [`lossy-proba-skip-extremes`](files/lossy-proba-skip-extremes.webp) [txt](cases/lossy-proba-skip-extremes.txt) | ok | A skip probability of 255 with nothing skipped, and the flag itself written out |
 | [`lossy-proba-zero`](files/lossy-proba-zero.webp) [txt](cases/lossy-proba-zero.txt) | ok | Coefficient probabilities of 0 and of 255, the ends of the range |
 
-## Lossy: prediction modes
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: prediction modes</b> -- 5 files, 5 ok, 0 reject</summary>
 
 The 16x16 and 4x4 luma modes and the chroma modes, and the neighbour-indexed
 probability table the 4x4 modes are coded with.
@@ -414,7 +474,10 @@ probability table the 4x4 modes are coded with.
 | [`lossy-mode-mixed`](files/lossy-mode-mixed.webp) [txt](cases/lossy-mode-mixed.txt) | ok | 16x16 and 4x4 macroblocks alternating, in both directions |
 | [`lossy-mode-uv-all-four`](files/lossy-mode-uv-all-four.webp) [txt](cases/lossy-mode-uv-all-four.txt) | ok | The four chroma modes, one per macroblock |
 
-## Lossy: coefficients
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: coefficients</b> -- 16 files, 16 ok, 0 reject</summary>
 
 The token coder of section 13: magnitudes and their escape categories, end-of-
 block, zero runs, and the four coefficient types. The band sweeps below share a
@@ -443,7 +506,10 @@ which is never a token's successor.
 | [`lossy-coeff-wht-full`](files/lossy-coeff-wht-full.webp) [txt](cases/lossy-coeff-wht-full.txt) | ok | A Y2 block with more than one coefficient, next to one with only a DC |
 | [`lossy-coeff-zero-runs`](files/lossy-coeff-zero-runs.webp) [txt](cases/lossy-coeff-zero-runs.txt) | ok | Single coefficients at positions 15, 12, 8 and 1, each behind a run of zeros |
 
-## Lossy: skipped macroblocks
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: skipped macroblocks</b> -- 3 files, 3 ok, 0 reject</summary>
 
 The per-macroblock skip flag, which drops the residual entirely and clears the
 neighbouring non-zero flags -- almost all of them.
@@ -454,7 +520,10 @@ neighbouring non-zero flags -- almost all of them.
 | [`lossy-skip-i4x4-nz-dc`](files/lossy-skip-i4x4-nz-dc.webp) [txt](cases/lossy-skip-i4x4-nz-dc.txt) | ok | A skipped 4x4 macroblock between two 16x16 ones that both carry a Y2 block |
 | [`lossy-skip-mixed`](files/lossy-skip-mixed.webp) [txt](cases/lossy-skip-mixed.txt) | ok | Skipped and coded macroblocks alternating, with a skip probability of 1 |
 
-## Lossy: token partitions
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: token partitions</b> -- 5 files, 2 ok, 3 reject</summary>
 
 A lossy frame may carry 1, 2, 4 or 8 token partitions, macroblock row r being
 read from partition r & (n - 1). cwebp does not expose config.partitions and
@@ -469,7 +538,10 @@ so none of this is reachable through the tools.
 | [`lossy-parts-size-past-end`](files/lossy-parts-size-past-end.webp) [txt](cases/lossy-parts-size-past-end.txt) | reject | Four partitions, the first declaring 16 MB of data |
 | [`lossy-parts-table-too-small`](files/lossy-parts-table-too-small.webp) [txt](cases/lossy-parts-table-too-small.txt) | reject | Eight partitions declared in a frame with only ten bytes left for the twenty-one-byte size table |
 
-## Lossy: truncation
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: truncation</b> -- 4 files, 1 ok, 3 reject</summary>
 
 Frames that stop early, at each of the places the decoder can notice: inside
 partition 0, inside the macroblock modes, and inside the token data.
@@ -481,7 +553,10 @@ partition 0, inside the macroblock modes, and inside the token data.
 | [`lossy-truncated-short-modes`](files/lossy-truncated-short-modes.webp) [txt](cases/lossy-truncated-short-modes.txt) | ok | Mode data for 15 macroblocks in a frame whose dimensions call for 16 |
 | [`lossy-truncated-tokens`](files/lossy-truncated-tokens.webp) [txt](cases/lossy-truncated-tokens.txt) | reject | Partition 0 intact, the token partition cut in half |
 
-## Lossy: partition sizes, from real encodes
+</details>
+
+<details markdown="block">
+<summary><b>Lossy: partition sizes, from real encodes</b> -- 8 files, 5 ok, 3 reject</summary>
 
 The four files behind these are genuine encoder output, made through the
 encoder API rather than cwebp, and the broken ones rewrite the raw size table
@@ -498,3 +573,5 @@ the assembled cases do not.
 | [`lossy-8-partitions-zero-sizes`](files/lossy-8-partitions-zero-sizes.webp) | reject | Eight partitions all declared as zero bytes long |
 | [`lossy-8-partitions-sizes-sum-past-end`](files/lossy-8-partitions-sizes-sum-past-end.webp) | reject | Eight partitions whose declared sizes add up to more than the chunk holds |
 | [`lossy-combo-all-features`](files/lossy-combo-all-features.webp) [txt](cases/lossy-combo-all-features.txt) | ok | Every optional tool switched on in one frame at once |
+
+</details>
