@@ -279,8 +279,8 @@ rests on having read the code.
   ./coverage.sh` builds an instrumented libwebp in a throwaway worktree and
   reports `src/dec` and `src/demux` three times over: the corpus as
   `check.sh` runs it, the same files through every `dwebp` output and
-  scaling knob, and then through every entry point libwebp exports. At
-  0be8ddd1 that is 61%% of regions and 68%% of lines from the files alone,
+  scaling knob, and then through every entry point libwebp exports. As of
+  8/26 that is 61%% of regions and 68%% of lines from the files alone,
   81%% and 92%% with a caller driving them. The distance between the two is
   the part no bitstream decides -- output formats, rescaling, allocation
   failures -- and keeping them apart is what stops the corpus being blamed
