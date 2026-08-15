@@ -6,7 +6,8 @@ in `cases/`. The case says the rest -- which decoder path it reaches and why
 that is worth a file. [`REACHES.md`](REACHES.md) indexes the same set the other
 way round, and the [notes](README.md) say what all of it is.
 
-The groups are folded shut. Click one to open it.
+The groups are folded shut. Click one to open it. All 263 at once are
+**[`webp-corners.tgz`](webp-corners.tgz)**, 19 kB.
 
 <details markdown="block">
 <summary><b>Whole lossless images</b> -- 2 files, 2 ok, 0 reject</summary>
@@ -311,9 +312,9 @@ anim_decode.c, and one decode per frame.
 <details markdown="block">
 <summary><b>The alpha chunk</b> -- 33 files, 23 ok, 10 reject</summary>
 
-ALPH carries the alpha plane beside a lossy frame: a header byte of four two-
-bit fields, then the plane itself, either stored as it is or compressed with
-the lossless coder in its 8-bit mode. That mode is a separate path through
+ALPH carries the alpha plane beside a lossy frame: a header byte of four
+two-bit fields, then the plane itself, either stored as it is or compressed
+with the lossless coder in its 8-bit mode. That mode is a separate path through
 vp8l_dec.c from the one every VP8L image here takes, and an alpha chunk is the
 only thing that reaches it, beside a still frame or inside an animation frame
 alike. Each of the four filters has a routine of its own in dsp/filters.c and
@@ -479,13 +480,13 @@ probability table the 4x4 modes are coded with.
 <details markdown="block">
 <summary><b>Lossy: coefficients</b> -- 16 files, 16 ok, 0 reject</summary>
 
-The token coder of section 13: magnitudes and their escape categories, end-of-
-block, zero runs, and the four coefficient types. The band sweeps below share a
-trick: the three token classes drive the context of the next position -- a zero
-gives 0, a +-1 gives 1, anything larger gives 2 -- so a block of each, walked
-to position 15, reads every band at that class, and placing the blocks so their
-neighbour contexts are 0, 1 and 2 in turn is the only way to reach band 0,
-which is never a token's successor.
+The token coder of section 13: magnitudes and their escape categories,
+end-of-block, zero runs, and the four coefficient types. The band sweeps below
+share a trick: the three token classes drive the context of the next position
+-- a zero gives 0, a +-1 gives 1, anything larger gives 2 -- so a block of
+each, walked to position 15, reads every band at that class, and placing the
+blocks so their neighbour contexts are 0, 1 and 2 in turn is the only way to
+reach band 0, which is never a token's successor.
 
 | file | | what it is |
 | --- | --- | --- |

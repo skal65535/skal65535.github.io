@@ -352,8 +352,11 @@ TOC_MARK = '<!--contents-->'
 
 
 def wrap(text, indent=''):
+    # never at a hyphen: every other name here has one in it, and a file name
+    # broken over two lines takes the markdown around it with it
     return '\n'.join(textwrap.wrap(text, 79, initial_indent=indent,
-                                   subsequent_indent=indent)) + '\n'
+                                   subsequent_indent=indent,
+                                   break_on_hyphens=False)) + '\n'
 
 
 def size(n):
@@ -1130,7 +1133,7 @@ def build_feature_index(outdir, rows):
     return '\n'.join(out) + '\n'
 
 
-def write_bitstreams(outdir, rows):
+def write_bitstreams(outdir, rows, tarball):
     """Every file, one line each, grouped -- the part that does not fit on a
     front page. The README carries the group counts and links here."""
     used = set()
@@ -1143,7 +1146,8 @@ def write_bitstreams(outdir, rows):
         '[`REACHES.md`](REACHES.md) indexes the same set the other way '
         'round, and the [notes](README.md) say what all of it is.'))
     out.append(wrap(
-        'The groups are folded shut. Click one to open it.'))
+        'The groups are folded shut. Click one to open it. All %d at once '
+        'are **[`%s`](%s)**, %s.' % (len(rows), TARBALL, TARBALL, tarball)))
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
         group = [r for r in rows if r[0] not in used and
                  (prefix is None or r[0].startswith(prefix))]
@@ -1224,12 +1228,13 @@ def write_readme(outdir, rows):
                 break
         else:
             kinds['vp8l'] += 1
-    write_bitstreams(outdir, rows)
+    tarball = size(write_tarball(outdir, rows))
+    write_bitstreams(outdir, rows, tarball)
     with open(os.path.join(outdir, 'REACHES.md'), 'w') as f:
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
     body = README_HEAD % dict(kinds,
                               toc=TOC_MARK,
-                              tarball=size(write_tarball(outdir, rows)),
+                              tarball=tarball,
                               cover=build_coverage(kinds),
                               env=build_env(),
                               files=build_file_list(
