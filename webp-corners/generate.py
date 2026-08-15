@@ -15,9 +15,12 @@ example in HOWTO.md does not assemble.
 """
 
 import glob
+import gzip
+import io
 import os
 import re
 import sys
+import tarfile
 import textwrap
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -29,6 +32,9 @@ import vp8_asm
 import webp_asm
 
 SLOW = set()      # the cases that allocate enough memory to be worth skipping
+
+TARBALL = 'webp-corners.tgz'   # every bitstream, for a reader without git
+TARDIR = 'webp-corners'        # the directory it unpacks into
 
 # A row is (name, expect, note, exercises, size, anim, info, incremental,
 # unique). The four after the size are what one decoder cannot say:
@@ -233,6 +239,12 @@ ask git for just that directory:
 
 Run the scripts above from `webp-corners/`.
 
+For the bitstreams on their own, without a clone or a checkout:
+**[`webp-corners.tgz`](webp-corners.tgz)** is every file in `files/` and
+nothing else, %(tarball)s, unpacking into a `webp-corners/` directory.
+`expected.txt` and `hashes.txt` are what say whether a decoder got them
+right, so they are worth taking too, but the tarball is only the bytes.
+
 To write one of your own, or read a real encode back into a case,
 [`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
 reference. The short version:
@@ -342,6 +354,11 @@ TOC_MARK = '<!--contents-->'
 def wrap(text, indent=''):
     return '\n'.join(textwrap.wrap(text, 79, initial_indent=indent,
                                    subsequent_indent=indent)) + '\n'
+
+
+def size(n):
+    """A byte count for a sentence rather than for a table."""
+    return '%d bytes' % n if n < 10000 else '%d kB' % round(n / 1000.)
 
 
 def slug(title):
@@ -773,6 +790,10 @@ SRC = [
 ]
 
 DATA = [
+    (TARBALL, 'Every bitstream in one file, for taking them without the '
+              'repository around them. Written by `generate.py` with the '
+              'headers zeroed, so it is the same bytes until a file '
+              'changes.'),
     ('BITSTREAMS.md', 'Every file with the line its case calls itself, '
                       'grouped.'),
     ('REACHES.md', 'The same set the other way round: every decoder path the '
@@ -1146,6 +1167,53 @@ def write_bitstreams(outdir, rows):
         f.write(text)
 
 
+def write_tarball(outdir, rows):
+    """Every bitstream in one file, for a reader who wants the corpus and
+    not the repository around it.
+
+    The headers are written rather than taken from the filesystem. Most of
+    what tar records per entry is the machine that made it -- the mtimes,
+    the uid, the order the directory happened to be read in -- and any of it
+    would give a different blob for the same 263 files, which in a tracked
+    file means a rewrite on every rebuild.
+    """
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode='w') as tar:
+        for row in sorted(rows, key=lambda r: r[0]):
+            with open(os.path.join(outdir, 'files', row[0] + '.webp'),
+                      'rb') as f:
+                data = f.read()
+            info = tarfile.TarInfo('%s/%s.webp' % (TARDIR, row[0]))
+            info.size, info.mtime, info.mode = len(data), 0, 0o644
+            info.uid = info.gid = 0
+            info.uname = info.gname = ''
+            tar.addfile(info, io.BytesIO(data))
+    path = os.path.join(outdir, TARBALL)
+    with open(path, 'wb') as f:
+        # mtime=0 for the same reason: gzip stamps one into its own header
+        with gzip.GzipFile(fileobj=f, mode='wb', mtime=0) as gz:
+            gz.write(tar_bytes.getvalue())
+    return os.path.getsize(path)
+
+
+def check_tarball(outdir, rows):
+    """The tarball holds the bitstreams and nothing else, byte for byte.
+
+    It is the one thing here that leaves without the scripts that check it,
+    so it is opened again once it is closed.
+    """
+    with tarfile.open(os.path.join(outdir, TARBALL)) as tar:
+        got = {m.name: tar.extractfile(m).read() for m in tar}
+    want = {}
+    for row in rows:
+        with open(os.path.join(outdir, 'files', row[0] + '.webp'), 'rb') as f:
+            want['%s/%s.webp' % (TARDIR, row[0])] = f.read()
+    assert got == want, '%s and files/ differ: %s' % (
+        TARBALL, ' '.join(sorted(set(got) ^ set(want))[:3]) or 'same names, '
+        'different bytes')
+    return len(got)
+
+
 def write_readme(outdir, rows):
     kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'anim': 0, 'vp8l': 0}
     for r in rows:
@@ -1161,6 +1229,7 @@ def write_readme(outdir, rows):
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
     body = README_HEAD % dict(kinds,
                               toc=TOC_MARK,
+                              tarball=size(write_tarball(outdir, rows)),
                               cover=build_coverage(kinds),
                               env=build_env(),
                               files=build_file_list(
@@ -1202,9 +1271,10 @@ def main():
     check_links(outdir)
     check_unique(outdir, rows)
     print('%d HOWTO.md examples assemble, %d environment knobs documented, '
-          '%d folded groups render both ways, %d sections in the contents list'
+          '%d folded groups render both ways, %d sections in the contents '
+          'list, %d files in %s'
           % (check_howto(outdir), check_env(outdir), check_details(outdir),
-             check_toc(outdir)))
+             check_toc(outdir), check_tarball(outdir, rows), TARBALL))
     return rows
 
 

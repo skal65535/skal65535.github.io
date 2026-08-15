@@ -110,6 +110,7 @@ describing how they fit together.
 
 | file | what it is |
 | --- | --- |
+| [`webp-corners.tgz`](webp-corners.tgz) | Every bitstream in one file, for taking them without the repository around them. Written by `generate.py` with the headers zeroed, so it is the same bytes until a file changes. |
 | [`BITSTREAMS.md`](BITSTREAMS.md) | Every file with the line its case calls itself, grouped. |
 | [`REACHES.md`](REACHES.md) | The same set the other way round: every decoder path the probes measure, and which files reach it. |
 | [`HOWTO.md`](HOWTO.md) | How to write a case, read a real file back into one, and add one here. |
@@ -172,6 +173,12 @@ ask git for just that directory:
     git sparse-checkout set webp-corners
 
 Run the scripts above from `webp-corners/`.
+
+For the bitstreams on their own, without a clone or a checkout:
+**[`webp-corners.tgz`](webp-corners.tgz)** is every file in `files/` and
+nothing else, 19 kB, unpacking into a `webp-corners/` directory.
+`expected.txt` and `hashes.txt` are what say whether a decoder got them
+right, so they are worth taking too, but the tarball is only the bytes.
 
 To write one of your own, or read a real encode back into a case,
 [`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
