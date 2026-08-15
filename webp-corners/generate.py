@@ -551,7 +551,8 @@ def check_links(outdir):
     page is served at all.
     """
     for doc, base in (('README.md', '.'), ('src/README.md', 'src'),
-                      ('SYNTAX.md', '.'), ('HOWTO.md', '.')):
+                      ('SYNTAX.md', '.'), ('HOWTO.md', '.'),
+                      ('BITSTREAMS.md', '.'), ('REACHES.md', '.')):
         with open(os.path.join(outdir, doc)) as f:
             text = f.read()
         for target in re.findall(r'\]\(([^)#][^)]*)\)', text):
@@ -698,6 +699,10 @@ SRC = [
 ]
 
 DATA = [
+    ('BITSTREAMS.md', 'Every file with the line its case calls itself, '
+                      'grouped.'),
+    ('REACHES.md', 'The same set the other way round: every decoder path the '
+                   'probes measure, and which files reach it.'),
     ('HOWTO.md', 'How to write a case, read a real file back into one, and '
                  'add one here.'),
     ('SYNTAX.md', 'The whole case syntax, generated from `src/grammar.py`.'),
@@ -958,15 +963,24 @@ def build_cases(outdir):
 
 
 def build_file_list(index):
-    """What the corpus holds, per group. Every file is one click from its own
-    note further down, and listed with its size in files/."""
+    """What the corpus holds, per group, and where the two long lists live.
+
+    One row per group is as much as a front page can carry: 263 files listed
+    a line each is four times the rest of this README put together, and
+    someone arriving wants to know what to run, not to scroll past all of
+    them first.
+    """
     return '## The bitstreams\n\n' + wrap(
-        'The whole set lives in **[`files/`](files)**, which lists each one '
-        'with its size and expected verdict, and the text they are assembled '
-        'from is in **[`cases/`](cases)**. Each row below links to both: '
-        'the line is what the case calls itself, and the case says the rest '
-        '-- which decoder path it reaches and why that is worth a file.'
-    ) + '\n' + index
+        'The files themselves are in **[`files/`](files)**, each with its '
+        'size and expected verdict, and the text they are assembled from is '
+        'in **[`cases/`](cases)**.'
+    ) + '\n' + index + '\n' + wrap(
+        'Two lists go with that, both generated: '
+        '**[`BITSTREAMS.md`](BITSTREAMS.md)** is every file with the line '
+        'its case calls itself, grouped as above, and '
+        '**[`REACHES.md`](REACHES.md)** turns that around -- every decoder '
+        'path the probes measure, and which files reach it, which is the '
+        'question someone holding a decoder actually has.')
 
 
 def cell(text):
@@ -1003,11 +1017,13 @@ def build_feature_index(outdir, rows):
         name, _, tags = line.partition(' ')
         for tag in tags.split():
             reached.setdefault(tag, []).append(name)
-    out = ['### What reaches what\n']
+    out = ['# webp-corners: what reaches what\n']
     out.append(wrap(
         'Every decoder path `src/probes.py` measures, and the files that '
-        'reach it -- the question a decoder leaves you with, which the list '
-        'above answers only backwards. Generated from `coverage.txt`.'))
+        'reach it. [`BITSTREAMS.md`](BITSTREAMS.md) answers the same '
+        'question backwards, a file at a time, and the [notes](README.md) '
+        'say what the corpus is. Generated from `coverage.txt`, so this is '
+        'the measurement rather than a claim about it.'))
     out.append('\n| decoder path | files |')
     out.append('| --- | --- |')
     for tag in sorted(reached):
@@ -1019,8 +1035,33 @@ def build_feature_index(outdir, rows):
     return '\n'.join(out) + '\n'
 
 
-def write_readme(outdir, rows):
+def write_bitstreams(outdir, rows):
+    """Every file, one line each, grouped -- the part that does not fit on a
+    front page. The README carries the group counts and links here."""
     used = set()
+    out = ['# webp-corners: the bitstreams\n']
+    out.append(wrap(
+        'One row per file: what the case calls itself, the verdict a decoder '
+        'must reach, and a link to both the bytes in `files/` and the text '
+        'they were assembled from in `cases/`. The case says the rest -- '
+        'which decoder path it reaches and why that is worth a file. '
+        '[`REACHES.md`](REACHES.md) indexes the same set the other way '
+        'round, and the [notes](README.md) say what all of it is.'))
+    for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
+        group = [r for r in rows if r[0] not in used and
+                 (prefix is None or r[0].startswith(prefix))]
+        if not group:
+            continue
+        out.append('## %s\n\n%s' % (title, wrap(blurb)) if blurb
+                   else '## %s\n' % title)
+        used.update(r[0] for r in group)
+        out.append(group_table(outdir, group))
+    text = re.sub(r'\n{3,}', '\n\n', '\n'.join(out))
+    with open(os.path.join(outdir, 'BITSTREAMS.md'), 'w') as f:
+        f.write(text)
+
+
+def write_readme(outdir, rows):
     kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'anim': 0, 'vp8l': 0}
     for r in rows:
         for prefix, kind in (('lossy-', 'lossy'), ('container-', 'container'),
@@ -1030,21 +1071,14 @@ def write_readme(outdir, rows):
                 break
         else:
             kinds['vp8l'] += 1
-    files = [build_file_list(build_index(rows, GROUPS))]
-    for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
-        group = [r for r in rows if r[0] not in used and
-                 (prefix is None or r[0].startswith(prefix))]
-        if not group:
-            continue
-        files.append('### %s\n\n%s' % (title, wrap(blurb)) if blurb
-                     else '### %s\n' % title)
-        used.update(r[0] for r in group)
-        files.append(group_table(outdir, group))
-    files.append(build_feature_index(outdir, rows))
+    write_bitstreams(outdir, rows)
+    with open(os.path.join(outdir, 'REACHES.md'), 'w') as f:
+        f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
     lines = [README_HEAD % dict(kinds,
                                 cover=build_coverage(kinds),
                                 env=build_env(),
-                                files='\n'.join(files),
+                                files=build_file_list(
+                                    build_index(rows, GROUPS)),
                                 code=build_code_list(outdir))]
     total = sum(r[4] for r in rows)
     lines.append('---\n')
