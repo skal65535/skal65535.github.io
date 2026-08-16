@@ -75,7 +75,7 @@ take the directory:
 
 The suite is graded by measurement rather than by inspection. `coverage.sh`
 builds libwebp with instrumentation and reports `src/dec` and `src/demux`
-three times over, at 0be8ddd1:
+three times over:
 
 | driven by | regions | lines | branches |
 | --- | ---: | ---: | ---: |

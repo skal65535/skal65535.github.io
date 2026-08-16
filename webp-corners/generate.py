@@ -230,7 +230,7 @@ take the directory:
 
 The suite is graded by measurement rather than by inspection. `coverage.sh`
 builds libwebp with instrumentation and reports `src/dec` and `src/demux`
-three times over, at %(at)s:
+three times over:
 
 %(coverage)s
 The first row is what a bitstream controls. The rest is what a caller
@@ -328,9 +328,8 @@ COVERAGE = [
      'canvas one frame at a time.'),
 ]
 
-# The three passes coverage.sh reports over libwebp's src/dec and src/demux,
-# and the revision it measured. check_coverage() holds the page to these.
-COVERAGE_AT = '0be8ddd1'
+# The three passes coverage.sh reports over libwebp's src/dec and src/demux.
+# Measured at 0be8ddd1; coverage.sh says when they have moved.
 COVERAGE_RUNS = [
     ('The bitstreams alone, as `check.sh` runs them', 61.20, 68.12, 54.97),
     ('The same files, through every output and scaling option', 68.00, 79.63,
@@ -1234,7 +1233,6 @@ def write_readme(outdir, rows):
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
     body = README_HEAD % dict(toc=TOC_MARK,
                               tarball_name=TARBALL,
-                              at=COVERAGE_AT,
                               coverage=build_coverage_table(),
                               cover=build_coverage())
     # the sections come from the pieces above as much as from the template,
