@@ -448,8 +448,8 @@ SOURCES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: sources</h1>
 <p>Real encoder output, not assembled. The partition count lives inside the
 bool-coded partition 0, so no case can write it; these lossy frames carry 1,
 2, 4 and 8 token partitions, made through the encoder API by
-<a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
-because cwebp emits only one.</p>
+<a href="../src/make_partition_sources.c"
+><code>make_partition_sources.c</code></a> because cwebp emits only one.</p>
 <p>Seven files in <a href="../files/">files/</a> come from these: the four as
 they are, and three with the partition-size table rewritten to lie about what
 follows it. <a href="../">The notes</a> say what each one does.</p>

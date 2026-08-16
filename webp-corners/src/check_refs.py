@@ -33,7 +33,8 @@ def references(here):
     out = []
     for path in sorted(glob.glob(os.path.join(here, 'cases', '*.txt'))) + \
             [os.path.join(here, 'generate.py')]:
-        text = open(path).read()
+        with open(path) as f:
+            text = f.read()
         for m in re.finditer(r'\b([a-z0-9_]+\.[ch]):(\d+)', text):
             out.append((os.path.basename(path), m.group(1), int(m.group(2))))
     return out
@@ -44,7 +45,8 @@ def cited_line(root, name, line):
     found = glob.glob(os.path.join(root, 'src', '*', name))
     if not found:
         return None
-    source = open(found[0]).read().splitlines()
+    with open(found[0]) as f:
+        source = f.read().splitlines()
     return source[line - 1].strip() if line <= len(source) else None
 
 
@@ -73,10 +75,11 @@ def main(argv):
         print('no %s; run with --write' % REFS, file=sys.stderr)
         return 2
     want = {}
-    for line in open(path):
-        if not line.startswith('#'):
-            where, at, text = line.rstrip('\n').split('|', 2)
-            want[(where, at)] = text
+    with open(path) as f:
+        for line in f:
+            if not line.startswith('#'):
+                where, at, text = line.rstrip('\n').split('|', 2)
+                want[(where, at)] = text
     bad = 0
     for gone in sorted(set(want) - {(w, a) for w, a, _ in rows}):
         print('%s: %s is no longer referenced; rerun with --write'

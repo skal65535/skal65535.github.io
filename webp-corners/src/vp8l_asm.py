@@ -690,24 +690,7 @@ def assemble_text(text):
 
 
 def main(argv):
-    if not 2 <= len(argv) <= 3:
-        print(__doc__.strip().split('\n\n')[0], file=sys.stderr)
-        print('usage: %s <case.txt> [<out.webp>]'
-              % os.path.basename(argv[0]), file=sys.stderr)
-        return 1
-    src = argv[1]
-    dst = argv[2] if len(argv) > 2 else os.path.splitext(src)[0] + '.webp'
-    with open(src) as f:
-        text = f.read()
-    try:
-        data = assemble_text(text)
-    except AsmError as e:
-        print('%s:%s' % (src, e), file=sys.stderr)
-        return 1
-    with open(dst, 'wb') as f:
-        f.write(data)
-    print('%-40s %5d bytes' % (dst, len(data)))
-    return 0
+    return vp8_asm.assemble_main(argv, assemble_text, __doc__)
 
 
 if __name__ == '__main__':

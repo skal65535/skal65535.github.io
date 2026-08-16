@@ -177,7 +177,7 @@ def write_simple_code(bw, num_symbols, symbols, use_8bit=True):
 
 
 def code_length_symbols(lengths, use_repeats=False):
-    """Turn a length array into the (symbol, extra_bits, extra_value) stream."""
+    """A length array as its (symbol, extra_bits, extra_value) stream."""
     out = []
     if not use_repeats:
         for l in lengths:

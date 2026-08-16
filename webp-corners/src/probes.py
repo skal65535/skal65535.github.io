@@ -706,7 +706,8 @@ def main():
     missing = 0
     for rel, patches in FILES:
         path = '%s/%s' % (root, rel)
-        s = open(path).read()
+        with open(path) as f:
+            s = f.read()
         at = s.index('#include')
         s = s[:at] + MACROS + s[at:]
         for old, new in patches:
@@ -721,7 +722,8 @@ def main():
                 missing += 1
                 continue
             s = s.replace(old, new, 1)
-        open(path, 'w').write(s)
+        with open(path, 'w') as f:
+            f.write(s)
     print('patched %d files, %d anchors missing' % (len(FILES), missing))
     return 1 if missing else 0
 

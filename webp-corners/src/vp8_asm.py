@@ -505,9 +505,14 @@ def assemble_text(text):
         raise unwritable(e)
 
 
-def main(argv):
+def assemble_main(argv, assemble, doc):
+    """The command each assembler here is: read a case, write the bytes.
+
+    'assemble' is the module's own assemble_text(), 'doc' its docstring,
+    whose first paragraph is the usage blurb.
+    """
     if not 2 <= len(argv) <= 3:
-        print(__doc__.strip().split('\n\n')[0], file=sys.stderr)
+        print(doc.strip().split('\n\n')[0], file=sys.stderr)
         print('usage: %s <case.txt> [<out.webp>]'
               % os.path.basename(argv[0]), file=sys.stderr)
         return 1
@@ -516,7 +521,7 @@ def main(argv):
     with open(src) as f:
         text = f.read()
     try:
-        data = assemble_text(text)
+        data = assemble(text)
     except AsmError as e:
         print('%s:%s' % (src, e), file=sys.stderr)
         return 1
@@ -524,6 +529,10 @@ def main(argv):
         f.write(data)
     print('%-40s %5d bytes' % (dst, len(data)))
     return 0
+
+
+def main(argv):
+    return assemble_main(argv, assemble_text, __doc__)
 
 
 if __name__ == '__main__':
