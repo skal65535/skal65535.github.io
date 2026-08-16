@@ -109,11 +109,11 @@ Size bounds, and cache-index literals.
 <summary><b>Sub-images</b> -- 9 files, 5 ok, 4 reject</summary>
 
 A lossless file carries whole image streams inside itself: one for each
-transform that needs a per-tile parameter, and one for the entropy image. Each
-is read by the same DecodeImageStream() as the outer image, minus the
-transforms and the entropy image it is not allowed to have of its own -- so
-each has a color cache and five Huffman codes that a file can say something
-about, and that cwebp always writes the same dull way.
+transform that needs a per-tile parameter, and one for the entropy image. A
+sub-image is read as an image stream like any other, minus the transforms and
+the entropy image it may not have of its own. So each carries a colour cache
+and five Huffman codes a file can say something about. An encoder writes them
+all the same dull way.
 
 | file | | what it is |
 | --- | --- | --- |
@@ -222,7 +222,7 @@ The 14-bit dimension fields and the version escape.
 The layer above the image: the RIFF header, the extended-format VP8X chunk and
 its canvas size, the optional chunks a decoder must step over by their declared
 length alone, and the padding rule that makes an odd-sized one even on disk.
-Everything here is read by webp_dec.c before the frame is looked at.
+All of it is read before the frame is.
 
 | file | | what it is |
 | --- | --- | --- |
@@ -252,9 +252,9 @@ Everything here is read by webp_dec.c before the frame is looked at.
 <summary><b>Animation</b> -- 48 files, 27 ok, 21 reject</summary>
 
 An ANIM chunk carrying the loop count, then an ANMF per frame with its own
-position, duration, disposal and blending, and its own image chunks. anim_dump
-is what reads these: the demuxer of demux.c, the frame composition of
-anim_decode.c, and one decode per frame.
+position, duration, disposal and blending, and its own image chunks. Reading
+one takes a container walk, a frame composed over the canvas, and one image
+decode per frame.
 
 | file | | what it is |
 | --- | --- | --- |
@@ -314,14 +314,12 @@ anim_decode.c, and one decode per frame.
 
 ALPH carries the alpha plane beside a lossy frame: a header byte of four
 two-bit fields, then the plane itself, either stored as it is or compressed
-with the lossless coder in its 8-bit mode. That mode is a separate path through
-vp8l_dec.c from the one every VP8L image here takes, and an alpha chunk is the
-only thing that reaches it, beside a still frame or inside an animation frame
-alike. Each of the four filters has a routine of its own in dsp/filters.c and
-turns the same stored bytes into a different plane, so the pixel hash is what
-tells those apart. A compressed plane is a lossless stream with its header left
-off: the alph-plane files write one from text, and break each of the four
-conditions the 8-bit mode asks for in turn.
+with the lossless coder in its 8-bit mode. Only an alpha chunk reaches that
+mode, beside a still frame or inside an animation frame alike. Each of the four
+filters turns the same stored bytes into a different plane, so the pixel hash
+is what tells them apart. A compressed plane is a lossless stream with its
+header left off. The alph-plane files write one from text, and break each of
+the four conditions the 8-bit mode asks for in turn.
 
 | file | | what it is |
 | --- | --- | --- |
@@ -412,10 +410,8 @@ ever writes absolute values, and always writes the map and the data together.
 <summary><b>Lossy: loop filter</b> -- 6 files, 6 ok, 0 reject</summary>
 
 The in-loop deblocking filter: simple or normal, its level and sharpness, and
-the per-reference and per-mode deltas. PrecomputeFilterStrengths() shifts the
-interior limit right by one for sharpness 1 to 4 and by two for 5 to 7, then
-clamps it to 9 - sharpness, which is what the sharpness files sit either side
-of.
+the per-reference and per-mode deltas. Sharpness moves the interior limit in
+two steps, at 1 and at 5, and the sharpness files sit either side of both.
 
 | file | | what it is |
 | --- | --- | --- |
@@ -526,10 +522,9 @@ neighbouring non-zero flags -- almost all of them.
 <details markdown="block">
 <summary><b>Lossy: token partitions</b> -- 5 files, 2 ok, 3 reject</summary>
 
-A lossy frame may carry 1, 2, 4 or 8 token partitions, macroblock row r being
-read from partition r & (n - 1). cwebp does not expose config.partitions and
-libwebp forces it back to 1 whenever the token path is used (webp_enc.c:124),
-so none of this is reachable through the tools.
+A lossy frame may carry 1, 2, 4 or 8 token partitions. Macroblock row r is read
+from partition r & (n - 1). No encoder here emits more than one, so nothing but
+a written bitstream reaches the rest.
 
 | file | | what it is |
 | --- | --- | --- |

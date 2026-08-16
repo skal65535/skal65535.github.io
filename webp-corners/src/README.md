@@ -1,41 +1,41 @@
 # webp-corners: the code
 
-Everything the scripts one directory up are built out of. Nothing here is
-run directly to produce the corpus -- [`../generate.py`](../generate.py)
-does that -- though each assembler and disassembler doubles as a command of
-its own, run from the directory above where `cases/` is.
-[`../HOWTO.md`](../HOWTO.md) is what to do with them; this is how they fit
-together.
+What the scripts one directory up are built out of.
+[`../generate.py`](../generate.py) drives all of it. Each assembler and
+disassembler is also a command of its own, run from the directory above,
+where `cases/` is. [`../HOWTO.md`](../HOWTO.md) says what to do with them.
+This says how they fit together.
 
-Three layers, and a case only ever touches the top one:
+Three layers. A case only ever touches the top one.
 
-* **`webp_asm.py`** reads the case, splits the container directives from the
-  image ones, and hands the image to whichever assembler owns it: a case
-  saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It
-  then wraps the result in RIFF. It also owns the two places the format
-  nests: a `frame` block is an animation frame with an image of its own, and
-  an `alph_plane` block is a compressed alpha plane, which is a lossless
-  image stream with its header left off.
-* **`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into the fields of a
-  bitstream. Their docstrings are the format: every keyword, its default and
-  what it writes. Nothing is validated or clamped -- a value too big for its
-  field loses its top bits, which is usually the point.
-* **`vp8l.py`** and **`vp8.py`** do the bit-level work: the boolean coder,
-  canonical Huffman codes, prefix codes, the sub-image streams. They
-  validate nothing either.
+**`webp_asm.py`** reads the case. It splits the container directives from
+the image ones and hands the image to the assembler that owns it: a case
+saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It wraps
+the result in RIFF. It also owns the two places the format nests. A `frame`
+block is an animation frame with an image of its own. An `alph_plane` block
+is a compressed alpha plane, which is a lossless image stream with its
+header left off.
 
-`vp8_dis.py`, `vp8l_dis.py` and `webp_dis.py` go the other way, and are
-what [`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writers
-against real encodes rather than against themselves: disassemble a file,
-reassemble from its own text, compare the bytes. `--check` does exactly that
-for any file you point it at. The first two read one chunk; `webp_dis.py`
-reads a whole file, which is the only way an animation or an alpha plane can
-be read at all.
+**`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into bitstream fields.
+Their docstrings are the format: every keyword, its default, and what it
+writes. Nothing is validated or clamped. A value too big for its field loses
+its top bits, which is usually the point.
 
-`grammar.py` is the third thing a case touches, though not at assembly time:
-it holds every keyword and the range of every value, and
+**`vp8l.py`** and **`vp8.py`** do the bit-level work: the boolean coder,
+canonical Huffman codes, prefix codes, the sub-image streams. They validate
+nothing either.
+
+`vp8_dis.py`, `vp8l_dis.py` and `webp_dis.py` go the other way. Disassemble
+a file, reassemble from its own text, compare the bytes: that is how
+[`../vp8_selftest.py`](../vp8_selftest.py) checks the writers against real
+encodes rather than against themselves. `--check` does it for any file you
+point it at. The first two read one chunk. `webp_dis.py` reads a whole file,
+which is the only way to read an animation or an alpha plane.
+
+`grammar.py` holds every keyword and the range of every value.
 [`../SYNTAX.md`](../SYNTAX.md) is generated from it, so the reference cannot
-drift from the code.
+drift from the code. A program writing cases should read `grammar.py`
+directly: `./grammar.py` prints the same thing as JSON.
 
 ## The files
 

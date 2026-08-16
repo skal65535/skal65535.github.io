@@ -91,11 +91,10 @@ GROUPS = [
     ('subimage-', 'Sub-images',
      'A lossless file carries whole image streams inside itself: one for '
      'each transform that needs a per-tile parameter, and one for the '
-     'entropy image. Each is read by the same DecodeImageStream() as the '
-     'outer image, minus the transforms and the entropy image it is not '
-     'allowed to have of its own -- so each has a color cache and five '
-     'Huffman codes that a file can say something about, and that cwebp '
-     'always writes the same dull way.'),
+     'entropy image. A sub-image is read as an image stream like any other, '
+     'minus the transforms and the entropy image it may not have of its '
+     'own. So each carries a colour cache and five Huffman codes a file can '
+     'say something about. An encoder writes them all the same dull way.'),
     ('transform-palette-', 'Palette packing',
      'Index width follows the palette size, and the map is padded out to the '
      'packing capacity with black.'),
@@ -111,25 +110,23 @@ GROUPS = [
      'The layer above the image: the RIFF header, the extended-format VP8X '
      'chunk and its canvas size, the optional chunks a decoder must step '
      'over by their declared length alone, and the padding rule that makes '
-     'an odd-sized one even on disk. Everything here is read by '
-     'webp_dec.c before the frame is looked at.'),
+     'an odd-sized one even on disk. All of it is read before the frame '
+     'is.'),
     ('anim-', 'Animation',
      'An ANIM chunk carrying the loop count, then an ANMF per frame with '
      'its own position, duration, disposal and blending, and its own image '
-     'chunks. anim_dump is what reads these: the demuxer of demux.c, the '
-     'frame composition of anim_decode.c, and one decode per frame.'),
+     'chunks. Reading one takes a container walk, a frame composed over the '
+     'canvas, and one image decode per frame.'),
     ('alph-', 'The alpha chunk',
      'ALPH carries the alpha plane beside a lossy frame: a header byte of '
      'four two-bit fields, then the plane itself, either stored as it is or '
-     'compressed with the lossless coder in its 8-bit mode. That mode is a '
-     'separate path through vp8l_dec.c from the one every VP8L image here '
-     'takes, and an alpha chunk is the only thing that reaches it, beside a '
-     'still frame or inside an animation frame alike. Each of the four '
-     'filters has a routine of its own in dsp/filters.c and turns the same '
-     'stored bytes into a different plane, so the pixel hash is what tells '
-     'those apart. A compressed plane is a lossless stream with its header '
-     'left off: the alph-plane files write one from text, and break each of '
-     'the four conditions the 8-bit mode asks for in turn.'),
+     'compressed with the lossless coder in its 8-bit mode. Only an alpha '
+     'chunk reaches that mode, beside a still frame or inside an animation '
+     'frame alike. Each of the four filters turns the same stored bytes '
+     'into a different plane, so the pixel hash is what tells them apart. A '
+     'compressed plane is a lossless stream with its header left off. The '
+     'alph-plane files write one from text, and break each of the four '
+     'conditions the 8-bit mode asks for in turn.'),
     ('lossy-frame-', 'Lossy: frame tag and picture header',
      'The ten uncompressed bytes every lossy frame starts with: the profile, '
      'the visibility and key-frame bits, the length of partition 0, the '
@@ -141,10 +138,9 @@ GROUPS = [
      'the map and the data together.'),
     ('lossy-filter-', 'Lossy: loop filter',
      'The in-loop deblocking filter: simple or normal, its level and '
-     'sharpness, and the per-reference and per-mode deltas. '
-     'PrecomputeFilterStrengths() shifts the interior limit right by one for '
-     'sharpness 1 to 4 and by two for 5 to 7, then clamps it to 9 - '
-     'sharpness, which is what the sharpness files sit either side of.'),
+     'sharpness, and the per-reference and per-mode deltas. Sharpness moves '
+     'the interior limit in two steps, at 1 and at 5, and the sharpness '
+     'files sit either side of both.'),
     ('lossy-quant-', 'Lossy: quantizer',
      'The frame quantizer index and the five deltas around it, one per plane '
      'and coefficient kind, with clamps that are not all the same.'),
@@ -167,11 +163,9 @@ GROUPS = [
      'The per-macroblock skip flag, which drops the residual entirely and '
      'clears the neighbouring non-zero flags -- almost all of them.'),
     ('lossy-parts-', 'Lossy: token partitions',
-     'A lossy frame may carry 1, 2, 4 or 8 token partitions, macroblock row '
-     'r being read from partition r & (n - 1). cwebp does not expose '
-     'config.partitions and libwebp forces it back to 1 whenever the token '
-     'path is used (webp_enc.c:124), so none of this is reachable through '
-     'the tools.'),
+     'A lossy frame may carry 1, 2, 4 or 8 token partitions. Macroblock row '
+     'r is read from partition r & (n - 1). No encoder here emits more than '
+     'one, so nothing but a written bitstream reaches the rest.'),
     ('lossy-truncated-', 'Lossy: truncation',
      'Frames that stop early, at each of the places the decoder can notice: '
      'inside partition 0, inside the macroblock modes, and inside the token '
@@ -185,161 +179,105 @@ GROUPS = [
 
 README_HEAD = """# WebP stress bitstreams
 
-Small WebP files that exercise corners of the format a normal encoder never
-emits, one layer of it at a time.
+A test suite for WebP decoders. Each file targets one construct of the
+format: a container chunk, a header field, a Huffman code, a back-reference,
+an animation frame. No encoder emits these files. They are written field by
+field from text, so a file can say what an encoder cannot.
+
+Every file states what a decoder must do with it. Any decoder can be held to
+that, not only the reference one.
 
 **Contents:**
 
 %(toc)s
-**They are written, not captured.** Each is a text file naming bitstream
-fields, one per line. Nothing is validated on the way, so a case can say
-what no encoder ever would.
+## What a decoder must do
 
-The names are the specifications' own:
+Every file carries a verdict.
+
+**ok** -- the decoder must decode the file, and must produce the pixels
+recorded in `hashes.txt`.
+
+**reject** -- the decoder must refuse the file and report an error. It must
+not crash, read out of bounds, or return a partial image as success.
+
+A verdict belongs to a decoder role. A still decoder refuses every animation
+before it reads a frame, and that is correct; for those files the animation
+decoder's verdict is the one that describes the file. A container parser
+reports errors an image decoder never reaches. `expected.txt` carries one
+column per role.
+
+A verdict names no status code. The format says what is malformed. How a
+decoder reports it is its own business.
+
+The field names here are the specifications' own:
 [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) for the lossy
 bitstream, [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html) for the
 container.
 
-What they reach:
+## What the suite covers
 
 %(cover)s
-For the files one at a time -- what each one is, and which decoder path it
-was written to reach -- see **[`BITSTREAMS.md`](BITSTREAMS.md)**;
-**[`REACHES.md`](REACHES.md)** is the same set indexed the other way round,
-by the path rather than by the file.
+[`BITSTREAMS.md`](BITSTREAMS.md) lists every file and what it is for.
+[`REACHES.md`](REACHES.md) indexes them by the construct they exercise, which
+is the way round to read it when a decoder has just failed one.
 
-Every file carries a verdict, which is what a decoder must do with it:
+## Running them
 
-* **ok** -- must decode, and must keep decoding to the same pixels. Several
-  are not something cwebp can produce, so nothing else pins the behaviour.
+    DWEBP=/path/to/dwebp ./check.sh
 
-* **reject** -- must fail cleanly and report a status, with no crash and no
-  out-of-bounds access. Which status varies: a malformed Huffman code gives
-  BITSTREAM_ERROR, a short partition table gives NOT_ENOUGH_DATA.
+`check.sh` decodes every file, checks the verdict, and compares the decoded
+pixels against `hashes.txt`. `asan_sweep.sh` runs the same files through a
+sanitizer build in 14 output modes.
 
-A file read by more than one decoder carries more than one verdict, and
-they do not always agree. An animation reads `reject, anim_dump ok`: a
-still decoder refuses anything claiming animation before it looks at a
-frame, so that half says nothing about the file and the second half is the
-one that does. `webpinfo` and the incremental decoder are named where they
-disagree, and `check.sh` holds all of them to it.
+Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) is the whole of it:
+the other decoders each file needs, what the pixel hash covers, and what a
+decoder that is not libwebp has to do to run the suite.
 
-%(code)s
-%(files)s
-## Using them
-
-Every file is one click away from this page, but the corpus is one
-directory of a much larger repository, so to take the whole thing at once
-ask git for just that directory:
+Take the bitstreams alone from **[`%(tarball_name)s`](%(tarball_name)s)**,
+%(tarball)s, or the directory with its scripts:
 
     git clone --depth 1 --filter=blob:none --sparse \\
         https://github.com/skal65535/skal65535.github.io.git
     cd skal65535.github.io
     git sparse-checkout set webp-corners
 
-Run the scripts above from `webp-corners/`.
+## What it reaches in libwebp
 
-For the bitstreams on their own, without a clone or a checkout:
-**[`webp-corners.tgz`](webp-corners.tgz)** is every file in `files/` and
-nothing else, %(tarball)s, unpacking into a `webp-corners/` directory.
-`expected.txt` and `hashes.txt` are what say whether a decoder got them
-right, so they are worth taking too, but the tarball is only the bytes.
+The suite is graded by measurement rather than by inspection. `coverage.sh`
+builds libwebp with instrumentation and reports `src/dec` and `src/demux`
+three times over, at %(at)s:
 
-To write one of your own, or read a real encode back into a case,
-[`HOWTO.md`](HOWTO.md) is the walk-through and [`SYNTAX.md`](SYNTAX.md) the
-reference. The short version:
+%(coverage)s
+The first row is what a bitstream controls. The rest is what a caller
+controls: output conversion, rescaling, allocation failure. Separating the
+two says whether a gap belongs to the suite or to code no file can reach.
+
+## Limits
+
+**Inter frames.** A WebP file carries a key frame. One file checks that a
+decoder refuses an inter frame, and nothing here goes further.
+
+**Encoding.** Nothing here tests an encoder or a muxer.
+
+**Partial input.** Every tool hands the decoder a whole file. A decoder that
+is fed a growing buffer is checked for the same verdict, not for its
+behaviour at every byte boundary.
+
+**Fields a decoder may ignore.** The profile and the entropy-refresh bit are
+written at both ends of their range. A decoder that starts acting on either
+fails a pixel hash rather than passing unnoticed.
+
+## Writing a case
+
+A case is a text file naming bitstream fields, one per line, and nothing
+validates it on the way out. [`HOWTO.md`](HOWTO.md) is the walk-through and
+[`SYNTAX.md`](SYNTAX.md) the reference:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
     ./src/webp_dis.py --check some-animation.webp
 
-[`files/`](files) is pure output and is wiped on every rebuild. The only
-input that is not text is [`sources/`](sources): four lossy frames made
-through the encoder API, because a frame may carry up to eight token
-partitions and cwebp emits only one. Nothing in this directory can write
-them.
-
-Nothing here looks for a decoder on its own account: every tool is named
-in the environment, so the thing under test is always the one you meant.
-
-%(env)s
-A missing tool is reported and skipped, never silently passed over.
-
-## How they were verified
-
-A verdict alone proves little: a file can be refused for the wrong reason,
-and several of these were until the reason was measured. So nothing here
-rests on having read the code.
-
-* **What each file reaches is measured.** `make_coverage.sh` builds an
-  instrumented decoder in a throwaway worktree -- probes on the exact lines
-  the notes name -- runs every file through `dwebp` and, for the animations,
-  `anim_dump`, and writes `coverage.txt`. Every note is written from that
-  output; two were rewritten when it disagreed with them.
-
-* **A second reader checks the first.** `webpinfo` walks every chunk and
-  decodes nothing. Its verdict is recorded beside the demuxer's, so the
-  files the two disagree about are a checked fact rather than a remark --
-  and they disagree in one direction only, webpinfo testing things the
-  demuxer never looks at.
-
-* **The writers are checked against libwebp, not against themselves.** The
-  three disassemblers read a file back into case text; assemble that, and
-  the bytes have to return. `vp8_selftest.py` runs it over `sources/`, over
-  images it asks cwebp to encode both ways, over animations it asks webpmux
-  to build, and over the corpus itself. It also writes every coefficient
-  magnitude the format allows, and pairs of frames that say the same thing
-  two ways and must decode alike.
-
-* **The source lines the notes quote are pinned.** They mean nothing except
-  against the libwebp revision stamped in `coverage.txt`, so
-  `src/check_refs.py` records what each cited line said and checks it still
-  says it. Three were already wrong when it was written.
-
-* **How much of the decoder this reaches is a number.** `LIBWEBP=...
-  ./coverage.sh` builds an instrumented libwebp in a throwaway worktree and
-  reports `src/dec` and `src/demux` three times over: the corpus as
-  `check.sh` runs it, the same files through every `dwebp` output and
-  scaling knob, and then through every entry point libwebp exports. As of
-  8/26 that is 61%% of regions and 68%% of lines from the files alone,
-  81%% and 92%% with a caller driving them. The distance between the two is
-  the part no bitstream decides -- output formats, rescaling, allocation
-  failures -- and keeping them apart is what stops the corpus being blamed
-  for paths a file cannot reach. `dec/quant_dec.c` and `dec/tree_dec.c` are
-  at 100%% from the files alone; `dec/io_dec.c`, which is output format and
-  nothing else, is at 26%% and belongs there. `coverage.sh` says when the
-  numbers in this paragraph have moved.
-
-Where that leaves the corpus: every field of the lossy frame header is
-written at both ends of its range, every reachable (coefficient type, band,
-context) probability cell is read, and every pair of optional tools appears
-together in some frame.
-
-The probes nothing reaches are all checks that cannot fire: the magic-byte
-and version tests inside `ReadImageInfo()`, which `VP8LCheckSignature()` has
-already made; and in `demux.c`, a negative loop count no 16-bit field can
-hold, a complete frame carrying neither image nor alpha, and a second frame
-in a file without the animation flag. One more is real but out of reach from
-here -- the master-chunk table matching nothing, which `WebPGetInfo()`
-refuses before the demuxer is ever called.
-
-## What is not covered
-
-No inter frames -- libwebp refuses them outright, so there is nothing to pin
-beyond the one file that checks it does. Nothing on the encoding side
-either: `WebPAnimEncoder` builds animations and no file here is written to
-be read back by it.
-
-Partial parsing. The demuxer can be asked to accept a file it has not seen
-all of, and a caller that streams one uses that; every tool here hands it
-the whole file, so the only thing these reach is the refusal that follows
-when it is not complete. The same goes for `libwebpmux`'s own reader, which
-is a third implementation of this container that nothing here runs.
-
-What is left inside a lossy key frame is what libwebp does not act on. The
-profile picks the reconstruction and loop filters in RFC 6386 and libwebp
-reads it only to refuse a value above 3; the entropy-refresh bit is parsed
-and dropped. Both are written anyway, so a decoder that started obeying
-either would fail a pixel hash rather than pass unnoticed.
+The second reads a real `.webp` back into case text, which is the shortest
+route to a file that is almost valid.
 
 ## License
 
@@ -387,26 +325,36 @@ def build_toc(text):
 # counts are substituted, so these are wrapped here rather than written out:
 # '80' and '148' are not the same width.
 COVERAGE = [
-    ('vp8l', 'lossless (VP8L) streams',
-     'Huffman codes and the code-length code that describes them, colour '
-     'caches, back-references, the four transforms, and the entropy image '
+    ('container', 'The RIFF container',
+     'The VP8X chunk and the canvas it declares. Optional chunks a decoder '
+     'steps over by their declared length. Headers that lie about what '
+     'follows them.'),
+    ('lossy', 'Lossy frames (VP8)',
+     'Every field of the frame header. Segmentation, loop filter and '
+     'quantizer records. The token coder out to its escape categories. One, '
+     'two, four and eight token partitions.'),
+    ('vp8l', 'Lossless images (VP8L)',
+     'Huffman codes and the code-length code that describes them. Colour '
+     'caches, back-references and the four transforms. The entropy image '
      'that changes codes mid-row.'),
-    ('lossy', 'lossy VP8 frames',
-     'every field of the frame header, the segmentation, loop-filter and '
-     'quantizer records, the coefficient token coder out to its escape '
-     'categories, and the 1, 2, 4 or 8 token partitions.'),
-    ('container', 'RIFF containers',
-     'the VP8X chunk and the canvas it declares, the optional chunks a '
-     'decoder must step over by their declared length alone, and headers '
-     'that lie about what sits behind them.'),
-    ('alpha', 'alpha chunks',
-     'the plane stored a byte per pixel through each of the four filters, '
-     'and the plane compressed by the lossless coder in an 8-bit mode '
-     'nothing else here reaches.'),
-    ('anim', 'animations',
-     'frame position, duration, disposal and blending, composed over a '
-     'canvas one frame at a time. No still decoder will open one of these '
-     'at all.'),
+    ('alpha', 'Alpha planes',
+     'The plane stored a byte per pixel, through each of the four filters. '
+     'The plane compressed by the lossless coder, in the 8-bit mode only an '
+     'alpha chunk reaches.'),
+    ('anim', 'Animation',
+     'Frame position, duration, disposal and blending, composed over a '
+     'canvas one frame at a time.'),
+]
+
+# The three passes coverage.sh reports over libwebp's src/dec and src/demux,
+# and the revision it measured. check_coverage() holds the page to these.
+COVERAGE_AT = '0be8ddd1'
+COVERAGE_RUNS = [
+    ('The bitstreams alone, as `check.sh` runs them', 61.20, 68.12, 54.97),
+    ('The same files, through every output and scaling option', 68.00, 79.63,
+     62.91),
+    ('The same files, through every decoding entry point', 81.15, 91.87,
+     77.10),
 ]
 
 
@@ -461,40 +409,29 @@ def check_env(outdir):
         want |= set(re.findall(r'\$\{([A-Z_]+):-', text))
         want |= set(re.findall(r"environ\.get\('([A-Z_]+)'", text))
         want |= set(re.findall(r'\bif \[ -n "\$([A-Z_]+)"', text))
-    with open(os.path.join(outdir, 'README.md')) as f:
-        readme = f.read()
-    missing = sorted(v for v in want if '`$%s`' % v not in readme)
-    assert not missing, 'README.md documents no $%s' % ', $'.join(missing)
+    with open(os.path.join(outdir, 'RUNNING.md')) as f:
+        running = f.read()
+    missing = sorted(v for v in want if '`$%s`' % v not in running)
+    assert not missing, 'RUNNING.md documents no $%s' % ', $'.join(missing)
     return len(want)
 
 
-def build_coverage(kinds):
-    """The opening list: what each family of files is for."""
-    return '\n'.join(
-        '\n'.join(textwrap.wrap('**%d %s** -- %s' % (kinds[key], title, what),
-                                79, initial_indent='* ',
-                                subsequent_indent='  ')) + '\n'
-        for key, title, what in COVERAGE)
+def build_coverage():
+    """What the suite covers, by layer of the format."""
+    return '\n'.join(wrap('**%s.** %s' % (title, what), '') + '\n'
+                     for _, title, what in COVERAGE)
 
 
-def build_index(rows, groups):
-    """A compact table: one row per group, with the ok/reject split."""
-    out = ['| Group | Files | must decode | must be rejected |',
+def build_coverage_table():
+    """What the suite reaches in libwebp, as measured."""
+    out = ['| driven by | regions | lines | branches |',
            '| --- | ---: | ---: | ---: |']
-    seen = set()
-    for prefix, title, _ in groups:
-        group = [r for r in rows
-                 if r[0].startswith(prefix) and r[0] not in seen]
-        seen.update(r[0] for r in group)
-        if not group:
-            continue
-        ok = sum(1 for r in group if wanted(r) == 'ok')
-        out.append('| %s | %d | %d | %d |' %
-                   (title, len(group), ok, len(group) - ok))
-    ok = sum(1 for r in rows if wanted(r) == 'ok')
-    out.append('| **total** | **%d** | **%d** | **%d** |' %
-               (len(rows), ok, len(rows) - ok))
+    for what, regions, lines, branches in COVERAGE_RUNS:
+        out.append('| %s | %.0f%% | %.0f%% | %.0f%% |'
+                   % (what, regions, lines, branches))
     return '\n'.join(out) + '\n'
+
+
 
 
 INDEX_STYLE = """<!doctype html>
@@ -602,7 +539,8 @@ def check_links(outdir):
     """
     for doc, base in (('README.md', '.'), ('src/README.md', 'src'),
                       ('SYNTAX.md', '.'), ('HOWTO.md', '.'),
-                      ('BITSTREAMS.md', '.'), ('REACHES.md', '.')):
+                      ('BITSTREAMS.md', '.'), ('REACHES.md', '.'),
+                      ('RUNNING.md', '.')):
         with open(os.path.join(outdir, doc)) as f:
             text = f.read()
         for target in re.findall(r'\]\(([^)#][^)]*)\)', text):
@@ -626,7 +564,8 @@ def check_details(outdir):
     the two are checked in different places, so nothing but this notices.
     """
     n = 0
-    for doc in ('README.md', 'BITSTREAMS.md', 'REACHES.md', 'HOWTO.md'):
+    for doc in ('README.md', 'BITSTREAMS.md', 'REACHES.md', 'HOWTO.md',
+                'RUNNING.md'):
         with open(os.path.join(outdir, doc)) as f:
             text = f.read()
         for block in re.findall(r'<details.*?</details>', text, re.S):
@@ -641,23 +580,26 @@ def check_details(outdir):
 
 
 def check_toc(outdir):
-    """The contents list names every section of README.md and nothing else.
+    """Each contents list names every section of its page and nothing else.
 
     Generated from the page, so the two can only differ by an anchor neither
     renderer would produce -- which is a heading carrying punctuation, since
     GitHub and kramdown strip it by different rules.
     """
-    with open(os.path.join(outdir, 'README.md')) as f:
-        text = f.read()
-    heads = re.findall(r'^## (.+)$', text, re.M)
-    for title in heads:
-        assert re.match(r'^[A-Za-z0-9 ]+$', title), \
-            'README.md: "%s" needs an anchor the two renderers agree on' \
-            % title
-    assert [(t, slug(t)) for t in heads] \
-        == re.findall(r'\[([^]]+)\]\(#([^)]+)\)', text), \
-        'README.md: the contents list and the sections have drifted'
-    return len(heads)
+    n = 0
+    for doc in ('README.md', 'RUNNING.md', 'HOWTO.md'):
+        with open(os.path.join(outdir, doc)) as f:
+            text = f.read()
+        heads = re.findall(r'^## (.+)$', text, re.M)
+        for title in heads:
+            assert re.match(r'^[A-Za-z0-9 ]+$', title), \
+                '%s: "%s" needs an anchor the two renderers agree on' \
+                % (doc, title)
+        assert [(t, slug(t)) for t in heads] \
+            == re.findall(r'\[([^]]+)\]\(#([^)]+)\)', text), \
+            '%s: the contents list and the sections have drifted' % doc
+        n += len(heads)
+    return n
 
 
 def check_howto(outdir):
@@ -735,24 +677,23 @@ def html_escape(text):
 # The two that answer "does my decoder survive this?" come first; the rest
 # are for changing the corpus, not for using it.
 RUN = [
-    ('check.sh', 'Decodes every file and checks the verdict and the pixels, '
-                 'through `dwebp` or -- for the animations -- `$ANIM_DUMP` '
-                 'and `$WEBPINFO`. The one to run.'),
-    ('asan_sweep.sh', 'The same, in 14 output modes under a sanitizer build. '
-                      'Point `$ASAN_DWEBP` at one.'),
-    ('coverage.sh', 'How much of `src/dec` and `src/demux` these files '
-                    'reach, from an instrumented build in a throwaway '
-                    'worktree. Also reports how much further a caller can '
-                    'get with the same files, which is how you tell a gap in '
-                    'the corpus from a path no bitstream controls.'),
-    ('generate.py', 'Rebuilds `files/` from `cases/`, and writes '
-                    '`expected.txt`, this README, `SYNTAX.md`, '
-                    '`src/README.md`, and an `index.html` for each directory that needs one.'),
+    ('check.sh', 'Decodes every file and checks the verdict and the pixels. '
+                 'Drives `$DWEBP`, and `$ANIM_DUMP` and `$WEBPINFO` for the '
+                 'animations. The one to run.'),
+    ('asan_sweep.sh', 'The same files in 14 output modes, against a sanitizer '
+                      'build named by `$ASAN_DWEBP`.'),
+    ('coverage.sh', 'Measures how much of libwebp the suite reaches, from an '
+                    'instrumented build in a throwaway worktree. Reports the '
+                    'three passes the README tabulates.'),
+    ('generate.py', 'Assembles `files/` from `cases/`. Writes every generated '
+                    'page and `expected.txt`, and refuses to finish when a '
+                    'link, a claim or an example no longer holds.'),
     ('make_hashes.sh', 'Rewrites `hashes.txt`, once the new output is known '
                        'to be right.'),
-    ('make_coverage.sh', 'Rebuilds `coverage.txt` in a throwaway worktree.'),
-    ('vp8_selftest.py', 'Checks the assemblers themselves, not the corpus: '
-                        'only needed if you change them.'),
+    ('make_coverage.sh', 'Rewrites `coverage.txt`: which construct each file '
+                         'reaches, measured rather than claimed.'),
+    ('vp8_selftest.py', 'Checks the assemblers against real encodes. Only '
+                        'needed if you change them.'),
 ]
 
 SRC = [
@@ -793,22 +734,15 @@ SRC = [
 ]
 
 DATA = [
+    ('expected.txt', 'The verdict per role, one line per file. The contract.'),
+    ('hashes.txt', 'The SHA-256 of the decoded pixels, for every file that '
+                   'must decode. A silent change in output fails too.'),
     (TARBALL, 'Every bitstream in one file, for taking them without the '
-              'repository around them. Written by `generate.py` with the '
-              'headers zeroed, so it is the same bytes until a file '
-              'changes.'),
-    ('BITSTREAMS.md', 'Every file with the line its case calls itself, '
-                      'grouped.'),
-    ('REACHES.md', 'The same set the other way round: every decoder path the '
-                   'probes measure, and which files reach it.'),
-    ('HOWTO.md', 'How to write a case, read a real file back into one, and '
-                 'add one here.'),
-    ('SYNTAX.md', 'The whole case syntax, generated from `src/grammar.py`.'),
-    ('expected.txt', 'Name and expected verdict, one line per file.'),
-    ('hashes.txt', "SHA-256 of each decoding file's `-pam` output, so a "
-                   'silent change in decoded pixels fails too.'),
-    ('coverage.txt', 'Which decoder path each file actually reached.'),
-    ('refs.txt', 'What each line a note points at said when it was written.'),
+              'repository around them.'),
+    ('files', 'The bitstreams themselves, each with its size and verdict.'),
+    ('cases', 'The text each one is assembled from.'),
+    ('coverage.txt', 'Which construct each file was measured to reach.'),
+    ('refs.txt', 'What each line a note cites said when it was written.'),
     ('COPYING', 'BSD 3-clause, the same as libwebp.'),
 ]
 
@@ -828,17 +762,102 @@ def code_table(outdir, entries, title, intro=None, strip=''):
     return '\n'.join(out) + '\n'
 
 
-def build_code_list(outdir):
-    """The three tables that go into the top-level README."""
-    return '\n'.join((
-        code_table(outdir, RUN, 'What to run',
-                   'The first two are the point: they run every file here '
-                   'through a decoder and say whether it behaved. The rest '
-                   'rebuild the corpus or check the tools that write it.'),
-        code_table(outdir, SRC, 'The code',
-                   'The layers underneath, in **[`src/`](src)**, which has '
-                   'its own README describing how they fit together.'),
-        code_table(outdir, DATA, 'The data')))
+RUNNING_HEAD = """# Running the suite
+
+How to point the suite at a decoder, what it checks, and what a decoder that
+is not libwebp has to do to run it. [`README.md`](README.md) says what the
+suite is.
+
+**Contents:**
+
+%(toc)s
+## The four roles
+
+A WebP file is read by more than one kind of decoder, and each sees a
+different part of it. Every file carries a verdict per role, so a decoder is
+only ever judged on what it is for.
+
+**Still image decoder.** Reads one image out of a container. Refuses
+anything that declares animation.
+
+**Animation decoder.** Reads the frames, composes them over a canvas, and
+returns each one. It is the only role that opens the animated files at all.
+
+**Container parser.** Walks the chunks without decoding an image. It reaches
+errors a decoder never gets to, and it accepts files a decoder rejects.
+
+**Incremental decoder.** The still decoder fed a growing buffer. It must
+reach the same verdict as the one-shot decoder. Where it does not,
+`expected.txt` records both.
+
+## What the check is
+
+    DWEBP=/path/to/dwebp ./check.sh
+
+For each file, `check.sh` decodes it, compares the outcome against the
+verdict in `expected.txt`, and for a file that must decode, hashes the pixels
+and compares against `hashes.txt`.
+
+The hash is the SHA-256 of the decoded image written as
+[PAM](https://netpbm.sourceforge.net/doc/pam.html), which is this header:
+
+    P7
+    WIDTH <w>
+    HEIGHT <h>
+    DEPTH 4
+    MAXVAL 255
+    TUPLTYPE RGB_ALPHA
+    ENDHDR
+
+followed by 8-bit RGBA rows, top to bottom, alpha not premultiplied. Every
+line ends in one newline and there is no padding anywhere. For an animation
+the hash covers every frame written that way, concatenated in order. Any
+decoder that can produce those bytes can reproduce the hash.
+
+## Running another decoder
+
+`check.sh` drives libwebp's tools because that is what the environment names.
+A decoder that is not libwebp needs an adapter that does three things:
+
+1. Decode a file and report success or failure. Failure must be a reported
+   error, never a crash, an out-of-bounds read, or a partial image returned
+   as success. Under a sanitizer is where this is worth doing.
+2. For a file whose verdict is `ok`, write the decoded pixels in the form
+   above and hash them.
+3. Read `expected.txt` for the verdict of the role being tested.
+
+`expected.txt` is `name|still|slow|animation|container|incremental`, one line
+per file, empty where a role has nothing to say. `hashes.txt` is `name
+sha256`. Both are plain text, and they are the whole contract.
+
+## Every knob
+
+Nothing here looks for a decoder on its own account. Every tool is named in
+the environment, so the thing under test is always the one you meant. A
+missing tool is reported and skipped, never silently passed over.
+
+%(env)s
+%(run)s
+%(data)s"""
+
+
+def build_running(outdir):
+    """RUNNING.md: the contract, the scripts, and the environment."""
+    return RUNNING_HEAD % dict(
+        toc=TOC_MARK,
+        env=build_env(),
+        run=code_table(outdir, RUN, 'The scripts',
+                       'The first two run the files through a decoder. The '
+                       'rest rebuild the corpus or check the tools that '
+                       'write it.'),
+        data=code_table(outdir, DATA, 'The files it reads and writes'))
+
+
+def write_running(outdir):
+    body = build_running(outdir)
+    text = re.sub(r'\n{3,}', '\n\n', body.replace(TOC_MARK, build_toc(body)))
+    with open(os.path.join(outdir, 'RUNNING.md'), 'w') as f:
+        f.write(text)
 
 
 SYNTAX_HEAD = """# The case syntax
@@ -991,42 +1010,42 @@ def build_syntax(outdir):
 
 SRC_README = """# webp-corners: the code
 
-Everything the scripts one directory up are built out of. Nothing here is
-run directly to produce the corpus -- [`../generate.py`](../generate.py)
-does that -- though each assembler and disassembler doubles as a command of
-its own, run from the directory above where `cases/` is.
-[`../HOWTO.md`](../HOWTO.md) is what to do with them; this is how they fit
-together.
+What the scripts one directory up are built out of.
+[`../generate.py`](../generate.py) drives all of it. Each assembler and
+disassembler is also a command of its own, run from the directory above,
+where `cases/` is. [`../HOWTO.md`](../HOWTO.md) says what to do with them.
+This says how they fit together.
 
-Three layers, and a case only ever touches the top one:
+Three layers. A case only ever touches the top one.
 
-* **`webp_asm.py`** reads the case, splits the container directives from the
-  image ones, and hands the image to whichever assembler owns it: a case
-  saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It
-  then wraps the result in RIFF. It also owns the two places the format
-  nests: a `frame` block is an animation frame with an image of its own, and
-  an `alph_plane` block is a compressed alpha plane, which is a lossless
-  image stream with its header left off.
-* **`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into the fields of a
-  bitstream. Their docstrings are the format: every keyword, its default and
-  what it writes. Nothing is validated or clamped -- a value too big for its
-  field loses its top bits, which is usually the point.
-* **`vp8l.py`** and **`vp8.py`** do the bit-level work: the boolean coder,
-  canonical Huffman codes, prefix codes, the sub-image streams. They
-  validate nothing either.
+**`webp_asm.py`** reads the case. It splits the container directives from
+the image ones and hands the image to the assembler that owns it: a case
+saying `lossless` is a VP8L image, anything else a lossy VP8 frame. It wraps
+the result in RIFF. It also owns the two places the format nests. A `frame`
+block is an animation frame with an image of its own. An `alph_plane` block
+is a compressed alpha plane, which is a lossless image stream with its
+header left off.
 
-`vp8_dis.py`, `vp8l_dis.py` and `webp_dis.py` go the other way, and are
-what [`../vp8_selftest.py`](../vp8_selftest.py) uses to check the writers
-against real encodes rather than against themselves: disassemble a file,
-reassemble from its own text, compare the bytes. `--check` does exactly that
-for any file you point it at. The first two read one chunk; `webp_dis.py`
-reads a whole file, which is the only way an animation or an alpha plane can
-be read at all.
+**`vp8l_asm.py`** and **`vp8_asm.py`** turn the text into bitstream fields.
+Their docstrings are the format: every keyword, its default, and what it
+writes. Nothing is validated or clamped. A value too big for its field loses
+its top bits, which is usually the point.
 
-`grammar.py` is the third thing a case touches, though not at assembly time:
-it holds every keyword and the range of every value, and
+**`vp8l.py`** and **`vp8.py`** do the bit-level work: the boolean coder,
+canonical Huffman codes, prefix codes, the sub-image streams. They validate
+nothing either.
+
+`vp8_dis.py`, `vp8l_dis.py` and `webp_dis.py` go the other way. Disassemble
+a file, reassemble from its own text, compare the bytes: that is how
+[`../vp8_selftest.py`](../vp8_selftest.py) checks the writers against real
+encodes rather than against themselves. `--check` does it for any file you
+point it at. The first two read one chunk. `webp_dis.py` reads a whole file,
+which is the only way to read an animation or an alpha plane.
+
+`grammar.py` holds every keyword and the range of every value.
 [`../SYNTAX.md`](../SYNTAX.md) is generated from it, so the reference cannot
-drift from the code.
+drift from the code. A program writing cases should read `grammar.py`
+directly: `./grammar.py` prints the same thing as JSON.
 
 %(files)s"""
 
@@ -1060,25 +1079,6 @@ def build_cases(outdir):
     return rows
 
 
-def build_file_list(index):
-    """What the corpus holds, per group, and where the two long lists live.
-
-    One row per group is as much as a front page can carry: 263 files listed
-    a line each is four times the rest of this README put together, and
-    someone arriving wants to know what to run, not to scroll past all of
-    them first.
-    """
-    return '## The bitstreams\n\n' + wrap(
-        'The files themselves are in **[`files/`](files)**, each with its '
-        'size and expected verdict, and the text they are assembled from is '
-        'in **[`cases/`](cases)**.'
-    ) + '\n' + index + '\n' + wrap(
-        '**[`BITSTREAMS.md`](BITSTREAMS.md)** takes those groups a file at a '
-        'time, with the line each case calls itself, and '
-        '**[`REACHES.md`](REACHES.md)** turns them round -- every decoder '
-        'path the probes measure, and which files reach it, which is the '
-        'question someone holding a decoder actually has. Both are '
-        'generated.')
 
 
 def cell(text):
@@ -1219,37 +1219,20 @@ def check_tarball(outdir, rows):
 
 
 def write_readme(outdir, rows):
-    kinds = {'lossy': 0, 'container': 0, 'alpha': 0, 'anim': 0, 'vp8l': 0}
-    for r in rows:
-        for prefix, kind in (('lossy-', 'lossy'), ('container-', 'container'),
-                             ('alph-', 'alpha'), ('anim-', 'anim')):
-            if r[0].startswith(prefix):
-                kinds[kind] += 1
-                break
-        else:
-            kinds['vp8l'] += 1
     tarball = size(write_tarball(outdir, rows))
     write_bitstreams(outdir, rows, tarball)
+    write_running(outdir)
     with open(os.path.join(outdir, 'REACHES.md'), 'w') as f:
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
-    body = README_HEAD % dict(kinds,
-                              toc=TOC_MARK,
+    body = README_HEAD % dict(toc=TOC_MARK,
                               tarball=tarball,
-                              cover=build_coverage(kinds),
-                              env=build_env(),
-                              files=build_file_list(
-                                  build_index(rows, GROUPS)),
-                              code=build_code_list(outdir))
+                              tarball_name=TARBALL,
+                              at=COVERAGE_AT,
+                              coverage=build_coverage_table(),
+                              cover=build_coverage())
     # the sections come from the pieces above as much as from the template,
     # so the contents list is written once the page is whole
     lines = [body.replace(TOC_MARK, build_toc(body))]
-    total = sum(r[4] for r in rows)
-    lines.append('---\n')
-    lines.append(wrap(
-        '%d files, %d bytes total. Rebuild with `generate.py`: it assembles '
-        'everything in `cases/` through `webp_asm.py`, which hands each case '
-        'to `vp8l_asm.py` or `vp8_asm.py`, and those to `vp8l.py` and '
-        '`vp8.py`.' % (len(rows), total)))
     write_files_index(outdir, rows)
     write_cases_index(outdir, rows)
     write_sources_index(outdir)

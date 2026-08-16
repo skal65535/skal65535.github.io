@@ -122,20 +122,23 @@ report corpus |
   awk '$1 ~ /\.c$/ {printf "  %-22s regions %7s  lines %7s  branches %7s\n",
                            $1, $4, $10, $13}'
 
-# README.md quotes these four, so they are a claim like any other here: say
-# when they have moved rather than letting the prose drift away from the
-# measurement. The sentence lives in generate.py, which writes the README.
+# README.md tabulates these nine, so they are a claim like any other here:
+# say when they have moved rather than letting the page drift away from the
+# measurement. The table lives in generate.py, which writes the README.
 round() {  # a percentage column of the report, to the nearest whole number
   report "$1" | tail -1 | awk -v c="$2" '{printf "%.0f", $c}'
 }
 echo
-said="$(round corpus 4)% of regions and $(round corpus 10)% of lines from \
-the files alone, $(round api 4)% and $(round api 10)% with a caller driving \
-them"
-# the README wraps, so compare against it with its line breaks flattened
-if [[ $(tr -s ' \n' '  ' < "$HERE/README.md") == *"$said"* ]]; then
-  echo "README.md still says: $said."
+stale=0
+for s in corpus options api; do
+  row="| $(round $s 4)% | $(round $s 10)% | $(round $s 13)% |"
+  if ! grep -qF -- "$row" "$HERE/README.md"; then
+    echo "README.md no longer has the $s row: $row"
+    stale=1
+  fi
+done
+if [ $stale = 0 ]; then
+  echo "README.md still tabulates all three passes."
 else
-  echo "README.md no longer says: $said."
-  echo "  ^ fix the paragraph in generate.py, then rerun it"
+  echo "  ^ fix COVERAGE_RUNS in generate.py, then rerun it"
 fi

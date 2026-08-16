@@ -25,4 +25,3 @@ predictor-single-row.txt|lossless.c:223|if (y_start == 0) {  // First Row follow
 subimage-cache-zero-invalid.txt|vp8l_dec.c:1576|ok = (color_cache_bits >= 1 && color_cache_bits <= MAX_CACHE_BITS);
 transform-cross-color-multipliers.txt|lossless.c:284|m->green_to_red = (color_code >> 0) & 0xff;
 transform-palette-index-past-end.txt|vp8l_dec.c:1412|new_data[i] = 0;  // black tail.
-generate.py|webp_enc.c:124|enc->num_parts = 1;  // doesn't work with multi-partition
