@@ -6,11 +6,10 @@
 # tree.
 # Decodes every file, compares the verdict with the 'expect' column, and for
 # files that must decode, compares the decoded pixels against hashes.txt.
-# Then the same file again through three more readers, since a decoder is
-# never only one implementation:
-#   -incremental   always, and it must agree with the one-shot decode on both
-#                  the verdict and the pixels. Column 6 is the exception, for
-#                  the file where the two are meant to differ.
+# Then the same file again through three more readers:
+#   -incremental   always, and it must agree with the one-shot decode on
+#                  both the verdict and the pixels. Column 6 names the files
+#                  where the two are meant to differ.
 #   anim_dump      column 4: dwebp refuses every animated file outright, so
 #                  this is the only thing that reads one. The hash covers all
 #                  of its frames at once. $ANIM_DUMP points at it.

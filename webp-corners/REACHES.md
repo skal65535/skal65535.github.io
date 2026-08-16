@@ -1,11 +1,11 @@
 # webp-corners: what reaches what
 
-Every decoder path `src/probes.py` measures, and the files that reach it.
+Every construct `src/probes.py` measures, and the files that reach it.
 [`BITSTREAMS.md`](BITSTREAMS.md) answers the same question backwards, a file at
 a time, and the [notes](README.md) say what the corpus is. Generated from
 `coverage.txt`, so this is the measurement rather than a claim about it.
 
-| decoder path | files |
+| construct | files |
 | --- | --- |
 | `alpha_8b_blocks` | `alph-plane-meta-huffman` |
 | `alpha_8b_copy` | `alph-lossless-palette`, `alph-plane-lz77`, `alph-plane-lz77-dist-2`, `alph-plane-lz77-dist-4`, `alph-plane-lz77-plain`, `alph-plane-lz77-unaligned` |

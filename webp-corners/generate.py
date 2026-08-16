@@ -6,12 +6,11 @@
 # tree.
 """Generates the stress bitstreams. Run: python3 generate.py [outdir]
 
-Every file but the multi-partition ones comes from a text case in cases/,
-which carries its own note; this assembles them into files/ and writes
-everything that is derived from them -- expected.txt, README.md, SYNTAX.md,
-src/README.md and an index per directory. It also refuses to finish if a
-link does not resolve, a 'unique:' claim disagrees with coverage.txt, or an
-example in HOWTO.md does not assemble.
+Every file but the multi-partition ones comes from a text case in cases/.
+This assembles them into files/ and writes everything derived from them:
+expected.txt, the tarball, every generated page, and an index per directory.
+It refuses to finish if a link does not resolve, a 'unique:' claim disagrees
+with coverage.txt, or an example in HOWTO.md does not assemble.
 """
 
 import glob
@@ -66,7 +65,8 @@ def verdict(row):
 
 
 def wanted(row):
-    """The verdict that is about the file rather than about dwebp."""
+    """The verdict that is about the file rather than about a still
+    decoder."""
     return row[ANIM] or row[1]
 
 
@@ -284,6 +284,10 @@ def wrap(text, indent=''):
 
 
 
+def and_list(items):
+    """'a, b and c', for a sentence rather than a table."""
+    return ' and '.join(x for x in (', '.join(items[:-1]), items[-1]) if x)
+
 
 def slug(title):
     """A heading's anchor, as both renderers derive it from the heading text.
@@ -304,27 +308,25 @@ def build_toc(text):
                      for h in re.findall(r'^## (.+)$', text, re.M)) + '\n'
 
 
-# What each family of files is for, in the order the README lists them. The
-# counts are substituted, so these are wrapped here rather than written out:
-# '80' and '148' are not the same width.
+# What the suite covers, in the order the README lists it.
 COVERAGE = [
-    ('container', 'The RIFF container',
+    ('The RIFF container',
      'The VP8X chunk and the canvas it declares. Optional chunks a decoder '
      'steps over by their declared length. Headers that lie about what '
      'follows them.'),
-    ('lossy', 'Lossy frames (VP8)',
+    ('Lossy frames (VP8)',
      'Every field of the frame header. Segmentation, loop filter and '
      'quantizer records. The token coder out to its escape categories. One, '
      'two, four and eight token partitions.'),
-    ('vp8l', 'Lossless images (VP8L)',
+    ('Lossless images (VP8L)',
      'Huffman codes and the code-length code that describes them. Colour '
      'caches, back-references and the four transforms. The entropy image '
      'that changes codes mid-row.'),
-    ('alpha', 'Alpha planes',
+    ('Alpha planes',
      'The plane stored a byte per pixel, through each of the four filters. '
      'The plane compressed by the lossless coder, in the 8-bit mode only an '
      'alpha chunk reaches.'),
-    ('anim', 'Animation',
+    ('Animation',
      'Frame position, duration, disposal and blending, composed over a '
      'canvas one frame at a time.'),
 ]
@@ -367,7 +369,8 @@ ENV = [
     ('PROFDATA', '`llvm-profdata`, for `coverage.sh`. Taken from `$PATH` or '
                  '`xcrun` when unset.'),
     ('COV', '`llvm-cov`, likewise.'),
-    ('SKIP_SLOW', 'Set it to skip the one file that allocates a gigabyte.'),
+    ('SKIP_SLOW', 'Set it to skip the files tagged `slow`, which allocate '
+                  'over a gigabyte.'),
 ]
 
 
@@ -381,15 +384,14 @@ def build_env():
 def check_env(outdir):
     """Every variable the scripts read from the environment is documented.
 
-    Taking a tool from the environment is how this corpus stays pointed at
-    the decoder you meant, so a knob nobody wrote down is a knob nobody
-    uses. Two were missing when this was written.
+    A knob nobody wrote down is a knob nobody uses.
     """
     want = set()
     for path in glob.glob(os.path.join(outdir, '*.sh')) + \
             glob.glob(os.path.join(outdir, '*.py')) + \
             glob.glob(os.path.join(outdir, 'src', '*.py')):
-        text = open(path).read()
+        with open(path) as f:
+            text = f.read()
         want |= set(re.findall(r'\$\{([A-Z_]+):-', text))
         want |= set(re.findall(r"environ\.get\('([A-Z_]+)'", text))
         want |= set(re.findall(r'\bif \[ -n "\$([A-Z_]+)"', text))
@@ -403,7 +405,7 @@ def check_env(outdir):
 def build_coverage():
     """What the suite covers, by layer of the format."""
     return '\n'.join(wrap('**%s.** %s' % (title, what), '') + '\n'
-                     for _, title, what in COVERAGE)
+                     for title, what in COVERAGE)
 
 
 def build_coverage_table():
@@ -417,15 +419,15 @@ def build_coverage_table():
 
 
 
-
 INDEX_STYLE = """<!doctype html>
 <meta charset="utf-8">
 <title>webp-corners</title>
 <style>
- body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 54rem;
-        padding: 0 1rem; }
+ body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto;
+        max-width: 54rem; padding: 0 1rem; }
  table { border-collapse: collapse; width: 100%%; }
- th, td { text-align: left; padding: .25rem .6rem; border-bottom: 1px solid #ddd; }
+ th, td { text-align: left; padding: .25rem .6rem;
+          border-bottom: 1px solid #ddd; }
  td.n { text-align: right; font-variant-numeric: tabular-nums; }
  .reject { color: #a33; }
  code { font-size: 90%%; }
@@ -469,8 +471,8 @@ container. <b>reject</b> means a compliant decoder must refuse it.
 
 
 def tarball_line():
-    """The download the directory indexes open with. Someone who has landed
-    on a listing of 263 files wants all of them, not one."""
+    """The download the directory indexes open with: someone looking at the
+    whole listing usually wants the whole set."""
     return ('<p>Every bitstream in one file: '
             '<b><a href="../%s">%s</a></b>.</p>' % (TARBALL, TARBALL))
 
@@ -505,21 +507,18 @@ def write_sources_index(outdir):
 
 def write_cases_index(outdir, rows):
     """cases/index.html -- same reason, and the README links cases/."""
-    lines = ['']
-    n = 0
+    lines = [CASES_INDEX_HEAD % {'tarball': tarball_line()}]
     for row in sorted(rows):
         name = row[0]
         if not os.path.exists(os.path.join(outdir, 'cases',
                                            name + '.txt')):
             continue                    # patched from sources/, not assembled
-        n += 1
         lines.append('<tr><td><a href="%s.txt"><code>%s</code></a></td>'
                      '<td class="%s">%s</td><td>%s</td></tr>'
                      % (name, name,
                         'reject' if wanted(row) == 'reject' else 'ok',
                         verdict(row), html_escape(row[2])))
     lines.append('</table>')
-    lines[0] = CASES_INDEX_HEAD % {'tarball': tarball_line()}
     with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
@@ -563,9 +562,12 @@ def check_html_links(outdir):
         for target in sorted(set(re.findall(r'href="([^"#]+)"', html))):
             if target.startswith(('http', 'mailto')):
                 continue
+            assert not target.endswith('.md'), \
+                '%s/index.html links %s, which Jekyll serves as text: name ' \
+                'the .html it renders' % (d, target)
             path = os.path.normpath(os.path.join(outdir, d, target))
             if target.endswith('.html') and not os.path.exists(path):
-                path = path[:-len('.html')] + '.md'   # what Jekyll renders it from
+                path = path[:-len('.html')] + '.md'   # Jekyll renders it
             if os.path.isdir(path):
                 assert any(os.path.exists(os.path.join(path, i))
                            for i in ('index.html', 'README.md')), \
@@ -573,9 +575,6 @@ def check_html_links(outdir):
             else:
                 assert os.path.exists(path), \
                     '%s/index.html links %s' % (d, target)
-            assert not target.endswith('.md'), \
-                '%s/index.html links %s, which Jekyll serves as text: name ' \
-                'the .html it renders' % (d, target)
             n += 1
     return n
 
@@ -584,10 +583,9 @@ def check_details(outdir):
     """Every folded group is written the way both renderers need.
 
     kramdown, which GitHub Pages runs, passes a raw HTML block straight
-    through unless it carries markdown="block": without it the table inside
-    comes out as literal pipes. GitHub's own renderer drops the attribute and
-    needs only the blank lines around the content. Neither one complains, and
-    the two are checked in different places, so nothing but this notices.
+    through unless it carries markdown="block", and the table inside comes
+    out as literal pipes. GitHub's own renderer drops the attribute and needs
+    only the blank lines around the content. Neither one complains.
     """
     n = 0
     for doc in ('README.md', 'BITSTREAMS.md', 'REACHES.md', 'HOWTO.md',
@@ -631,10 +629,8 @@ def check_toc(outdir):
 def check_howto(outdir):
     """Every worked example in HOWTO.md, assembled.
 
-    A document telling someone how to write a case is worth nothing if its
-    examples do not assemble, and prose is exactly where that rots. The
-    ```case blocks are run rather than read; so are the case files its
-    commands name.
+    The ```case blocks are run rather than read, and so are the case files
+    its commands name.
     """
     path = os.path.join(outdir, 'HOWTO.md')
     with open(path) as f:
@@ -658,28 +654,40 @@ def check_howto(outdir):
     return len(blocks)
 
 
+def read_coverage(outdir):
+    """coverage.txt as ({construct: {file, ...}}, {file, ...}).
+
+    The second is every file it has an line for, which is not the union of
+    the first: a file that reached no probe still has a line, and that is how
+    check_unique() tells an untested claim from an unmeasured file.
+    """
+    path = os.path.join(outdir, 'coverage.txt')
+    if not os.path.exists(path):
+        return None, None
+    reached, seen = {}, set()
+    with open(path) as f:
+        for line in f:
+            if line.startswith('#') or not line.strip():
+                continue
+            name, _, tags = line.partition(' ')
+            seen.add(name)
+            for tag in tags.split():
+                reached.setdefault(tag, set()).add(name)
+    return reached, seen
+
+
 def check_unique(outdir, rows):
     """Every '# unique:' claim, against what coverage.txt measured.
 
-    A note saying a file is the only one to reach some path is the kind of
-    claim nothing else here checks, and the kind most likely to stop being
-    true the next time a case is added. Naming the probe makes it an
-    assertion instead of a remark.
+    A note saying a file is the only one to reach some construct is the kind
+    of claim most likely to stop being true the next time a case is added.
     """
-    path = os.path.join(outdir, 'coverage.txt')
     claims = [r for r in rows if r[UNIQUE]]
     if not claims:
         return
-    assert os.path.exists(path), 'a case claims a probe, but there is no ' \
+    reached, measured = read_coverage(outdir)
+    assert reached is not None, 'a case claims a probe, but there is no ' \
         'coverage.txt to check it against; run make_coverage.sh'
-    reached, measured = {}, set()
-    for line in open(path):
-        if line.startswith('#') or not line.strip():
-            continue
-        name, _, tags = line.partition(' ')
-        measured.add(name)
-        for tag in tags.split():
-            reached.setdefault(tag, set()).add(name)
     # A case coverage.txt has never seen would make every claim below look
     # true, so say that rather than trusting it.
     stale = sorted({r[0] for r in rows} - measured)
@@ -698,10 +706,8 @@ def html_escape(text):
     return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
-# What lives where: the things you run stay at the top, the code they are
-# built out of sits in src/. Paths are relative to this directory.
-# The two that answer "does my decoder survive this?" come first; the rest
-# are for changing the corpus, not for using it.
+# Paths are relative to this directory. The two that run the corpus come
+# first; the rest are for changing it.
 RUN = [
     ('check.sh', 'Decodes every file and checks the verdict and the pixels. '
                  'Drives `$DWEBP`, and `$ANIM_DUMP` and `$WEBPINFO` for the '
@@ -896,9 +902,9 @@ def write_running(outdir):
         f.write(text)
 
 
-# What each key of the comment header says. grammar.py owns which keys
-# exist; the prose lives here, and build_syntax() stops if the two drift.
-HEADER_KEYS = [
+# What each key of the comment header says. vp8_asm.py owns which keys exist
+# and which are required; this owns the prose.
+HEADER_DOCS = [
     ('note', 'What the file is, in a sentence.'),
     ('expect', '`ok` or `reject`.'),
     ('exercises', 'Which construct it reaches, and why that matters.'),
@@ -911,7 +917,7 @@ HEADER_KEYS = [
     ('roundtrip', '`no` when no disassembler can read the case back.'),
     ('unique', 'Probes the case claims to be the only file reaching. '
                '`generate.py` refuses to build if `coverage.txt` disagrees.'),
-    ('slow', 'The file allocates a gigabyte.'),
+    ('slow', 'The file allocates over a gigabyte.'),
 ]
 
 SYNTAX_HEAD = """# The case syntax
@@ -1014,16 +1020,19 @@ def build_header_keys(g):
     grammar.py owns which keys exist and this owns what they mean, so a key
     added to one and not the other stops the build.
     """
-    named = [k for k, _ in HEADER_KEYS]
+    named = [k for k, _ in HEADER_DOCS]
     assert sorted(named) == sorted(g['header_keys']), \
         'SYNTAX.md and grammar.py disagree on the header keys: %s' \
         % ' '.join(sorted(set(named) ^ set(g['header_keys'])))
+    order = [k for k, _ in HEADER_DOCS]
+    required = [k for k, v in g['header_keys'].items() if v == 'required']
     out = ['## The header keys\n']
-    out.append(wrap('`note`, `expect` and `exercises` are required. The rest '
-                    'are written only where they say something no one can '
-                    'infer.'))
+    out.append(wrap('%s are required. The rest are written only where they '
+                    'say something no one can infer.'
+                    % and_list(['`%s`' % k for k in
+                                   sorted(required, key=order.index)])))
     out += ['| key | what it says |', '| --- | --- |']
-    out += ['| `%s` | %s |' % (k, what) for k, what in HEADER_KEYS]
+    out += ['| `%s` | %s |' % (k, what) for k, what in HEADER_DOCS]
     return '\n'.join(out) + '\n'
 
 
@@ -1138,7 +1147,6 @@ def build_cases(outdir):
 
 
 
-
 def cell(text):
     return text.replace('|', '\\|').rstrip('.')
 
@@ -1157,30 +1165,22 @@ def group_table(outdir, group):
 
 
 def build_feature_index(outdir, rows):
-    """Every decoder path the probes measured, and what reaches it.
+    """Every construct the probes measured, and what reaches it.
 
-    The other way round from everything else here, and the question someone
-    with a decoder actually has: not "what does this file do" but "which
-    file tests this". Generated from coverage.txt, so it is measurement
-    rather than a claim.
+    The other way round from everything else here: not "what does this file
+    do" but "which file tests this". Generated from coverage.txt, so it is
+    measurement rather than a claim.
     """
-    path = os.path.join(outdir, 'coverage.txt')
-    assert os.path.exists(path), 'no coverage.txt; run make_coverage.sh'
-    reached = {}
-    for line in open(path):
-        if line.startswith('#') or not line.strip():
-            continue
-        name, _, tags = line.partition(' ')
-        for tag in tags.split():
-            reached.setdefault(tag, []).append(name)
+    reached, _ = read_coverage(outdir)
+    assert reached is not None, 'no coverage.txt; run make_coverage.sh'
     out = ['# webp-corners: what reaches what\n']
     out.append(wrap(
-        'Every decoder path `src/probes.py` measures, and the files that '
+        'Every construct `src/probes.py` measures, and the files that '
         'reach it. [`BITSTREAMS.md`](BITSTREAMS.md) answers the same '
         'question backwards, a file at a time, and the [notes](README.md) '
         'say what the corpus is. Generated from `coverage.txt`, so this is '
         'the measurement rather than a claim about it.'))
-    out.append('\n| decoder path | files |')
+    out.append('\n| construct | files |')
     out.append('| --- | --- |')
     for tag in sorted(reached):
         names = sorted(reached[tag])
@@ -1193,14 +1193,14 @@ def build_feature_index(outdir, rows):
 
 def write_bitstreams(outdir, rows):
     """Every file, one line each, grouped -- the part that does not fit on a
-    front page. The README carries the group counts and links here."""
+    front page."""
     used = set()
     out = ['# webp-corners: the bitstreams\n']
     out.append(wrap(
         'One row per file: what the case calls itself, the verdict a decoder '
         'must reach, and a link to both the bytes in `files/` and the text '
         'they were assembled from in `cases/`. The case says the rest -- '
-        'which decoder path it reaches and why that is worth a file. '
+        'which construct it reaches and why that is worth a file. '
         '[`REACHES.md`](REACHES.md) indexes the same set the other way '
         'round, and the [notes](README.md) say what all of it is.'))
     out.append(wrap(
@@ -1233,11 +1233,10 @@ def write_tarball(outdir, rows):
     """Every bitstream in one file, for a reader who wants the corpus and
     not the repository around it.
 
-    The headers are written rather than taken from the filesystem. Most of
-    what tar records per entry is the machine that made it -- the mtimes,
-    the uid, the order the directory happened to be read in -- and any of it
-    would give a different blob for the same 263 files, which in a tracked
-    file means a rewrite on every rebuild.
+    The headers are written rather than taken from the filesystem: the
+    mtimes, the uid and the directory order are the machine that made it, and
+    any of them would give a different blob for the same bitstreams. This one
+    is tracked, so that would be a rewrite on every rebuild.
     """
     tar_bytes = io.BytesIO()
     with tarfile.open(fileobj=tar_bytes, mode='w') as tar:
@@ -1255,14 +1254,12 @@ def write_tarball(outdir, rows):
         # mtime=0 for the same reason: gzip stamps one into its own header
         with gzip.GzipFile(fileobj=f, mode='wb', mtime=0) as gz:
             gz.write(tar_bytes.getvalue())
-    return os.path.getsize(path)
 
 
 def check_tarball(outdir, rows):
     """The tarball holds the bitstreams and nothing else, byte for byte.
 
-    It is the one thing here that leaves without the scripts that check it,
-    so it is opened again once it is closed.
+    It is the one thing here that leaves without the scripts that check it.
     """
     with tarfile.open(os.path.join(outdir, TARBALL)) as tar:
         got = {m.name: tar.extractfile(m).read() for m in tar}
@@ -1273,15 +1270,15 @@ def check_tarball(outdir, rows):
     assert got == want, '%s and files/ differ: %s' % (
         TARBALL, ' '.join(sorted(set(got) ^ set(want))[:3]) or 'same names, '
         'different bytes')
-    # No page says how big it is, because at this size nobody has to care.
-    # That holds while it stays a download nobody thinks about first.
-    grew = os.path.getsize(os.path.join(outdir, TARBALL))
-    assert grew < 1 << 20, '%s is %d bytes: big enough that the pages now ' \
-        'owe the reader a size' % (TARBALL, grew)
+    # no page quotes a size, which holds only while there is nothing to quote
+    nbytes = os.path.getsize(os.path.join(outdir, TARBALL))
+    assert nbytes < 1 << 20, '%s is %d bytes: big enough that the pages now ' \
+        'owe the reader a size' % (TARBALL, nbytes)
     return len(got)
 
 
-def write_readme(outdir, rows):
+def write_pages(outdir, rows):
+    """Every generated page, and the tarball the pages link."""
     write_tarball(outdir, rows)
     write_bitstreams(outdir, rows)
     write_running(outdir)
@@ -1309,7 +1306,7 @@ def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     files = os.path.join(outdir, 'files')
     os.makedirs(files, exist_ok=True)
-    for stale in os.listdir(files) if os.path.isdir(files) else []:
+    for stale in os.listdir(files):
         os.remove(os.path.join(files, stale))
     rows = lossy_parts.build(outdir) + build_cases(outdir)
     with open(os.path.join(outdir, 'expected.txt'), 'w') as f:
@@ -1317,7 +1314,7 @@ def main():
             f.write('%s|%s|%s|%s|%s|%s\n'
                     % (row[0], row[1], 'slow' if row[0] in SLOW else '',
                        row[ANIM], row[INFO], row[INCR]))
-    write_readme(outdir, rows)
+    write_pages(outdir, rows)
     check_links(outdir)
     check_unique(outdir, rows)
     print('%d HOWTO.md examples assemble, %d environment knobs documented, '

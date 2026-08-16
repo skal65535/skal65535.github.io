@@ -170,7 +170,7 @@ The other header keys are optional. Each says something no one can infer:
 `roundtrip: no` for a case no disassembler can reproduce, `anim` and `info` for
 the animation decoder's and the container parser's verdicts, `incremental` for
 the streaming decoder's where it differs, `unique` naming a probe the case
-claims to be the only file reaching, and `slow` for one that allocates a
+claims to be the only file reaching, and `slow` for one that allocates over a
 gigabyte.
 
 ## For a program writing cases

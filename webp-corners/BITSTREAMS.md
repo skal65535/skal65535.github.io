@@ -2,9 +2,9 @@
 
 One row per file: what the case calls itself, the verdict a decoder must reach,
 and a link to both the bytes in `files/` and the text they were assembled from
-in `cases/`. The case says the rest -- which decoder path it reaches and why
-that is worth a file. [`REACHES.md`](REACHES.md) indexes the same set the other
-way round, and the [notes](README.md) say what all of it is.
+in `cases/`. The case says the rest -- which construct it reaches and why that
+is worth a file. [`REACHES.md`](REACHES.md) indexes the same set the other way
+round, and the [notes](README.md) say what all of it is.
 
 The groups are folded shut. Click one to open it. All 263 at once are
 **[`webp-corners.tgz`](webp-corners.tgz)**.

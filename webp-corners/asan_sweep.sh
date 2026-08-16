@@ -5,8 +5,8 @@
 # that can be found in the COPYING file in the root of the source
 # tree.
 # Decodes every file in 14 output/scaling modes. Point ASAN_DWEBP at a
-# sanitizer build. The 'slow' file allocates ~1.8GB, so it is decoded once
-# rather than in every mode. Every file with an animation column is decoded
+# sanitizer build. The files tagged 'slow' allocate over a gigabyte, so each
+# is decoded once rather than in every mode. Every file with an animation column is decoded
 # again through anim_dump, which is the only way the demuxer, the frame
 # composition and the blending get run at all; it is looked for beside
 # $ASAN_DWEBP, where the build puts it.

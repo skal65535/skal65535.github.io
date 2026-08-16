@@ -102,7 +102,7 @@ missing tool is reported and skipped, never silently passed over.
 | `$LIBWEBP` | A libwebp git checkout, for `make_coverage.sh`, `coverage.sh` and `make_vp8_tables.py`. |
 | `$PROFDATA` | `llvm-profdata`, for `coverage.sh`. Taken from `$PATH` or `xcrun` when unset. |
 | `$COV` | `llvm-cov`, likewise. |
-| `$SKIP_SLOW` | Set it to skip the one file that allocates a gigabyte. |
+| `$SKIP_SLOW` | Set it to skip the files tagged `slow`, which allocate over a gigabyte. |
 
 ## The scripts
 

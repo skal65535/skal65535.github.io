@@ -45,7 +45,7 @@ they say something no one can infer.
 | `incremental` | The streaming decoder's, where it differs from `expect`. |
 | `roundtrip` | `no` when no disassembler can read the case back. |
 | `unique` | Probes the case claims to be the only file reaching. `generate.py` refuses to build if `coverage.txt` disagrees. |
-| `slow` | The file allocates a gigabyte. |
+| `slow` | The file allocates over a gigabyte. |
 
 ## The lossless image (VP8L)
 

@@ -51,8 +51,8 @@ B=$WT/build
 clang $FLAGS -I"$WT/src" -I"$WT" "$HERE/src/api_sweep.c" -o "$TMP/api_sweep" \
   "$B/libwebpdemux.a" "$B/libwebp.a" -lm
 
-# every file but the one that allocates a gigabyte: it says nothing new about
-# which lines run, and costs minutes at -O0
+# every file but those tagged slow: they say nothing new about which lines
+# run, and cost minutes at -O0
 awk -F'|' '$1 != "" && $3 != "slow" {print "'"$HERE"'/files/" $1 ".webp"}' \
   "$HERE/expected.txt" > "$TMP/files"
 
