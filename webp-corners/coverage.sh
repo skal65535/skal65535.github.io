@@ -109,7 +109,7 @@ step corpus "$TMP"/prof/corpus-*
 step options "$TMP"/prof/corpus-* "$TMP"/prof/options-*
 step api "$TMP"/prof/*.profraw
 echo
-echo "src/dec + src/demux at $(git -C "$LIBWEBP" rev-parse --short HEAD):"
+echo "src/dec + src/demux at $(git -C "$LIBWEBP" describe --tags --always):"
 for s in corpus options api; do
   printf '  %-9s ' "$s"
   report $s | tail -1 |
