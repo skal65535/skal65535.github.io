@@ -1,12 +1,15 @@
 # WebP stress bitstreams
 
-A test suite for WebP decoders. Each file targets one construct of the
-format: a container chunk, a header field, a Huffman code, a back-reference,
-an animation frame. No encoder emits these files. They are written field by
-field from text, so a file can say what an encoder cannot.
+**[`webp-corners.tgz`](webp-corners.tgz)**: a test suite of bitstreams to
+exercise decoders with all WebP features.
 
-Every file states what a decoder must do with it. Any decoder can be held to
-that, not only the reference one.
+Each file targets one construct of the format: a container chunk, a header
+field, a Huffman code, a back-reference, an animation frame. No encoder emits
+these files. They are written field by field from text, so a file can say
+what an encoder cannot.
+
+Every file states what a decoder must do with it. Any compliant decoder can
+be held to that, not only the reference one.
 
 **Contents:**
 
@@ -20,19 +23,16 @@ that, not only the reference one.
 
 ## What a decoder must do
 
-Every file carries a verdict.
+Every file is one or the other.
 
-**ok** -- the decoder must decode the file, and must produce the pixels
-recorded in `hashes.txt`.
+**ok** -- decode it, and produce the pixels in `hashes.txt`.
 
-**reject** -- the decoder must refuse the file and report an error. It must
-not crash, read out of bounds, or return a partial image as success.
+**reject** -- refuse it, and report an error. No crash, no out-of-bounds
+read, no partial image returned as success.
 
-A verdict belongs to a decoder role. A still decoder refuses every animation
-before it reads a frame, and that is correct; for those files the animation
-decoder's verdict is the one that describes the file. A container parser
-reports errors an image decoder never reaches. `expected.txt` carries one
-column per role.
+Which decoder is being asked matters: a still decoder refuses every
+animation, so `expected.txt` carries a column per role.
+[`RUNNING.md`](RUNNING.md) says what the roles are.
 
 A verdict names no status code. The format says what is malformed. How a
 decoder reports it is its own business.
@@ -79,8 +79,8 @@ Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) is the whole of it:
 the other decoders each file needs, what the pixel hash covers, and what a
 decoder that is not libwebp has to do to run the suite.
 
-Take the bitstreams alone from **[`webp-corners.tgz`](webp-corners.tgz)**,
-19 kB, or the directory with its scripts:
+The tarball above is the bitstreams alone. To get the scripts with them,
+take the directory:
 
     git clone --depth 1 --filter=blob:none --sparse \
         https://github.com/skal65535/skal65535.github.io.git

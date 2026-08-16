@@ -7,7 +7,7 @@ that is worth a file. [`REACHES.md`](REACHES.md) indexes the same set the other
 way round, and the [notes](README.md) say what all of it is.
 
 The groups are folded shut. Click one to open it. All 263 at once are
-**[`webp-corners.tgz`](webp-corners.tgz)**, 19 kB.
+**[`webp-corners.tgz`](webp-corners.tgz)**.
 
 <details markdown="block">
 <summary><b>Whole lossless images</b> -- 2 files, 2 ok, 0 reject</summary>

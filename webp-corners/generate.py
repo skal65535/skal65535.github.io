@@ -179,32 +179,32 @@ GROUPS = [
 
 README_HEAD = """# WebP stress bitstreams
 
-A test suite for WebP decoders. Each file targets one construct of the
-format: a container chunk, a header field, a Huffman code, a back-reference,
-an animation frame. No encoder emits these files. They are written field by
-field from text, so a file can say what an encoder cannot.
+**[`%(tarball_name)s`](%(tarball_name)s)**: a test suite of bitstreams to
+exercise decoders with all WebP features.
 
-Every file states what a decoder must do with it. Any decoder can be held to
-that, not only the reference one.
+Each file targets one construct of the format: a container chunk, a header
+field, a Huffman code, a back-reference, an animation frame. No encoder emits
+these files. They are written field by field from text, so a file can say
+what an encoder cannot.
+
+Every file states what a decoder must do with it. Any compliant decoder can
+be held to that, not only the reference one.
 
 **Contents:**
 
 %(toc)s
 ## What a decoder must do
 
-Every file carries a verdict.
+Every file is one or the other.
 
-**ok** -- the decoder must decode the file, and must produce the pixels
-recorded in `hashes.txt`.
+**ok** -- decode it, and produce the pixels in `hashes.txt`.
 
-**reject** -- the decoder must refuse the file and report an error. It must
-not crash, read out of bounds, or return a partial image as success.
+**reject** -- refuse it, and report an error. No crash, no out-of-bounds
+read, no partial image returned as success.
 
-A verdict belongs to a decoder role. A still decoder refuses every animation
-before it reads a frame, and that is correct; for those files the animation
-decoder's verdict is the one that describes the file. A container parser
-reports errors an image decoder never reaches. `expected.txt` carries one
-column per role.
+Which decoder is being asked matters: a still decoder refuses every
+animation, so `expected.txt` carries a column per role.
+[`RUNNING.md`](RUNNING.md) says what the roles are.
 
 A verdict names no status code. The format says what is malformed. How a
 decoder reports it is its own business.
@@ -233,8 +233,8 @@ Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) is the whole of it:
 the other decoders each file needs, what the pixel hash covers, and what a
 decoder that is not libwebp has to do to run the suite.
 
-Take the bitstreams alone from **[`%(tarball_name)s`](%(tarball_name)s)**,
-%(tarball)s, or the directory with its scripts:
+The tarball above is the bitstreams alone. To get the scripts with them,
+take the directory:
 
     git clone --depth 1 --filter=blob:none --sparse \\
         https://github.com/skal65535/skal65535.github.io.git
@@ -297,9 +297,6 @@ def wrap(text, indent=''):
                                    break_on_hyphens=False)) + '\n'
 
 
-def size(n):
-    """A byte count for a sentence rather than for a table."""
-    return '%d bytes' % n if n < 10000 else '%d kB' % round(n / 1000.)
 
 
 def slug(title):
@@ -449,6 +446,7 @@ INDEX_STYLE = """<!doctype html>
 """
 
 FILES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: bitstreams</h1>
+%(tarball)s
 <p>%(count)d WebP files that exercise corners of the format a normal encoder
 never emits, most of them assembled from the text in
 <a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
@@ -470,6 +468,7 @@ it. <a href="../">The notes</a> say what each one does.</p>
 """
 
 CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: cases</h1>
+%(tarball)s
 <p>%(count)d text cases, each assembled into the .webp of the same name in
 <a href="../files/">files/</a>. A case names the fields the specification
 names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
@@ -481,9 +480,17 @@ conforming decoder must refuse it.</p>
 """
 
 
+def tarball_line():
+    """The download the directory indexes open with. Someone who has landed
+    on a listing of 263 files wants all of them, not one."""
+    return ('<p>Every bitstream in one file: '
+            '<b><a href="../%s">%s</a></b>.</p>' % (TARBALL, TARBALL))
+
+
 def write_files_index(outdir, rows):
     """files/index.html -- GitHub Pages serves no directory listing."""
-    lines = [FILES_INDEX_HEAD % {'count': len(rows)}]
+    lines = [FILES_INDEX_HEAD % {'count': len(rows),
+                                 'tarball': tarball_line()}]
     for row in sorted(rows):
         lines.append('<tr><td><a href="%s.webp"><code>%s.webp</code></a></td>'
                      '<td class="n">%d</td><td class="%s">%s</td></tr>'
@@ -525,7 +532,8 @@ def write_cases_index(outdir, rows):
                         'reject' if wanted(row) == 'reject' else 'ok',
                         verdict(row), html_escape(row[2])))
     lines.append('</table>')
-    lines[0] = CASES_INDEX_HEAD % {'count': n}
+    lines[0] = CASES_INDEX_HEAD % {'count': n,
+                                   'tarball': tarball_line()}
     with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
@@ -1133,7 +1141,7 @@ def build_feature_index(outdir, rows):
     return '\n'.join(out) + '\n'
 
 
-def write_bitstreams(outdir, rows, tarball):
+def write_bitstreams(outdir, rows):
     """Every file, one line each, grouped -- the part that does not fit on a
     front page. The README carries the group counts and links here."""
     used = set()
@@ -1147,7 +1155,7 @@ def write_bitstreams(outdir, rows, tarball):
         'round, and the [notes](README.md) say what all of it is.'))
     out.append(wrap(
         'The groups are folded shut. Click one to open it. All %d at once '
-        'are **[`%s`](%s)**, %s.' % (len(rows), TARBALL, TARBALL, tarball)))
+        'are **[`%s`](%s)**.' % (len(rows), TARBALL, TARBALL)))
     for prefix, title, blurb in GROUPS + [(None, 'Other', None)]:
         group = [r for r in rows if r[0] not in used and
                  (prefix is None or r[0].startswith(prefix))]
@@ -1215,17 +1223,21 @@ def check_tarball(outdir, rows):
     assert got == want, '%s and files/ differ: %s' % (
         TARBALL, ' '.join(sorted(set(got) ^ set(want))[:3]) or 'same names, '
         'different bytes')
+    # No page says how big it is, because at this size nobody has to care.
+    # That holds while it stays a download nobody thinks about first.
+    grew = os.path.getsize(os.path.join(outdir, TARBALL))
+    assert grew < 1 << 20, '%s is %d bytes: big enough that the pages now ' \
+        'owe the reader a size' % (TARBALL, grew)
     return len(got)
 
 
 def write_readme(outdir, rows):
-    tarball = size(write_tarball(outdir, rows))
-    write_bitstreams(outdir, rows, tarball)
+    write_tarball(outdir, rows)
+    write_bitstreams(outdir, rows)
     write_running(outdir)
     with open(os.path.join(outdir, 'REACHES.md'), 'w') as f:
         f.write(re.sub(r'\n{3,}', '\n\n', build_feature_index(outdir, rows)))
     body = README_HEAD % dict(toc=TOC_MARK,
-                              tarball=tarball,
                               tarball_name=TARBALL,
                               at=COVERAGE_AT,
                               coverage=build_coverage_table(),
