@@ -1,47 +1,51 @@
 # The case syntax
 
-Every file in [`files/`](files) but seven is assembled from one text case in
-[`cases/`](cases). This is the whole vocabulary those cases use, generated
-from [`src/grammar.py`](src/grammar.py), which is also where a generator
-should read it from -- `./src/grammar.py` prints the same thing as JSON.
+The whole vocabulary a case uses, generated from
+[`src/grammar.py`](src/grammar.py). A program writing cases should read that
+instead: `./src/grammar.py` prints the same thing as JSON.
 
-A case is a keyed comment header, then one field per line, `#` starting a
+A case is a keyed comment header, then one field per line. `#` starts a
 comment. Every field has a default, so a case says only what it is about:
 
     # note: what this file is
     # expect: ok
-    # exercises: which decoder path it reaches, and why that matters
+    # exercises: which construct it reaches, and why that matters
     lossless
     width 16
     code dist 200 3
 
-**Nothing is validated or clamped.** The ranges below are what the
-*bitstream field* holds, not what a decoder accepts: a value past one loses
-its top bits rather than being refused, which for a stress case is usually
-the point. The handful of things the assemblers do refuse are the ones they
-could not write at all -- a symbol a declared code has no entry for, a tile
+**Nothing is validated or clamped.** The ranges below are what the *bitstream
+field* holds, not what a decoder accepts. A value past the end of one loses
+its top bits rather than being refused. The assemblers refuse only what they
+could not write at all: a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.
 
-The header keys are `anim`, `exercises`, `expect`, `incremental`, `info`, `note`, `roundtrip`, `slow`, `unique`. `expect` is `ok` or `reject`; `slow` marks
-the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by whichever of the three disassemblers owns it; `anim` is
-the same verdict from the
-animation decoder, for the files a still one refuses on sight; `info` is
-webpinfo's, which is a second reader of the container and not always of the
-same opinion; `incremental` is the streaming decoder's, and is written down
-only where it differs from `expect`, which is the whole reason to write it.
-`unique` names probes the case claims to be the only file reaching, and
-`generate.py` refuses to build if `coverage.txt` disagrees.
-
-Which assembler owns a case follows from its keywords: a case saying
+Which assembler owns a case follows from its keywords. A case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container
-keywords may be added to either. Two keywords open a block -- `frame` and
-`alph_plane` -- and everything after one belongs to it until the next block
-or the end of the case; that is the only nesting there is.
+keywords may be added to either. `frame` and `alph_plane` open a block:
+everything after one belongs to it until the next block or the end of the
+case. That is the only nesting there is.
 
-A value is written as a plain number -- `12`, `0x0c`, `0b1100` all work --
-except where the table says otherwise. `-` in place of a number means the
-field is *absent*, which is not the same as zero: it writes the flag alone.
+A value is a plain number -- `12`, `0x0c`, `0b1100` all work -- except where
+the table says otherwise. `-` in place of a number means the field is
+*absent*, which is not zero: it writes the flag alone.
+
+## The header keys
+
+`note`, `expect` and `exercises` are required. The rest are written only where
+they say something no one can infer.
+
+| key | what it says |
+| --- | --- |
+| `note` | What the file is, in a sentence. |
+| `expect` | `ok` or `reject`. |
+| `exercises` | Which construct it reaches, and why that matters. |
+| `anim` | The animation decoder's verdict, for the files a still decoder refuses on sight. |
+| `info` | The container parser's, which is not always of the same opinion. |
+| `incremental` | The streaming decoder's, where it differs from `expect`. |
+| `roundtrip` | `no` when no disassembler can read the case back. |
+| `unique` | Probes the case claims to be the only file reaching. `generate.py` refuses to build if `coverage.txt` disagrees. |
+| `slow` | The file allocates a gigabyte. |
 
 ## The lossless image (VP8L)
 

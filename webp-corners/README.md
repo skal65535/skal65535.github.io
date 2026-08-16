@@ -88,8 +88,7 @@ two says whether a gap belongs to the suite or to code no file can reach.
 
 ## Limits
 
-What the suite leaves out. A decoder that passes every file has been told
-nothing about these.
+What the suite leaves out.
 
 **Inter frames.** A WebP file carries a key frame. One file checks that a
 decoder refuses an inter frame, and nothing here goes further.

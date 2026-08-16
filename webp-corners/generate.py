@@ -238,8 +238,7 @@ two says whether a gap belongs to the suite or to code no file can reach.
 
 ## Limits
 
-What the suite leaves out. A decoder that passes every file has been told
-nothing about these.
+What the suite leaves out.
 
 **Inter frames.** A WebP file carries a key frame. One file checks that a
 decoder refuses an inter frame, and nothing here goes further.
@@ -435,34 +434,35 @@ INDEX_STYLE = """<!doctype html>
 
 FILES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: bitstreams</h1>
 %(tarball)s
-<p>%(count)d WebP files that exercise corners of the format a normal encoder
-never emits, most of them assembled from the text in
-<a href="../cases/">cases/</a>. See the <a href="../">notes</a> for what each
-one targets. <b>reject</b> means a conforming decoder must refuse the file.</p>
+<p>Each file targets one construct of the WebP format. No encoder emits them:
+they are assembled from the text in <a href="../cases/">cases/</a>.
+<b>reject</b> means a compliant decoder must refuse the file. The
+<a href="../">notes</a> say what each one is for.</p>
 <table>
 <tr><th>file</th><th>bytes</th><th>expected</th></tr>
 """
 
 SOURCES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: sources</h1>
-<p>Real encoder output, not assembled: %(count)d lossy frames carrying 1, 2, 4
-and 8 token partitions, made through the encoder API by
+<p>Real encoder output, not assembled. The partition count lives inside the
+bool-coded partition 0, so no case can write it; these lossy frames carry 1,
+2, 4 and 8 token partitions, made through the encoder API by
 <a href="../src/make_partition_sources.c"><code>make_partition_sources.c</code></a>
-because cwebp emits only one. Seven files in
-<a href="../files/">files/</a> come from these: these four as they are, and
-three more with the partition-size table rewritten to lie about what follows
-it. <a href="../">The notes</a> say what each one does.</p>
+because cwebp emits only one.</p>
+<p>Seven files in <a href="../files/">files/</a> come from these: the four as
+they are, and three with the partition-size table rewritten to lie about what
+follows it. <a href="../">The notes</a> say what each one does.</p>
 <table>
 <tr><th>file</th><th>bytes</th></tr>
 """
 
 CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: cases</h1>
 %(tarball)s
-<p>%(count)d text cases, each assembled into the .webp of the same name in
-<a href="../files/">files/</a>. A case names the fields the specification
-names &mdash; RFC 6386 for the lossy frame, RFC 9649 for the container
-&mdash; and carries its own note on what it is for; the
-<a href="../">notes</a> have the full write-up. <b>reject</b> means a
-conforming decoder must refuse it.</p>
+<p>A case describes the content of a bitstream as text, and is assembled into
+the .webp of the same name in <a href="../files/">files/</a>. The field names
+are the specifications' own: RFC 6386 for the lossy frame, RFC 9649 for the
+container. <b>reject</b> means a compliant decoder must refuse it.
+<a href="../SYNTAX.md">SYNTAX.md</a> is the vocabulary,
+<a href="../HOWTO.md">HOWTO.md</a> the walk-through.</p>
 <table>
 <tr><th>case</th><th>expected</th><th>what it is</th></tr>
 """
@@ -477,8 +477,7 @@ def tarball_line():
 
 def write_files_index(outdir, rows):
     """files/index.html -- GitHub Pages serves no directory listing."""
-    lines = [FILES_INDEX_HEAD % {'count': len(rows),
-                                 'tarball': tarball_line()}]
+    lines = [FILES_INDEX_HEAD % {'tarball': tarball_line()}]
     for row in sorted(rows):
         lines.append('<tr><td><a href="%s.webp"><code>%s.webp</code></a></td>'
                      '<td class="n">%d</td><td class="%s">%s</td></tr>'
@@ -494,7 +493,7 @@ def write_sources_index(outdir):
     """sources/index.html, so the directory can be linked like the others."""
     names = sorted(f for f in os.listdir(os.path.join(outdir, 'sources'))
                    if f.endswith('.webp'))
-    lines = [SOURCES_INDEX_HEAD % {'count': len(names)}]
+    lines = [SOURCES_INDEX_HEAD]
     for name in names:
         size = os.path.getsize(os.path.join(outdir, 'sources', name))
         lines.append('<tr><td><a href="%s"><code>%s</code></a></td>'
@@ -506,7 +505,7 @@ def write_sources_index(outdir):
 
 def write_cases_index(outdir, rows):
     """cases/index.html -- same reason, and the README links cases/."""
-    lines = [CASES_INDEX_HEAD]
+    lines = ['']
     n = 0
     for row in sorted(rows):
         name = row[0]
@@ -520,8 +519,7 @@ def write_cases_index(outdir, rows):
                         'reject' if wanted(row) == 'reject' else 'ok',
                         verdict(row), html_escape(row[2])))
     lines.append('</table>')
-    lines[0] = CASES_INDEX_HEAD % {'count': n,
-                                   'tarball': tarball_line()}
+    lines[0] = CASES_INDEX_HEAD % {'tarball': tarball_line()}
     with open(os.path.join(outdir, 'cases', 'index.html'), 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
@@ -866,53 +864,57 @@ def write_running(outdir):
         f.write(text)
 
 
+# What each key of the comment header says. grammar.py owns which keys
+# exist; the prose lives here, and build_syntax() stops if the two drift.
+HEADER_KEYS = [
+    ('note', 'What the file is, in a sentence.'),
+    ('expect', '`ok` or `reject`.'),
+    ('exercises', 'Which construct it reaches, and why that matters.'),
+    ('anim', "The animation decoder's verdict, for the files a still decoder "
+             'refuses on sight.'),
+    ('info', "The container parser's, which is not always of the same "
+             'opinion.'),
+    ('incremental', "The streaming decoder's, where it differs from "
+                    '`expect`.'),
+    ('roundtrip', '`no` when no disassembler can read the case back.'),
+    ('unique', 'Probes the case claims to be the only file reaching. '
+               '`generate.py` refuses to build if `coverage.txt` disagrees.'),
+    ('slow', 'The file allocates a gigabyte.'),
+]
+
 SYNTAX_HEAD = """# The case syntax
 
-Every file in [`files/`](files) but seven is assembled from one text case in
-[`cases/`](cases). This is the whole vocabulary those cases use, generated
-from [`src/grammar.py`](src/grammar.py), which is also where a generator
-should read it from -- `./src/grammar.py` prints the same thing as JSON.
+The whole vocabulary a case uses, generated from
+[`src/grammar.py`](src/grammar.py). A program writing cases should read that
+instead: `./src/grammar.py` prints the same thing as JSON.
 
-A case is a keyed comment header, then one field per line, `#` starting a
+A case is a keyed comment header, then one field per line. `#` starts a
 comment. Every field has a default, so a case says only what it is about:
 
     # note: what this file is
     # expect: ok
-    # exercises: which decoder path it reaches, and why that matters
+    # exercises: which construct it reaches, and why that matters
     lossless
     width 16
     code dist 200 3
 
-**Nothing is validated or clamped.** The ranges below are what the
-*bitstream field* holds, not what a decoder accepts: a value past one loses
-its top bits rather than being refused, which for a stress case is usually
-the point. The handful of things the assemblers do refuse are the ones they
-could not write at all -- a symbol a declared code has no entry for, a tile
+**Nothing is validated or clamped.** The ranges below are what the *bitstream
+field* holds, not what a decoder accepts. A value past the end of one loses
+its top bits rather than being refused. The assemblers refuse only what they
+could not write at all: a symbol a declared code has no entry for, a tile
 list that is not the length the transform implies.
 
-The header keys are %(header)s. `expect` is `ok` or `reject`; `slow` marks
-the one file that allocates a gigabyte; `roundtrip: no` says the case cannot
-be read back by whichever of the three disassemblers owns it; `anim` is
-the same verdict from the
-animation decoder, for the files a still one refuses on sight; `info` is
-webpinfo's, which is a second reader of the container and not always of the
-same opinion; `incremental` is the streaming decoder's, and is written down
-only where it differs from `expect`, which is the whole reason to write it.
-`unique` names probes the case claims to be the only file reaching, and
-`generate.py` refuses to build if `coverage.txt` disagrees.
-
-Which assembler owns a case follows from its keywords: a case saying
+Which assembler owns a case follows from its keywords. A case saying
 `lossless` is a VP8L image, anything else a lossy VP8 frame, and container
-keywords may be added to either. Two keywords open a block -- `frame` and
-`alph_plane` -- and everything after one belongs to it until the next block
-or the end of the case; that is the only nesting there is.
+keywords may be added to either. `frame` and `alph_plane` open a block:
+everything after one belongs to it until the next block or the end of the
+case. That is the only nesting there is.
 
-"""
+A value is a plain number -- `12`, `0x0c`, `0b1100` all work -- except where
+the table says otherwise. `-` in place of a number means the field is
+*absent*, which is not zero: it writes the flag alone.
 
-VALUE_NOTE = """
-A value is written as a plain number -- `12`, `0x0c`, `0b1100` all work --
-except where the table says otherwise. `-` in place of a number means the
-field is *absent*, which is not the same as zero: it writes the flag alone.
+%(header)s
 """
 
 
@@ -974,11 +976,29 @@ SYNTAX_SCOPES = [
 ]
 
 
+def build_header_keys(g):
+    """The comment header, one row per key.
+
+    grammar.py owns which keys exist and this owns what they mean, so a key
+    added to one and not the other stops the build.
+    """
+    named = [k for k, _ in HEADER_KEYS]
+    assert sorted(named) == sorted(g['header_keys']), \
+        'SYNTAX.md and grammar.py disagree on the header keys: %s' \
+        % ' '.join(sorted(set(named) ^ set(g['header_keys'])))
+    out = ['## The header keys\n']
+    out.append(wrap('`note`, `expect` and `exercises` are required. The rest '
+                    'are written only where they say something no one can '
+                    'infer.'))
+    out += ['| key | what it says |', '| --- | --- |']
+    out += ['| `%s` | %s |' % (k, what) for k, what in HEADER_KEYS]
+    return '\n'.join(out) + '\n'
+
+
 def build_syntax(outdir):
     """SYNTAX.md, from src/grammar.py rather than from prose."""
     g = grammar.build()
-    keys = ', '.join('`%s`' % k for k in sorted(g['header_keys']))
-    out = [SYNTAX_HEAD % {'header': keys}, VALUE_NOTE]
+    out = [SYNTAX_HEAD % {'header': build_header_keys(g)}]
     for scope, title, blurb in SYNTAX_SCOPES:
         out.append('## %s\n' % title)
         out.append(wrap(blurb))
