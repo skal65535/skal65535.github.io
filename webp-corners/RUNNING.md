@@ -1,15 +1,13 @@
 # Running the suite
 
-How to point the suite at a decoder, what it checks, and what a decoder that
-is not libwebp has to do to run it. [`README.md`](README.md) says what the
-suite is.
+How to point the suite at a decoder, and what it checks.
+[`README.md`](README.md) says what the suite is.
 
 **Contents:**
 
 * [The two verdicts](#the-two-verdicts)
 * [The four roles](#the-four-roles)
 * [What the check is](#what-the-check-is)
-* [Running another decoder](#running-another-decoder)
 * [Every knob](#every-knob)
 * [The scripts](#the-scripts)
 * [The files it reads and writes](#the-files-it-reads-and-writes)
@@ -67,21 +65,9 @@ line ends in one newline and there is no padding anywhere. For an animation
 the hash covers every frame written that way, concatenated in order. Any
 decoder that can produce those bytes can reproduce the hash.
 
-## Running another decoder
-
-`check.sh` drives libwebp's tools because that is what the environment names.
-A decoder that is not libwebp needs an adapter that does three things:
-
-1. Decode a file and report success or failure. Failure must be a reported
-   error, never a crash, an out-of-bounds read, or a partial image returned
-   as success. Under a sanitizer is where this is worth doing.
-2. For a file whose verdict is `ok`, write the decoded pixels in the form
-   above and hash them.
-3. Read `expected.txt` for the verdict of the role being tested.
-
 `expected.txt` is `name|still|slow|animation|container|incremental`, one line
 per file, empty where a role has nothing to say. `hashes.txt` is `name
-sha256`. Both are plain text, and they are the whole contract.
+sha256`. Both are plain text, and between them they are the whole contract.
 
 ## Every knob
 

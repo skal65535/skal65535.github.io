@@ -59,9 +59,8 @@ is the way round to read it when a decoder has just failed one.
 pixels against `hashes.txt`. `asan_sweep.sh` runs the same files through a
 sanitizer build in 14 output modes.
 
-Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) is the whole of it:
-the other decoders each file needs, what the pixel hash covers, and what a
-decoder that is not libwebp has to do to run the suite.
+Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) has the rest: the
+roles a file is read by, what the pixel hash covers, and every knob.
 
 The tarball above is the bitstreams alone. To get the scripts with them,
 take the directory:

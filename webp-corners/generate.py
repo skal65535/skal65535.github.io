@@ -214,9 +214,8 @@ is the way round to read it when a decoder has just failed one.
 pixels against `hashes.txt`. `asan_sweep.sh` runs the same files through a
 sanitizer build in 14 output modes.
 
-Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) is the whole of it:
-the other decoders each file needs, what the pixel hash covers, and what a
-decoder that is not libwebp has to do to run the suite.
+Both drive libwebp's tools. [`RUNNING.md`](RUNNING.md) has the rest: the
+roles a file is read by, what the pixel hash covers, and every knob.
 
 The tarball above is the bitstreams alone. To get the scripts with them,
 take the directory:
@@ -804,9 +803,8 @@ def code_table(outdir, entries, title, intro=None, strip=''):
 
 RUNNING_HEAD = """# Running the suite
 
-How to point the suite at a decoder, what it checks, and what a decoder that
-is not libwebp has to do to run it. [`README.md`](README.md) says what the
-suite is.
+How to point the suite at a decoder, and what it checks.
+[`README.md`](README.md) says what the suite is.
 
 **Contents:**
 
@@ -864,21 +862,9 @@ line ends in one newline and there is no padding anywhere. For an animation
 the hash covers every frame written that way, concatenated in order. Any
 decoder that can produce those bytes can reproduce the hash.
 
-## Running another decoder
-
-`check.sh` drives libwebp's tools because that is what the environment names.
-A decoder that is not libwebp needs an adapter that does three things:
-
-1. Decode a file and report success or failure. Failure must be a reported
-   error, never a crash, an out-of-bounds read, or a partial image returned
-   as success. Under a sanitizer is where this is worth doing.
-2. For a file whose verdict is `ok`, write the decoded pixels in the form
-   above and hash them.
-3. Read `expected.txt` for the verdict of the role being tested.
-
 `expected.txt` is `name|still|slow|animation|container|incremental`, one line
 per file, empty where a role has nothing to say. `hashes.txt` is `name
-sha256`. Both are plain text, and they are the whole contract.
+sha256`. Both are plain text, and between them they are the whole contract.
 
 ## Every knob
 
