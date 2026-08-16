@@ -228,9 +228,8 @@ take the directory:
 
 ## What it reaches in libwebp
 
-The suite is graded by measurement rather than by inspection. `coverage.sh`
-builds libwebp with instrumentation and reports `src/dec` and `src/demux`
-three times over. These are from a build %(version)s:
+`coverage.sh` builds libwebp with instrumentation and reports `src/dec` and
+`src/demux` three times over. These are from a build %(version)s:
 
 %(coverage)s
 The first row is what a bitstream controls. The rest is what a caller
@@ -238,6 +237,9 @@ controls: output conversion, rescaling, allocation failure. Separating the
 two says whether a gap belongs to the suite or to code no file can reach.
 
 ## Limits
+
+What the suite leaves out. A decoder that passes every file has been told
+nothing about these.
 
 **Inter frames.** A WebP file carries a key frame. One file checks that a
 decoder refuses an inter frame, and nothing here goes further.
@@ -254,9 +256,9 @@ fails a pixel hash rather than passing unnoticed.
 
 ## Writing a case
 
-A case is a text file naming bitstream fields, one per line, and nothing
-validates it on the way out. [`HOWTO.md`](HOWTO.md) is the walk-through and
-[`SYNTAX.md`](SYNTAX.md) the reference:
+A case describes the content of a bitstream as a text file, one field per
+line. Nothing validates it on the way out. [`HOWTO.md`](HOWTO.md) is the
+walk-through and [`SYNTAX.md`](SYNTAX.md) the reference:
 
     ./src/webp_asm.py cases/alph-raw-filter-gradient.txt /tmp/out.webp
     ./src/webp_dis.py --check some-animation.webp

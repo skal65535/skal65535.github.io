@@ -1,9 +1,9 @@
 # Writing a case
 
-A bitstream here is a text file in [`cases/`](cases), assembled into bytes.
-This says how to write one, how to read an existing `.webp` back into one,
-and what a program generating them needs to know.
-[`SYNTAX.md`](SYNTAX.md) is the reference for every keyword.
+A case describes the content of a bitstream as a text file in
+[`cases/`](cases), assembled into bytes. This says how to write one, how to
+read an existing `.webp` back into one, and what a program generating them
+needs to know. [`SYNTAX.md`](SYNTAX.md) is the reference for every keyword.
 
 **Contents:**
 
@@ -46,8 +46,6 @@ says only what it is about. The lossy one above has four macroblocks it never
 mentions, filled in with default modes and no coefficients.
 
 ## Nothing is checked on the way
-
-This is the one rule to keep in mind.
 
 **A value too big for its field loses its top bits rather than being
 refused.** `cache_bits 15` writes 15 into a 4-bit field that a decoder accepts
