@@ -461,8 +461,8 @@ CASES_INDEX_HEAD = INDEX_STYLE + """<h1>webp-corners: cases</h1>
 the .webp of the same name in <a href="../files/">files/</a>. The field names
 are the specifications' own: RFC 6386 for the lossy frame, RFC 9649 for the
 container. <b>reject</b> means a compliant decoder must refuse it.
-<a href="../SYNTAX.md">SYNTAX.md</a> is the vocabulary,
-<a href="../HOWTO.md">HOWTO.md</a> the walk-through.</p>
+<a href="../SYNTAX.html">SYNTAX.md</a> is the vocabulary,
+<a href="../HOWTO.html">HOWTO.md</a> the walk-through.</p>
 <table>
 <tr><th>case</th><th>expected</th><th>what it is</th></tr>
 """
@@ -546,6 +546,38 @@ def check_links(outdir):
                 assert any(os.path.exists(os.path.join(path, n))
                            for n in ('index.html', 'README.md')), \
                     '%s links %s/, which has no index' % (doc, target)
+
+
+def check_html_links(outdir):
+    """Every relative link in the directory indexes resolves.
+
+    Jekyll rewrites a .md link inside a markdown page to the .html it
+    generates, and leaves a raw HTML page alone. So these must name the
+    .html, or a reader gets the markdown source served as text. The target
+    is checked against the .md Jekyll writes it from.
+    """
+    n = 0
+    for d in ('files', 'cases', 'sources'):
+        with open(os.path.join(outdir, d, 'index.html')) as f:
+            html = f.read()
+        for target in sorted(set(re.findall(r'href="([^"#]+)"', html))):
+            if target.startswith(('http', 'mailto')):
+                continue
+            path = os.path.normpath(os.path.join(outdir, d, target))
+            if target.endswith('.html') and not os.path.exists(path):
+                path = path[:-len('.html')] + '.md'   # what Jekyll renders it from
+            if os.path.isdir(path):
+                assert any(os.path.exists(os.path.join(path, i))
+                           for i in ('index.html', 'README.md')), \
+                    '%s/index.html links %s/, which has no index' % (d, target)
+            else:
+                assert os.path.exists(path), \
+                    '%s/index.html links %s' % (d, target)
+            assert not target.endswith('.md'), \
+                '%s/index.html links %s, which Jekyll serves as text: name ' \
+                'the .html it renders' % (d, target)
+            n += 1
+    return n
 
 
 def check_details(outdir):
@@ -1290,9 +1322,10 @@ def main():
     check_unique(outdir, rows)
     print('%d HOWTO.md examples assemble, %d environment knobs documented, '
           '%d folded groups render both ways, %d sections in the contents '
-          'list, %d files in %s'
+          'list, %d links out of the listings, %d files in %s'
           % (check_howto(outdir), check_env(outdir), check_details(outdir),
-             check_toc(outdir), check_tarball(outdir, rows), TARBALL))
+             check_toc(outdir), check_html_links(outdir),
+             check_tarball(outdir, rows), TARBALL))
     return rows
 
 
