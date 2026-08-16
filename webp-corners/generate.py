@@ -187,34 +187,19 @@ field, a Huffman code, a back-reference, an animation frame. No encoder emits
 these files. They are written field by field from text, so a file can say
 what an encoder cannot.
 
-Every file states what a decoder must do with it. Any compliant decoder can
-be held to that, not only the reference one.
+Every file says what a compliant decoder must do with it: decode it to the
+pixels in `hashes.txt`, or refuse it without crashing.
+[`RUNNING.md`](RUNNING.md) is the contract in full.
 
 **Contents:**
 
 %(toc)s
-## What a decoder must do
+## What the suite covers
 
-Every file is one or the other.
-
-**ok** -- decode it, and produce the pixels in `hashes.txt`.
-
-**reject** -- refuse it, and report an error. No crash, no out-of-bounds
-read, no partial image returned as success.
-
-Which decoder is being asked matters: a still decoder refuses every
-animation, so `expected.txt` carries a column per role.
-[`RUNNING.md`](RUNNING.md) says what the roles are.
-
-A verdict names no status code. The format says what is malformed. How a
-decoder reports it is its own business.
-
-The field names here are the specifications' own:
+Every layer of the format, in the names its specification uses:
 [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) for the lossy
 bitstream, [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html) for the
 container.
-
-## What the suite covers
 
 %(cover)s
 [`BITSTREAMS.md`](BITSTREAMS.md) lists every file and what it is for.
@@ -779,6 +764,16 @@ suite is.
 **Contents:**
 
 %(toc)s
+## The two verdicts
+
+**ok** -- decode it, and produce the pixels in `hashes.txt`.
+
+**reject** -- refuse it, and report an error. No crash, no out-of-bounds
+read, no partial image returned as success.
+
+A verdict names no status code. The format says what is malformed. How a
+decoder reports it is its own business.
+
 ## The four roles
 
 A WebP file is read by more than one kind of decoder, and each sees a

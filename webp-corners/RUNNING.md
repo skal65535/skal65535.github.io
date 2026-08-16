@@ -6,12 +6,23 @@ suite is.
 
 **Contents:**
 
+* [The two verdicts](#the-two-verdicts)
 * [The four roles](#the-four-roles)
 * [What the check is](#what-the-check-is)
 * [Running another decoder](#running-another-decoder)
 * [Every knob](#every-knob)
 * [The scripts](#the-scripts)
 * [The files it reads and writes](#the-files-it-reads-and-writes)
+
+## The two verdicts
+
+**ok** -- decode it, and produce the pixels in `hashes.txt`.
+
+**reject** -- refuse it, and report an error. No crash, no out-of-bounds
+read, no partial image returned as success.
+
+A verdict names no status code. The format says what is malformed. How a
+decoder reports it is its own business.
 
 ## The four roles
 

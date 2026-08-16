@@ -8,12 +8,12 @@ field, a Huffman code, a back-reference, an animation frame. No encoder emits
 these files. They are written field by field from text, so a file can say
 what an encoder cannot.
 
-Every file states what a decoder must do with it. Any compliant decoder can
-be held to that, not only the reference one.
+Every file says what a compliant decoder must do with it: decode it to the
+pixels in `hashes.txt`, or refuse it without crashing.
+[`RUNNING.md`](RUNNING.md) is the contract in full.
 
 **Contents:**
 
-* [What a decoder must do](#what-a-decoder-must-do)
 * [What the suite covers](#what-the-suite-covers)
 * [Running them](#running-them)
 * [What it reaches in libwebp](#what-it-reaches-in-libwebp)
@@ -21,28 +21,12 @@ be held to that, not only the reference one.
 * [Writing a case](#writing-a-case)
 * [License](#license)
 
-## What a decoder must do
+## What the suite covers
 
-Every file is one or the other.
-
-**ok** -- decode it, and produce the pixels in `hashes.txt`.
-
-**reject** -- refuse it, and report an error. No crash, no out-of-bounds
-read, no partial image returned as success.
-
-Which decoder is being asked matters: a still decoder refuses every
-animation, so `expected.txt` carries a column per role.
-[`RUNNING.md`](RUNNING.md) says what the roles are.
-
-A verdict names no status code. The format says what is malformed. How a
-decoder reports it is its own business.
-
-The field names here are the specifications' own:
+Every layer of the format, in the names its specification uses:
 [RFC 6386](https://www.rfc-editor.org/rfc/rfc6386.html) for the lossy
 bitstream, [RFC 9649](https://www.rfc-editor.org/rfc/rfc9649.html) for the
 container.
-
-## What the suite covers
 
 **The RIFF container.** The VP8X chunk and the canvas it declares. Optional
 chunks a decoder steps over by their declared length. Headers that lie about
