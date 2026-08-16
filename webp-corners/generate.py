@@ -228,8 +228,16 @@ take the directory:
 
 ## What it reaches in libwebp
 
-`coverage.sh` builds libwebp with instrumentation and reports `src/dec` and
-`src/demux` three times over. These are from a build %(version)s:
+`coverage.sh` builds libwebp with instrumentation, runs the suite through it,
+and reports how much of `src/dec` and `src/demux` ran.
+
+The columns are llvm-cov's three measures. A **region** is a stretch of code
+with a single execution count, so each arm of an `if` is one. A **line** is a
+source line. A **branch** is one outcome of one condition, counted separately
+from the other, which makes it the strictest of the three: code can run
+without every condition going both ways.
+
+Three passes, on a build %(version)s:
 
 %(coverage)s
 The first row is what a bitstream controls. The rest is what a caller
