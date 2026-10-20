@@ -8,7 +8,7 @@ import { MOMENT_FLOATS } from './octree.js';
 import { loadShaders } from './render.js';
 import { residualDensity, stippleSites, buildViewDepthGrid, makeSeedSplats } from './stipple.js';
 
-const UNIFORM_BYTES = 160;     // TrainUniforms (gaussopt-shaders.wgsl): 40 x f32
+const UNIFORM_BYTES = 160;     // TrainUniforms (shaders.wgsl): 40 x f32
 const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry plot
 const OPT_METHODS   = { adam: 0, monte_carlo: 1, sim_anneal: 2 };
 const BUF_RW   = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;

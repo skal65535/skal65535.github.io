@@ -1,4 +1,4 @@
-// gaussopt-shaders.wgsl — WGSL kernels for Gauss-Opt.
+// shaders.wgsl — WGSL kernels for Gauss-Opt.
 //
 // Each `// === <name> ===` section is compiled as an independent module by
 // loadShaders() (src/render.js), so shared structs/helpers are duplicated per

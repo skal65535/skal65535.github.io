@@ -28,7 +28,7 @@ function selectSubgroupLines(code, device) {
 
 export async function loadShaders(device) {
   if (_shaderCache && _shaderCache.device === device) return _shaderCache.mods;
-  const url = new URL('../gaussopt-shaders.wgsl', import.meta.url);
+  const url = new URL('./shaders.wgsl', import.meta.url);
   const src = await (await fetch(url)).text();
   const map = splitWgslSource(src);
   const mods = {};

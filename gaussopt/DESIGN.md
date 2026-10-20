@@ -208,7 +208,6 @@ skal65535.github.io/gaussopt/
 ├── serve.py               # Local HTTP bridge: mounts COLMAP gs/ dirs, lists .ply checkpoints, handles POST /save
 ├── index.html             # Page markup + bootstrap (imports src/app.js)
 ├── gaussopt.css           # Page layout (canvas + controls columns), overlays (#info, #frustum-thumb)
-├── gaussopt-shaders.wgsl  # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
 └── src/
     ├── app.js             # App: GUI & URL params, dataset/snapshot loading, frame loop, cameras (orbit/drone/fly-to)
     ├── colmap.js          # Binary parser for COLMAP *.bin + .ply/.splat import/export (with embedded octree)
@@ -217,6 +216,7 @@ skal65535.github.io/gaussopt/
     ├── render.js          # Pure draw layer: free-view splats, 3D octree & camera wireframes, side-canvas telemetry
     ├── drone.js           # 'Drone fly' free camera: angle-mode quadcopter model (mouse stick, arrow throttle/yaw)
     ├── trainer.js         # GPU/CPU hybrid training loop (Adam, Monte-Carlo SGLD, Simulated Annealing)
+    ├── shaders.wgsl       # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
     ├── snapshot.js        # .gosnap full training-state snapshot codec (splats + Adam + moments + octree)
     └── stipple.js         # E4: residual stippling -> unprojected seed splats (reuses ../stipple/ Voronoi)
 ```
