@@ -328,7 +328,11 @@ fn fs(in: BlitOut) -> @location(0) vec4f {
 // Projects the num_visible depth-sorted splats to screen space, one thread each.
 // proj_splats (2 vec4f per sorted slot): [u0, v0, z_cam, radius_px],
 // [conic_a, conic_b, conic_c, bitcast<f32>(orig_idx)]; radius_px = 0 = culled.
-// Bindings: 0 TrainUniforms, 1 splats, 2 sorted_idx, 3 proj_splats.
+// proj_tiles (per slot): inclusive 16x16-tile rect, packed [x0 | y0 << 16, x1 | y1 << 16]
+// (x0 > x1 = none), of the tiles holding a pixel center inside the 3-sigma ellipse
+// (power <= 4.5, the rasterizers' cut): its bounding box, half-widths 3 sqrt(cov_xx|yy).
+// The CPU bins slots into per-tile lists from it.
+// Bindings: 0 TrainUniforms, 1 splats, 2 sorted_idx, 3 proj_splats, 4 proj_tiles.
 
 struct TrainUniforms {
   view       : mat4x4f,
@@ -344,6 +348,7 @@ struct TrainUniforms {
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       sorted_idx  : array<u32>;
 @group(0) @binding(3) var<storage, read_write> proj_splats : array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> proj_tiles  : array<vec2u>;
 
 // q = (w, x, y, z), normalized here. Returns column-major R.
 fn quat_to_mat3(q: vec4f) -> mat3x3f {
@@ -372,6 +377,14 @@ fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32) -> mat3x2f {
 fn write_culled(k: u32, idx: u32) {
   proj_splats[k * 2u + 0u] = vec4f(-1e5, -1e5, -1.0, 0.0);
   proj_splats[k * 2u + 1u] = vec4f(0.0, 0.0, 0.0, bitcast<f32>(idx));
+  proj_tiles[k] = vec2u(1u, 0u);  // empty rect
+}
+
+// Tiles t whose pixel centers [16 t + 0.5, 16 t + 15.5] meet [c - e, c + e], padded for rounding.
+fn tile_span(c: f32, e: f32, n: u32) -> vec2u {
+  let lo = i32(floor((c - e - 15.6) / 16.0));
+  let hi = i32(floor((c + e - 0.4) / 16.0));
+  return vec2u(u32(clamp(lo, 0, i32(n) - 1)), u32(clamp(hi, 0, i32(n) - 1)));
 }
 
 @compute @workgroup_size(64)
@@ -414,14 +427,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
   proj_splats[k * 2u + 0u] = vec4f(u0, v0, vpos.z, radius_px);
   proj_splats[k * 2u + 1u] = vec4f(conic, bitcast<f32>(idx));
+  let sx = tile_span(u0, 3.0 * sqrt(sxx), (tu.dims.x + 15u) / 16u);
+  let sy = tile_span(v0, 3.0 * sqrt(syy), (tu.dims.y + 15u) / 16u);
+  proj_tiles[k] = vec2u(sx.x | (sy.x << 16u), sx.y | (sy.y << 16u));
 }
 
 // === tile_forward ===
-// 16x16-pixel tile rasterizer: one workgroup per tile composites proj_splats
-// front-to-back in shared-memory batches; stops at T < 1e-4.
+// 16x16-pixel tile rasterizer: one workgroup per tile composites its list of sorted
+// slots (tile_list[start .. start + count), front-to-back) in shared-memory batches;
+// stops at T < 1e-4.
 // Writes color to out_tex and pix_state = [T_final, z_med, bitcast<f32>(last_k), 0],
 // z_med = depth where T crosses 0.5, last_k = 1 + last contributing sorted slot.
-// Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state.
+// Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
+//           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
 
 struct TrainUniforms {
   view       : mat4x4f,
@@ -438,6 +456,8 @@ struct TrainUniforms {
 @group(0) @binding(2) var<storage, read>       proj_splats : array<vec4f>;
 @group(0) @binding(3) var                      out_tex     : texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var<storage, read_write> pix_state   : array<vec4f>;
+@group(0) @binding(5) var<storage, read>       tile_ranges : array<vec2u>;
+@group(0) @binding(6) var<storage, read>       tile_list   : array<u32>;
 
 const BATCH : u32 = 64u;
 const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
@@ -445,6 +465,7 @@ const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
 var<workgroup> wg_u0v0zr : array<vec4f, BATCH>;
 var<workgroup> wg_conic  : array<vec4f, BATCH>;
 var<workgroup> wg_rgba   : array<vec4f, BATCH>;
+var<workgroup> wg_k      : array<u32, BATCH>;
 var<workgroup> wg_hits   : atomic<u32>;
 
 const SH_C0 : f32 = 0.28209479177387814;
@@ -475,16 +496,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var last_k = 0u;
   var done = !in_bounds;
 
-  let num_batches = (num_vis + BATCH - 1u) / BATCH;
+  let range = tile_ranges[wgid.y * ((W + 15u) / 16u) + wgid.x];
+  let num_batches = (range.y + BATCH - 1u) / BATCH;
   for (var batch = 0u; batch < num_batches; batch++) {
     if (lid == 0u) { atomicStore(&wg_hits, 0u); }
     workgroupBarrier();
 
-    // Load: one thread per batch slot; slots missing this tile get kNoSplat.
+    // Load: one thread per batch entry; entries missing this tile get kNoSplat.
     if (lid < BATCH) {
-      let k = batch * BATCH + lid;
+      let j = batch * BATCH + lid;
       var e = kNoSplat;
-      if (k < num_vis) {
+      if (j < range.y) {
+        let k = tile_list[range.x + j];
+        wg_k[lid] = k;
         let pr0 = proj_splats[k * 2u + 0u];
         if (tile_hit(pr0, tile_c)) {
           let pr1 = proj_splats[k * 2u + 1u];
@@ -502,7 +526,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     workgroupBarrier();
 
     if (!done && atomicLoad(&wg_hits) > 0u) {
-      let batch_end = min(BATCH, num_vis - batch * BATCH);
+      let batch_end = min(BATCH, range.y - batch * BATCH);
       for (var i = 0u; i < batch_end; i++) {
         let u0v0zr = wg_u0v0zr[i];
         let r = u0v0zr.w;
@@ -521,7 +545,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         if (T >= 0.5 && next_T < 0.5) { z_med = u0v0zr.z; }
         C += (T * alpha) * rgba.rgb;
         T = next_T;
-        last_k = batch * BATCH + i + 1u;
+        last_k = wg_k[i] + 1u;
         if (T < 1e-4) { done = true; break; }
       }
     }
@@ -535,15 +559,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 }
 
 // === tile_backward ===
-// Backward pass of tile_forward, same tiling, batches walked back-to-front up to
-// each pixel's last_k. T_i is recovered as T_{i+1} / (1 - alpha_i).
+// Backward pass of tile_forward over the same tile lists, batches walked back-to-front
+// up to each pixel's last_k. T_i is recovered as T_{i+1} / (1 - alpha_i).
 // Per splat, accumulates the 2D grads (see header) into grads_2d and the WLBG
-// error moments into moments (S is done in adam_step). Contributions are
-// reduced in workgroup memory first: at most one global CAS per slot per tile.
+// error moments into moments (S is done in adam_step). Contributions are summed
+// over the subgroup first (when the device has 'subgroups'; lines tagged @sg / @nosg
+// are selected by loadShaders()), then in workgroup memory: one global CAS per slot
+// per batch per tile.
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count;
 // loss_acc sums the per-pixel MSE in 16.16 fixed point.
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
-//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc.
+//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list.
 
 struct TrainUniforms {
   view       : mat4x4f,
@@ -564,6 +590,8 @@ struct TrainUniforms {
 @group(0) @binding(6) var<storage, read_write> grads_2d    : array<atomic<u32>>; // 12 f32 per splat
 @group(0) @binding(7) var<storage, read_write> moments     : array<atomic<u32>>; // 12 f32 per splat
 @group(0) @binding(8) var<storage, read_write> loss_acc    : atomic<u32>;
+@group(0) @binding(9) var<storage, read>       tile_ranges : array<vec2u>;
+@group(0) @binding(10) var<storage, read>      tile_list   : array<u32>;
 
 const BATCH : u32 = 32u;
 const SLOTS : u32 = BATCH * 12u;
@@ -573,6 +601,7 @@ var<workgroup> wg_u0v0zr     : array<vec4f, BATCH>;
 var<workgroup> wg_conic      : array<vec4f, BATCH>;
 var<workgroup> wg_rgba       : array<vec4f, BATCH>;
 var<workgroup> wg_cmask      : array<vec4f, BATCH>; // 1 where rgb is not clamped
+var<workgroup> wg_k          : array<u32, BATCH>;   // sorted slot of each batch entry
 var<workgroup> wg_grads      : array<atomic<u32>, SLOTS>;
 var<workgroup> wg_moms       : array<atomic<u32>, SLOTS>;
 var<workgroup> wg_mse        : atomic<u32>;
@@ -635,6 +664,7 @@ fn add_global_mom(i: u32, val: f32) {
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3u,
         @builtin(workgroup_id) wgid: vec3u,
+        @builtin(subgroup_invocation_id) sg_lane: u32,  // @sg
         @builtin(local_invocation_index) lid: u32) {
   let W = tu.dims.x;
   let H = tu.dims.y;
@@ -682,16 +712,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   let fy = tu.intrinsics.y;
   let cam_to_world = transpose(mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz));
 
-  let num_batches = (num_vis + BATCH - 1u) / BATCH;
+  let range = tile_ranges[wgid.y * ((W + 15u) / 16u) + wgid.x];
+  let num_batches = (range.y + BATCH - 1u) / BATCH;
   for (var b_rev = 0u; b_rev < num_batches; b_rev++) {
     let batch = num_batches - 1u - b_rev;
     let base = batch * BATCH;
 
-    // Load (skipping batches past every pixel's last_k).
+    // Load (entries past every pixel's last_k are skipped).
     if (lid < BATCH) {
-      let k = base + lid;
+      let j = base + lid;
       var e = kNoSplat;
-      if (k < num_vis && base < tile_max_k) {
+      var k = 0xffffffffu;
+      if (j < range.y) { k = tile_list[range.x + j]; }
+      wg_k[lid] = k;
+      if (k < tile_max_k) {
         let pr0 = proj_splats[k * 2u + 0u];
         if (tile_hit(pr0, tile_c)) {
           let pr1 = proj_splats[k * 2u + 1u];
@@ -711,61 +745,76 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     }
     workgroupBarrier();
 
+    // Every thread walks the batch (uniformly, for the subgroup sums); `hit` = this
+    // pixel gets a contribution from entry i.
     let has_hits = atomicLoad(&wg_hits) > 0u;
-    if (has_hits && in_bounds && last_k > base) {
-      let batch_end = min(BATCH, num_vis - base);
+    if (has_hits) {
+      let batch_end = min(BATCH, range.y - base);
       for (var ir = 0u; ir < batch_end; ir++) {
         let i = batch_end - 1u - ir;
-        if (base + i >= last_k) { continue; }
         let u0v0zr = wg_u0v0zr[i];
         let r = u0v0zr.w;
-        if (r <= 0.0) { continue; }
         let dx = px.x - u0v0zr.x;
         let dy = px.y - u0v0zr.y;
-        if (abs(dx) > r || abs(dy) > r) { continue; }
         let conic = wg_conic[i].xyz;
         let power = 0.5 * (conic.x * dx * dx + 2.0 * conic.y * dx * dy + conic.z * dy * dy);
-        if (power > 4.5) { continue; }
         let rgba  = wg_rgba[i];
         let alpha = min(0.99, rgba.w * exp(-power));
-        if (alpha < 1.0 / 255.0) { continue; }
+        let hit = in_bounds && wg_k[i] < last_k && r > 0.0 && abs(dx) <= r && abs(dy) <= r &&
+                     power <= 4.5 && alpha >= 1.0 / 255.0;
+        if (!hit) { continue; }                                      // @nosg
 
-        T = T / max(1e-4, 1.0 - alpha); // T_i
-        let weight = T * alpha;
-        let w_err  = weight * err_l1;
+        var g = array<f32, 11>();  // grads_2d slots 0..10
+        var m = array<f32, 12>();  // moments slots 0..11 (1 = S, done in adam_step)
+        if (hit) {
+          T = T / max(1e-4, 1.0 - alpha); // T_i
+          let weight = T * alpha;
+          let w_err  = weight * err_l1;
 
-        let dL_drgb   = dL_dC * weight * SH_C0 * wg_cmask[i].xyz; // w.r.t. f_dc, zero where clamped
-        let dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
-        accum_rec = alpha * rgba.rgb + (1.0 - alpha) * accum_rec;
+          let dL_drgb   = dL_dC * weight * SH_C0 * wg_cmask[i].xyz; // w.r.t. f_dc, zero where clamped
+          let dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
+          accum_rec = alpha * rgba.rgb + (1.0 - alpha) * accum_rec;
 
-        let dL_dlogit_op = dL_dalpha * alpha * (1.0 - rgba.w);
-        let dL_dpower = -dL_dalpha * alpha;
+          let dL_dpower = -dL_dalpha * alpha;
+          g[0] = dL_drgb.x;
+          g[1] = dL_drgb.y;
+          g[2] = dL_drgb.z;
+          g[3] = dL_dalpha * alpha * (1.0 - rgba.w);                // dL/dlogit_opacity
+          g[4] = -dL_dpower * (conic.x * dx + conic.y * dy);        // dL/du0
+          g[5] = -dL_dpower * (conic.y * dx + conic.z * dy);        // dL/dv0
+          g[6] = 0.5 * dL_dpower * dx * dx;                         // dL/dconic.a
+          g[7] =       dL_dpower * dx * dy;                         // dL/dconic.b (full, b appears twice)
+          g[8] = 0.5 * dL_dpower * dy * dy;                         // dL/dconic.c
+          g[9] = weight;                                            // w_view
+          g[10] = w_err;                                            // w_err_view (SA energy)
+
+          // WLBG moments; delta = world-space pixel offset from the center at its depth.
+          let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
+          m[0] = weight;
+          m[2] = w_err;
+          m[3] = w_err * d.x;
+          m[4] = w_err * d.y;
+          m[5] = w_err * d.z;
+          m[6] = w_err * d.x * d.x;
+          m[7] = w_err * d.y * d.y;
+          m[8] = w_err * d.z * d.z;
+          m[9] = w_err * d.x * d.y;
+          m[10] = w_err * d.x * d.z;
+          m[11] = w_err * d.y * d.z;
+        }
         let gbase = i * 12u;
-        add_wg_grad(gbase + 0u, dL_drgb.x);
-        add_wg_grad(gbase + 1u, dL_drgb.y);
-        add_wg_grad(gbase + 2u, dL_drgb.z);
-        add_wg_grad(gbase + 3u, dL_dlogit_op);
-        add_wg_grad(gbase + 4u, -dL_dpower * (conic.x * dx + conic.y * dy)); // dL/du0
-        add_wg_grad(gbase + 5u, -dL_dpower * (conic.y * dx + conic.z * dy)); // dL/dv0
-        add_wg_grad(gbase + 6u, 0.5 * dL_dpower * dx * dx);                  // dL/dconic.a
-        add_wg_grad(gbase + 7u,       dL_dpower * dx * dy);                  // dL/dconic.b (full, b appears twice)
-        add_wg_grad(gbase + 8u, 0.5 * dL_dpower * dy * dy);                  // dL/dconic.c
-        add_wg_grad(gbase + 9u, weight);                                     // w_view
-        add_wg_grad(gbase + 10u, w_err);                                     // w_err_view (SA energy)
-
-        // WLBG moments; delta = world-space pixel offset from the center at its depth.
-        let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
-        add_wg_mom(gbase + 0u, weight);
-        add_wg_mom(gbase + 2u, w_err);
-        add_wg_mom(gbase + 3u, w_err * d.x);
-        add_wg_mom(gbase + 4u, w_err * d.y);
-        add_wg_mom(gbase + 5u, w_err * d.z);
-        add_wg_mom(gbase + 6u, w_err * d.x * d.x);
-        add_wg_mom(gbase + 7u, w_err * d.y * d.y);
-        add_wg_mom(gbase + 8u, w_err * d.z * d.z);
-        add_wg_mom(gbase + 9u, w_err * d.x * d.y);
-        add_wg_mom(gbase + 10u, w_err * d.x * d.z);
-        add_wg_mom(gbase + 11u, w_err * d.y * d.z);
+        if (subgroupAny(hit)) {                                   // @sg
+          for (var c = 0u; c < 11u; c++) { g[c] = subgroupAdd(g[c]); }  // @sg
+          for (var c = 0u; c < 12u; c++) { m[c] = subgroupAdd(m[c]); }  // @sg
+          if (sg_lane == 0u) {                                       // @sg
+            for (var c = 0u; c < 11u; c++) { add_wg_grad(gbase + c, g[c]); }  // @sg
+            for (var c = 0u; c < 12u; c++) { add_wg_mom(gbase + c, m[c]); }   // @sg
+          }                                                          // @sg
+        }                                                            // @sg
+        if (hit) {                                                // @nosg
+          for (var c = 0u; c < 11u; c++) { add_wg_grad(gbase + c, g[c]); }  // @nosg
+          for (var c = 0u; c < 12u; c++) { add_wg_mom(gbase + c, m[c]); }   // @nosg
+        }                                                            // @nosg
       }
     }
     workgroupBarrier();

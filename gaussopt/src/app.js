@@ -241,7 +241,10 @@ export class GaussOptApp {
   }
 
   async init() {
-    this.gpu = await initGPU(this.canvas, { alphaMode: 'premultiplied' });
+    // &nosg: force the no-subgroup shader path (A/B tests)
+    const features = new URLSearchParams(location.search).has('nosg') ? [] : ['subgroups'];
+    this.gpu = await initGPU(this.canvas, { alphaMode: 'premultiplied', features });
+    this.log(`WebGPU subgroups: ${this.gpu.device.features.has('subgroups') ? 'on' : 'off'}`);
     this.renderer = await GaussOptRenderer.create(this.gpu.device, this.gpu.context, this.gpu.format);
     this._setupEvents();
     this._setupGui();

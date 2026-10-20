@@ -106,6 +106,13 @@ export class GaussOptTrainer {
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     this.pixStateBuf = this._buffer('pix_state', this.trainW * this.trainH * 16, BUF_RW());
+    // Per-tile splat lists (see _binTiles): [start, count] per 16x16 tile + concatenated slots
+    this.tilesX = Math.ceil(this.trainW / 16);
+    this.tilesY = Math.ceil(this.trainH / 16);
+    this.tileRanges   = new Uint32Array(2 * this.tilesX * this.tilesY);
+    this.tileRangesBuf = this._buffer('tile_ranges', this.tileRanges.byteLength, BUF_RW());
+    this.tileList = new Uint32Array(0);
+    this.tileListBuf = null;
     this._allocateSplatBuffers(Math.max(this.count * 2, 8192));
     this._uploadSplats();
 
@@ -120,7 +127,7 @@ export class GaussOptTrainer {
   _allocateSplatBuffers(capacity) {
     this.capacity = capacity;
     for (const k of ['splatsBuf', 'momentsBuf', 'grads2dBuf', 'adamMBuf', 'adamVBuf',
-                     'sortedIdxBuf', 'viewIdxBuf', 'projSplatsBuf']) {
+                     'sortedIdxBuf', 'viewIdxBuf', 'projSplatsBuf', 'projTilesBuf', 'projTilesReadBuf']) {
       this[k]?.destroy?.();
     }
     const splatBytes  = capacity * SPLAT_FLOATS * 4;
@@ -134,6 +141,8 @@ export class GaussOptTrainer {
     this.sortedIdxBuf  = this._buffer('sorted_idx',      capacity * 4, IDX);
     this.viewIdxBuf    = this._buffer('view_sorted_idx', capacity * 4, IDX);
     this.projSplatsBuf = this._buffer('proj_splats',     capacity * 32, IDX);  // 2 vec4f / visible splat
+    this.projTilesBuf  = this._buffer('proj_tiles',      capacity * 8, BUF_RW());  // tile rect / visible splat
+    this.projTilesReadBuf = this._buffer('proj_tiles_read', capacity * 8, BUF_READ());
     this.sortedIdx = new Uint32Array(capacity);
     this.viewIdx   = new Uint32Array(capacity);
   }
@@ -235,22 +244,68 @@ export class GaussOptTrainer {
     pass.end();
   }
 
-  // Encode project + tile forward (into hatTex / pixStateBuf) for the current sortedIdxBuf.
-  // gtTex != null also encodes tile backward (2D grads, WLBG moments, loss) and the param update.
-  _encodePasses(enc, gtTex = null) {
-    const tilesX = Math.ceil(this.trainW / 16), tilesY = Math.ceil(this.trainH / 16);
-    const U = this.trainUniformBuf;
-    this._pass(enc, this.pipeProject, [U, this.splatsBuf, this.sortedIdxBuf, this.projSplatsBuf],
-               Math.ceil(this.numVisible / 64));
-    this._pass(enc, this.pipeForward, [U, this.splatsBuf, this.projSplatsBuf, this.hatTex.createView(), this.pixStateBuf],
-               tilesX, tilesY);
-    if (!gtTex) return;
-    this._pass(enc, this.pipeBackward, [U, this.splatsBuf, this.projSplatsBuf, gtTex.createView(), this.hatTex.createView(),
-                                        this.pixStateBuf, this.grads2dBuf, this.momentsBuf, this.lossBuf],
-               tilesX, tilesY);
-    // per-splat 2D->3D chain rule + Adam / MC / SA update
-    this._pass(enc, this.pipeAdam, [U, this.splatsBuf, this.grads2dBuf, this.adamMBuf, this.adamVBuf, this.momentsBuf],
-               Math.ceil(this.count / 64));
+  // Render the current sortedIdxBuf: project, bin into per-tile lists (CPU, from the GPU tile
+  // rects), tile forward (into hatTex / pixStateBuf). gtTex != null also runs tile backward
+  // (2D grads, WLBG moments, loss) and the param update. extra(enc) appends commands.
+  async _runPasses(gtTex = null, extra = null) {
+    const n = this.numVisible, U = this.trainUniformBuf;
+    let enc = this.device.createCommandEncoder({ label: 'project' });
+    this._pass(enc, this.pipeProject, [U, this.splatsBuf, this.sortedIdxBuf, this.projSplatsBuf, this.projTilesBuf],
+               Math.ceil(n / 64));
+    enc.copyBufferToBuffer(this.projTilesBuf, 0, this.projTilesReadBuf, 0, n * 8);
+    this.device.queue.submit([enc.finish()]);
+    await this.projTilesReadBuf.mapAsync(GPUMapMode.READ, 0, n * 8);
+    this._binTiles(new Uint32Array(this.projTilesReadBuf.getMappedRange(0, n * 8)), n);
+    this.projTilesReadBuf.unmap();
+
+    const lists = [this.tileRangesBuf, this.tileListBuf];
+    enc = this.device.createCommandEncoder({ label: gtTex ? 'train' : 'forward' });
+    this._pass(enc, this.pipeForward, [U, this.splatsBuf, this.projSplatsBuf, this.hatTex.createView(), this.pixStateBuf,
+                                       ...lists], this.tilesX, this.tilesY);
+    if (gtTex) {
+      this._pass(enc, this.pipeBackward, [U, this.splatsBuf, this.projSplatsBuf, gtTex.createView(), this.hatTex.createView(),
+                                          this.pixStateBuf, this.grads2dBuf, this.momentsBuf, this.lossBuf, ...lists],
+                 this.tilesX, this.tilesY);
+      // per-splat 2D->3D chain rule + Adam / MC / SA update
+      this._pass(enc, this.pipeAdam, [U, this.splatsBuf, this.grads2dBuf, this.adamMBuf, this.adamVBuf, this.momentsBuf],
+                 Math.ceil(this.count / 64));
+    }
+    extra?.(enc);
+    this.device.queue.submit([enc.finish()]);
+  }
+
+  // Counting sort of the n sorted slots into per-tile lists, from their packed tile rects
+  // [x0 | y0 << 16, x1 | y1 << 16]. Slots are visited in depth order, so each list stays
+  // front-to-back. Uploads tileRangesBuf ([start, count] per tile) and tileListBuf.
+  _binTiles(rects, n) {
+    const TX = this.tilesX, ranges = this.tileRanges;
+    ranges.fill(0);
+    let total = 0;
+    for (let k = 0; k < n; k++) {
+      const a = rects[2 * k], b = rects[2 * k + 1];
+      const x0 = a & 0xffff, y0 = a >>> 16, x1 = b & 0xffff, y1 = b >>> 16;
+      if (x0 > x1 || y0 > y1) continue;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) ranges[2 * (y * TX + x) + 1]++;
+      total += (x1 - x0 + 1) * (y1 - y0 + 1);
+    }
+    for (let t = 0, start = 0; t < ranges.length; t += 2) { ranges[t] = start; start += ranges[t + 1]; }
+    if (this.tileList.length < total) {
+      this.tileList = new Uint32Array(Math.ceil(total * 1.5) + 1024);
+      this.tileListBuf?.destroy();
+      this.tileListBuf = this._buffer('tile_list', this.tileList.byteLength, BUF_RW());
+    }
+    const list = this.tileList, nt = ranges.length / 2;
+    const cur = this._tileCursor = (this._tileCursor?.length === nt) ? this._tileCursor : new Uint32Array(nt);
+    for (let t = 0; t < nt; t++) cur[t] = ranges[2 * t];
+    for (let k = 0; k < n; k++) {
+      const a = rects[2 * k], b = rects[2 * k + 1];
+      const x0 = a & 0xffff, y0 = a >>> 16, x1 = b & 0xffff, y1 = b >>> 16;
+      if (x0 > x1 || y0 > y1) continue;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) list[cur[y * TX + x]++] = k;
+    }
+    this.tileEntries = total;
+    this.device.queue.writeBuffer(this.tileRangesBuf, 0, ranges);
+    if (total > 0) this.device.queue.writeBuffer(this.tileListBuf, 0, list, 0, total);
   }
 
   // Copy GPU resources into one staging buffer and return CPU copies, one per source.
@@ -341,9 +396,7 @@ export class GaussOptTrainer {
     const k = this._intrinsics(img);
     if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return out;
     this._writeUniforms(img, k);
-    const enc = this.device.createCommandEncoder({ label: `eval_forward_${idx}` });
-    this._encodePasses(enc);
-    this.device.queue.submit([enc.finish()]);
+    await this._runPasses();
     this._lastHatKey = hatKey;
     return out;
   }
@@ -400,12 +453,9 @@ export class GaussOptTrainer {
     ]);
     this.device.queue.writeBuffer(this.lossBuf, 0, new Uint32Array(4));
 
-    const enc = this.device.createCommandEncoder({ label: `train_step_${this.stepCount}` });
-    this._encodePasses(enc, gtTex);
     const needRebalance = (this.stepCount % P.rebalance_every === 0);
     const needLossPoll  = !needRebalance && (this.stepCount % 5 === 0) && !this.pendingLossRead;
-    if (needLossPoll) enc.copyBufferToBuffer(this.lossBuf, 0, this.lossReadBuf, 0, 16);
-    this.device.queue.submit([enc.finish()]);
+    await this._runPasses(gtTex, needLossPoll ? enc => enc.copyBufferToBuffer(this.lossBuf, 0, this.lossReadBuf, 0, 16) : null);
 
     if (needRebalance) {
       await this._rebalance();
@@ -646,9 +696,7 @@ export class GaussOptTrainer {
       const sortMs = performance.now() - t0;
       this.device.queue.writeBuffer(this.sortedIdxBuf, 0, this.sortedIdx, 0, this.numVisible);
       this._writeUniforms(img, k);
-      const enc = this.device.createCommandEncoder({ label: 'e1_forward' });
-      this._encodePasses(enc);
-      this.device.queue.submit([enc.finish()]);
+      await this._runPasses();
       const [pixels] = await this._readback('e1_read', [{ tex: this.hatTex }]);
       return { pixels, sortMs, n: this.numVisible };
     };

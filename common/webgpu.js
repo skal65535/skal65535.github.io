@@ -3,11 +3,14 @@
 // ES module. Exports the small set of helpers each demo currently rewrites
 // (device init + canvas configure, buffer / texture / bind-group creation).
 
-export async function initGPU(canvas, { alphaMode = 'premultiplied' } = {}) {
+// features: optional device features, requested only when the adapter has them.
+export async function initGPU(canvas, { alphaMode = 'premultiplied', features = [] } = {}) {
   if (!navigator.gpu) throw new Error('WebGPU not supported.');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("Couldn't request WebGPU adapter.");
-  const device = await adapter.requestDevice();
+  const device = await adapter.requestDevice({
+    requiredFeatures: features.filter(f => adapter.features.has(f)),
+  });
   if (!device)  throw new Error("Couldn't request WebGPU logical device.");
   device.addEventListener('uncapturederror',
     e => console.error('WebGPU uncaptured error:', e.error.message));

@@ -17,6 +17,15 @@ function splitWgslSource(src) {
   return out;
 }
 
+// Lines ending in `// @sg` are kept only when the device has 'subgroups' (and the module
+// then gets `enable subgroups;`), lines ending in `// @nosg` only when it hasn't.
+function selectSubgroupLines(code, device) {
+  if (!/\/\/ @(no)?sg\s*$/m.test(code)) return code;
+  const sg = device.features.has('subgroups');
+  const lines = code.split('\n').filter(l => !(sg ? /\/\/ @nosg\s*$/ : /\/\/ @sg\s*$/).test(l));
+  return (sg ? 'enable subgroups;\ndiagnostic(off, subgroup_uniformity);\n' : '') + lines.join('\n');
+}
+
 export async function loadShaders(device) {
   if (_shaderCache && _shaderCache.device === device) return _shaderCache.mods;
   const url = new URL('../gaussopt-shaders.wgsl', import.meta.url);
@@ -24,7 +33,7 @@ export async function loadShaders(device) {
   const map = splitWgslSource(src);
   const mods = {};
   for (const [name, code] of Object.entries(map)) {
-    mods[name] = device.createShaderModule({ code, label: name });
+    mods[name] = device.createShaderModule({ code: selectSubgroupLines(code, device), label: name });
   }
   _shaderCache = { device, mods };
   return mods;
