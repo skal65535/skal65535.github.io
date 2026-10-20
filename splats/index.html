@@ -186,8 +186,8 @@ const GUI_change = async () => { await init({}); }  // parameter changed
 const GUI_reload = async () => { await init({model:true, sorting:true, buffers:true}); }    // (re)load a model
 
 const GUI_init = () => {
-  canvas.width  = parse_arg("w", innerWidth * .9);
-  canvas.height = parse_arg("h", innerHeight * .8);
+  canvas.width  = Math.max(1, parse_arg("w", innerWidth * .9));
+  canvas.height = Math.max(1, parse_arg("h", innerHeight * .8));
 
   if (params.no_gui) {
     render.gui = undefined;
@@ -306,8 +306,8 @@ canvas.addEventListener('wheel', (event) => {
 }, { passive: false });
 
 window.addEventListener("resize", (event) => {
-  canvas.width = innerWidth * .9;
-  canvas.height = innerHeight * .8;
+  canvas.width  = Math.max(1, innerWidth * .9);
+  canvas.height = Math.max(1, innerHeight * .8);
   do_resize();
 });
 
