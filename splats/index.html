@@ -41,9 +41,9 @@
     The vertex shader generates a quad as triangle-strip.<br/>
     The fragment shader has several 'visu' functions, other than the expected
     'gaussian'. <i>Try 'cone', it looks good too!</i><br/>
-    The exact depth-sort is done on CPU at regular intervals (it's a
-    web-worker), while the GPU is doing an incremental insertion-sort [WIP!]
-    to keep the splats approximately sorted while the CPU is working for real.
+    Supports <b>Loose Octree</b> front-to-back hierarchical frustum culling &amp; sorting
+    (from <a href="../gaussopt/">Gauss-Opt</a>, including dropping <code>.ply</code> checkpoints with embedded octrees or <code>.octree.json</code> files),
+    or CPU web-worker radix-sort + GPU incremental insertion-sort.
   </p>
   <p class="blurb small">
     <b>KNOWN BUGS / LIMITATIONS:</b>
@@ -64,6 +64,8 @@
 import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
          createTexture, createBindGroup } from '../common/webgpu.js';
 import { mkGui }                          from '../common/controls.js';
+import { LooseOctree }                    from '../gaussopt/gaussopt-octree.js';
+import { parsePlyBuffer, exportSplatBuffer } from '../gaussopt/gaussopt-colmap.js';
 const kVisus = {  // mapping from name to shader function
   'gaussian': 'gaussian', 'cone': 'cone',
   '(ellipsis)': 'ellipsis', '(dot)': 'small_dot', '(axis)': 'axis',
@@ -90,6 +92,7 @@ const kModels = {
 };
 
 const kSorts = {  // TODO(skal): simplify semantics!
+  'Octree':   {cpu:false, gpu:false, every:false, octree:true,},
   'GPU':      {cpu:false, gpu:true,  every:true,},
   'GPU only': {cpu:false, gpu:true,  every:false,},
   'CPU':      {cpu:true,  gpu:false, every:true,},
@@ -141,7 +144,7 @@ const params = {
   dof: .0,  // fake Depth Of Field
   z_dof: 1.,
 
-  sort_name: parse_arg_str('sort', 'CPU'),
+  sort_name: parse_arg_str('sort', 'Octree'),
   sort_sortsize: 32,
   sort_groupsize: 128,
   sort_every: parse_arg('every', 8),    // perform CPU-sort every xxx frame...
@@ -990,6 +993,38 @@ function create_sort_worker(render) {
 }
 
 function handle_sorting(render, encoder) {
+  if (render.depth_sort.octree) {
+    if (render.stored_splats > 0) {
+      const needRebuild = !render.octree ||
+        (!render.loading && render.octree_splats !== render.stored_splats) ||
+        (render.loading && (render.stored_splats - render.octree_splats) >= 16384);
+      if (needRebuild) {
+        const t0 = performance.now();
+        render.octree = new LooseOctree({ maxLeafSize: 256, beta: 0.20 })
+          .buildIndexOnly(render.CPU.positions, render.stored_splats, STRIDE_POS);
+        render.octree_splats = render.stored_splats;
+        if (params.dbg.timing) {
+          console.log(`Built LooseOctree (${render.octree.leaves.length} leaves) in ${(performance.now() - t0).toFixed(1)} ms`);
+        }
+      }
+      if (params.dbg.timing) console.time("OctreeSort");
+      const fx = params.sort_culled ? 0.96 * render.fx : 0.0;
+      const fy = params.sort_culled ? 0.96 * render.fy : 0.0;
+      render.num_visible = render.octree.sortIndexFrontToBack(
+        render.CPU.positions, STRIDE_POS,
+        render.cam_center, render.view, fx, fy,
+        render.CPU.idx, -1.0
+      );
+      if (params.dbg.timing) console.timeEnd("OctreeSort");
+      if (render.num_visible > 0) {
+        render.device.queue.writeBuffer(
+          render.GPU.idx, 0, render.CPU.idx, 0, render.num_visible
+        );
+      }
+    }
+    return;
+  }
+
   let sort_cpu = render.depth_sort.cpu;
   let sort_gpu = render.depth_sort.gpu;
   if (render.depth_sort.every) {
@@ -1086,7 +1121,7 @@ function DrawArray(mtx, data, height = canvas.height / 4) {
 }
 
 async function debug_sort(render) {
-  if (!render.depth_sort.gpu && !render.depth_sort.cpu) return;
+  if (!render.depth_sort.gpu && !render.depth_sort.cpu && !render.depth_sort.octree) return;
   const mtx = render.view;
   if (render.depth_sort.gpu == false) {
     DrawArray(mtx, render.CPU.idx);
@@ -1100,13 +1135,13 @@ async function debug_sort(render) {
 
 async function init_sorting(render) {
   // set the sorting method
-  render.depth_sort = kSorts[params.sort_name];
+  render.depth_sort = kSorts[params.sort_name] || kSorts['Octree'];
 
   // adapt the UI
   if (render.gui) {
     GUI_get('sort_groupsize').enable(render.depth_sort.gpu);
     GUI_get('sort_sortsize').enable(render.depth_sort.gpu);
-    GUI_get('sort_debug').enable(render.depth_sort.gpu || render.depth_sort.cpu);
+    GUI_get('sort_debug').enable(render.depth_sort.gpu || render.depth_sort.cpu || render.depth_sort.octree);
     GUI_get('sort_every').enable(render.depth_sort.every);
   }
 
@@ -1115,7 +1150,7 @@ async function init_sorting(render) {
     render.GPU.mapped_idx.destroy();
     render.GPU.mapped_idx = undefined;
   }
-  if (params.sort_debug && (render.depth_sort.gpu || render.depth_sort.cpu)) {
+  if (params.sort_debug && (render.depth_sort.gpu || render.depth_sort.cpu || render.depth_sort.octree)) {
     if (render.depth_sort.gpu) {
       render.GPU.mapped_idx = render.device.createBuffer({
         size: render.max_splats * UINT32_SIZE,
@@ -1194,10 +1229,13 @@ function allocate_splats(max_splats) {
   render.CPU.positions = new Float32Array(max_splats * STRIDE_POS);
   render.CPU.colors    = new Uint8Array(max_splats * UINT32_SIZE);   // view as 4 x uint8
   render.CPU.sigmas    = new Uint32Array(max_splats * STRIDE_COV3);
+  render.CPU.idx       = new Uint32Array(max_splats);
   render.max_splats = max_splats;
   render.num_splats = 0;     // initial CPU storing
   render.stored_splats = 0;  // restart GPU transfer
   render.num_visible = 0;
+  render.octree = null;
+  render.octree_splats = 0;
 
   trace(0, "allocated buffers for splats with max_splats =" , max_splats);
 }
@@ -1274,7 +1312,7 @@ function create_synth_splats() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// File-drop handling
+// File-drop handling (.splat, .ply with embedded octree, or .octree.json)
 
 const PreventDefault = (e) => {
   e.preventDefault();
@@ -1290,9 +1328,34 @@ document.addEventListener("drop", (event) => {
 });
 
 function DropFile(file) {
+  if (file.name.endsWith('.json')) {
+    file.text().then(text => {
+      render.octree = LooseOctree.fromJSON(text);
+      render.octree_splats = render.stored_splats;
+      params.sort_name = 'Octree';
+      console.log(`Loaded saved LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
+      init({sorting:true});
+    });
+    return;
+  }
   const fr = new FileReader();
   fr.onload = () => {
     render.sort_discard = true;  // cancel any pending sort
+    if (file.name.endsWith('.ply')) {
+      const ply = parsePlyBuffer(fr.result);
+      const splatAb = exportSplatBuffer(ply.params, ply.count);
+      const data = new Uint8Array(splatAb);
+      allocate_splats(ply.count);
+      add_splats(ply.count, data);
+      if (ply.octreeData) {
+        render.octree = LooseOctree.fromSerializedNodes(ply.octreeData.meta, ply.octreeData.nodes);
+        render.octree_splats = ply.count;
+        params.sort_name = 'Octree';
+        console.log(`Restored embedded LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
+      }
+      init({buffers:true, sorting:true});
+      return;
+    }
     const data = new Uint8Array(fr.result);
     const num_splats = Math.floor(data.length / STRIDE_SPLAT);
     allocate_splats(num_splats);
@@ -1491,11 +1554,17 @@ function compute_frame_params() {
   render.proj = perspective(render.fx, render.fy, params.znear, params.zfar);
   const theta = params.theta * Math.PI / 180.;
   const phi = params.phi * Math.PI / 180.;
-  render.view = look_at(
-      [ params.radius * Math.cos(theta) * Math.cos(phi),
-        params.radius *                   Math.sin(phi),
-        params.radius * Math.sin(theta) * Math.cos(phi), ],
-      params.target, params.up);
+  const rel = [
+    params.radius * Math.cos(theta) * Math.cos(phi),
+    params.radius *                   Math.sin(phi),
+    params.radius * Math.sin(theta) * Math.cos(phi),
+  ];
+  render.cam_center = [
+    params.target[0] + rel[0],
+    params.target[1] + rel[1],
+    params.target[2] + rel[2],
+  ];
+  render.view = look_at(rel, params.target, params.up);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1689,6 +1758,9 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   sort_done:    false,
   sort_discard: false,
   sort_waiting: false,
+  octree:       null,
+  octree_splats:0,
+  cam_center:   [0, 0, 0],
 
   // per-frame params
   view: undefined,
