@@ -331,8 +331,8 @@ fn fs(in: BlitOut) -> @location(0) vec4f {
 // proj_tiles (per slot): inclusive 16x16-tile rect, packed [x0 | y0 << 16, x1 | y1 << 16]
 // (x0 > x1 = none), of the tiles holding a pixel center inside the 3-sigma ellipse
 // (power <= 4.5, the rasterizers' cut): its bounding box, half-widths 3 sqrt(cov_xx|yy).
-// The CPU bins slots into per-tile lists from it.
-// Bindings: 0 TrainUniforms, 1 splats, 2 sorted_idx, 3 proj_splats, 4 proj_tiles.
+// Each covered tile's tile_counts entry is incremented (tile_scan / fill / sort build the lists).
+// Bindings: 0 TrainUniforms, 1 splats, 2 sorted_idx, 3 proj_splats, 4 proj_tiles, 5 tile_counts.
 
 struct TrainUniforms {
   view       : mat4x4f,
@@ -349,6 +349,7 @@ struct TrainUniforms {
 @group(0) @binding(2) var<storage, read>       sorted_idx  : array<u32>;
 @group(0) @binding(3) var<storage, read_write> proj_splats : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> proj_tiles  : array<vec2u>;
+@group(0) @binding(5) var<storage, read_write> tile_counts : array<atomic<u32>>;
 
 // q = (w, x, y, z), normalized here. Returns column-major R.
 fn quat_to_mat3(q: vec4f) -> mat3x3f {
@@ -427,9 +428,160 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   }
   proj_splats[k * 2u + 0u] = vec4f(u0, v0, vpos.z, radius_px);
   proj_splats[k * 2u + 1u] = vec4f(conic, bitcast<f32>(idx));
-  let sx = tile_span(u0, 3.0 * sqrt(sxx), (tu.dims.x + 15u) / 16u);
+  let tx = (tu.dims.x + 15u) / 16u;
+  let sx = tile_span(u0, 3.0 * sqrt(sxx), tx);
   let sy = tile_span(v0, 3.0 * sqrt(syy), (tu.dims.y + 15u) / 16u);
   proj_tiles[k] = vec2u(sx.x | (sy.x << 16u), sx.y | (sy.y << 16u));
+  for (var y = sy.x; y <= sy.y; y++) {
+    for (var x = sx.x; x <= sx.y; x++) { atomicAdd(&tile_counts[y * tx + x], 1u); }
+  }
+}
+
+// === tile_scan ===
+// Per-tile list ranges from tile_counts (one workgroup): exclusive prefix sum ->
+// tile_ranges[t] = [start, count] (count clipped to the list capacity), tile_cursor[t] =
+// start (for tile_fill), bin_stats[0] = total entries (unclipped, for resizing).
+// Bindings: 0 BinUniforms, 1 tile_counts, 2 tile_ranges, 3 tile_cursor, 4 bin_stats.
+
+struct BinUniforms {
+  n_vis    : u32,  // sorted slots
+  tiles_x  : u32,
+  n_tiles  : u32,
+  capacity : u32,  // tile_list length
+};
+
+@group(0) @binding(0) var<uniform> bu : BinUniforms;
+@group(0) @binding(1) var<storage, read>       tile_counts : array<u32>;
+@group(0) @binding(2) var<storage, read_write> tile_ranges : array<vec2u>;
+@group(0) @binding(3) var<storage, read_write> tile_cursor : array<u32>;
+@group(0) @binding(4) var<storage, read_write> bin_stats   : array<u32>;
+
+var<workgroup> wg_sum : array<u32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_index) lid: u32) {
+  // Each thread owns a contiguous chunk of tiles; scan the 256 chunk sums, then the chunks.
+  let chunk = (bu.n_tiles + 255u) / 256u;
+  let t0 = lid * chunk;
+  let t1 = min(t0 + chunk, bu.n_tiles);
+  var s = 0u;
+  for (var t = t0; t < t1; t++) { s += tile_counts[t]; }
+  wg_sum[lid] = s;
+  workgroupBarrier();
+  for (var off = 1u; off < 256u; off *= 2u) {  // inclusive Hillis-Steele scan
+    let v = select(0u, wg_sum[lid - off], lid >= off);
+    workgroupBarrier();
+    wg_sum[lid] += v;
+    workgroupBarrier();
+  }
+  var start = wg_sum[lid] - s;
+  for (var t = t0; t < t1; t++) {
+    let c = tile_counts[t];
+    let clipped = min(c, select(0u, bu.capacity - start, start < bu.capacity));
+    tile_ranges[t] = vec2u(start, clipped);
+    tile_cursor[t] = start;
+    start += c;
+  }
+  if (lid == 255u) { bin_stats[0] = wg_sum[255]; }
+}
+
+// === tile_fill ===
+// Appends every sorted slot to the list of each tile of its proj_tiles rect (unordered;
+// tile_sort restores the depth order). Entries past the capacity are dropped.
+// Bindings: 0 BinUniforms, 1 proj_tiles, 2 tile_cursor, 3 tile_list.
+
+struct BinUniforms {
+  n_vis    : u32,  // sorted slots
+  tiles_x  : u32,
+  n_tiles  : u32,
+  capacity : u32,  // tile_list length
+};
+
+@group(0) @binding(0) var<uniform> bu : BinUniforms;
+@group(0) @binding(1) var<storage, read>       proj_tiles  : array<vec2u>;
+@group(0) @binding(2) var<storage, read_write> tile_cursor : array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> tile_list   : array<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let k = gid.x;
+  if (k >= bu.n_vis) { return; }
+  let r = proj_tiles[k];
+  let x0 = r.x & 0xffffu;
+  let y0 = r.x >> 16u;
+  let x1 = r.y & 0xffffu;
+  let y1 = r.y >> 16u;
+  if (x0 > x1 || y0 > y1) { return; }
+  for (var y = y0; y <= y1; y++) {
+    for (var x = x0; x <= x1; x++) {
+      let pos = atomicAdd(&tile_cursor[y * bu.tiles_x + x], 1u);
+      if (pos < bu.capacity) { tile_list[pos] = k; }
+    }
+  }
+}
+
+// === tile_sort ===
+// One workgroup per tile sorts its list ascending (= front-to-back slot order): bottom-up
+// merge sort ping-ponging between tile_list and tile_scratch, each element placed at its
+// rank (own index + binary-searched position in the sibling run). Keys are unique.
+// Bindings: 0 BinUniforms, 1 tile_ranges, 2 tile_list, 3 tile_scratch.
+
+struct BinUniforms {
+  n_vis    : u32,  // sorted slots
+  tiles_x  : u32,
+  n_tiles  : u32,
+  capacity : u32,  // tile_list length
+};
+
+@group(0) @binding(0) var<uniform> bu : BinUniforms;
+@group(0) @binding(1) var<storage, read>       tile_ranges  : array<vec2u>;
+@group(0) @binding(2) var<storage, read_write> tile_list    : array<u32>;
+@group(0) @binding(3) var<storage, read_write> tile_scratch : array<u32>;
+
+var<workgroup> wg_range : vec2u;
+
+fn load(from_list: bool, i: u32) -> u32 {
+  if (from_list) { return tile_list[i]; }
+  return tile_scratch[i];
+}
+
+// Number of elements < v (strict) or <= v in the sorted run [lo, hi).
+fn rank_in(from_list: bool, lo: u32, hi: u32, v: u32, strict: bool) -> u32 {
+  var a = lo;
+  var b = hi;
+  while (a < b) {
+    let m = (a + b) / 2u;
+    let x = load(from_list, m);
+    if (x < v || (!strict && x == v)) { a = m + 1u; } else { b = m; }
+  }
+  return a - lo;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid: u32) {
+  if (lid == 0u) { wg_range = tile_ranges[wgid.y * bu.tiles_x + wgid.x]; }
+  let range = workgroupUniformLoad(&wg_range);
+  let start = range.x;
+  let n = range.y;
+  var in_list = true;  // where the current runs live
+  for (var w = 1u; w < n; w *= 2u) {
+    for (var j = lid; j < n; j += 256u) {
+      let v = load(in_list, start + j);
+      let pair = (j / (2u * w)) * 2u * w;   // start of this pair of runs
+      let mid  = min(pair + w, n);
+      let end  = min(pair + 2u * w, n);
+      var dst : u32;
+      if (j < mid) { dst = pair + (j - pair) + rank_in(in_list, start + mid, start + end, v, true); }
+      else         { dst = pair + (j - mid) + rank_in(in_list, start + pair, start + mid, v, false); }
+      if (in_list) { tile_scratch[start + dst] = v; } else { tile_list[start + dst] = v; }
+    }
+    storageBarrier();
+    workgroupBarrier();
+    in_list = !in_list;
+  }
+  if (!in_list) {
+    for (var j = lid; j < n; j += 256u) { tile_list[start + j] = tile_scratch[start + j]; }
+  }
 }
 
 // === tile_forward ===
@@ -567,7 +719,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 // are selected by loadShaders()), then in workgroup memory: one global CAS per slot
 // per batch per tile.
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count;
-// loss_acc sums the per-pixel MSE in 16.16 fixed point.
+// loss_acc[0..1] = 64-bit sum (lo, hi) of the per-pixel MSE in 16.16 fixed point.
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
 //           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list.
 
@@ -589,7 +741,7 @@ struct TrainUniforms {
 @group(0) @binding(5) var<storage, read>       pix_state   : array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> grads_2d    : array<atomic<u32>>; // 12 f32 per splat
 @group(0) @binding(7) var<storage, read_write> moments     : array<atomic<u32>>; // 12 f32 per splat
-@group(0) @binding(8) var<storage, read_write> loss_acc    : atomic<u32>;
+@group(0) @binding(8) var<storage, read_write> loss_acc    : array<atomic<u32>, 4>;
 @group(0) @binding(9) var<storage, read>       tile_ranges : array<vec2u>;
 @group(0) @binding(10) var<storage, read>      tile_list   : array<u32>;
 
@@ -705,7 +857,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     atomicMax(&wg_max_last_k, last_k);
   }
   workgroupBarrier();
-  if (lid == 0u) { atomicAdd(&loss_acc, atomicLoad(&wg_mse)); }
+  if (lid == 0u) {  // 64-bit add: carry into loss_acc[1] when the low word wraps
+    let v = atomicLoad(&wg_mse);
+    let old = atomicAdd(&loss_acc[0], v);
+    if (old + v < old) { atomicAdd(&loss_acc[1], 1u); }
+  }
 
   let tile_max_k = atomicLoad(&wg_max_last_k);
   let fx = tu.intrinsics.x;

@@ -202,6 +202,7 @@ export class GaussOptApp {
     this.lastValStep = 0;
     this.lastSnapStep = 0;
     this.drone       = new Drone();
+    this.orbitKeys   = new Set();  // arrows held in orbit mode (pan)
     this.droneLive   = false;  // drone state initialized from the current view
     this.lastFrameT  = performance.now();
   }
@@ -440,6 +441,7 @@ export class GaussOptApp {
         this._leaveColmapView();
         this.params.theta += dx * 0.35;
         this.params.phi = Math.min(89, Math.max(-89, this.params.phi - dy * 0.35));
+        this.orbitAnim = null;
       }
     });
     cv.addEventListener('wheel', e => {
@@ -450,6 +452,7 @@ export class GaussOptApp {
         return;
       }
       this._leaveColmapView();
+      this.orbitAnim = null;
       this.params.radius *= (e.deltaY > 0) ? 1.07 : 1 / 1.07;
     }, { passive: false });
 
@@ -466,13 +469,23 @@ export class GaussOptApp {
         this._setCameraMode(this.params.camera_mode === 'drone' ? 'orbit' : 'drone');
         return;
       }
+      if (this.params.camera_mode !== 'drone') {
+        if (key === ' ') { e.preventDefault(); this._recenterOrbit(); }
+        if (key.startsWith('arrow')) {  // pan, see _panOrbit()
+          e.preventDefault();
+          this._leaveColmapView();
+          this.orbitAnim = null;
+          this.orbitKeys.add(key);
+        }
+        return;
+      }
       if (this.params.camera_mode !== 'drone' || !droneKeys.has(key)) return;
       e.preventDefault();
       this._droneTakeover();
       this.drone.keys.add(key);
     });
-    window.addEventListener('keyup', e => this.drone.keys.delete(keyName(e)));
-    window.addEventListener('blur', () => { this.drone.keys.clear(); this.drone.stick = [0, 0]; });
+    window.addEventListener('keyup', e => { this.drone.keys.delete(keyName(e)); this.orbitKeys.delete(keyName(e)); });
+    window.addEventListener('blur', () => { this.drone.keys.clear(); this.orbitKeys.clear(); this.drone.stick = [0, 0]; });
 
     $('thumb-close').addEventListener('click', () => this.closeThumbnail());
     $('thumb-fly').addEventListener('click', () => { if (this.pickedCam >= 0) this.flyToCamera(this.pickedCam); });
@@ -543,6 +556,41 @@ export class GaussOptApp {
 
   // Orbit input takes over from a snapped / in-flight view. Orbit params are only kept up to
   // date in free view, so re-derive them from the pose on screen to avoid jumping back.
+  // Space in orbit mode: ease the orbit back to the scene center, default distance and
+  // elevation (heading kept), over 0.6 s. Mouse orbit / zoom cancels it.
+  _recenterOrbit() {
+    if (!this.octree) return;
+    this._leaveColmapView();
+    const P = this.params;
+    this.orbitAnim = {
+      t0: performance.now(), dur: 600,
+      from: { target: [...P.target], radius: P.radius, phi: P.phi },
+      to:   { target: [...this.octree.sceneCenter], radius: this.octree.sceneRadius * 1.4, phi: 15 },
+    };
+  }
+
+  // Arrows in orbit mode: pan the orbit target (and camera) along the screen's right axis
+  // (Left / Right) and world up (Up / Down), at half the orbit radius per second.
+  _panOrbit(dt) {
+    const k = this.orbitKeys, P = this.params;
+    if (k.size === 0 || !this.lastView) return;
+    const v = this.lastView.view, right = [v[0], v[4], v[8]], U = this.worldUp;
+    const sx = (k.has('arrowright') ? 1 : 0) - (k.has('arrowleft') ? 1 : 0);
+    const sy = (k.has('arrowup') ? 1 : 0) - (k.has('arrowdown') ? 1 : 0);
+    const d = 0.5 * P.radius * dt;
+    P.target = P.target.map((t, i) => t + d * (sx * right[i] + sy * U[i]));
+  }
+
+  _stepOrbitAnim() {
+    const a = this.orbitAnim, P = this.params;
+    if (!a) return;
+    const t = Math.min(1, (performance.now() - a.t0) / a.dur), s = t * t * (3 - 2 * t);
+    P.target = a.from.target.map((v, k) => v + (a.to.target[k] - v) * s);
+    P.radius = a.from.radius * Math.pow(a.to.radius / a.from.radius, s);  // geometric: even zoom speed
+    P.phi    = a.from.phi + (a.to.phi - a.from.phi) * s;
+    if (t >= 1) this.orbitAnim = null;
+  }
+
   _leaveColmapView() {
     if (!this.flyAnim && !this.params.snap_to_colmap) return;
     this._syncOrbitToLastView();
@@ -1198,6 +1246,8 @@ export class GaussOptApp {
         camCenter = [...this.drone.pos];
         intr      = this._freeIntrinsics(W, H);
       } else {
+        this._stepOrbitAnim();
+        this._panOrbit(dtFrame);
         const orb = buildOrbitViewMatrix(P.target, P.radius, P.theta, P.phi, this.worldUp);
         view      = orb.view;
         camCenter = orb.center;

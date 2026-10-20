@@ -39,6 +39,9 @@
     $$C_{\text{pix}} \leftarrow C_{\text{pix}} + T_i \alpha_i c_i, \quad T_{i+1} = T_i (1 - \alpha_i)$$
     Also records per-pixel median surface depth $z_{\text{med}}(\mathbf{p})$ (the depth where $T$ crosses $0.5$) and `last_k` index.
   * **Backward pass:** Walk contributing splats back-to-front up to `last_k`, recovering $T_i = T_{i+1} / (1 - \alpha_i)$, computing parameter gradients, and reducing gradients across the $16\times 16$ tile in `var<workgroup>` shared memory before a single `atomicCompareExchangeWeak` per workgroup hits global memory.
+  * **Per-tile splat lists (GPU, one submission):** `project_splats` writes each sorted slot's tile rect (bounding box of the 3σ ellipse, half-widths $3\sqrt{\Sigma_{xx}}, 3\sqrt{\Sigma_{yy}}$) and counts entries per tile; `tile_scan` (prefix sum) → `[start, count]`; `tile_fill` appends slots unordered; `tile_sort` (one workgroup per tile, rank-by-binary-search merge sort) restores depth order. Forward/backward then walk only their tile's list: bit-exact vs scanning every visible splat, ~44× fewer splat–tile tests at `ds=4`. List capacity follows an asynchronously read entry count (grown ×2 on overflow).
+  * **Subgroup reduction:** with the `subgroups` feature, backward sums each entry's contributions with `subgroupAdd` before the workgroup atomics (`// @sg` / `// @nosg` lines selected in `loadShaders()`; `&nosg` forces the fallback).
+  * Measured (Chrome, M1 Pro, 153k-splat jardin3): ~15 ms/step at 478×268, ~20 ms at 956×537, ~55 ms at full 1912×1074 (previously 115–200 ms at 478×268 and a GPU timeout at full resolution).
 
 ### D4. Parameterization (Phase 1: SH Degree 0, Brush-Compatible)
 * Start with **SH degree 0** (**14 `f32` per splat**, padded to 16 `f32` = 64 bytes for clean `vec4f` alignment in WGSL):
