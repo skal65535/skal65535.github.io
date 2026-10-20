@@ -64,8 +64,8 @@
 import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer,
          createTexture, createBindGroup } from '../common/webgpu.js';
 import { mkGui }                          from '../common/controls.js';
-import { LooseOctree }                    from '../gaussopt/gaussopt-octree.js';
-import { parsePlyBuffer, exportSplatBuffer } from '../gaussopt/gaussopt-colmap.js';
+import { LooseOctree }                    from '../gaussopt/src/octree.js';
+import { parsePlyBuffer, exportSplatBuffer } from '../gaussopt/src/colmap.js';
 const kVisus = {  // mapping from name to shader function
   'gaussian': 'gaussian', 'cone': 'cone',
   '(ellipsis)': 'ellipsis', '(dot)': 'small_dot', '(axis)': 'axis',

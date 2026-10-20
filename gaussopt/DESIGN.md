@@ -25,8 +25,8 @@
 
 ### D2. Loose Octree Spatial Partitioning ($N_{\text{leaf}} \le 256$)
 * **Why an Octree:**
-  1. **Eliminates Global GPU Radix Sort:** Any octree can be traversed in exact front-to-back order for a given camera position $\mathbf{c}$ by ordering a node's 8 children using a 3-bit XOR mask on the octant index (`octant ^ cam_octant_mask`).
-  2. **Workgroup-Local Sorting:** Because each leaf holds at most $N_{\max} = 256$ splats, sorting splats by depth within a leaf happens locally on small contiguous leaf slices.
+  1. **Cheap exact culling:** hierarchical frustum culling over leaves (plus a per-splat frustum/opacity test) yields the same visible set as an exhaustive pass at ~1/10 the cost.
+  2. **Depth order = octree cull + radix sort:** leaf traversal (`flips ^ cam_octant_mask`) is a valid per-ray order for *points*, but not for extended splats — see Experiment E1 (§9). The culled set is therefore sorted exactly by view-space $z$ with a 3-pass 11-bit LSD radix sort on the float bit patterns (`sortOctreeFrontToBack`).
   3. **Hierarchical Culling & Spatial Context:** Frustum culling, early-out transmittance culling ($T_{\text{tile}} < 10^{-4}$), and 3D neighbor/density checks for floater removal operate at the octree node level.
 * **Why "Loose" (Overlapping Cells):**
   * Standard octrees clip or pop when a Gaussian ellipsoid ($3\sigma$ radius) straddles a boundary or when its center $\mu_i$ drifts across a face during the $K$ inner-loop steps.
@@ -60,7 +60,7 @@ A lightweight Python script (`gaussopt/serve.py`) acts as the local bridge:
 ./gaussopt/serve.py /Users/skal/gskal/skal65535/Hierarchical-Localization/datasets/jardin1_gs [--ply splats/jardin1_05000.ply]
 ```
 1. **HTTP Mounting:** Serves `skal65535.github.io/` on `http://localhost:8000/`, mounts the target `gs/` directory at `/dataset/`, and exposes `GET /dataset/info.json` (listing any existing `.ply` checkpoints in `splats*/` or `init.ply`).
-2. **Direct Binary Ingestion (`gaussopt-colmap.js`):**
+2. **Direct Binary Ingestion (`src/colmap.js`):**
    * Fetches `/dataset/sparse/cameras.bin` $\to$ intrinsics $(W, H, f_x, f_y, c_x, c_y)$.
    * Fetches `/dataset/sparse/images.bin` $\to$ world-to-camera $(q, t)$, observed `point3D_id`s (to compute each camera's near-field depth guard $z_{\min}(c)$), and image filenames.
    * Fetches `/dataset/sparse/points3D.bin` $\to$ initial 3D positions $(x, y, z)$ and RGB colors.
@@ -70,7 +70,7 @@ A lightweight Python script (`gaussopt/serve.py`) acts as the local bridge:
 
 ### 3.2 Path B: Zero-Server Static Browser Mode (Drag-and-Drop / Folder Picker)
 When running statically on `https://skal65535.github.io/gaussopt/`:
-* Dragging and dropping a `gs/` directory (or picking it via `<input type="file" webkitdirectory>`) maps the dropped `File` handles by relative path (`sparse/*.bin`, `images/*`, `*.ply`) into `gaussopt-colmap.js`.
+* Dragging and dropping a `gs/` directory (or picking it via `<input type="file" webkitdirectory>`) maps the dropped `File` handles by relative path (`sparse/*.bin`, `images/*`, `*.ply`) into `src/colmap.js`.
 
 ### 3.3 Resuming Training from a `.ply` / `.splat` Checkpoint (with COLMAP Cameras)
 Gauss-Opt supports resuming or warm-starting training from any 3DGS `.ply` (including Brush exports like `jardin1_05000.ply`) while keeping the registered COLMAP cameras and ground-truth images from `gs/`:
@@ -93,7 +93,7 @@ Because `LooseOctree.build()` reorders the splat array so every leaf $l$ occupie
      property float cz
      property float half_size
      property int is_leaf
-     property int start_or_child0
+     property int first_child_or_start
      property int count_or_depth
      property int state
      ```
@@ -156,8 +156,8 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
    * **Outer Loop (MCMC Error-Proportional Teleportation):** During `reconcileAndGrow`, pruned/dead splats are **teleported (resampled)** onto high-error parent splats chosen via roulette-wheel sampling proportional to WLBG error mass $R_j$, preserving total splat count while concentrating density where residual error is highest.
 
 2. **Simulated Annealing (`opt_method = 2`, `sim_anneal`):**
-   * **Temperature Schedule:** Maintains an annealing temperature $T(t) = T_0 \cdot \gamma^{t/100}$ with optional periodic re-heating at rebalance intervals.
-   * **Inner Loop (Metropolis-Hastings Per-Splat Perturbation):** Each splat tracks its local WLBG mean error energy $E_i^{(t)} = e_{\text{view}}(i)$ in `adam_v[b+1].w` and its last accepted position displacement in `adam_m[b+2]`. At each step:
+   * **Temperature Schedule:** Maintains an annealing temperature $T(t) = T_0 \cdot \gamma^{t/50}$ with optional periodic re-heating at rebalance intervals.
+   * **Inner Loop (Metropolis-Hastings Per-Splat Perturbation):** Each splat tracks its local WLBG mean error energy $E_i^{(t)} = e_{\text{view}}(i)$ in `adam_v[b+1].w` and its last accepted position displacement in `adam_m[b+1].w`, `adam_m[b+3].w`, `adam_v[b+3].w`. At each step:
      * Compare current local error $E_i^{(t)}$ against previous $E_i^{(t-1)}$.
      * Compute Boltzmann acceptance probability $P_{\text{acc}} = \exp(-\max(0, E_i^{(t)} - E_i^{(t-1)}) / T(t))$.
      * If rejected ($u > P_{\text{acc}}$), partially revert the last position/scale perturbation and sample a new temperature-scaled Cauchy/Gaussian proposal $\Delta \boldsymbol{\mu}_i \propto T(t) \mathbf{R}_i \mathbf{s}_i \boldsymbol{\xi}_i$.
@@ -165,7 +165,7 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
 
 ---
 
-## 6. Live Visualization & Interactive Debugging (`gaussopt-render.js`)
+## 6. Live Visualization & Interactive Debugging (`src/render.js`)
 
 1. **Camera Modes (`#main-canvas`):** Free-View Orbit Camera (`theta, phi, radius, fov`), Snap-to-COLMAP View (`cam_idx`), and `hold target` / split-screen wipe comparing $I_{\text{gt}}$, $\hat{I}$, and $|I_{\text{gt}} - \hat{I}|$.
 2. **Splat Shape & Diagnostic Color Modes:**
@@ -184,14 +184,14 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
 | ID | Risk / Failure Mode | Concrete Mitigation Built into Implementation |
 | :--- | :--- | :--- |
 | **A1** | **COLMAP vs. `splats/index.html` Camera Convention Mismatch** | Standardized all projection and EWA Jacobian math on **OpenCV/COLMAP camera space ($+Z$ forward)**: $u = f_x (x/z) + c_x$, $v = f_y (y/z) + c_y$, while supporting $z_{\text{sign}} = -1$ in `LooseOctree.sortIndexFrontToBack` for `splats/index.html`. |
-| **A2** | **Far-Field SfM Outliers Crushing Octree Resolution** | Root octree bounding box computed from the **2nd–98th percentile** of point coordinates. |
+| **A2** | **Far-Field SfM Outliers Crushing Octree Resolution** | Scene center / radius from the **10th–90th percentile** of point coordinates (the root box still bounds all finite points). |
 | **A3** | **Backward Transmittance Division-by-Zero ($T_i = T_{i+1} / (1 - \alpha_i)$)** | Clamped $\alpha_i \le 0.99$; forward integration stops when $T < 10^{-4}$, recording `last_k` per pixel. |
 | **A4** | **Workgroup Shared-Memory Contention in Backward Pass** | Contributing splats are loaded in batches of 32 into `var<workgroup>` shared memory and reduced across the $16\times 16$ tile before at most 1 global atomic update per splat per tile. |
 | **A5** | **2D$\to$3D EWA Chain Rule Overhead** | Pixel threads accumulate only 2D gradients (`dL/drgb`, `dL/dop`, `dL/duv`, `dL/dconic`); the 2D$\to$3D EWA covariance & quaternion chain rule runs once per splat in `adam_step`. |
 | **A6** | **Suffix Color Transmittance Scaling in `dL_dalpha`** | Since `accum_rec` tracks the unattenuated suffix color $\tilde{C}_{>i} = T_{i+1}^{-1}\sum_{j>i} T_j \alpha_j c_j$, `dL_dalpha` uses exact $T_i \cdot (\text{dL\_dC} \cdot (c_i - \tilde{C}_{>i}))$ without double-dividing by $(1 - \alpha_i)$. |
 | **A7** | **Column-Major Quaternion Rotation Gradient (`dL_dq`)** | Matched skew-symmetric cross-terms `(G1.z - G2.y)`, `(G2.x - G0.z)`, `(G0.y - G1.x)` to WGSL's column-major `mat3x3f` layout. |
-| **A8** | **Stale Adam Momentum / SA State Across Octree Reordering** | `_uploadSplats()` zeroes `adamMBuf` and `adamVBuf` and resets `adamStepCount = 0` whenever splats are reordered or split/pruned by the octree. |
-| **A9** | **Concurrent `step()` / `mapAsync` Re-Entrancy** | Guarded `GaussOptTrainer.step()` with `stepInFlight` to prevent overlapping `mapAsync()` calls when clicking UI step controls during live training. |
+| **A8** | **Stale Adam Momentum / SA State Across Octree Reordering** | Adam state is carried across rebalances: `reconcileAndGrow()` returns `srcIdx` (source splat of each survivor, -1 for new children) and `build()` records `lastPerm` (its leaf-order permutation); the trainer gathers m/v through both. New splats start from zero. |
+| **A9** | **Concurrent `step()` / `mapAsync` Re-Entrancy** | All GPU readbacks (step, validation, snapshot, .ply sync, E1) run under `GaussOptTrainer._withStepLock()`, so no two `mapAsync()` sequences overlap. |
 | **A10** | **Rank-Deficient Single-View 2nd Error Moment $\mathbf{E}_i$** | Added isotropic diagonal regularization $\epsilon_{\text{iso}} = 10^{-4} s_{\max}^2 \mathbf{I}_3$ before power iteration in `reconcileAndGrow()`. |
 | **A11** | **Progressive Streaming Octree Rebuild Thrashing in `splats/`** | Throttled `LooseOctree.buildIndexOnly()` during HTTP streaming to only rebuild every $\ge 16{,}384$ newly arrived splats and once upon stream completion. |
 
@@ -203,10 +203,43 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
 skal65535.github.io/gaussopt/
 ├── DESIGN.md              # Architecture, decisions, adversarial review, MC/SA & Octree spec
 ├── serve.py               # Local HTTP bridge: mounts COLMAP gs/ dirs, lists .ply checkpoints, handles POST /save
-├── index.html             # UI, main 3D canvas, side-canvas inspector, GUI controls & training loop
-├── gaussopt-colmap.js     # Binary parser for COLMAP *.bin + .ply/.splat import/export (with embedded octree)
-├── gaussopt-octree.js     # Loose Octree build, JSON/PLY serialization, front-to-back sort, WLBG/MCMC/SA growth
-├── gaussopt-render.js     # Pure draw layer: free-view splats, 3D octree & camera wireframes, side-canvas telemetry
-├── gaussopt-trainer.js    # GPU/CPU hybrid training loop (Adam, Monte-Carlo SGLD, Simulated Annealing)
-└── gaussopt-shaders.wgsl  # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
+├── index.html             # Page markup + bootstrap (imports src/app.js)
+├── gaussopt.css           # Page layout (canvas + controls columns), overlays (#info, #frustum-thumb)
+├── gaussopt-shaders.wgsl  # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
+└── src/
+    ├── app.js             # App: GUI & URL params, dataset/snapshot loading, frame loop, cameras (orbit/drone/fly-to)
+    ├── colmap.js          # Binary parser for COLMAP *.bin + .ply/.splat import/export (with embedded octree)
+    ├── math.js            # Shared math: vec3, quaternions, 3x3 eigen, OpenCV view/proj, orbit frame, intrinsics fit
+    ├── octree.js          # Loose Octree build, JSON/PLY serialization, front-to-back sort, WLBG/MCMC/SA growth
+    ├── render.js          # Pure draw layer: free-view splats, 3D octree & camera wireframes, side-canvas telemetry
+    ├── drone.js           # 'Drone fly' free camera: angle-mode quadcopter model (mouse stick, arrow throttle/yaw)
+    ├── trainer.js         # GPU/CPU hybrid training loop (Adam, Monte-Carlo SGLD, Simulated Annealing)
+    ├── snapshot.js        # .gosnap full training-state snapshot codec (splats + Adam + moments + octree)
+    └── stipple.js         # E4: residual stippling -> unprojected seed splats (reuses ../stipple/ Voronoi)
 ```
+
+---
+
+## 9. Experiments
+
+### E1 — Depth order: octree traversal vs exact z-sort (closed, 2026-10-20)
+* **Setup:** `jardin3_gs`, `splat_05000.ply` and a step-8088 snapshot, 6 COLMAP cameras (0, 16, 34, 69, 85, 107). Each variant is rendered with the training forward pass (`tile_forward`) and compared (PSNR) against an exhaustive exact $z$-sort over the **same** culled set, under the step lock (an early version raced with training steps and gave non-reproducible numbers).
+* **Results (dB vs exact $z$, same set; higher = closer):**
+
+| Variant | Extra cost | cam 16 | cam 34 | cam 69 | cam 85 |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| Octree leaf order + intra-leaf sort (`rank ^ mask`) | — | 35.00 | 37.11 | 34.80 | 27.53 |
+| + weighted child order (ray-aligned axis flipped last) | 0 | 35.54 | 37.69 | 35.08 | 29.18 |
+| + cross-leaf sliding window W=64 (CPU) | 2–10 ms | 35.19 | 37.68 | 35.34 | 27.62 |
+| + GPU chunked insertion refine ×32 (reach ≈ ±500) | 5 ms GPU | 36.23 | 38.54 | 36.35 | 29.15 |
+| Exact radial (distance to camera) order | — | 41.50 | 45.61 | 44.35 | 44.37 |
+| **Octree cull + radix sort by $z$** | **0.7–2.7 ms total** | **exact** | **exact** | **exact** | **exact** |
+
+* **Findings:**
+  1. Culling is exact: octree and exhaustive visible sets match once both use the same opacity cut / frustum margin.
+  2. Leaf traversal order is a valid visibility order for points, but splats have extent: two splats in neighbouring leaves overlap on screen while lying on different rays, and the leaf order decides arbitrarily. Mis-orders span whole leaves (mean rank displacement 11–18% of the list), so **no local fix** (sliding window, GPU refine) recovers more than ~1.5 dB.
+  3. $z$-order and radial order agree to 41–46 dB, so $z$-sort is a valid reference — the octree order really is worse, not just different.
+  4. Weighted child order is free and strictly better (+0.3 to +1.7 dB); kept for traversal (also used by `splats/`).
+* **Decision:** training and display use octree culling + exact radix sort (bit-exact vs the exhaustive sort, 10–14× faster: 0.7–2.7 ms vs 7–30 ms for 27k–112k visible splats). Sliding window and GPU refine were removed. The "Run Exp E1" button now only checks octree+radix against the exhaustive sort (expect 99.9 dB).
+* **Open:** does exact order improve *training* PSNR vs the old leaf order? (A/B on held-out views, once validation PSNR exists.)
+
