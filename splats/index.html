@@ -1328,39 +1328,49 @@ document.addEventListener("drop", (event) => {
 });
 
 function DropFile(file) {
+  if (!file) return;
   if (file.name.endsWith('.json')) {
     file.text().then(text => {
-      render.octree = LooseOctree.fromJSON(text);
-      render.octree_splats = render.stored_splats;
-      params.sort_name = 'Octree';
-      console.log(`Loaded saved LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
-      init({sorting:true});
+      try {
+        render.octree = LooseOctree.fromJSON(text);
+        render.octree_splats = render.stored_splats;
+        params.sort_name = 'Octree';
+        console.log(`Loaded saved LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
+        init({sorting:true});
+      } catch (e) {
+        Oops(`Invalid octree JSON "${file.name}": ${e.message}`);
+      }
     });
     return;
   }
   const fr = new FileReader();
   fr.onload = () => {
-    render.sort_discard = true;  // cancel any pending sort
-    if (file.name.endsWith('.ply')) {
-      const ply = parsePlyBuffer(fr.result);
-      const splatAb = exportSplatBuffer(ply.params, ply.count);
-      const data = new Uint8Array(splatAb);
-      allocate_splats(ply.count);
-      add_splats(ply.count, data);
-      if (ply.octreeData) {
-        render.octree = LooseOctree.fromSerializedNodes(ply.octreeData.meta, ply.octreeData.nodes);
-        render.octree_splats = ply.count;
-        params.sort_name = 'Octree';
-        console.log(`Restored embedded LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
+    try {
+      render.sort_discard = true;  // cancel any pending sort
+      if (file.name.endsWith('.ply')) {
+        const ply = parsePlyBuffer(fr.result);
+        const splatAb = exportSplatBuffer(ply.params, ply.count);
+        const data = new Uint8Array(splatAb);
+        allocate_splats(ply.count);
+        add_splats(ply.count, data);
+        if (ply.octreeData) {
+          render.octree = LooseOctree.fromSerializedNodes(ply.octreeData.meta, ply.octreeData.nodes);
+          render.octree_splats = ply.count;
+          params.sort_name = 'Octree';
+          console.log(`Restored embedded LooseOctree from ${file.name} (${render.octree.leaves.length} leaves)`);
+        }
+        init({buffers:true, sorting:true});
+        return;
       }
+      const data = new Uint8Array(fr.result);
+      const num_splats = Math.floor(data.length / STRIDE_SPLAT);
+      if (!(num_splats > 0)) throw new Error('Empty or invalid .splat file');
+      allocate_splats(num_splats);
+      add_splats(num_splats, data);
       init({buffers:true, sorting:true});
-      return;
+    } catch (e) {
+      Oops(`Failed to load "${file.name}": ${e.message}`);
     }
-    const data = new Uint8Array(fr.result);
-    const num_splats = Math.floor(data.length / STRIDE_SPLAT);
-    allocate_splats(num_splats);
-    add_splats(num_splats, data);
-    init({buffers:true, sorting:true});
   };
   fr.readAsArrayBuffer(file);
 }
