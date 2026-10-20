@@ -94,6 +94,11 @@ function radixSortByPositiveKey(keys, ids, n, tmpKeys, tmpIds, out) {
 // of the splat at params[b..] (`view`: column-major world->camera, +Z forward), or -1 if it is
 // near-transparent, behind z = 0.05, or outside the |x| fx, |y| fy <= 1.25 z cone. fx, fy <= 0
 // disables the xy test.
+// 3-sigma world extent of splat b (largest axis, log-scale clamped as in the shaders)
+const splatExtent = (params, b) => 3 * Math.exp(Math.min(3, Math.max(params[b + 4], params[b + 5], params[b + 6])));
+
+// Frustum test keeps a splat whose center is within 1.25x the frustum, or whose 3-sigma
+// extent reaches into it: large splats centered off-screen still cover the frame edges.
 function makeSplatCull(view, fx, fy) {
   const zx = view[2], zy = view[6], zz = view[10], zw = view[14];
   const xx = view[0], xy = view[4], xz = view[8],  xw = view[12];
@@ -104,8 +109,13 @@ function makeSplatCull(view, fx, fy) {
     const X = params[b], Y = params[b + 1], Z = params[b + 2];
     const z = zx * X + zy * Y + zz * Z + zw;
     if (z <= 0.05) return -1;
-    if (cullXY && (Math.abs(xx * X + xy * Y + xz * Z + xw) * fx > z * 1.25 ||
-                   Math.abs(yx * X + yy * Y + yz * Z + yw) * fy > z * 1.25)) return -1;
+    if (cullXY) {
+      const ax = Math.abs(xx * X + xy * Y + xz * Z + xw) * fx, ay = Math.abs(yx * X + yy * Y + yz * Z + yw) * fy;
+      if (ax > z * 1.25 || ay > z * 1.25) {
+        const e = splatExtent(params, b);
+        if (ax > z * 1.25 + e * fx || ay > z * 1.25 + e * fy) return -1;
+      }
+    }
     return z;
   };
 }
@@ -212,6 +222,22 @@ export class LooseOctree {
     }
     node.indices = [];
     for (const c of node.children) this._splitRecursive(c, arr, stride);
+  }
+
+  // node.maxExtent = largest 3-sigma splat extent in the subtree, so frustum culling of a
+  // node also keeps large splats poking out of its loose bounds. Call when params change.
+  updateExtents(params) {
+    const visit = (node) => {
+      let m = 0;
+      if (node.isLeaf) {
+        for (let i = node.start, end = node.start + node.count; i < end; i++) m = Math.max(m, splatExtent(params, i * SPLAT_FLOATS));
+      } else {
+        for (const c of node.children) if (c) m = Math.max(m, visit(c));
+      }
+      node.maxExtent = m;
+      return m;
+    };
+    if (this.root) visit(this.root);
   }
 
   // Non-empty leaves in depth-first octant order
@@ -426,7 +452,7 @@ export class LooseOctree {
         const xc = view[0] * node.cx + view[4] * node.cy + view[8]  * node.cz + view[12];
         const yc = view[1] * node.cx + view[5] * node.cy + view[9]  * node.cz + view[13];
         const zc = (view[2] * node.cx + view[6] * node.cy + view[10] * node.cz + view[14]) * zSign;
-        const r  = node.halfSize * betaScale * 1.73205;
+        const r  = node.halfSize * betaScale * 1.73205 + (node.maxExtent || 0);
         if (zc + r < 0.05) return;  // completely behind the camera
         if (zc - r > 0.05 && fx > 0 && fy > 0) {
           if (Math.abs(xc) * fx > (zc + r) * 1.15 + r * fx) return;
@@ -485,8 +511,11 @@ export class LooseOctree {
         const z = zx * X + zy * Y + zz * Z + zw;
         if (z <= 0.05) continue;
         if (cullXY) {
-          if (Math.abs(xx * X + xy * Y + xz * Z + xw) * fx > z * 1.25) continue;
-          if (Math.abs(yx * X + yy * Y + yz * Z + yw) * fy > z * 1.25) continue;
+          const ax = Math.abs(xx * X + xy * Y + xz * Z + xw) * fx, ay = Math.abs(yx * X + yy * Y + yz * Z + yw) * fy;
+          if (ax > z * 1.25 || ay > z * 1.25) {  // center off-frame: keep if its extent reaches in
+            const e = splatExtent(params, b);
+            if (ax > z * 1.25 + e * fx || ay > z * 1.25 + e * fy) continue;
+          }
         }
         keys[n] = z;
         ids[n++] = idx;

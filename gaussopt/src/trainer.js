@@ -54,6 +54,7 @@ export class GaussOptTrainer {
     this.count    = initialSplats.count;
     this.cpuParams  = new Float32Array(initialSplats.params);
     this.numVisible     = 0;  // training-camera sort (sortedIdxBuf)
+    this.refineLeft     = 0;  // display: GPU refine passes still owed after the view stopped
     this.numVisibleView = 0;  // display-view sort (viewIdxBuf)
     this.sortGen    = 0;      // bumped whenever cpuParams / octree change: invalidates display sort
 
@@ -90,6 +91,9 @@ export class GaussOptTrainer {
     this.pipeTileScan = pipe('tile_scan');
     this.pipeTileFill = pipe('tile_fill');
     this.pipeTileSort = pipe('tile_sort');
+    this.pipeSortRefine = pipe('sort_refine');
+    this.refineUniformBufs = [0, 1].map(k =>
+      this._buffer(`sort_refine_${k}`, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST));
 
     this.trainUniformBuf = this._buffer('train_uniforms', UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     this.lossBuf     = this._buffer('loss_acc', 16, BUF_RW());
@@ -175,6 +179,7 @@ export class GaussOptTrainer {
       q.writeBuffer(this.adamVBuf, 0, zeroAdam);
       this.adamStepCount = 0;
     }
+    this.octree.updateExtents(this.cpuParams);
     this.sortGen++;
     this._lastSortKey = this._lastViewSortKey = this._lastHatKey = '';
   }
@@ -364,17 +369,64 @@ export class GaussOptTrainer {
     return this.numVisible;
   }
 
-  // Sort for the on-screen view into viewIdxBuf, cached independently of the training sort.
-  // cpuParams only change on readback (sortGen bump), so a still view costs no CPU while training.
+  // Sort for the on-screen view into viewIdxBuf, independently of the training sort.
+  // The exact CPU sort (octree cull + radix) only runs when its culled set may be stale:
+  // splats re-synced (sortGen), intrinsics changed, the view turned > 5 deg or moved > 5% of
+  // the scene radius since, or every REFRESH moving frames. In between, a moving view keeps
+  // the last list and refines its order on the GPU against the live splat positions
+  // (sort_refine, as in splats/); the CPU culls with a 25% wider frustum to cover the drift.
+  // A still view costs nothing.
   sortForDisplay(camCenter, view, fxNorm, fyNorm) {
-    let key = `${this.sortGen}:${this.count}:${fxNorm.toFixed(3)},${fyNorm.toFixed(3)}`;
+    const REFRESH = 30, MARGIN = 0.8, MAX_COS = Math.cos(5 * Math.PI / 180), PASSES = 4;
+    const baseKey = `${this.sortGen}:${this.count}:${fxNorm.toFixed(3)},${fyNorm.toFixed(3)}`;
+    let key = baseKey;
     for (const i of [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]) key += `,${view[i].toFixed(4)}`;
-    if (this._lastViewSortKey === key) return this.numVisibleView;
+    const moved = this._lastViewSortKey !== key;
+    if (!moved && this.refineLeft <= 0) return this.numVisibleView;
     this._lastViewSortKey = key;
-    this.numVisibleView = this.octree.sortOctreeFrontToBack(
-      this.cpuParams, camCenter, view, fxNorm, fyNorm, this.viewIdx).numVisible;
-    if (this.numVisibleView > 0) this.device.queue.writeBuffer(this.viewIdxBuf, 0, this.viewIdx, 0, this.numVisibleView);
+
+    const fwd = [view[2], view[6], view[10]], vs = this.viewSort;
+    let full = !vs || vs.baseKey !== baseKey || vs.frames >= REFRESH;
+    if (!full) {
+      const cosA = fwd[0] * vs.fwd[0] + fwd[1] * vs.fwd[1] + fwd[2] * vs.fwd[2];
+      const dist = Math.hypot(camCenter[0] - vs.center[0], camCenter[1] - vs.center[1], camCenter[2] - vs.center[2]);
+      full = cosA < MAX_COS || dist > 0.05 * this.octree.sceneRadius;
+    }
+    if (full) {
+      const t0 = performance.now();
+      this.numVisibleView = this.octree.sortOctreeFrontToBack(
+        this.cpuParams, camCenter, view, fxNorm * MARGIN, fyNorm * MARGIN, this.viewIdx).numVisible;
+      if (this.numVisibleView > 0) this.device.queue.writeBuffer(this.viewIdxBuf, 0, this.viewIdx, 0, this.numVisibleView);
+      this.viewSort = { baseKey, fwd, center: [...camCenter], frames: 0 };
+      this.displaySortMs = performance.now() - t0;
+      this.displayFullSorts = (this.displayFullSorts || 0) + 1;
+    } else {
+      vs.frames++;
+    }
+    // keep refining for a few frames after the view stops, so the order settles exactly
+    this.refineLeft = moved ? 8 : this.refineLeft - 1;
+    if (this.numVisibleView > 1) this._refineDisplaySort(view, PASSES);
     return this.numVisibleView;
+  }
+
+  // `passes` chunked insertion-sort passes over viewIdxBuf, alternating chunk offsets.
+  _refineDisplaySort(view, passes) {
+    const n = this.numVisibleView, CHUNK = 32;
+    const enc = this.device.createCommandEncoder({ label: 'sort_refine' });
+    for (let k = 0; k < 2; k++) {
+      const b = new ArrayBuffer(32), f = new Float32Array(b), u = new Uint32Array(b);
+      f[0] = view[2]; f[1] = view[6]; f[2] = view[10]; f[3] = view[14];  // z row of the view
+      u[4] = n; u[5] = k * (CHUNK / 2);
+      this.device.queue.writeBuffer(this.refineUniformBufs[k], 0, b);
+    }
+    for (let p = 0; p < passes; p++) {
+      const k = p & 1, chunks = Math.ceil((n - k * (CHUNK / 2)) / CHUNK);
+      if (chunks > 0) {
+        this._pass(enc, this.pipeSortRefine, [this.refineUniformBufs[k], this.splatsBuf, this.viewIdxBuf],
+                   Math.ceil(chunks / 64));
+      }
+    }
+    this.device.queue.submit([enc.finish()]);
   }
 
   // Forward-render COLMAP view `viewIdx` into hatTex without touching the parameters
@@ -479,6 +531,7 @@ export class GaussOptTrainer {
       await this._drainLossRead();
       const [params] = await this._readback('sync_splats', [{ buf: this.splatsBuf, bytes: this.count * SPLAT_FLOATS * 4 }]);
       this.cpuParams.set(params);
+      this.octree.updateExtents(this.cpuParams);
       this.sortGen++;
     });
   }
@@ -508,6 +561,7 @@ export class GaussOptTrainer {
         { buf: this.adamVBuf,   bytes: splatBytes },
       ]);
       this.cpuParams.set(params);
+      this.octree.updateExtents(this.cpuParams);
       this.sortGen++;
       return {
         count:         this.count,

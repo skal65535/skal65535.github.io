@@ -62,16 +62,23 @@ fn quat_to_mat3(q: vec4f) -> mat3x3f {
 }
 
 // EWA: T = J * W (pixel Jacobian at view-space point vpos times view rotation).
-// Screen covariance is T * Sigma * T^T.
-fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32) -> mat3x2f {
+// Screen covariance is T * Sigma * T^T. As in 3DGS, J is evaluated with x/z, y/z clamped
+// to `lim` (1.3x the frustum, see frustum_lim): off-axis splats near the camera would
+// otherwise project to huge ellipses.
+fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat3x2f {
   let inv_z  = 1.0 / vpos.z;
-  let inv_z2 = inv_z * inv_z;
+  let t = clamp(vpos.xy * inv_z, -lim, lim);  // clamped x/z, y/z
   let J = mat3x2f(
     vec2f(fx * inv_z, 0.0),
     vec2f(0.0, fy * inv_z),
-    vec2f(-fx * vpos.x * inv_z2, -fy * vpos.y * inv_z2)
+    vec2f(-fx * t.x * inv_z, -fy * t.y * inv_z)
   );
   return J * mat3x3f(view[0].xyz, view[1].xyz, view[2].xyz);
+}
+
+// |x/z|, |y/z| bounds of 1.3x the view frustum (W x H, principal point cx, cy).
+fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
+  return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
 }
 
 fn palette_leaf(leaf_id: u32) -> vec3f {
@@ -113,7 +120,8 @@ fn vs(@builtin(vertex_index) vid: u32,
   let R = quat_to_mat3(p2);
   let s = exp(clamp(p1.xyz, vec3f(-12.0), vec3f(4.0))) * u.screen.w;
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
-  let T = ewa_jacobian(u.view, vpos.xyz, fx, fy);
+  let T = ewa_jacobian(u.view, vpos.xyz, fx, fy,
+                       frustum_lim(u.screen.x, u.screen.y, fx, fy, u.intrinsics.z, u.intrinsics.w));
   let cov2d = T * (M * transpose(M)) * transpose(T);
 
   // Eigen-decomposition of the dilated 2x2 covariance -> quad axes in pixels.
@@ -324,6 +332,59 @@ fn fs(in: BlitOut) -> @location(0) vec4f {
   return vec4f(select(hat, gt, in.uv.x < bp.split_x), 1.0);
 }
 
+// === sort_refine ===
+// Incremental GPU depth sort of the display list (cf. splats/): each thread insertion-sorts
+// a CHUNK of indices in place by camera-space z (front-to-back). Alternating the chunk offset
+// (0 / CHUNK/2) between passes lets entries migrate across chunk borders, so the exact CPU
+// order of a recent pose keeps tracking the moving camera.
+// Bindings: 0 RefineParams, 1 splats, 2 idx_list.
+struct RefineParams {
+  zrow   : vec4f, // row 2 of the view matrix: z_cam = dot(zrow.xyz, p) + zrow.w
+  n      : u32,
+  offset : u32,
+  _pad0  : u32,
+  _pad1  : u32,
+};
+
+const CHUNK : u32 = 32u;
+
+@group(0) @binding(0) var<uniform> rp : RefineParams;
+@group(0) @binding(1) var<storage, read> splats : array<vec4f>; // 4 vec4f per splat, [0].xyz = position
+@group(0) @binding(2) var<storage, read_write> idx_list : array<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let s = gid.x * CHUNK + rp.offset;
+  if (s >= rp.n) { return; }
+  let m = min(CHUNK, rp.n - s);
+  var ids : array<u32, CHUNK>;
+  var zs  : array<f32, CHUNK>;
+  for (var i = 0u; i < m; i++) {
+    let id = idx_list[s + i];
+    ids[i] = id;
+    zs[i]  = dot(rp.zrow.xyz, splats[id * 4u].xyz) + rp.zrow.w;
+  }
+  var changed = false;
+  for (var i = 1u; i < m; i++) {
+    let a  = ids[i];
+    let za = zs[i];
+    var j = i;
+    while (j > 0u && zs[j - 1u] > za) {
+      ids[j] = ids[j - 1u];
+      zs[j]  = zs[j - 1u];
+      j--;
+    }
+    if (j != i) {
+      ids[j] = a;
+      zs[j]  = za;
+      changed = true;
+    }
+  }
+  if (changed) {
+    for (var i = 0u; i < m; i++) { idx_list[s + i] = ids[i]; }
+  }
+}
+
 // === project_splats ===
 // Projects the num_visible depth-sorted splats to screen space, one thread each.
 // proj_splats (2 vec4f per sorted slot): [u0, v0, z_cam, radius_px],
@@ -363,16 +424,23 @@ fn quat_to_mat3(q: vec4f) -> mat3x3f {
 }
 
 // EWA: T = J * W (pixel Jacobian at view-space point vpos times view rotation).
-// Screen covariance is T * Sigma * T^T.
-fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32) -> mat3x2f {
+// Screen covariance is T * Sigma * T^T. As in 3DGS, J is evaluated with x/z, y/z clamped
+// to `lim` (1.3x the frustum, see frustum_lim): off-axis splats near the camera would
+// otherwise project to huge ellipses.
+fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat3x2f {
   let inv_z  = 1.0 / vpos.z;
-  let inv_z2 = inv_z * inv_z;
+  let t = clamp(vpos.xy * inv_z, -lim, lim);  // clamped x/z, y/z
   let J = mat3x2f(
     vec2f(fx * inv_z, 0.0),
     vec2f(0.0, fy * inv_z),
-    vec2f(-fx * vpos.x * inv_z2, -fy * vpos.y * inv_z2)
+    vec2f(-fx * t.x * inv_z, -fy * t.y * inv_z)
   );
   return J * mat3x3f(view[0].xyz, view[1].xyz, view[2].xyz);
+}
+
+// |x/z|, |y/z| bounds of 1.3x the view frustum (W x H, principal point cx, cy).
+fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
+  return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
 }
 
 fn write_culled(k: u32, idx: u32) {
@@ -410,7 +478,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let R = quat_to_mat3(p2);
   let s = exp(clamp(p1.xyz, vec3f(-10.0), vec3f(3.0)));
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
-  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy);
+  let lim = frustum_lim(f32(tu.dims.x), f32(tu.dims.y), fx, fy, tu.intrinsics.z, tu.intrinsics.w);
+  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);
   let cov2d = T * (M * transpose(M)) * transpose(T);
 
   // 0.3 px^2 low-pass dilation (must match adam_step), conic = inverse covariance.
@@ -1038,16 +1107,23 @@ fn quat_to_mat3(q: vec4f) -> mat3x3f {
 }
 
 // EWA: T = J * W (pixel Jacobian at view-space point vpos times view rotation).
-// Screen covariance is T * Sigma * T^T.
-fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32) -> mat3x2f {
+// Screen covariance is T * Sigma * T^T. As in 3DGS, J is evaluated with x/z, y/z clamped
+// to `lim` (1.3x the frustum, see frustum_lim): off-axis splats near the camera would
+// otherwise project to huge ellipses.
+fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat3x2f {
   let inv_z  = 1.0 / vpos.z;
-  let inv_z2 = inv_z * inv_z;
+  let t = clamp(vpos.xy * inv_z, -lim, lim);  // clamped x/z, y/z
   let J = mat3x2f(
     vec2f(fx * inv_z, 0.0),
     vec2f(0.0, fy * inv_z),
-    vec2f(-fx * vpos.x * inv_z2, -fy * vpos.y * inv_z2)
+    vec2f(-fx * t.x * inv_z, -fy * t.y * inv_z)
   );
   return J * mat3x3f(view[0].xyz, view[1].xyz, view[2].xyz);
+}
+
+// |x/z|, |y/z| bounds of 1.3x the view frustum (W x H, principal point cx, cy).
+fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
+  return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
 }
 
 fn pcg_hash(v_in: u32) -> u32 {
@@ -1149,7 +1225,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let s = exp(clamp(p1.xyz, vec3f(-10.0), vec3f(3.0)));
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
   let Sigma = M * transpose(M);
-  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy);
+  let lim = frustum_lim(f32(tu.dims.x), f32(tu.dims.y), fx, fy, tu.intrinsics.z, tu.intrinsics.w);
+  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);
   let cov2d = T * Sigma * transpose(T);
   let sxx = cov2d[0][0] + 0.3;
   let syy = cov2d[1][1] + 0.3;
@@ -1170,11 +1247,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // cov2d also depends on the view-space position through J.
   let dL_dJ = 2.0 * dL_dcov2d * T * Sigma * transpose(W3);
+  // A clamped x/z (y/z) makes J's x (y) column independent of x (y), and halves its z term.
+  let tq = vpos.xy * inv_z;
+  let free = vec2f(select(0.0, 1.0, abs(tq.x) <= lim.x), select(0.0, 1.0, abs(tq.y) <= lim.y));
+  let tc = clamp(tq, -lim, lim) * vpos.z;  // clamped x, y
   let dL_dvpos_cov = vec3f(
-    -fx * inv_z2 * dL_dJ[2][0],
-    -fy * inv_z2 * dL_dJ[2][1],
+    -fx * inv_z2 * dL_dJ[2][0] * free.x,
+    -fy * inv_z2 * dL_dJ[2][1] * free.y,
     -fx * inv_z2 * dL_dJ[0][0] - fy * inv_z2 * dL_dJ[1][1] +
-      2.0 * inv_z3 * (fx * vpos.x * dL_dJ[2][0] + fy * vpos.y * dL_dJ[2][1])
+      inv_z3 * ((1.0 + free.x) * fx * tc.x * dL_dJ[2][0] + (1.0 + free.y) * fy * tc.y * dL_dJ[2][1])
   );
   let dL_dpos = transpose(W3) * (dL_dvpos + dL_dvpos_cov);
 
