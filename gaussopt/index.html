@@ -1,5 +1,5 @@
-<!-- Gauss-Opt: WebGPU 3DGS Optimizer with Loose Octree & WLBG Stipple Growth -->
 <!DOCTYPE html>
+<!-- Gauss-Opt: WebGPU 3DGS Optimizer with Loose Octree & WLBG Stipple Growth (app logic: src/app.js) -->
 <html lang="en">
 
 <head>
@@ -7,26 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gauss-Opt: WebGPU 3DGS Optimizer</title>
 <link rel="stylesheet" href="../common/main.css">
-<style>
-  #info {
-    position: absolute; left: 14px; top: 14px;
-    background: var(--panel-bg); color: var(--ink);
-    border: 1px solid var(--panel-border); border-radius: 6px;
-    padding: 6px 10px; font: 12px var(--font-mono); z-index: 5;
-    pointer-events: none;
-  }
-  #side-canvas {
-    display: block;
-    width: 100%;
-    max-width: 960px;
-    height: 150px;
-    margin: 10px auto 0;
-    border-radius: 6px;
-  }
-  .button-row {
-    display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center;
-  }
-</style>
+<link rel="stylesheet" href="gaussopt.css">
 </head>
 
 <body>
@@ -42,7 +23,7 @@
 
   <form style="display:none">
     <input type="file" id="FolderElmt" webkitdirectory directory multiple>
-    <input type="file" id="PlyElmt" accept=".ply,.splat,.json">
+    <input type="file" id="PlyElmt" accept=".ply,.splat,.json,.gosnap">
   </form>
 
   <div class="button-row">
@@ -57,610 +38,72 @@
             onpointercancel="window.app.setHoldTarget(false)">hold target</button>
     <button class="button" id="BtnExportPly">save .ply (+octree)</button>
     <button class="button" id="BtnExportOctree">save .octree</button>
+    <button class="button" id="BtnSnapshot" title="full training state (splats + Adam + moments + octree), resumable">save snapshot</button>
   </div>
 
-  <div class="canvas-wrap">
-    <canvas id="main-canvas" class="dark" width="960" height="540"></canvas>
-    <div id="info"><span id="status-line">Initializing WebGPU...</span></div>
+  <div class="gaussopt-layout">
+    <div class="view-col">
+      <div class="canvas-wrap">
+        <canvas id="main-canvas" class="dark" width="960" height="540"></canvas>
+        <div id="info">
+          <div id="status-line">Initializing WebGPU...</div>
+          <div id="error-line"></div>
+        </div>
+        <div id="help-overlay">
+          <div class="help-title">Keys &amp; mouse <span>(H to close)</span></div>
+          <table>
+            <tr><th colspan="2">Orbit camera</th></tr>
+            <tr><td>drag</td><td>orbit around the target</td></tr>
+            <tr><td>wheel</td><td>zoom</td></tr>
+            <tr><td>← / →</td><td>pan left / right</td></tr>
+            <tr><td>↑ / ↓</td><td>pan up / down</td></tr>
+            <tr><td>Space</td><td>re-center on the scene</td></tr>
+            <tr><th colspan="2">Drone camera (F to toggle)</th></tr>
+            <tr><td>drag</td><td>stick: pitch / roll, release to self-level</td></tr>
+            <tr><td>↑ / ↓</td><td>fly forward / backward</td></tr>
+            <tr><td>← / →</td><td>yaw left / right</td></tr>
+            <tr><td>E / Q</td><td>climb / descend (released: hold altitude)</td></tr>
+            <tr><td>Space</td><td>re-center: level, brake, face the scene</td></tr>
+            <tr><td>wheel</td><td>camera tilt</td></tr>
+            <tr><th colspan="2">COLMAP cameras</th></tr>
+            <tr><td>click frustum</td><td>show its photo</td></tr>
+            <tr><td>double-click</td><td>fly to that view</td></tr>
+            <tr><th colspan="2">General</th></tr>
+            <tr><td>F</td><td>orbit / drone camera</td></tr>
+            <tr><td>H or ?</td><td>this help</td></tr>
+          </table>
+        </div>
+        <div id="frustum-thumb">
+          <div class="thumb-row">
+            <span class="thumb-name" id="thumb-title"></span>
+            <button id="thumb-close" title="close">×</button>
+          </div>
+          <img id="thumb-img" alt="COLMAP view">
+          <div class="thumb-row">
+            <span id="thumb-res"></span>
+            <span class="thumb-tag" id="thumb-tag"></span>
+            <button id="thumb-fly">Fly to View ↗</button>
+          </div>
+        </div>
+      </div>
+
+      <canvas id="side-canvas" width="960" height="150"></canvas>
+      <div id="log-panel">
+        <div class="log-head">
+          <span>Log</span>
+          <button id="log-clear" title="clear log">clear</button>
+        </div>
+        <div id="log-body"></div>
+      </div>
+    </div>
     <div id="gui-container"></div>
   </div>
-
-  <canvas id="side-canvas" width="960" height="150"></canvas>
 </div>
 
 <script src="../common/args.js"></script>
 
 <script type="module">
-"use strict";
-
-import { initGPU } from '../common/webgpu.js';
-import { mkGui }   from '../common/controls.js';
-import {
-  SPLAT_FLOATS, logit, rgbToSh0,
-  loadColmapFromUrl, loadColmapFromFiles,
-  parsePlyBuffer, parseSplatBuffer, exportPlyBuffer, exportSplatBuffer
-} from './gaussopt-colmap.js';
-import { LooseOctree } from './gaussopt-octree.js';
-import { GaussOptRenderer, buildOrbitViewMatrix, drawTelemetryPanel } from './gaussopt-render.js';
-import { GaussOptTrainer } from './gaussopt-trainer.js';
-
-const VISU_MODES = {
-  'gaussian':  0,
-  'cone':      1,
-  'ellipsis':  2,
-  'small_dot': 3,
-  'axis':      4,
-};
-
-const COLOR_MODES = {
-  'learned_rgb':    0,
-  'octree_leaf':    1,
-  'wlbg_error (R)': 2,
-  'view_div (Neff)':3,
-  'depth':          4,
-};
-
-const COMPARE_MODES = {
-  '3D Free / Snap View': 0,
-  'Split (GT | Render)': 1,
-  'Residual |GT - Hat|': 2,
-};
-
-const OPT_METHODS = {
-  'Adam (deterministic)':       'adam',
-  'Monte-Carlo (SGLD / MCMC)':  'monte_carlo',
-  'Simulated Annealing (SA)':   'sim_anneal',
-};
-
-function createSyntheticScene(count = 128) {
-  const params = new Float32Array(count * SPLAT_FLOATS);
-  for (let i = 0; i < count; i++) {
-    const b = i * SPLAT_FLOATS;
-    const a = (i / count) * Math.PI * 2;
-    const r = 0.6 + 0.3 * Math.sin(i * 1.7);
-    params[b + 0]  = Math.cos(a) * r;
-    params[b + 1]  = Math.sin(a * 2) * 0.4;
-    params[b + 2]  = Math.sin(a) * r;
-    params[b + 3]  = logit(0.75);
-    params[b + 4]  = -2.8;
-    params[b + 5]  = -2.8;
-    params[b + 6]  = -2.8;
-    params[b + 8]  = 1.0;
-    params[b + 12] = rgbToSh0(0.5 + 0.45 * Math.cos(a));
-    params[b + 13] = rgbToSh0(0.5 + 0.45 * Math.sin(a));
-    params[b + 14] = rgbToSh0(0.6);
-  }
-  return { count, params, octreeData: null };
-}
-
-class GaussOptApp {
-  constructor() {
-    this.canvas     = document.getElementById('main-canvas');
-    this.sideCanvas = document.getElementById('side-canvas');
-    this.statusEl   = document.getElementById('status-line');
-
-    this.params = {
-      dataset_url:     parse_arg_str('dataset', '/datasets/jardin1_gs'),
-      resume_ply:      parse_arg_str('ply', '[points3D.bin]'),
-      training:        parse_arg_bool('train'),
-      steps_per_frame: parse_arg('spf', 2, 1, 20),
-      downsample:      parse_arg('ds', 4, 1, 8),
-
-      // Optimizer Method (Adam, Monte-Carlo SGLD/MCMC, Simulated Annealing)
-      opt_method:      parse_arg_str('opt', 'adam'),
-      mc_noise:        0.08,
-      sa_temp:         0.15,
-      sa_cooling:      0.96,
-      sa_reheat:       true,
-
-      // Camera & View
-      snap_to_colmap:  false,
-      cam_idx:         0,
-      fov:             60,
-      radius:          3.5,
-      theta:           -90,
-      phi:             15,
-      target:          [0, 0, 0],
-      split_x:         0.5,
-
-      // Visualization
-      visu_mode:       0,
-      color_mode:      0,
-      compare_mode:    0,
-      haze:            1.0,
-      show_octree:     true,
-      show_loose:      false,
-      show_cameras:    true,
-      show_splits:     true,
-
-      // Octree & WLBG Optimizer
-      max_leaf_size:   256,
-      beta:            0.20,
-      sort_mode:       'octree',
-      sliding_window:  0,
-      rebalance_every: 100,
-      enable_rebalance:true,
-      enable_split:    true,
-      enable_merge:    true,
-      remove_floaters: true,
-      max_splats:      50000,
-      prune_opacity:   0.008,
-      hysteresis:      0.35,
-
-      // Learning rates
-      lr_pos:          0.0015,
-      lr_scale:        0.005,
-      lr_quat:         0.002,
-      lr_color:        0.015,
-    };
-
-    this.gpu         = null;
-    this.renderer    = null;
-    this.octree      = null;
-    this.trainer     = null;
-    this.colmap      = null;
-    this.holdTarget  = false;
-    this.lastStepOut = null;
-    this.expSummary  = '';
-    this.mouse       = { down: false, x: 0, y: 0 };
-  }
-
-  async init() {
-    this.gpu = await initGPU(this.canvas, { alphaMode: 'premultiplied' });
-    this.renderer = await GaussOptRenderer.create(
-      this.gpu.device, this.gpu.context, this.gpu.format
-    );
-    this._setupEvents();
-    this._setupGui();
-    await this.loadDatasetUrl(this.params.dataset_url, this.params.resume_ply);
-    requestAnimationFrame(() => this.frame());
-  }
-
-  _setupGui() {
-    const gui = mkGui(document.getElementById('gui-container'), { title: 'Gauss-Opt Controls' });
-    this.gui = gui;
-
-    const dsOpts = {
-      'jardin1_gs (16 views)':  '/datasets/jardin1_gs',
-      'jardin3_gs (120 views)': '/datasets/jardin3_gs',
-      '[synthetic ring]':       '[synth]',
-    };
-    gui.add(this.params, 'dataset_url', dsOpts).name('dataset').onChange(v => {
-      this.params.resume_ply = '[points3D.bin]';
-      this.loadDatasetUrl(v, '[points3D.bin]');
-    });
-
-    this.plySelectFolder = gui.addFolder('Checkpoint / Resume');
-    this._rebuildPlySelector(['[points3D.bin]']);
-
-    const optF = gui.addFolder('Optimizer (Adam / MC / SA)');
-    optF.add(this.params, 'opt_method', OPT_METHODS).name('method');
-    optF.add(this.params, 'mc_noise', 0.0, 0.5, 0.01).name('MC Langevin η');
-    optF.add(this.params, 'sa_temp', 0.01, 1.0, 0.01).name('SA temp T₀');
-    optF.add(this.params, 'sa_cooling', 0.80, 0.999, 0.005).name('SA cooling γ');
-    optF.add(this.params, 'sa_reheat').name('SA re-heat @ K');
-
-    const visF = gui.addFolder('Visualization');
-    visF.add(this.params, 'visu_mode', VISU_MODES).name('splat shape');
-    visF.add(this.params, 'color_mode', COLOR_MODES).name('color mode');
-    visF.add(this.params, 'compare_mode', COMPARE_MODES).name('view mode');
-    visF.add(this.params, 'split_x', 0.0, 1.0, 0.01).name('split wipe X');
-    visF.add(this.params, 'haze', 0.2, 3.0, 0.05).name('scale multiplier');
-    visF.add(this.params, 'show_octree').name('3D octree boxes').onChange(() => this._refreshWireframes());
-    visF.add(this.params, 'show_loose').name('show loose (1+2β)L').onChange(() => this._refreshWireframes());
-    visF.add(this.params, 'show_cameras').name('COLMAP frustums').onChange(() => this._refreshWireframes());
-    visF.add(this.params, 'show_splits').name('WLBG split axes').onChange(() => this._refreshWireframes());
-
-    const camF = gui.addFolder('Camera', { collapsed: true });
-    camF.add(this.params, 'snap_to_colmap').name('snap to COLMAP cam');
-    this.camSlider = camF.add(this.params, 'cam_idx', 0, 15, 1).name('COLMAP cam #').onChange(() => {
-      this.params.snap_to_colmap = true;
-      this._refreshWireframes();
-    });
-    camF.add(this.params, 'fov', 20, 120, 1).name('free-view FoV');
-    camF.add(this.params, 'radius', 0.2, 30, 0.1).name('orbit radius');
-
-    const octF = gui.addFolder('Octree & WLBG Growth', { collapsed: true });
-    octF.add(this.params, 'max_leaf_size', [64, 128, 256]).name('leaf N_max').onChange(v => {
-      if (this.octree && this.trainer) {
-        this.octree.maxLeafSize = Number(v);
-        this.octree.build(this.trainer.cpuParams, this.trainer.count, this.colmap?.images);
-        this.trainer._uploadSplats();
-        this._refreshWireframes();
-      }
-    });
-    octF.add(this.params, 'beta', 0.0, 0.4, 0.05).name('loose overlap β').onChange(v => {
-      if (this.octree) {
-        this.octree.beta = Number(v);
-        this._refreshWireframes();
-      }
-    });
-    octF.add(this.params, 'sliding_window', [0, 8, 16]).name('cross-leaf win');
-    octF.add(this.params, 'rebalance_every', 20, 500, 10).name('rebalance K');
-    octF.add(this.params, 'enable_rebalance').name('WLBG grow/prune');
-    octF.add(this.params, 'remove_floaters').name('octree floater kill');
-    octF.add(this.params, 'enable_split').name('error-cov split');
-    octF.add(this.params, 'enable_merge').name('overlap merge');
-  }
-
-  _rebuildPlySelector(plyList) {
-    const host = this.plySelectFolder._host;
-    host.innerHTML = '';
-    this.plySelectFolder._controls = [];
-    const opts = { '[init from points3D.bin]': '[points3D.bin]' };
-    for (const p of plyList) {
-      const name = typeof p === 'string' ? p : p.name;
-      opts[name] = name;
-    }
-    this.plySelectFolder.add(this.params, 'resume_ply', opts).name('checkpoint').onChange(val => {
-      this.resumeFromSelectedPly(val);
-    });
-  }
-
-  _setupEvents() {
-    this.canvas.addEventListener('pointerdown', e => {
-      this.mouse.down = true;
-      this.mouse.x = e.clientX;
-      this.mouse.y = e.clientY;
-    });
-    window.addEventListener('pointerup', () => { this.mouse.down = false; });
-    this.canvas.addEventListener('pointermove', e => {
-      if (!this.mouse.down) return;
-      const dx = e.clientX - this.mouse.x;
-      const dy = e.clientY - this.mouse.y;
-      this.mouse.x = e.clientX;
-      this.mouse.y = e.clientY;
-      if (this.params.compare_mode === 1) {
-        const rect = this.canvas.getBoundingClientRect();
-        this.params.split_x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-      } else {
-        this.params.snap_to_colmap = false;
-        this.params.theta += dx * 0.35;
-        this.params.phi = Math.min(89, Math.max(-89, this.params.phi - dy * 0.35));
-      }
-    });
-    this.canvas.addEventListener('wheel', e => {
-      e.preventDefault();
-      this.params.snap_to_colmap = false;
-      this.params.radius *= (e.deltaY > 0) ? 1.07 : 1 / 1.07;
-    }, { passive: false });
-
-    document.getElementById('BtnTrain').addEventListener('click', () => {
-      this.params.training = !this.params.training;
-      document.getElementById('BtnTrain').textContent = this.params.training ? '⏸ Pause' : '▶ Train';
-    });
-    document.getElementById('BtnStep').addEventListener('click', async () => {
-      if (this.trainer) {
-        this.lastStepOut = await this.trainer.step(
-          this.params.snap_to_colmap ? this.params.cam_idx : null
-        );
-        this._refreshWireframes();
-      }
-    });
-    document.getElementById('BtnE1').addEventListener('click', async () => {
-      if (this.trainer) {
-        this.expSummary = await this.trainer.runExperimentE1(this.params.cam_idx);
-      }
-    });
-    document.getElementById('BtnExportPly').addEventListener('click', () => this.savePlyCheckpoint());
-    document.getElementById('BtnExportOctree').addEventListener('click', () => this.saveOctreeJson());
-
-    document.getElementById('FolderElmt').addEventListener('change', e => {
-      if (e.target.files.length > 0) this.loadDroppedFolder(e.target.files);
-    });
-    document.getElementById('PlyElmt').addEventListener('change', e => {
-      if (e.target.files.length > 0) this.loadPlyOrOctreeFile(e.target.files[0]);
-    });
-
-    const stop = e => { e.preventDefault(); e.stopPropagation(); };
-    document.addEventListener('dragenter', stop);
-    document.addEventListener('dragover', stop);
-    document.addEventListener('drop', e => {
-      stop(e);
-      const files = e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      if (files.length === 1 && (
-          files[0].name.endsWith('.ply') ||
-          files[0].name.endsWith('.splat') ||
-          files[0].name.endsWith('.json'))) {
-        this.loadPlyOrOctreeFile(files[0]);
-      } else {
-        this.loadDroppedFolder(files);
-      }
-    });
-  }
-
-  setHoldTarget(v) {
-    this.holdTarget = v;
-    if (v && this.colmap?.images?.length > 0) {
-      this.trainer?.ensureGtTexture(this.params.cam_idx);
-    }
-  }
-
-  async loadDatasetUrl(url, plyRel = '[points3D.bin]') {
-    try {
-      this.params.training = false;
-      document.getElementById('BtnTrain').textContent = '▶ Train';
-
-      if (url === '[synth]') {
-        this.colmap = null;
-        const splats = createSyntheticScene(256);
-        await this._initOctreeAndTrainer(splats, []);
-        this.statusEl.textContent = `Loaded synthetic scene (${splats.count} splats)`;
-        return;
-      }
-
-      this.statusEl.textContent = `Loading COLMAP dataset from ${url}...`;
-      this.colmap = await loadColmapFromUrl(url, {
-        onProgress: msg => { this.statusEl.textContent = msg; }
-      });
-      this._rebuildPlySelector(this.colmap.availablePlys);
-
-      if (plyRel && plyRel !== '[points3D.bin]') {
-        await this.resumeFromSelectedPly(plyRel);
-      } else {
-        await this._initFromPoints3D();
-      }
-    } catch (e) {
-      console.warn('Dataset fetch fallback to synthetic scene:', e.message);
-      this.colmap = null;
-      const splats = createSyntheticScene(256);
-      await this._initOctreeAndTrainer(splats, []);
-      this.statusEl.textContent = `Offline mode (run ./gaussopt/serve.py for COLMAP datasets) | ${e.message}`;
-    }
-  }
-
-  async loadDroppedFolder(fileList) {
-    try {
-      this.colmap = await loadColmapFromFiles(fileList, {
-        onProgress: msg => { this.statusEl.textContent = msg; }
-      });
-      this._rebuildPlySelector(this.colmap.availablePlys);
-      await this._initFromPoints3D();
-    } catch (e) {
-      this.statusEl.textContent = `Folder load error: ${e.message}`;
-    }
-  }
-
-  async _initFromPoints3D() {
-    const octree = new LooseOctree({
-      maxLeafSize: Number(this.params.max_leaf_size),
-      beta:        Number(this.params.beta),
-    });
-    const splats = octree.initSplatsFromPoints3D(this.colmap.points3D, this.colmap.images);
-    await this._initOctreeAndTrainer(splats, this.colmap.images, octree);
-    const rep = this.colmap.stats.meanReprojError.toFixed(2);
-    this.expSummary = `COLMAP verified: ${this.colmap.images.length} cams, ${splats.count} pts, mean reproj err = ${rep} px`;
-  }
-
-  async resumeFromSelectedPly(plyRel) {
-    if (!this.colmap) return;
-    if (plyRel === '[points3D.bin]') {
-      await this._initFromPoints3D();
-      return;
-    }
-    const found = this.colmap.availablePlys.find(p => (typeof p === 'object' && p.name === plyRel));
-    if (found && found.file) {
-      await this.loadPlyOrOctreeFile(found.file);
-      return;
-    }
-    const url = `${this.colmap.baseUrl}/${plyRel.replace(/^\//, '')}`;
-    this.statusEl.textContent = `Fetching checkpoint ${url}...`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Could not fetch ${url}`);
-    const buf = await resp.arrayBuffer();
-    const splats = plyRel.endsWith('.splat') ? parseSplatBuffer(buf) : parsePlyBuffer(buf);
-
-    let restoredOctree = null;
-    if (splats.octreeData) {
-      const t0 = performance.now();
-      restoredOctree = LooseOctree.fromSerializedNodes(splats.octreeData.meta, splats.octreeData.nodes);
-      restoredOctree.updateCameraAndNeighborStats(this.colmap.images);
-      console.log(`Restored embedded octree (${restoredOctree.leaves.length} leaves) in ${(performance.now() - t0).toFixed(2)} ms`);
-    }
-    await this._initOctreeAndTrainer(splats, this.colmap.images, restoredOctree);
-    const octMsg = restoredOctree ? ` [pre-built octree: ${restoredOctree.leaves.length} leaves]` : '';
-    this.expSummary = `Resumed ${plyRel} (${splats.count} splats, ${this.colmap.images.length} cams)${octMsg}`;
-  }
-
-  async loadPlyOrOctreeFile(file) {
-    this.statusEl.textContent = `Reading ${file.name}...`;
-    if (file.name.endsWith('.json')) {
-      const text = await file.text();
-      const oct = LooseOctree.fromJSON(text);
-      if (this.colmap?.images) oct.updateCameraAndNeighborStats(this.colmap.images);
-      this.octree = oct;
-      if (this.trainer) this.trainer.octree = oct;
-      this._refreshWireframes();
-      this.expSummary = `Loaded saved LooseOctree from ${file.name} (${oct.leaves.length} leaves, β=${oct.beta})`;
-      return;
-    }
-
-    const buf = await file.arrayBuffer();
-    const splats = file.name.endsWith('.splat') ? parseSplatBuffer(buf) : parsePlyBuffer(buf);
-    let restoredOctree = null;
-    if (splats.octreeData) {
-      restoredOctree = LooseOctree.fromSerializedNodes(splats.octreeData.meta, splats.octreeData.nodes);
-      if (this.colmap?.images) restoredOctree.updateCameraAndNeighborStats(this.colmap.images);
-    }
-    await this._initOctreeAndTrainer(splats, this.colmap ? this.colmap.images : [], restoredOctree);
-    this.expSummary = `Loaded ${file.name} (${splats.count} splats${restoredOctree ? ', embedded octree' : ''})`;
-  }
-
-  async _initOctreeAndTrainer(splats, images, existingOctree = null) {
-    this.octree = existingOctree || new LooseOctree({
-      maxLeafSize: Number(this.params.max_leaf_size),
-      beta:        Number(this.params.beta),
-    });
-    if (!existingOctree) {
-      this.octree.build(splats.params, splats.count, images);
-    }
-
-    this.params.target = [...this.octree.sceneCenter];
-    this.params.radius = this.octree.sceneRadius * 1.4;
-
-    this.trainer = await GaussOptTrainer.create(
-      this.gpu.device, this.octree, splats, images, this.params
-    );
-    if (images.length > 0) {
-      await this.trainer.ensureGtTexture(0);
-    }
-    this._refreshWireframes();
-  }
-
-  _refreshWireframes() {
-    if (!this.renderer || !this.octree) return;
-    this.renderer.updateWireframes({
-      octree:       this.octree,
-      images:       this.colmap?.images || [],
-      activeCamIdx: this.params.snap_to_colmap ? this.params.cam_idx : -1,
-      showOctree:   this.params.show_octree,
-      showLoose:    this.params.show_loose,
-      showCameras:  this.params.show_cameras,
-      splitVectors: this.params.show_splits ? this.trainer?.splitVectors : null,
-    });
-  }
-
-  async savePlyCheckpoint() {
-    if (!this.trainer) return;
-    const plyBuf = exportPlyBuffer(this.trainer.cpuParams, this.trainer.count, this.octree);
-    const name = `gaussopt_${String(this.trainer.stepCount).padStart(5, '0')}.ply`;
-
-    try {
-      const resp = await fetch(`/save?name=${encodeURIComponent(name)}&dataset=${encodeURIComponent(this.params.dataset_url)}`, {
-        method: 'POST',
-        body: plyBuf,
-      });
-      if (resp.ok) {
-        const j = await resp.json();
-        this.expSummary = `Saved PLY + embedded octree (${this.octree.leaves.length} leaves) to: ${j.path}`;
-        return;
-      }
-    } catch {}
-
-    // Fallback: browser download
-    const blob = new Blob([plyBuf], { type: 'application/octet-stream' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-  }
-
-  async saveOctreeJson() {
-    if (!this.octree) return;
-    const jsonBytes = new TextEncoder().encode(JSON.stringify(this.octree.toJSON()));
-    const step = this.trainer ? this.trainer.stepCount : 0;
-    const name = `gaussopt_${String(step).padStart(5, '0')}.octree.json`;
-
-    try {
-      const resp = await fetch(`/save?name=${encodeURIComponent(name)}&dataset=${encodeURIComponent(this.params.dataset_url)}`, {
-        method: 'POST',
-        body: jsonBytes,
-      });
-      if (resp.ok) {
-        const j = await resp.json();
-        this.expSummary = `Saved standalone octree (${this.octree.leaves.length} leaves) to: ${j.path}`;
-        return;
-      }
-    } catch {}
-
-    const blob = new Blob([jsonBytes], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-  }
-
-  async frame() {
-    if (this.trainer && this.params.training) {
-      for (let s = 0; s < this.params.steps_per_frame; s++) {
-        this.lastStepOut = await this.trainer.step();
-      }
-      if (this.trainer.stepCount % this.params.rebalance_every === 0) {
-        this._refreshWireframes();
-      }
-    }
-
-    if (this.renderer && this.trainer) {
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      const imgs = this.colmap?.images || [];
-      const camIdx = Math.min(Math.max(0, this.params.cam_idx | 0), Math.max(0, imgs.length - 1));
-
-      if (this.holdTarget && imgs[camIdx]) {
-        const gtTex = await this.trainer.ensureGtTexture(camIdx);
-        if (gtTex) {
-          this.renderer.renderCompare({ gtTex, hatTex: this.trainer.hatTex, mode: 0 });
-        }
-      } else if (this.params.compare_mode > 0 && this.lastStepOut?.gtTex) {
-        this.renderer.renderCompare({
-          gtTex:  this.lastStepOut.gtTex,
-          hatTex: this.lastStepOut.hatTex,
-          mode:   this.params.compare_mode,
-          splitX: this.params.split_x,
-          amp:    3.0,
-        });
-      } else {
-        let view, camCenter, fx, fy, cx, cy;
-        if (this.params.snap_to_colmap && imgs[camIdx]) {
-          const im = imgs[camIdx];
-          view      = im.view;
-          camCenter = im.center;
-          fx        = im.camera.fx * (W / im.camera.width);
-          fy        = im.camera.fy * (H / im.camera.height);
-          cx        = im.camera.cx * (W / im.camera.width);
-          cy        = im.camera.cy * (H / im.camera.height);
-        } else {
-          const orb = buildOrbitViewMatrix(
-            this.params.target, this.params.radius, this.params.theta, this.params.phi
-          );
-          view      = orb.view;
-          camCenter = orb.center;
-          fy        = (0.5 * H) / Math.tan((this.params.fov * Math.PI) / 360);
-          fx        = fy;
-          cx        = 0.5 * W;
-          cy        = 0.5 * H;
-        }
-
-        const numVis = this.trainer.updateSortingForView(
-          camCenter, view, 2 * fx / W, 2 * fy / H,
-          {
-            useGlobalSort: this.params.sort_mode === 'global_exact',
-            slidingWindow: Number(this.params.sliding_window),
-          }
-        );
-
-        this.renderer.renderScene({
-          splatsBuf:      this.trainer.splatsBuf,
-          momentsBuf:     this.trainer.momentsBuf,
-          sortedIdxBuf:   this.trainer.sortedIdxBuf,
-          numVisible:     numVis,
-          view,
-          proj:           null,
-          camCenter,
-          sceneRadius:    this.octree.sceneRadius,
-          fx, fy, cx, cy, W, H,
-          visuMode:       Number(this.params.visu_mode),
-          colorMode:      Number(this.params.color_mode),
-          haze:           Number(this.params.haze),
-          avgR:           this.trainer.avgR,
-          drawWireframes: this.params.show_octree || this.params.show_cameras || this.params.show_splits,
-        });
-      }
-
-      const psnrTxt = this.trainer.lastPsnr > 0 ? `${this.trainer.lastPsnr.toFixed(2)} dB` : '--';
-      const optLabel = this.params.opt_method === 'sim_anneal'
-        ? `SA(T=${this.trainer.currentTemp.toFixed(3)})`
-        : (this.params.opt_method === 'monte_carlo' ? `MC(η=${this.params.mc_noise})` : 'Adam');
-      this.statusEl.textContent =
-        `[${optLabel}] Step: ${this.trainer.stepCount} | PSNR: ${psnrTxt} | Splats: ${this.trainer.count} (${this.trainer.numVisible} vis) | Leaves: ${this.octree.leaves.length}`;
-      drawTelemetryPanel(this.sideCanvas, this.trainer.history, this.octree, this.expSummary);
-    }
-
-    requestAnimationFrame(() => this.frame());
-  }
-}
-
+import { GaussOptApp } from './src/app.js';
 window.app = new GaussOptApp();
 window.app.init().catch(e => {
   console.error(e);

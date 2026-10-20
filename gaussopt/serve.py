@@ -24,6 +24,7 @@ WEB_ROOT = HERE.parent
 DEFAULT_DATASETS = {
     "jardin1_gs": Path("/Users/skal/gskal/skal65535/Hierarchical-Localization/datasets/jardin1_gs"),
     "jardin3_gs": Path("/Users/skal/gskal/skal65535/Hierarchical-Localization/datasets/jardin3/gs"),
+    "jardin3-2_gs": Path("/Users/skal/gskal/skal65535/Hierarchical-Localization/datasets/jardin3-2/gs"),
 }
 
 
@@ -38,13 +39,15 @@ def resolve_gs_dir(p: Path) -> Path:
 
 def scan_plys(gs_dir: Path):
     found = []
-    for root in [gs_dir, gs_dir.parent]:
-        if not root.exists():
+    roots = [gs_dir] + ([gs_dir.parent] if gs_dir.name == "gs" else [])
+    for r in roots:
+        if not r.exists():
             continue
-        for pat in ["*.ply", "splats/*.ply", "splats_*/*.ply", "*.splat", "splats/*.splat"]:
-            for f in sorted(root.glob(pat)):
+        for pat in ["*.ply", "splats/*.ply", "splats_*/*.ply", "*.splat", "splats/*.splat",
+                    "*.gosnap", "splats_*/*.gosnap"]:
+            for f in sorted(r.glob(pat)):
                 try:
-                    rel = f.relative_to(gs_dir)
+                    rel = f.relative_to(r)
                     found.append(str(rel))
                 except ValueError:
                     pass
@@ -105,7 +108,10 @@ class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             target = (root / sub).resolve()
-            if not str(target).startswith(str(root.resolve())) or not target.is_file():
+            allowed_base = root.parent.resolve() if root.name == "gs" else root.resolve()
+            if not target.is_file() and root.name == "gs":
+                target = (root.parent / sub).resolve()
+            if not str(target).startswith(str(allowed_base)) or not target.is_file():
                 self.send_error(404, f"Dataset file not found: {sub}")
                 return
             self.send_response(200)
