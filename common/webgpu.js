@@ -8,8 +8,14 @@ export async function initGPU(canvas, { alphaMode = 'premultiplied', features = 
   if (!navigator.gpu) throw new Error('WebGPU not supported.');
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("Couldn't request WebGPU adapter.");
+  // The defaults (256 MiB buffers, 128 MiB storage bindings) are far below what most adapters
+  // support; ask for the adapter's own limits so large scenes fit.
   const device = await adapter.requestDevice({
     requiredFeatures: features.filter(f => adapter.features.has(f)),
+    requiredLimits: {
+      maxBufferSize: adapter.limits.maxBufferSize,
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    },
   });
   if (!device)  throw new Error("Couldn't request WebGPU logical device.");
   device.addEventListener('uncapturederror',

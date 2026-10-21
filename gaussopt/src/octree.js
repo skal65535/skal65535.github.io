@@ -15,6 +15,20 @@ import { clamp, logit, sigmoid, randn, quatToMat3, mat3ToQuat, symEigen3 } from 
 // [6..11]: R2 second error moment: xx, yy, zz, xy, xz, yz
 export const MOMENT_FLOATS = 12;
 
+// Clamp a world-space offset o from the center of splat p (params slice) to the box of
+// +-c * scale along each of the splat's own axes, so a child moved by o stays on the splat:
+// a flat disc's children stay in its plane, a needle's along its length.
+function clampToSplat(p, o, c) {
+  const Rm = quatToMat3([p[8], p[9], p[10], p[11]]);  // row-major; axis k = column k
+  const out = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    const lim = c * Math.exp(p[4 + k]);
+    const ok = clamp(Rm[k] * o[0] + Rm[3 + k] * o[1] + Rm[6 + k] * o[2], -lim, lim);
+    out[0] += Rm[k] * ok; out[1] += Rm[3 + k] * ok; out[2] += Rm[6 + k] * ok;
+  }
+  return out;
+}
+
 // Root box: exact bounds of all finite points. Scene center / radius (orbit framing):
 // per-axis median and 0.85 x the largest 10th-90th percentile span (8192-point sample).
 function sceneBounds(arr, count, stride) {
@@ -655,9 +669,9 @@ export class LooseOctree {
       const jx = randn() * Math.exp(child[4]) * 0.5;
       const jy = randn() * Math.exp(child[5]) * 0.5;
       const jz = randn() * Math.exp(child[6]) * 0.5;
-      child[0] += Rm[0] * jx + Rm[3] * jy + Rm[6] * jz;
-      child[1] += Rm[1] * jx + Rm[4] * jy + Rm[7] * jz;
-      child[2] += Rm[2] * jx + Rm[5] * jy + Rm[8] * jz;
+      child[0] += Rm[0] * jx + Rm[1] * jy + Rm[2] * jz;  // R * j (Rm is row-major)
+      child[1] += Rm[3] * jx + Rm[4] * jy + Rm[5] * jz;
+      child[2] += Rm[6] * jx + Rm[7] * jy + Rm[8] * jz;
       push(child, -1);
       nTeleported++;
       return true;
@@ -735,8 +749,10 @@ export class LooseOctree {
         const shiftNorm = Math.min(maxS, Math.hypot(dx, dy, dz));
 
         if (maxS > this.sceneRadius * 0.006) {
-          // large: two children +-0.65 errStd along v, scales / 1.55
-          const sx = vx * errStd * 0.65, sy = vy * errStd * 0.65, sz = vz * errStd * 0.65;
+          // large: two children +-0.65 errStd along v (kept within 0.65 sigma on each splat
+          // axis, so v's component off a flat splat's plane doesn't lift them off it), scales / 1.55
+          const [sx, sy, sz] = clampToSplat(params.subarray(b, b + SPLAT_FLOATS),
+            [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65], 0.65);
           const logShrink = Math.log(1 / 1.55);
           for (const sign of [-1, 1]) {
             const c = copyOf(i);
@@ -748,10 +764,10 @@ export class LooseOctree {
           nSplit++;
           continue;
         } else if (shiftNorm > 1e-5) {
-          // small: keep the parent, clone at the error centroid (offset capped at maxS)
+          // small: keep the parent, clone at the error centroid (within 1 sigma on each axis)
           const child = copyOf(i);
-          const jump = Math.min(maxS, shiftNorm) / shiftNorm;
-          child[0] = x + dx * jump; child[1] = y + dy * jump; child[2] = z + dz * jump;
+          const [ox, oy, oz] = clampToSplat(child, [dx, dy, dz], 1.0);
+          child[0] = x + ox; child[1] = y + oy; child[2] = z + oz;
           push(copyOf(i), i);
           push(child, -1);
           nCloned++;
@@ -765,6 +781,7 @@ export class LooseOctree {
     //    opacity-weighted position / color, combined opacity 1 - (1 - a)(1 - b).
     if (enableMerge && kept.length > 16) {
       for (let i = 0; i + 1 < kept.length; i++) {
+        if (keptSrc[i] < 0 || keptSrc[i + 1] < 0) continue;  // don't undo this pass's new splats
         const a = kept[i], b = kept[i + 1];
         const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
         const sa = Math.exp(Math.max(a[4], a[5], a[6]));

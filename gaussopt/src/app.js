@@ -324,7 +324,7 @@ export class GaussOptApp {
     octF.add(P, 'remove_floaters').name('octree floater kill');
     octF.add(P, 'enable_split').name('error-cov split');
     octF.add(P, 'enable_merge').name('overlap merge');
-    octF.add(P, 'max_splats', 10000, 1000000, 10000).name('max splats');
+    octF.add(P, 'max_splats', 10000, 2000000, 10000).name('max splats');
     octF.add(P, 'max_splat_angle', 0.005, 0.2, 0.005).name('max splat angle');
     octF.add(P, 'max_anisotropy', 2, 50, 1).name('max anisotropy');
     octF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');

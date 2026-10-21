@@ -1153,7 +1153,7 @@ fn adam4(p: vec4f, grad: vec4f, m: ptr<function, vec4f>, v: ptr<function, vec4f>
   let g = clamp(grad, vec4f(-1.0), vec4f(1.0));
   *m = 0.9 * (*m) + 0.1 * g;
   *v = 0.999 * (*v) + 0.001 * g * g;
-  return p - lr * ((*m) / bc.x) / (sqrt((*v) / bc.y) + 1e-8);
+  return p - lr * ((*m) / bc.x) / (sqrt((*v) / bc.y) + 1e-15);
 }
 
 // Same on xyz only; m.w / v.w are left untouched.
@@ -1163,7 +1163,7 @@ fn adam3(p: vec3f, grad: vec3f, m: ptr<function, vec4f>, v: ptr<function, vec4f>
   let vn = 0.999 * (*v).xyz + 0.001 * g * g;
   *m = vec4f(mn, (*m).w);
   *v = vec4f(vn, (*v).w);
-  return p - lr * (mn / bc.x) / (sqrt(vn / bc.y) + 1e-8);
+  return p - lr * (mn / bc.x) / (sqrt(vn / bc.y) + 1e-15);
 }
 
 fn load_grad(i: u32) -> f32 {
