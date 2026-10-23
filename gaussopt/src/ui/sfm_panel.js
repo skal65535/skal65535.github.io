@@ -52,7 +52,7 @@ const TIPS = {
   'Redo (re-map, merge back)': 'map the selection again as a new piece and merge it back. For a broken stretch',
   'Force loop (first ↔ last)': 'the first and last selected keyframes see the same place: match them and close a loop. For missed loops',
   'Reject loops of the selection': 'drop the loop edges that touch the selection (Timeline arcs), then re-run loop closure. ' +
-                                   'For false loops (repeated façades)',
+                                   'For false loops (repeated façades), or a suspect loop (red arc) that pulls the map apart',
   'Set focal (field below)': 'set the focal (Camera & mapping: focal, fix it) and run the reconstruction again',
   '↶ Undo': 'revert the last action',
   'Features & matching (S1–S2)': 'SIFT features and which keyframe pairs are matched',
@@ -603,7 +603,7 @@ export class SfmPanel {
       ctx.fillRect(Math.min(...xs) - 3, 0, Math.max(...xs) - Math.min(...xs) + 6, c.height);
     }
     // loop edges as arcs under the keyframes, higher for a longer span: verified ones blue, suspect
-    // ones (residual after the pose graph) red, on top; with a selection, the others are dimmed
+    // ones (relocated on the map, quality.js) red, on top; with a selection, the others are dimmed
     const time = new Map(this.quality.frames.map(f => [f.name, f.time]));
     const arcs = this.quality.loops.map(l => ({ ...l, xa: this._x(time.get(l.a)), xb: this._x(time.get(l.b)), hit: sel.has(l.a) || sel.has(l.b) }))
       .sort((p, q) => (p.hit - q.hit) || (p.suspect - q.suspect));

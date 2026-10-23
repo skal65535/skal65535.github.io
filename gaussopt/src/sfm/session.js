@@ -78,12 +78,13 @@ export class SfmSession {
     return res;
   }
 
-  quality() {
+  // checkLoops: relocalize the loop edges on the map (quality.js; a second or so, for what the panel shows)
+  quality({ checkLoops = false } = {}) {
     const camera = this.mapper.camera.params.join();
     if (camera !== this.twoViewCamera) { this.twoView.clear(); this.twoViewCamera = camera; }
     const ix = this._index();
     const loops = this.loops.map(l => ({ ...l, i: ix.get(l.a), j: ix.get(l.b) })).filter(l => l.i !== undefined && l.j !== undefined);
-    return keyframeQuality(this.mapper, { loops, times: this.images.map((im, k) => im.time ?? k), cache: this.twoView, viewPsnr: this.viewPsnr });
+    return keyframeQuality(this.mapper, { loops, checkLoops, times: this.images.map((im, k) => im.time ?? k), cache: this.twoView, viewPsnr: this.viewPsnr });
   }
 
   // Saved state (project.js): keyframe list (without keypoints: the features hold them), pairs,

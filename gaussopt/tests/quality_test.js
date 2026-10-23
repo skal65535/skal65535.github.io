@@ -25,6 +25,19 @@ Deno.test('quality: a clean map is green; a damaged pose is red, with its reason
   assert(bare.score === 'red' && /weak/.test(bare.reason), `no points: ${bare.score} ${bare.reason}`);
 });
 
+Deno.test('quality: loops checked on the map are not suspect; a loop frame moved off the map is', () => {
+  const scene = makeSyntheticScene(ORBIT);
+  const { mapper, stats } = reconstruct(scene.input, {});
+  const loops = stats.loops.loops, q = keyframeQuality(mapper, { loops, checkLoops: true });
+  const checked = q.loops.filter(l => l.reloc);
+  assert(checked.length >= 0.8 * loops.length && !q.loops.some(l => l.suspect),
+         `clean: ${checked.length}/${loops.length} relocalized, worst ${Math.max(...checked.map(l => l.reloc.offset)).toFixed(4)} x depth`);
+  const { j } = loops[0], p = mapper.poses[j], depth = keyframeQuality(mapper, {}).frames[j].depth;
+  mapper.poses[j] = { R: p.R, t: [p.t[0] + 0.3 * depth, p.t[1], p.t[2]] };  // its points stay
+  const moved = keyframeQuality(mapper, { loops, checkLoops: true }).loops.filter(l => l.i === j || l.j === j);
+  assert(moved.length && moved.every(l => l.suspect), `moved: ${moved.map(l => JSON.stringify(l.reloc)).join(', ')}`);
+});
+
 Deno.test({ name: 'quality on jardin5 (SFM_DUMP): few red frames, 176 among them; redo there merges the map and keeps COLMAP pieces passing',
             ignore: !SLOW || !DUMP || !HAS_REF, fn: async () => {
   const input = await loadInput(), names = input.images.map(im => im.name);

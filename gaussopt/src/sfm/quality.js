@@ -9,14 +9,15 @@
 //   - after training: the view's validation PSNR against the others'
 // Path smoothness (a pose against the time interpolation of its neighbours) is reported but not
 // scored: drone footage keyframed by optical flow stops, starts and yaws in place (DESIGN-sfm R5).
-// Loop edges come with their residual after the pose graph (loop.js stats.loops).
+// Loop edges come with their residual after the pose graph (loop.js stats.loops); on request they are
+// checked on the current map: one frame relocalized on the other's points (see relocalize).
 "use strict";
 
 import { makeRng } from '../math.js';
 import { sub } from '../math.js';
 import { poseCenter } from './camera.js';
 import { mul3, mulVec3, rotationAngle, expSO3, logSO3 } from './linalg.js';
-import { twoViewPose, depthIn } from './geometry.js';
+import { twoViewPose, depthIn, ransacPnP } from './geometry.js';
 import { median, deg, angleBetween, relativeRotation, hashString } from './util.js';
 
 const DEFAULTS = {
@@ -30,6 +31,9 @@ const DEFAULTS = {
   maxHomographyRatio: 0.7, maxSpreadDeg: 0.3,  // two-view pose trusted: H explains < 70% of F's inliers, 2 runs agree
   breakFactor: 10, minBreak: 0.3,           // scale break: baseline / depth > max(minBreak, factor x median)
   loopRotDeg: 2, loopLogScale: 0.05,        // loop residual after the pose graph: suspect above
+  // checked loop: suspect when a relocalized frame is this far from its pose (jardin4: at most 3 deg,
+  // 6% of the depth over 447 loops; gare-st-lazare, two passes of a square: 5% for half of its loops)
+  loopRelocDeg: 3, loopRelocOffset: 0.1,
   lowPsnrDb: 3,                             // after training: below the median view PSNR by this
 };
 
@@ -45,6 +49,25 @@ function pairPose(mapper, prev, k, rng, { maxHomographyRatio, maxSpreadDeg }) {
   return twoViewPose(x1, x2, mapper.camera, { rng, maxHomographyRatio, maxSpreadDeg });
 }
 
+// A loop edge (i, j) on the current map: j relocalized (PnP) on the 3D points of i's keypoints that
+// the pair matched, against j's pose: { rotDeg, offset (center distance / median depth) }, or null
+// when there are too few such points. Scale-aware, and independent of how the loop was closed.
+function relocalize(mapper, i, j, rng) {
+  const e = mapper.adj[i].find(e => e.other === j);
+  if (!e) return null;
+  const rays = [], pixels = [], points = [];
+  for (let m = 0; m < e.a.length; m++) {
+    const p = mapper.kpPoint[i][e.a[m]];
+    if (p < 0 || !mapper.points[p]) continue;
+    rays.push(mapper.ray(j, e.b[m])); pixels.push(mapper.pixel(j, e.b[m])); points.push(mapper.points[p].X);
+  }
+  if (points.length < 30) return null;
+  const r = ransacPnP(rays, pixels, points, mapper.camera, { rng, threshold: 4 });
+  if (!r || r.numInliers < 30) return null;
+  const Q = mapper.poses[j], depth = median(points.filter((_, k) => r.inliers[k]).map(X => depthIn(Q, X)));
+  return { rotDeg: deg(rotationAngle(r.model.R, Q.R)), offset: norm(sub(poseCenter(r.model), poseCenter(Q))) / depth };
+}
+
 // Model vs two-view: { rotDeg, dirDeg }
 function twoViewAgreement(mapper, prev, k, rel) {
   const P = mapper.poses[prev], Q = mapper.poses[k];
@@ -52,14 +75,15 @@ function twoViewAgreement(mapper, prev, k, rel) {
   return { rotDeg: deg(rotationAngle(rel.R, R)), dirDeg: angleDeg(rel.t, sub(Q.t, Rt)) };
 }
 
-// mapper: SequentialMapper. loops: loop.js stats.loops. main: the exported segment (default the
+// mapper: SequentialMapper. loops: loop.js stats.loops; checkLoops: relocalize each one, both ways
+// (the worse kept as loop.reloc, which then decides `suspect`). main: the exported segment (default the
 // largest). times: keyframe timestamps (default: the indices). viewPsnr: optional Map(name ->
 // validation PSNR) from the trainer. seed: of the two-view RANSAC, per pair (a cached result does
 // not depend on what was computed before it). cache: a Map kept by the caller across updates,
 // for the two-view poses (keyed by keyframe names).
 // Returns { frames: [{ index, name, registered, segment, support, trackLength, reprojPx, depth,
 //           parallaxDeg, twoView, breakRatio, pathDev, rotDev, psnr, score, reason }], loops, counts, main }
-export function keyframeQuality(mapper, { loops = [], main = null, times = null, viewPsnr = null, seed = 1, cache = new Map(), ...options } = {}) {
+export function keyframeQuality(mapper, { loops = [], checkLoops = false, main = null, times = null, viewPsnr = null, seed = 1, cache = new Map(), ...options } = {}) {
   const o = { ...DEFAULTS, ...options };
   const n = mapper.n;
   const sizes = new Map();
@@ -145,6 +169,12 @@ export function keyframeQuality(mapper, { loops = [], main = null, times = null,
     f.reason = red ?? amber ?? '';
     counts[f.score]++;
   }
-  const loopsOut = loops.map(l => ({ ...l, suspect: l.rotDeg > o.loopRotDeg || Math.abs(l.logScale) > o.loopLogScale }));
+  const rng = makeRng(seed);
+  const loopsOut = loops.map(l => {
+    if (!checkLoops) return { ...l, suspect: l.rotDeg > o.loopRotDeg || Math.abs(l.logScale) > o.loopLogScale };
+    const both = mapper.poses[l.i] && mapper.poses[l.j] ? [relocalize(mapper, l.i, l.j, rng), relocalize(mapper, l.j, l.i, rng)].filter(Boolean) : [];
+    const reloc = both.reduce((w, r) => (!w || r.offset > w.offset ? r : w), null);
+    return { ...l, reloc, suspect: !!reloc && (reloc.rotDeg > o.loopRelocDeg || reloc.offset > o.loopRelocOffset) };
+  });
   return { frames, loops: loopsOut, counts, main };
 }

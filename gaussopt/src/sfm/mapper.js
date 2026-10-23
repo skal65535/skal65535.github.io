@@ -339,21 +339,24 @@ export class SequentialMapper {
   // registered frames plus its most covisible frames elsewhere (loop partners). Successive sweeps
   // shift the windows by half a window, so their boundaries do not stay fixed. Free intrinsics are
   // refined by each window BA in turn, starting from the previous window's: the final f, k1 are
-  // the last window's estimate, not a joint fit over all frames.
+  // the last window's estimate, fitted to its frames. One more sweep with them fixed then fits
+  // every other window to that camera (without it, a window keeps the poses and points it made for
+  // its own estimate: gare-st-lazare 1.97 -> 0.79 px median reprojection, jardin5 p90 1.62 -> 0.73).
   refine({ sweeps = 2, refineIntrinsics = true, extra = 5 } = {}) {
     const W = this.o.window, half = Math.max(1, W >> 1);
     const segs = [...new Set(Array.from(this.segment).filter(s => s >= 0))];
     const sizes = segs.map(seg => this.poses.filter((P, k) => P && this.segment[k] === seg).length);
+    const all = sweeps && refineIntrinsics ? sweeps + 1 : sweeps;  // + the sweep with the intrinsics fixed
     let done = 0, total = 0;  // windows, for progress
-    for (let sw = 0; sw < sweeps; sw++) for (const n of sizes) total += Math.max(0, Math.ceil((n - (sw % 2) * half) / W));
-    for (let sw = 0; sw < sweeps; sw++) {
+    for (let sw = 0; sw < all; sw++) for (const n of sizes) total += Math.max(0, Math.ceil((n - (sw % 2) * half) / W));
+    for (let sw = 0; sw < all; sw++) {
       for (const seg of segs) {
         const reg = [];
         for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === seg) reg.push(k);
         for (let start = (sw % 2) * half; start < reg.length; start += W) {
           const core = reg.slice(start, start + W);
           if (!core.length) continue;
-          this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], refineIntrinsics, iterations: 10 });
+          this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], refineIntrinsics: refineIntrinsics && sw < sweeps, iterations: 10 });
           this.o.progress('refine', ++done, total);
         }
       }

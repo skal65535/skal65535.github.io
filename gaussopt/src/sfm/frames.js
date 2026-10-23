@@ -1,13 +1,16 @@
 // frames.js — S0 keyframe selection (DESIGN-sfm §5.1), a port of video2splat.py `select`:
 // sharpness = variance of the Laplacian at <= 1000 px, motion = median pyramidal Lucas-Kanade
 // displacement of Shi-Tomasi corners at <= 640 px (fraction of the diagonal), then one sharpest
-// frame per SPACING of cumulative motion (or per 1/keepFps s), blurry picks dropped. Works on
+// frame per SPACING of cumulative motion (or per 1/keepFps s), blurry picks dropped (blurry next
+// to the picks around them, not to all: video2splat compares with all). Works on
 // 8-bit gray images from any source (browser canvas, ffmpeg in the tests).
 "use strict";
 
 import { median } from './util.js';
 
-export const FRAME_DEFAULTS = { spacing: 0.05, keepFps: 2, blurRel: 0.35, sharpDim: 1000, flowDim: 640 };
+// blurWindow: picks a pick's sharpness is compared with (it centred); blur is a dip among its
+// neighbours, while sharpness also follows the texture of the scene, which changes slowly
+export const FRAME_DEFAULTS = { spacing: 0.05, keepFps: 2, blurRel: 0.35, blurWindow: 11, sharpDim: 1000, flowDim: 640 };
 
 // Size of an image scaled to fit `maxDim` (never enlarged)
 export function fitSize(w, h, maxDim) {
@@ -244,7 +247,8 @@ export function motion(pyrA, pyrB) {
 
 // Keyframe choice from per-candidate sharpness and motion (motion[i]: from candidate i - 1 to i,
 // motion[0] unused). times: candidate timestamps in seconds (keepFps mode).
-// Returns { kept: [index], status: ['kept' | 'blurry' | 'window'], path (spacing units), threshold }
+// Returns { kept: [index], status: ['kept' | 'blurry' | 'window'], path (spacing units),
+// threshold (the median of the picks' blur thresholds), thresholds: Map(pick -> its threshold) }
 export function selectFrames({ sharpness: scores, motion: steps, times }, options = {}) {
   const o = { ...FRAME_DEFAULTS, ...options };
   const n = scores.length, bins = new Map();
@@ -263,13 +267,18 @@ export function selectFrames({ sharpness: scores, motion: steps, times }, option
   } else {
     times.forEach((t, i) => add(Math.floor((t - times[0]) * o.keepFps + 1e-6), i));
   }
-  const picks = [...bins.values()].map(b => b.reduce((best, i) => scores[i] > scores[best] ? i : best, b[0]));
-  const threshold = o.blurRel * median(picks.map(i => scores[i]));
+  const picks = [...bins.values()].map(b => b.reduce((best, i) => scores[i] > scores[best] ? i : best, b[0])).sort((a, b) => a - b);
+  // a pick is blurry below blurRel x the median of the blurWindow picks around it (fewer at the ends)
+  const half = o.blurWindow >> 1;
+  const thresholds = picks.map((_, k) => {
+    const lo = Math.max(0, Math.min(k - half, picks.length - 2 * half - 1));
+    return o.blurRel * median(picks.slice(lo, lo + 2 * half + 1).map(i => scores[i]));
+  });
   const status = new Array(n).fill('window');
   const kept = [];
-  for (const i of picks) {
-    status[i] = scores[i] >= threshold ? 'kept' : 'blurry';
+  picks.forEach((i, k) => {
+    status[i] = scores[i] >= thresholds[k] ? 'kept' : 'blurry';
     if (status[i] === 'kept') kept.push(i);
-  }
-  return { kept, status, path, threshold };
+  });
+  return { kept, status, path, threshold: median(thresholds), thresholds: new Map(picks.map((i, k) => [i, thresholds[k]])) };
 }

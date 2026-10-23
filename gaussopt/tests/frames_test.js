@@ -94,6 +94,17 @@ Deno.test('frame selection: one sharpest pick per spacing, blurry picks dropped 
   assert(byTime.kept.length === 20 && byTime.kept.every(i => byTime.kept.filter(j => Math.floor(j / 5) === Math.floor(i / 5)).length === 1), 'one per 0.5 s');
 });
 
+Deno.test('frame selection: a dull stretch is kept, a blur dip inside it is dropped (local threshold)', () => {
+  // 40 segments of 5 frames; the first half 8x less textured (jardin7's start), segment 10 blurred
+  const n = 200, r = makeRng(7);
+  const sharp = Array.from({ length: n }, (_, i) => (i < 100 ? 100 : 800) * (0.9 + 0.2 * r()) * (i >= 48 && i <= 52 ? 0.1 : 1));
+  const steps = Array.from({ length: n }, (_, i) => i === 0 ? 0 : 0.01);
+  const sel = selectFrames({ sharpness: sharp, motion: steps }, { spacing: 0.05 });
+  const dull = sel.kept.filter(i => i < 100).length, blurred = [48, 49, 50, 51, 52].filter(i => sel.status[i] === 'blurry');
+  assert(dull >= 18, `dull half: ${dull} keyframes`);
+  assert(blurred.length === 1 && [48, 49, 50, 51, 52].every(i => sel.status[i] !== 'kept'), `the blurred segment: ${[48, 49, 50, 51, 52].map(i => sel.status[i])}`);
+});
+
 Deno.test({ name: 'MP4 demuxer: jardin5 sample table (SFM_VIDEO)', ignore: !exists(VIDEO), fn: async () => {
   const reader = await denoFileReader(VIDEO);
   try {

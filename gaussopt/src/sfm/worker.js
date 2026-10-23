@@ -171,7 +171,7 @@ async function postThumbs(features) {
 async function keyframes(o, analysis) {
   const sel = selection(analysis, o), kept = sel.kept.map(i => analysis.order[i]);
   const blurry = sel.status.filter(s => s === 'blurry').length;
-  log(`keyframes: ${kept.length} kept (${blurry} blurry dropped, threshold ${sel.threshold.toFixed(1)}` +
+  log(`keyframes: ${kept.length} kept (${blurry} blurry dropped, median threshold ${sel.threshold.toFixed(1)}` +
       (sel.path ? `; path ${(sel.path.at(-1) * o.spacing).toFixed(2)} diagonals)` : ')'));
   if (kept.length < 3) throw new Error(`only ${kept.length} keyframes: lower the spacing or the blur threshold`);
   const keys = ['maxDim', 'maxFeatures', 'jpegQuality'];
@@ -344,13 +344,13 @@ async function send() {
 
 // Per-keyframe scores for the panel (quality.js, without the heavy fields)
 function postQuality(action = null) {
-  const q = current.session.quality();
+  const q = current.session.quality({ checkLoops: true });
   const time = new Map(current.session.images.map(im => [im.name, im.time]));
   post({ type: 'quality', action, quality: {
     counts: q.counts, main: q.main, version: current.version,
     frames: q.frames.map(f => ({ name: f.name, time: time.get(f.name), score: f.score, reason: f.reason, segment: f.segment,
                                   registered: f.registered, support: f.support })),
-    loops: q.loops.map(l => ({ a: l.a, b: l.b, inliers: l.inliers, rotDeg: l.rotDeg, suspect: l.suspect })),
+    loops: q.loops.map(l => ({ a: l.a, b: l.b, inliers: l.inliers, rotDeg: l.rotDeg, reloc: l.reloc, suspect: l.suspect })),
   } });
 }
 
