@@ -9,7 +9,7 @@
 //                         [qw, qx, qy, qz], [f_dc_r, f_dc_g, f_dc_b, flags]
 // Moments (12 f32): W, S, R, R1.xyz, R2.(xx, yy, zz, xy, xz, yz)
 // Grads   (12 f32): dL/drgb.xyz, dL/dlogit_op, dL/du0, dL/dv0,
-//                   dL/dconic.(a, b, c), w_view, w_err_view, unused
+//                   dL/dconic.(a, b, c), w_view, w_err_view, dL/dz_cam
 
 // === splats_render ===
 // Instanced quad renderer for the interactive view: 2.5-sigma screen-space
@@ -420,6 +420,7 @@ struct TrainUniforms {
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
+  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
@@ -678,7 +679,8 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 // z_med = depth where T crosses 0.5, last_k = 1 + last contributing sorted slot,
 // spread = (z_q3 - z_q1) / z_med, z_q1 and z_q3 = depths where T crosses 0.75 and 0.25: how
 // far apart along the ray the middle half of the blending weight is (a facade made of two
-// sheets = high); 0 when T stays above 0.25.
+// sheets = high); 0 when T stays above 0.25. A second plane, pix_state[W H + pixel] =
+// [sum of w ln z (w = T alpha), 0, 0, 0], is for the depth distortion loss in tile_backward.
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
 //           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
 
@@ -689,6 +691,7 @@ struct TrainUniforms {
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
+  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
@@ -736,6 +739,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var done = !in_bounds;
   var z_q1 = 0.0;
   var z_q3 = 0.0;
+  var wlnz = 0.0;
 
   let range = tile_ranges[wgid.y * ((W + 15u) / 16u) + wgid.x];
   let num_batches = (range.y + BATCH - 1u) / BATCH;
@@ -786,6 +790,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         if (T >= 0.75 && next_T < 0.75) { z_q1 = u0v0zr.z; }
         if (T >= 0.5 && next_T < 0.5) { z_med = u0v0zr.z; }
         if (T >= 0.25 && next_T < 0.25) { z_q3 = u0v0zr.z; }
+        wlnz += (T * alpha) * log(max(1e-6, u0v0zr.z));
         C += (T * alpha) * rgba.rgb;
         T = next_T;
         last_k = wg_k[i] + 1u;
@@ -799,6 +804,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     textureStore(out_tex, vec2i(gid.xy), vec4f(C, 1.0));
     let spread = select(0.0, max(0.0, z_q3 - z_q1) / max(1e-6, z_med), T < 0.25);
     pix_state[gid.y * W + gid.x] = vec4f(T, z_med, bitcast<f32>(last_k), spread);
+    pix_state[W * H + gid.y * W + gid.x] = vec4f(wlnz, 0.0, 0.0, 0.0);
   }
 }
 
@@ -812,6 +818,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 // per batch per tile.
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count;
 // loss_acc[0..1] = 64-bit sum (lo, hi) of the per-pixel MSE in 16.16 fixed point.
+// Depth distortion (Mip-NeRF 360), weight tu.loss.x, per pixel and normalized the same way:
+//   L_d = sum_ij w_i w_j |m_i - m_j|, w = T alpha, m = ln z_cam (scale-free),
+// the list taken as sorted by depth. Back to front, with the sums behind i (sw = sum w,
+// sm = sum w m, sg = sum w g) and the totals (1 - T_final, pix_state's 2nd plane = sum w m):
+//   g_i = dL_d/dw_i = 2 (m_i a_i - b_i + sm - m_i sw), a_i, b_i = the sums in front of i,
+//   dL_d/dm_i = 2 w_i (a_i - sw),  dL_d/dalpha_i = T_i g_i - sg / (1 - alpha_i);
+// the first goes into dL/dlogit_op and the 2D grads through alpha, as the color's does, and
+// the second into grads_2d slot 11 (dL/dz_cam, chained to the position by adam_step).
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
 //           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list.
 
@@ -822,6 +836,7 @@ struct TrainUniforms {
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
+  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
@@ -932,6 +947,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var T : f32 = 1.0;
   var last_k = 0u;
   var accum_rec = vec3f(0.0); // color behind the current splat, unattenuated by T
+  let lam = tu.loss.x / f32(W * H);  // depth distortion (see header)
+  var w_tot = 0.0;
+  var wm_tot = 0.0;
+  var sw = 0.0;
+  var sm = 0.0;
+  var sg = 0.0;
 
   if (in_bounds) {
     let gt   = textureLoad(gt_tex,  vec2i(gid.xy), 0).rgb;
@@ -944,6 +965,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 
     let st = pix_state[gid.y * W + gid.x];
     T = st.x;
+    w_tot = 1.0 - st.x;
+    wm_tot = pix_state[W * H + gid.y * W + gid.x].x;
     last_k = bitcast<u32>(st.z);
     atomicMax(&wg_max_last_k, last_k);
   }
@@ -1011,7 +1034,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
                      power <= 4.5 && alpha >= 1.0 / 255.0;
         if (!hit) { continue; }                                      // @nosg
 
-        var g = array<f32, 11>();  // grads_2d slots 0..10
+        var g = array<f32, 12>();  // grads_2d slots 0..11
         var m = array<f32, 12>();  // moments slots 0..11 (1 = S, done in adam_step)
         if (hit) {
           T = T / max(1e-4, 1.0 - alpha); // T_i
@@ -1019,7 +1042,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           let w_err  = weight * err_l1;
 
           let dL_drgb   = dL_dC * weight * SH_C0 * wg_cmask[i].xyz; // w.r.t. f_dc, zero where clamped
-          let dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
+          var dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
+          if (lam > 0.0) {
+            let z = max(1e-6, u0v0zr.z);
+            let mi = log(z);
+            let a = w_tot - weight - sw;           // weight in front of i
+            let b = wm_tot - weight * mi - sm;
+            let gi = 2.0 * (mi * a - b + sm - mi * sw);
+            dL_dalpha += lam * (T * gi - sg / max(1e-4, 1.0 - alpha));
+            g[11] = lam * 2.0 * weight * (a - sw) / z;
+            sw += weight;
+            sm += weight * mi;
+            sg += weight * gi;
+          }
           accum_rec = alpha * rgba.rgb + (1.0 - alpha) * accum_rec;
 
           let dL_dpower = -dL_dalpha * alpha;
@@ -1051,15 +1086,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         }
         let gbase = i * 12u;
         if (subgroupAny(hit)) {                                   // @sg
-          for (var c = 0u; c < 11u; c++) { g[c] = subgroupAdd(g[c]); }  // @sg
+          for (var c = 0u; c < 12u; c++) { g[c] = subgroupAdd(g[c]); }  // @sg
           for (var c = 0u; c < 12u; c++) { m[c] = subgroupAdd(m[c]); }  // @sg
-          // one lane per slot (grads 0..10, then moments 0..11), not 23 CAS loops on lane 0  // @sg
-          for (var c = sg_lane; c < 23u; c += sg_size) {             // @sg
-            if (c < 11u) { add_wg_grad(gbase + c, g[c]); } else { add_wg_mom(gbase + c - 11u, m[c - 11u]); }  // @sg
+          // one lane per slot (grads 0..11, then moments 0..11), not 24 CAS loops on lane 0  // @sg
+          for (var c = sg_lane; c < 24u; c += sg_size) {             // @sg
+            if (c < 12u) { add_wg_grad(gbase + c, g[c]); } else { add_wg_mom(gbase + c - 12u, m[c - 12u]); }  // @sg
           }                                                          // @sg
         }                                                            // @sg
         if (hit) {                                                // @nosg
-          for (var c = 0u; c < 11u; c++) { add_wg_grad(gbase + c, g[c]); }  // @nosg
+          for (var c = 0u; c < 12u; c++) { add_wg_grad(gbase + c, g[c]); }  // @nosg
           for (var c = 0u; c < 12u; c++) { add_wg_mom(gbase + c, m[c]); }   // @nosg
         }                                                            // @nosg
       }
@@ -1103,6 +1138,7 @@ struct TrainUniforms {
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
+  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
@@ -1206,6 +1242,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_dc   = load_grad(gbase + 8u);
   let w_view  = load_grad(gbase + 9u);
   let w_err_v = load_grad(gbase + 10u);
+  let dL_dz   = load_grad(gbase + 11u);  // depth distortion
   for (var c = 0u; c < 12u; c++) { grads_2d[gbase + c] = 0u; }
 
   // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S).
@@ -1213,7 +1250,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     moments[gbase + 1u] = bitcast<u32>(bitcast<f32>(moments[gbase + 1u]) + w_view * w_view);
   }
 
-  let grad_norm = abs(dL_drgb.x) + abs(dL_drgb.y) + abs(dL_drgb.z) + abs(dL_dop) + abs(dL_du0) + abs(dL_dv0);
+  let grad_norm = abs(dL_drgb.x) + abs(dL_drgb.y) + abs(dL_drgb.z) + abs(dL_dop) + abs(dL_du0) + abs(dL_dv0) + abs(dL_dz);
   if (grad_norm < 1e-10) { return; }
 
   let b  = idx * 4u;
@@ -1236,7 +1273,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_dvpos = vec3f(
     dL_du0 * fx * inv_z,
     dL_dv0 * fy * inv_z,
-    -(dL_du0 * fx * vpos.x + dL_dv0 * fy * vpos.y) * inv_z2
+    -(dL_du0 * fx * vpos.x + dL_dv0 * fy * vpos.y) * inv_z2 + dL_dz
   );
 
   // Recompute the forward covariance (must match project_splats).

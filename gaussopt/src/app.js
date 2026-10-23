@@ -99,6 +99,9 @@ const TIPS = {
   enable_merge: 'merge overlapping splats of nearly the same color',
   max_splats: 'growth stops at this many splats',
   max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats)',
+  depth_dist: 'weight of the depth distortion loss: it pulls the splats that make a pixel together in depth ' +
+              '(one surface, not a fog or two sheets; the Depth spread view shows what is left). 0: off (the default: ' +
+              'from the first step it costs 0.15-0.7 dB of validation PSNR at 30k steps on the test scenes)',
   max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles)',
   opacity_reset: 'every N steps, all opacities are lowered to 0.01 so useless splats fade out and get pruned (0: never). ' +
                  'Validation right at a reset reads low',
@@ -141,7 +144,7 @@ const SNAPSHOT_PARAMS = [
   'max_leaf_size', 'beta', 'rebalance_every',
   'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth',
   'max_splats', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count',
-  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final',
+  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'depth_dist',
   'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset',
 ];
 
@@ -264,6 +267,7 @@ export class GaussOptApp {
       lr_quat:         0.002,
       lr_color:        0.0025,
       lr_opacity:      0.05,
+      depth_dist:      0,      // depth distortion loss weight (0 = off), see tile_backward
     };
     this.urlKeys = this._applyUrlParams();
     this.autoTrain = this.params.training;  // &train: start training once the first model is loaded
@@ -400,6 +404,7 @@ export class GaussOptApp {
     optF.add(P, 'sa_temp', 0.01, 1.0, 0.01).name('SA temp T₀');
     optF.add(P, 'sa_cooling', 0.80, 0.999, 0.005).name('SA cooling γ');
     optF.add(P, 'sa_reheat').name('SA re-heat @ K');
+    optF.add(P, 'depth_dist', 0, 1, 0.01).name('depth distortion');
 
     const visF = view.addFolder('Visualization');
     visF.add(P, 'visu_mode', VISU_MODES).name('splat shape');

@@ -9,7 +9,7 @@ import { loadShaders } from './render.js';
 import { residualDensity, stippleSites, buildViewDepthGrid, makeSeedSplats } from './stipple.js';
 import { rgbPsnr, rgbPsnrDown, rgbSsim } from './metrics.js';
 
-const UNIFORM_BYTES = 144;     // TrainUniforms (shaders.wgsl): 36 x f32
+const UNIFORM_BYTES = 160;     // TrainUniforms (shaders.wgsl): 40 x f32
 const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry plot
 const OPT_METHODS   = { adam: 0, monte_carlo: 1, sim_anneal: 2 };
 const BUF_RW   = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
@@ -146,7 +146,8 @@ export class GaussOptTrainer {
       size: [this.trainW, this.trainH], format: 'rgba8unorm', label: 'hat_tex',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
-    this.pixStateBuf = this._buffer('pix_state', this.trainW * this.trainH * 16, BUF_RW());
+    // 2 planes of a vec4f per pixel: [T, z_med, last_k, spread], [sum w ln z, 0, 0, 0] (tile_forward)
+    this.pixStateBuf = this._buffer('pix_state', this.trainW * this.trainH * 32, BUF_RW());
     // Per-tile splat lists, built on the GPU each render (see _runPasses)
     this.tilesX = Math.ceil(this.trainW / 16);
     this.tilesY = Math.ceil(this.trainH / 16);
@@ -262,8 +263,8 @@ export class GaussOptTrainer {
              fxNorm: 2 * fx / this.trainW, fyNorm: 2 * fy / this.trainH };
   }
 
-  // Write TrainUniforms: view | intrinsics | dims | lrs | opt_params | limits.
-  // `extra` fills f32[24..35] (lrs, opt_params, limits); forward-only renders leave them at 0.
+  // Write TrainUniforms: view | intrinsics | dims | lrs | opt_params | limits | loss.
+  // `extra` fills f32[24..39] (lrs, opt_params, limits, loss); forward-only renders leave them at 0.
   _writeUniforms(img, k, extra = null) {
     const buf = new ArrayBuffer(UNIFORM_BYTES);
     const f32 = new Float32Array(buf), u32 = new Uint32Array(buf);
@@ -537,6 +538,7 @@ export class GaussOptTrainer {
       optMethod, (optMethod === 1) ? (P.mc_noise || 0.08) : this.currentTemp, Math.random(), this.adamStepCount,  // opt_params
       P.max_splat_angle ?? 0.03, (P.max_splat_scale ?? 0.1) * R,                              // limits
       Math.log(Math.max(1, P.max_anisotropy ?? 10)), P.lr_opacity ?? 0.05,
+      P.depth_dist ?? 0, 0, 0, 0,                                                               // loss
     ]);
     this.device.queue.writeBuffer(this.lossBuf, 0, new Uint32Array(4));
 
