@@ -304,9 +304,10 @@ export class GaussOptRenderer {
     dev.queue.submit([enc.finish()]);
   }
 
-  // Fullscreen target / render / residual comparison (mode: see compare_blit BlitParams)
-  renderCompare({ gtTex, hatTex, mode = 0, splitX = 0.5, amp = 3.0 }) {
-    if (!gtTex || !hatTex) return;
+  // Fullscreen target / render / residual / depth-spread comparison (mode: see compare_blit
+  // BlitParams); pixState: the trainer's pix_state, of the render in hatTex
+  renderCompare({ gtTex, hatTex, pixState, mode = 0, splitX = 0.5, amp = mode === 3 ? 5.0 : 3.0 }) {
+    if (!gtTex || !hatTex || !pixState) return;
     const b = new ArrayBuffer(16);
     new Uint32Array(b)[0] = mode;
     new Float32Array(b).set([splitX, amp], 1);
@@ -320,7 +321,7 @@ export class GaussOptRenderer {
       }],
     });
     pass.setPipeline(this.pipeBlit);
-    pass.setBindGroup(0, this._bindGroup(this.pipeBlit, this.blitUniformBuf, gtTex.createView(), hatTex.createView(), this.sampler));
+    pass.setBindGroup(0, this._bindGroup(this.pipeBlit, this.blitUniformBuf, gtTex.createView(), hatTex.createView(), this.sampler, pixState));
     pass.draw(4);
     pass.end();
     this.device.queue.submit([enc.finish()]);

@@ -299,11 +299,13 @@ fn fs(in: FrustumImgOut) -> @location(0) vec4f {
 }
 
 // === compare_blit ===
-// Fullscreen ground-truth / render / residual comparison.
-// Bindings: 0 BlitParams, 1 gt_tex, 2 hat_tex, 3 samp.
+// Fullscreen ground-truth / render / residual / depth-spread comparison.
+// Bindings: 0 BlitParams, 1 gt_tex, 2 hat_tex, 3 samp, 4 pix_state (tile_forward's, of hat_tex).
 
 struct BlitParams {
-  mode    : u32, // 0 = target, 1 = split (target left), 2 = residual |gt - hat| * amp
+  mode    : u32, // 0 = target, 1 = split (target left), 2 = residual |gt - hat| * amp,
+                 // 3 = depth spread (pix_state.w) as heat over the gray render, full at 1 / amp;
+                 //     blue where T_final > 0.25 (no spread measured)
   split_x : f32, // in [0, 1]
   amp     : f32,
   _pad    : f32,
@@ -313,6 +315,7 @@ struct BlitParams {
 @group(0) @binding(1) var          gt_tex  : texture_2d<f32>;
 @group(0) @binding(2) var          hat_tex : texture_2d<f32>;
 @group(0) @binding(3) var          samp    : sampler;
+@group(0) @binding(4) var<storage, read> pix_state : array<vec4f>;
 
 struct BlitOut {
   @builtin(position) pos : vec4f,
@@ -334,6 +337,15 @@ fn fs(in: BlitOut) -> @location(0) vec4f {
   let hat = textureSampleLevel(hat_tex, samp, in.uv, 0.0).rgb;
   if (bp.mode == 0u) { return vec4f(gt, 1.0); }
   if (bp.mode == 2u) { return vec4f(abs(gt - hat) * bp.amp, 1.0); }
+  if (bp.mode == 3u) {
+    let dim = textureDimensions(hat_tex);
+    let p = min(vec2u(in.uv * vec2f(dim)), dim - 1u);
+    let st = pix_state[p.y * dim.x + p.x];
+    let gray = vec3f(0.35 * dot(hat, vec3f(0.299, 0.587, 0.114)));
+    let s = clamp(st.w * bp.amp, 0.0, 1.0);
+    let heat = clamp(vec3f(3.0 * s, 3.0 * s - 1.0, 3.0 * s - 2.0), vec3f(0.0), vec3f(1.0));  // black-red-yellow-white
+    return vec4f(select(gray + heat, vec3f(0.0, 0.0, 0.25), st.x > 0.25), 1.0);
+  }
   if (abs(in.uv.x - bp.split_x) < 0.002) { return vec4f(1.0, 0.9, 0.2, 1.0); } // wipe line
   return vec4f(select(hat, gt, in.uv.x < bp.split_x), 1.0);
 }
@@ -662,8 +674,11 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 // 16x16-pixel tile rasterizer: one workgroup per tile composites its list of sorted
 // slots (tile_list[start .. start + count), front-to-back) in shared-memory batches;
 // stops at T < 1e-4.
-// Writes color to out_tex and pix_state = [T_final, z_med, bitcast<f32>(last_k), 0],
-// z_med = depth where T crosses 0.5, last_k = 1 + last contributing sorted slot.
+// Writes color to out_tex and pix_state = [T_final, z_med, bitcast<f32>(last_k), spread],
+// z_med = depth where T crosses 0.5, last_k = 1 + last contributing sorted slot,
+// spread = (z_q3 - z_q1) / z_med, z_q1 and z_q3 = depths where T crosses 0.75 and 0.25: how
+// far apart along the ray the middle half of the blending weight is (a facade made of two
+// sheets = high); 0 when T stays above 0.25.
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
 //           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
 
@@ -719,6 +734,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var z_med = 0.0;
   var last_k = 0u;
   var done = !in_bounds;
+  var z_q1 = 0.0;
+  var z_q3 = 0.0;
 
   let range = tile_ranges[wgid.y * ((W + 15u) / 16u) + wgid.x];
   let num_batches = (range.y + BATCH - 1u) / BATCH;
@@ -766,7 +783,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         if (alpha < 1.0 / 255.0) { continue; }
 
         let next_T = T * (1.0 - alpha);
+        if (T >= 0.75 && next_T < 0.75) { z_q1 = u0v0zr.z; }
         if (T >= 0.5 && next_T < 0.5) { z_med = u0v0zr.z; }
+        if (T >= 0.25 && next_T < 0.25) { z_q3 = u0v0zr.z; }
         C += (T * alpha) * rgba.rgb;
         T = next_T;
         last_k = wg_k[i] + 1u;
@@ -778,7 +797,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 
   if (in_bounds) {
     textureStore(out_tex, vec2i(gid.xy), vec4f(C, 1.0));
-    pix_state[gid.y * W + gid.x] = vec4f(T, z_med, bitcast<f32>(last_k), 0.0);
+    let spread = select(0.0, max(0.0, z_q3 - z_q1) / max(1e-6, z_med), T < 0.25);
+    pix_state[gid.y * W + gid.x] = vec4f(T, z_med, bitcast<f32>(last_k), spread);
   }
 }
 
@@ -888,6 +908,7 @@ fn add_global_mom(i: u32, val: f32) {
 fn main(@builtin(global_invocation_id) gid: vec3u,
         @builtin(workgroup_id) wgid: vec3u,
         @builtin(subgroup_invocation_id) sg_lane: u32,  // @sg
+        @builtin(subgroup_size) sg_size: u32,           // @sg
         @builtin(local_invocation_index) lid: u32) {
   let W = tu.dims.x;
   let H = tu.dims.y;
@@ -1032,9 +1053,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         if (subgroupAny(hit)) {                                   // @sg
           for (var c = 0u; c < 11u; c++) { g[c] = subgroupAdd(g[c]); }  // @sg
           for (var c = 0u; c < 12u; c++) { m[c] = subgroupAdd(m[c]); }  // @sg
-          if (sg_lane == 0u) {                                       // @sg
-            for (var c = 0u; c < 11u; c++) { add_wg_grad(gbase + c, g[c]); }  // @sg
-            for (var c = 0u; c < 12u; c++) { add_wg_mom(gbase + c, m[c]); }   // @sg
+          // one lane per slot (grads 0..10, then moments 0..11), not 23 CAS loops on lane 0  // @sg
+          for (var c = sg_lane; c < 23u; c += sg_size) {             // @sg
+            if (c < 11u) { add_wg_grad(gbase + c, g[c]); } else { add_wg_mom(gbase + c - 11u, m[c - 11u]); }  // @sg
           }                                                          // @sg
         }                                                            // @sg
         if (hit) {                                                // @nosg

@@ -37,6 +37,7 @@ const COMPARE_MODES = {
   '3D Free / Snap View': 0,
   'Split (GT | Render)': 1,
   'Residual |GT - Hat|': 2,
+  'Depth spread': 3,
 };
 
 const FRUSTUM_IMAGES = { 'Off': 'off', 'Active Cam Only': 'active', 'All Cameras': 'all' };
@@ -63,8 +64,10 @@ const TIPS = {
   Visualization: 'how the splats are drawn, and the overlays',
   visu_mode: 'gaussian: the real render. cone, ellipsis, small dot, axis: shapes to inspect the splats',
   color_mode: 'learned colors, or a diagnostic: octree leaf, error mass R (WLBG), effective view count Neff, depth',
-  compare_mode: '3D view (free or snapped to a camera), a split wipe photo | render, or the residual |photo - render|. ' +
-                'Split and residual show the camera being trained, or the camera # of the Camera folder when paused',
+  compare_mode: '3D view (free or snapped to a camera), a split wipe photo | render, the residual |photo - render|, or ' +
+                'the depth spread: how far apart in depth the middle half of each pixel\'s opacity is (red at 7% of the depth, white at 20%: ' +
+                'e.g. a wall rendered as two layers; blue: not enough opacity to tell). ' +
+                'The 2D modes show the camera being trained, or the camera # of the Camera folder when paused',
   split_x: 'Split mode: where the wipe between the photo (left) and the render (right) is',
   haze: 'draws every splat this much larger (view only, training is not changed)',
   show_octree: 'wireframes of the octree leaves, colored by state',
@@ -1484,7 +1487,7 @@ export class GaussOptApp {
     try {
       const r = await this.trainer.evaluateValidation();
       if (r) {
-        this.log(`Val PSNR @ step ${r.step}: ${r.psnr.toFixed(2)} dB (1/4 res ${r.psnr4.toFixed(2)} dB), SSIM ${r.ssim.toFixed(3)} over ${r.views} held-out views (${this.params.val_split}) ` +
+        this.log(`Val PSNR @ step ${r.step}: ${r.psnr.toFixed(2)} dB (1/4 res ${r.psnr4.toFixed(2)} dB), SSIM ${r.ssim.toFixed(3)}, depth spread ${(100 * r.spread).toFixed(1)}% over ${r.views} held-out views (${this.params.val_split}) ` +
                  `(${r.count} splats, ${(performance.now() - t0).toFixed(0)} ms)`, 'ok', 'train');
         if (this.colmap?.fromSfm) this.sfm?.viewPsnr(r.perView);
       } else {
@@ -1574,12 +1577,12 @@ export class GaussOptApp {
 
     if (this.holdTarget && imgs[camIdx] && this.gtAvailable) {
       const gtTex = await tr.ensureGtTexture(camIdx);
-      if (gtTex) this.renderer.renderCompare({ gtTex, hatTex: tr.hatTex, mode: 0 });
+      if (gtTex) this.renderer.renderCompare({ gtTex, hatTex: tr.hatTex, pixState: tr.pixStateBuf, mode: 0 });
     } else if (P.compare_mode > 0 && imgs.length > 0 && this.gtAvailable) {
       const out = (P.training && this.lastStepOut?.gtTex) ? this.lastStepOut : await tr.renderViewForward(camIdx);
       if (out?.gtTex) {
         this.renderer.renderCompare({
-          gtTex: out.gtTex, hatTex: out.hatTex,
+          gtTex: out.gtTex, hatTex: out.hatTex, pixState: tr.pixStateBuf,
           mode: P.compare_mode, splitX: P.split_x,
         });
       }

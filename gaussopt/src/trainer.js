@@ -18,6 +18,13 @@ const BUF_READ = () => GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST;
 // Fixed-point (x65536) 64-bit squared-error sum [lo, hi] of loss_acc
 const lossFixed = (u32) => u32[1] * 4294967296 + u32[0];
 
+// Mean depth spread (pix_state.w) over the pixels with T_final < 0.25 (pix_state: 4 floats / pixel)
+function meanDepthSpread(pix) {
+  let sum = 0, n = 0;
+  for (let p = 0; p < pix.length; p += 4) if (pix[p] < 0.25) { sum += pix[p + 3]; n++; }
+  return n > 0 ? sum / n : 0;
+}
+
 // Cache key of a view matrix: its 12 non-constant entries
 function viewKey(view) {
   let key = '';
@@ -659,11 +666,12 @@ export class GaussOptTrainer {
 
   // Held-out metrics: forward-render every validation camera (never trained on) at training
   // resolution vs its GT; means of the per-view PSNR, SSIM and 1/4-resolution PSNR (psnr4), as
-  // 3DGS averages per-view PSNRs.
+  // 3DGS averages per-view PSNRs, and of the depth spread (pix_state.w, see tile_forward) over
+  // the pixels where it is measured (T_final < 0.25).
   async evaluateValidation() {
     if (this.valViews.length === 0 || this.count === 0) return null;
     return this._withStepLock(async () => {
-      let sumPsnr = 0, sumSsim = 0, sumPsnr4 = 0, n = 0;
+      let sumPsnr = 0, sumSsim = 0, sumPsnr4 = 0, sumSpread = 0, n = 0;
       const perView = [];  // [name, dB]: the SfM panel scores keyframes that train badly (DESIGN-sfm §6.1)
       const W = this.trainW, H = this.trainH, bpr = this.rowPitch;
       try {
@@ -671,19 +679,23 @@ export class GaussOptTrainer {
           this._lastHatKey = '';
           const out = await this._renderViewForward(v);
           if (!out) continue;
-          const [gt, hat] = await this._readback('val_readback', [{ tex: out.gtTex }, { tex: this.hatTex }]);
+          const [gt, hat, pix] = await this._readback('val_readback', [
+            { tex: out.gtTex }, { tex: this.hatTex }, { buf: this.pixStateBuf, bytes: W * H * 16 },
+          ]);
           const psnr = rgbPsnr(gt, hat, W, H, bpr);
           perView.push([this.images[v].name, psnr]);
           sumPsnr += psnr;
           sumSsim += rgbSsim(gt, hat, W, H, bpr);
           sumPsnr4 += rgbPsnrDown(gt, hat, W, H, bpr, 4);
+          sumSpread += meanDepthSpread(pix);
           n++;
         }
       } finally {
         this._invalidateCaches();  // shared buffers now hold the last val view
       }
       if (n === 0) return null;
-      const res = { step: this.stepCount, psnr: sumPsnr / n, ssim: sumSsim / n, psnr4: sumPsnr4 / n, count: this.count, views: n };
+      const res = { step: this.stepCount, psnr: sumPsnr / n, ssim: sumSsim / n, psnr4: sumPsnr4 / n,
+                    spread: sumSpread / n, count: this.count, views: n };
       this.valHistory.push(res);
       return { ...res, perView };
     });
