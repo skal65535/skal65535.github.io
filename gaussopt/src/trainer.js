@@ -721,10 +721,9 @@ export class GaussOptTrainer {
   // CPU outer loop (inside a step, holding the lock): read back loss / splats / moments / Adam,
   // prune-grow-rebuild (or just rebuild) the octree, carry Adam state over, re-upload.
   // Returns true when stipple seeding rendered another view into hatTex.
-  // TODO: everything here runs on the main thread, so the page stops drawing meanwhile (jardin5,
-  // 300k splats: ~210 ms, mostly reconcileAndGrow, then the readback, gather and upload).
-  // Run reconcileAndGrow + the Adam gather in a worker on transferred buffers, keep training on
-  // the old splats meanwhile and swap the result in (DESIGN.md §5.3).
+  // Everything here runs on the main thread, so the page stops drawing meanwhile (300k splats:
+  // 160-200 ms, mostly reconcileAndGrow, then the readback, gather and upload; ~11% of the
+  // training time at one rebalance per 100 steps). No worker: DESIGN.md §5.3.
   async _rebalance() {
     const ms = {}, t = [performance.now()], lap = (k) => { t.push(performance.now()); ms[k] = t.at(-1) - t.at(-2); };
     await this._drainLossRead();  // keep history in step order
