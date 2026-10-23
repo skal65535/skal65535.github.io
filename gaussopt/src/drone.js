@@ -15,6 +15,8 @@
 import { clamp, wrapPi, approach, dot, cross, sub, madd, normalize, rotate, orbitBasis, viewFromAxes } from './math.js';
 
 const DEG = Math.PI / 180;
+const GIMBAL_MIN = -30 * DEG, GIMBAL_MAX = 85 * DEG;  // camera tilt range (radians, > 0 = down)
+
 export class Drone {
   constructor() {
     this.pos = [0, 0, 0];
@@ -41,10 +43,13 @@ export class Drone {
     this.vel = [0, 0, 0];
     this.yaw = Math.atan2(dot(f, e2), dot(f, e1));
     this.pitch = 0; this.roll = 0; this.yawRate = 0; this.throttle = 0;
-    this.gimbal = clamp(Math.asin(clamp(-dot(f, U), -1, 1)), -30 * DEG, 85 * DEG);
+    this.gimbal = clamp(Math.asin(clamp(-dot(f, U), -1, 1)), GIMBAL_MIN, GIMBAL_MAX);
     this.recenter = 0;
     this.stickF = [0, 0];
   }
+
+  // Gimbal tilt by `delta` radians (> 0 = look further down), within the tilt range
+  tilt(delta) { this.gimbal = clamp(this.gimbal + delta, GIMBAL_MIN, GIMBAL_MAX); }
 
   // World-space body axes: forward f, right r, down d (OpenCV camera axes, as buildOrbitViewMatrix)
   _axes(extraPitch = 0) {

@@ -1,0 +1,84 @@
+// ply_octree_test.js — .ply checkpoint with an embedded Loose Octree: round trip of the tree and
+// the splats' leaf ids, and octree-culled vs exhaustive sorts keeping the same splats.
+import { LooseOctree, nearCameraCone } from '../src/octree.js';
+import { SPLAT_FLOATS, exportPlyBuffer, parsePlyBuffer } from '../src/colmap.js';
+import { makeRng, projectPinhole } from '../src/math.js';
+import { expSO3, mul3 } from '../src/sfm/linalg.js';
+import { assert } from './util.js';
+
+// n splats, 95% in a dense cluster (deep, unbalanced tree), the rest spread out
+function clusteredSplats(n, rng) {
+  const p = new Float32Array(n * SPLAT_FLOATS);
+  for (let i = 0; i < n; i++) {
+    const b = i * SPLAT_FLOATS, dense = i < 0.95 * n;
+    for (let k = 0; k < 3; k++) p[b + k] = dense ? -1 - 0.5 * rng() : 4 * (rng() - 0.5);
+    p[b + 3] = 4 * rng() - 2;
+    for (let k = 4; k < 7; k++) p[b + k] = -5 + 2 * rng();
+    p[b + 8] = 1;
+  }
+  return p;
+}
+
+Deno.test('.ply octree round trip: leaf ids, max depth, leaf size, looseness', () => {
+  const n = 3000, p = clusteredSplats(n, makeRng(1));
+  const tree = new LooseOctree({ maxLeafSize: 128, maxDepth: 7, beta: 0.3 });
+  tree.build(p, n);
+  const parsed = parsePlyBuffer(exportPlyBuffer(p, n, tree));
+  const t = LooseOctree.fromSerializedNodes(parsed.octreeData.meta, parsed.octreeData.nodes);
+  assert(t.maxDepth === 7 && t.maxLeafSize === 128 && Math.abs(t.beta - 0.3) < 1e-6, `meta ${t.maxDepth} ${t.maxLeafSize} ${t.beta}`);
+  assert(t.leaves.length === tree.leaves.length, `${t.leaves.length} leaves, expected ${tree.leaves.length}`);
+  let bad = 0;
+  for (let i = 0; i < n; i++) {
+    const lid = parsed.params[i * SPLAT_FLOATS + 7], leaf = t.leaves[lid];
+    if (lid !== p[i * SPLAT_FLOATS + 7] || !(i >= leaf.start && i < leaf.start + leaf.count)) bad++;
+  }
+  assert(bad === 0, `${bad} splats with a wrong leaf id`);
+});
+
+Deno.test('octree cull keeps the splats the exhaustive cull keeps', () => {
+  const rng = makeRng(2), n = 20000, p = new Float32Array(n * SPLAT_FLOATS);
+  for (let i = 0; i < n; i++) {
+    const b = i * SPLAT_FLOATS;
+    for (let k = 0; k < 3; k++) p[b + k] = 8 * (rng() - 0.5);
+    p[b + 3] = 0;
+    for (let k = 4; k < 7; k++) p[b + k] = (i % 64) ? -9 + 2 * rng() : -4 + 3.5 * rng();  // small, a few larger than their leaf
+    p[b + 8] = 1;
+  }
+  const tree = new LooseOctree({ maxLeafSize: 4 });
+  tree.build(p, n);
+  tree.updateExtents(p);
+  const a = new Uint32Array(n), b = new Uint32Array(n);
+  for (let c = 0; c < 16; c++) {  // cameras around the origin looking at it, some inside the cloud
+    const ang = c * 0.7, r = 1 + (c % 4) * 2.5, C = [r * Math.cos(ang), 0.3 * (c % 3), r * Math.sin(ang)];
+    const f = [-Math.cos(ang), 0, -Math.sin(ang)], d = [0, 1, 0], x = [d[1] * f[2] - d[2] * f[1], d[2] * f[0] - d[0] * f[2], d[0] * f[1] - d[1] * f[0]];
+    const dot = (u) => u[0] * C[0] + u[1] * C[1] + u[2] * C[2];
+    const view = new Float32Array([x[0], d[0], f[0], 0, x[1], d[1], f[1], 0, x[2], d[2], f[2], 0, -dot(x), -dot(d), -dot(f), 1]);
+    const fx = 1 + (c % 3), fy = fx * 1.3;
+    const nRef = tree.sortGlobalExact(p, n, view, fx, fy, a);
+    const nOct = tree.sortOctreeFrontToBack(p, C, view, fx, fy, b).numVisible;
+    const ref = new Set(a.subarray(0, nRef)), oct = new Set(b.subarray(0, nOct));
+    assert(nRef === nOct && [...ref].every(i => oct.has(i)), `camera ${c}: exhaustive ${nRef} visible, octree ${nOct}`);
+  }
+});
+
+Deno.test('near-camera cone: the sphere grid finds exactly the splats a scan of every camera finds', () => {
+  const r = makeRng(7), uv = [0, 0];
+  const images = Array.from({ length: 60 }, (_, c) => {
+    const R = mul3(expSO3([r() - 0.5, 6 * r(), r() - 0.5]), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const C = [8 * r() - 4, r() - 0.5, 8 * r() - 4], t = [0, 1, 2].map(i => -(R[3 * i] * C[0] + R[3 * i + 1] * C[1] + R[3 * i + 2] * C[2]));
+    const camera = { fx: 500 + 500 * r(), fy: 500 + 500 * r(), cx: 400 + 200 * r(), cy: 300 + 100 * r(), width: 1000, height: 700 };
+    return { R, t, camera, zMin: 0.2 + 2 * r(), isValidation: c % 8 === 4 };
+  });
+  const near = nearCameraCone(images), train = images.filter(im => !im.isValidation);
+  const scan = (x, y, z) => train.some(({ R, t, camera, zMin }) => {
+    const zc = projectPinhole(R, t, camera, x, y, z, uv);
+    return zc > 0 && zc < 0.65 * zMin && uv[0] >= 0 && uv[0] <= camera.width && uv[1] >= 0 && uv[1] <= camera.height;
+  });
+  let hits = 0;
+  for (let k = 0; k < 200000; k++) {
+    const x = 10 * r() - 5, y = 3 * r() - 1.5, z = 10 * r() - 5, s = scan(x, y, z);
+    assert(near(x, y, z) === s, `point ${k} (${x}, ${y}, ${z}): grid ${!s}, scan ${s}`);
+    hits += s;
+  }
+  assert(hits > 1000, `only ${hits} points in a cone`);
+});

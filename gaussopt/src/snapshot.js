@@ -3,7 +3,8 @@
 // Layout (little-endian):
 //   [0..7]   magic 'GOSNAP01'
 //   [8..11]  u32 JSON header byte length (incl. padding to 4 bytes)
-//   [12..]   UTF-8 JSON header: { format, version, count, ..., blobs: { name: [byteOffset, byteLength] } }
+//   [12..]   UTF-8 JSON header: { format, version, state: { count, stepCount, ... }, ...,
+//            blobs: { name: [byteOffset, byteLength] } }  (see GaussOptApp._writeSnapshot)
 //   [...]    raw blobs (offsets relative to the start of the blob section, 4-byte aligned):
 //              params  : Float32 count * SPLAT_FLOATS   (raw GPU splat layout, incl. leaf_id/flags)
 //              moments : Float32 count * MOMENT_FLOATS  (WLBG accumulators since last rebalance)
@@ -18,7 +19,7 @@ export const SNAPSHOT_VERSION = 1;
 export const SNAPSHOT_EXT     = '.gosnap';
 
 export function isSnapshotName(name) {
-  return typeof name === 'string' && name.endsWith(SNAPSHOT_EXT);
+  return typeof name === 'string' && name.toLowerCase().endsWith(SNAPSHOT_EXT);
 }
 
 // header: plain JSON-able object; blobs: { name: TypedArray }

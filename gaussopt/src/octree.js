@@ -5,7 +5,10 @@
 "use strict";
 
 import { SPLAT_FLOATS, rgbToSh0 } from './colmap.js';
-import { clamp, logit, sigmoid, randn, quatToMat3, mat3ToQuat, symEigen3 } from './math.js';
+import { clamp, logit, sigmoid, randn, quatToMat3, mat3ToQuat, symEigen3, projectPinhole } from './math.js';
+
+// LooseOctree constructor defaults (also for a .ply / JSON octree that doesn't record them)
+export const OCTREE_DEFAULTS = { maxLeafSize: 256, maxDepth: 10, beta: 0.20 };
 
 // Floats per splat in the GPU WLBG moments buffer:
 // [0]: W   visibility mass (sum T * alpha)
@@ -72,7 +75,7 @@ class OctreeNode {
     this.start = 0;        // leaf slice [start, start + count) in the compacted order
     this.count = 0;
     this.numCameras = 0;   // M_cell: training frustums intersecting the loose box
-    this.state = 0;        // 0 normal, 1 active subtask, 2 near split, 3 isolated floater
+    this.state = 0;        // 0 normal, 2 near split, 3 isolated floater (1: unused, see STATE_COLORS)
   }
 
   get isLeaf() { return this.children === null; }
@@ -104,34 +107,41 @@ function radixSortByPositiveKey(keys, ids, n, tmpKeys, tmpIds, out) {
   out.set(srcI.subarray(0, n));
 }
 
-// Per-splat cull of the octree and exhaustive sorts (inlined in sortOctreeFrontToBack). Returns (params, b) -> view-space z
-// of the splat at params[b..] (`view`: column-major world->camera, +Z forward), or -1 if it is
-// near-transparent, behind z = 0.05, or outside the |x| fx, |y| fy <= 1.25 z cone. fx, fy <= 0
-// disables the xy test.
 // 3-sigma world extent of splat b (largest axis, log-scale clamped as in the shaders)
 const splatExtent = (params, b) => 3 * Math.exp(Math.min(3, Math.max(params[b + 4], params[b + 5], params[b + 6])));
 
-// Frustum test keeps a splat whose center is within 1.25x the frustum, or whose 3-sigma
-// extent reaches into it: large splats centered off-screen still cover the frame edges.
-function makeSplatCull(view, fx, fy) {
+// Culling: near plane, frustum widening (node and splat tests must agree, so that the octree
+// path keeps what the exhaustive one does) and the opacity logit below which a splat is skipped
+const CULL_ZNEAR = 0.05, CULL_FRUSTUM = 1.25, CULL_MIN_LOGIT = -5.5;
+
+// Per-splat cull of the octree and exhaustive sorts, over splats [start, end) of `params`
+// (`view`: column-major world->camera, +Z forward): appends the view z / index of the kept ones
+// to keys / ids from n, returns the new n. Culled: near-transparent, behind the near plane, or
+// outside the |x| fx, |y| fy <= 1.25 z cone with its 3-sigma extent too (large splats centered
+// off-screen still cover the frame edges). fx, fy <= 0 disables the xy test.
+function cullSplats(params, start, end, view, fx, fy, keys, ids, n) {
   const zx = view[2], zy = view[6], zz = view[10], zw = view[14];
   const xx = view[0], xy = view[4], xz = view[8],  xw = view[12];
   const yx = view[1], yy = view[5], yz = view[9],  yw = view[13];
   const cullXY = fx > 0 && fy > 0;
-  return (params, b) => {
-    if (params[b + 3] < -5.5) return -1;
+  for (let idx = start; idx < end; idx++) {
+    const b = idx * SPLAT_FLOATS;
+    if (params[b + 3] < CULL_MIN_LOGIT) continue;
     const X = params[b], Y = params[b + 1], Z = params[b + 2];
     const z = zx * X + zy * Y + zz * Z + zw;
-    if (z <= 0.05) return -1;
+    if (z <= CULL_ZNEAR) continue;
     if (cullXY) {
       const ax = Math.abs(xx * X + xy * Y + xz * Z + xw) * fx, ay = Math.abs(yx * X + yy * Y + yz * Z + yw) * fy;
-      if (ax > z * 1.25 || ay > z * 1.25) {
+      const zf = z * CULL_FRUSTUM;
+      if (ax > zf || ay > zf) {
         const e = splatExtent(params, b);
-        if (ax > z * 1.25 + e * fx || ay > z * 1.25 + e * fy) return -1;
+        if (ax > zf + e * fx || ay > zf + e * fy) continue;
       }
     }
-    return z;
-  };
+    keys[n] = z;
+    ids[n++] = idx;
+  }
+  return n;
 }
 
 // Node table entry (PLY `octree_node` element / JSON): leaves store their slice, internal nodes
@@ -150,11 +160,12 @@ const BOX_EDGES = [
   [-1,-1, 1,  1,-1, 1], [ 1,-1, 1,  1, 1, 1], [ 1, 1, 1, -1, 1, 1], [-1, 1, 1, -1,-1, 1],
   [-1,-1,-1, -1,-1, 1], [ 1,-1,-1,  1,-1, 1], [ 1, 1,-1,  1, 1, 1], [-1, 1,-1, -1, 1, 1],
 ];
-// ABGR by leaf state: normal cyan, active green, near split orange, isolated red
+// ABGR by leaf state: normal cyan, active green (state 1, DESIGN.md Mode B: never assigned yet),
+// near split orange, isolated red
 const STATE_COLORS = [0x88ffcc44, 0xff44ff44, 0xff2299ff, 0xff3333ff];
 
 export class LooseOctree {
-  constructor({ maxLeafSize = 256, maxDepth = 10, beta = 0.20 } = {}) {
+  constructor({ maxLeafSize = OCTREE_DEFAULTS.maxLeafSize, maxDepth = OCTREE_DEFAULTS.maxDepth, beta = OCTREE_DEFAULTS.beta } = {}) {
     this.maxLeafSize = maxLeafSize;
     this.maxDepth    = maxDepth;
     this.beta        = beta;  // looseness: a node's loose box has side (1 + 2 beta) L
@@ -282,9 +293,9 @@ export class LooseOctree {
 
   static fromSerializedNodes(meta, nodes, leafIndices = null) {
     const tree = new LooseOctree({
-      maxLeafSize: meta.maxLeafSize || 256,
-      maxDepth:    meta.maxDepth    || 8,
-      beta:        meta.beta        ?? 0.20,
+      maxLeafSize: meta.maxLeafSize || undefined,
+      maxDepth:    meta.maxDepth    || undefined,
+      beta:        meta.beta        ?? undefined,
     });
     tree.sceneCenter = meta.sceneCenter || [0, 0, 0];
     tree.sceneRadius = meta.sceneRadius || 2.0;
@@ -424,18 +435,14 @@ export class LooseOctree {
   // with <= 3 splats and no other leaf within 1.25 x (sum of half sizes) get state 3 (isolated).
   updateCameraAndNeighborStats(images) {
     const trainImgs = images.filter(im => !im.isValidation);
+    const uv = [0, 0];
     for (const leaf of this.leaves) {
       const looseR = leaf.halfSize * (1 + 2 * this.beta) * 1.732;
       let camHits = 0;
       for (const { R, t, camera } of trainImgs) {
-        const xc = R[0] * leaf.cx + R[1] * leaf.cy + R[2] * leaf.cz + t[0];
-        const yc = R[3] * leaf.cx + R[4] * leaf.cy + R[5] * leaf.cz + t[1];
-        const zc = R[6] * leaf.cx + R[7] * leaf.cy + R[8] * leaf.cz + t[2];
+        const zc = projectPinhole(R, t, camera, leaf.cx, leaf.cy, leaf.cz, uv, 0.1);
         if (zc + looseR < 0.05) continue;
-        const zClamped = Math.max(0.1, zc);
-        const u = camera.fx * (xc / zClamped) + camera.cx;
-        const v = camera.fy * (yc / zClamped) + camera.cy;
-        const rPx = camera.fx * (looseR / zClamped);
+        const [u, v] = uv, rPx = camera.fx * (looseR / Math.max(0.1, zc));
         if (u + rPx >= 0 && u - rPx <= camera.width && v + rPx >= 0 && v - rPx <= camera.height) camHits++;
       }
       leaf.numCameras = camHits;
@@ -467,10 +474,10 @@ export class LooseOctree {
         const yc = view[1] * node.cx + view[5] * node.cy + view[9]  * node.cz + view[13];
         const zc = (view[2] * node.cx + view[6] * node.cy + view[10] * node.cz + view[14]) * zSign;
         const r  = node.halfSize * betaScale * 1.73205 + (node.maxExtent || 0);
-        if (zc + r < 0.05) return;  // completely behind the camera
-        if (zc - r > 0.05 && fx > 0 && fy > 0) {
-          if (Math.abs(xc) * fx > (zc + r) * 1.15 + r * fx) return;
-          if (Math.abs(yc) * fy > (zc + r) * 1.15 + r * fy) return;
+        if (zc + r < CULL_ZNEAR) return;  // completely behind the camera
+        if (zc - r > CULL_ZNEAR && fx > 0 && fy > 0) {  // the splat cull's cone, widened by r
+          if (Math.abs(xc) * fx > (zc + r) * CULL_FRUSTUM + r * fx) return;
+          if (Math.abs(yc) * fy > (zc + r) * CULL_FRUSTUM + r * fy) return;
         }
       }
       if (node.isLeaf) {
@@ -511,32 +518,10 @@ export class LooseOctree {
       this._tmpIds   = new Uint32Array(cap);
     }
     const keys = this._sortKeys, ids = this._sortIds;
-    // per-splat cull, inlined from makeSplatCull() (hot path)
-    const zx = view[2], zy = view[6], zz = view[10], zw = view[14];
-    const xx = view[0], xy = view[4], xz = view[8],  xw = view[12];
-    const yx = view[1], yy = view[5], yz = view[9],  yw = view[13];
-    const cullXY = fx > 0 && fy > 0;
     let n = 0;
-    for (const leaf of visibleLeaves) {
-      for (let idx = leaf.start, end = leaf.start + leaf.count; idx < end; idx++) {
-        const b = idx * SPLAT_FLOATS;
-        if (params[b + 3] < -5.5) continue;
-        const X = params[b], Y = params[b + 1], Z = params[b + 2];
-        const z = zx * X + zy * Y + zz * Z + zw;
-        if (z <= 0.05) continue;
-        if (cullXY) {
-          const ax = Math.abs(xx * X + xy * Y + xz * Z + xw) * fx, ay = Math.abs(yx * X + yy * Y + yz * Z + yw) * fy;
-          if (ax > z * 1.25 || ay > z * 1.25) {  // center off-frame: keep if its extent reaches in
-            const e = splatExtent(params, b);
-            if (ax > z * 1.25 + e * fx || ay > z * 1.25 + e * fy) continue;
-          }
-        }
-        keys[n] = z;
-        ids[n++] = idx;
-      }
-    }
+    for (const leaf of visibleLeaves) n = cullSplats(params, leaf.start, leaf.start + leaf.count, view, fx, fy, keys, ids, n);
     radixSortByPositiveKey(new Uint32Array(keys.buffer, 0, n), ids, n, this._tmpKeys, this._tmpIds, outIdx);
-    return { numVisible: n, numVisibleLeaves: visibleLeaves.length, visibleLeaves };
+    return { numVisible: n };
   }
 
   // Viewer sort (index-only octree, `splats/index.html`): visible leaves front-to-back, each
@@ -571,13 +556,11 @@ export class LooseOctree {
     return writePos;
   }
 
-  // Reference for the E1 check: exhaustive cull (same test as sortOctreeFrontToBack) + exact z-sort
+  // Reference for tests/ply_octree_test.js (E1): exhaustive cull (same test as sortOctreeFrontToBack) + exact z-sort
   sortGlobalExact(params, count, view, fx, fy, outIdx) {
-    const cull = makeSplatCull(view, fx, fy), pairs = [];
-    for (let i = 0; i < count; i++) {
-      const z = cull(params, i * SPLAT_FLOATS);
-      if (z >= 0) pairs.push({ id: i, z });
-    }
+    const keys = new Float32Array(count), ids = new Uint32Array(count);
+    const n = cullSplats(params, 0, count, view, fx, fy, keys, ids, 0);
+    const pairs = Array.from({ length: n }, (_, k) => ({ id: ids[k], z: keys[k] }));
     pairs.sort((a, b) => a.z - b.z);
     for (let i = 0; i < pairs.length; i++) outIdx[i] = pairs[i].id;
     return pairs.length;
@@ -607,89 +590,33 @@ export class LooseOctree {
   // ── Outer loop: prune / floaters / split / merge / seeds, then rebuild ──
   // Returns { count, params (new, compacted), srcIdx, splitVectors, stats }. srcIdx[k] is the
   // input splat whose optimizer state new splat k inherits (-1 = fresh), in the order BEFORE the
-  // final build(); compose with this.lastPerm.
+  // final build(); compose with this.lastPerm. `params` is also modified in place (opacity of
+  // MCMC teleport parents and of decayed occluders), so the caller should switch to the result.
   reconcileAndGrow(params, count, moments, images, opts = {}) {
     const {
       maxSplats      = 100000,
       pruneOpacity   = 0.008,
       hysteresis     = 0.35,
       enableFloaters = true,
+      floaterDepth   = 'observed',  // nearCameraCone's depth
       enableSplit    = true,
       enableMerge    = true,
       optMethod      = 'adam',  // 'adam' | 'monte_carlo' | 'sim_anneal'
       saTemp         = 0.15,    // current SA temperature T(t)
       seedSplats     = null,    // Float32Array of splats to append (stipple seeding)
     } = opts;
-
-    // Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds, and the
-    // R-weighted CDF used to pick MCMC teleport parents.
-    let totalR = 0, activeCount = 0, cdfSum = 0;
-    const cdfIdx = [], cdfVal = [];
-    for (let i = 0; i < count; i++) {
-      const W = moments[i * MOMENT_FLOATS], R = moments[i * MOMENT_FLOATS + 2];
-      if (!(W > 1e-3)) continue;
-      totalR += R;
-      activeCount++;
-      if (R > 0) { cdfSum += R; cdfIdx.push(i); cdfVal.push(cdfSum); }
-    }
-    const avgR = activeCount > 0 ? totalR / activeCount : 0;
-    const Tu   = (1 + hysteresis) * avgR;
-    const Tl   = (1 - hysteresis) * avgR;
-
-    const kept = [];          // Float32Array(SPLAT_FLOATS) per output splat (null = merged away)
-    const keptSrc = [];       // source index of kept[k] (-1 = new)
-    const keptOf = new Int32Array(count).fill(-1);  // input splat -> its kept copy
-    const splitVectors = [];  // split axes, for the 3D overlay
-    let nSplit = 0, nCloned = 0, nPruned = 0, nFloaters = 0, nMerged = 0, nTeleported = 0;
-    const copyOf = (i) => params.slice(i * SPLAT_FLOATS, (i + 1) * SPLAT_FLOATS);
-    const push = (splat, src) => {
-      if (src >= 0) keptOf[src] = kept.length;
-      kept.push(splat);
-      keptSrc.push(src);
-    };
-
-    // monte_carlo: instead of dropping a splat, respawn it as a jittered copy of a parent drawn
-    // with probability ~ R; parent and child share the parent's opacity (1 - (1 - a')^2 = a).
-    const tryMcmcTeleport = () => {
-      if (optMethod !== 'monte_carlo' || cdfIdx.length === 0 || cdfSum <= 0) return false;
-      const u = Math.random() * cdfSum;
-      let lo = 0, hi = cdfVal.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (cdfVal[mid] < u) lo = mid + 1; else hi = mid;
-      }
-      const p = cdfIdx[lo], pb = p * SPLAT_FLOATS;
-      const alphaP = sigmoid(params[pb + 3]);
-      if (alphaP < pruneOpacity * 2) return false;
-      const opNew = logit(Math.max(0.05, 1.0 - Math.sqrt(Math.max(0.01, 1.0 - alphaP))));
-      params[pb + 3] = opNew;
-      if (keptOf[p] >= 0) kept[keptOf[p]][3] = opNew;  // parent already copied out
-      const child = copyOf(p);
-      const Rm = quatToMat3([child[8], child[9], child[10], child[11]]);
-      const jx = randn() * Math.exp(child[4]) * 0.5;
-      const jy = randn() * Math.exp(child[5]) * 0.5;
-      const jz = randn() * Math.exp(child[6]) * 0.5;
-      child[0] += Rm[0] * jx + Rm[1] * jy + Rm[2] * jz;  // R * j (Rm is row-major)
-      child[1] += Rm[3] * jx + Rm[4] * jy + Rm[5] * jz;
-      child[2] += Rm[6] * jx + Rm[7] * jy + Rm[8] * jz;
-      push(child, -1);
-      nTeleported++;
+    const err = errorStats(moments, count, hysteresis);
+    const out = new KeptSplats(params, count);
+    const stats = { split: 0, cloned: 0, pruned: 0, floaters: 0, merged: 0, teleported: 0, seeded: 0 };
+    const teleport = () => {
+      if (optMethod !== 'monte_carlo' || !mcmcTeleport(out, err, pruneOpacity)) return false;
+      stats.teleported++;
       return true;
     };
-
-    const trainImgs = images ? images.filter(im => !im.isValidation) : [];
-    // Rule 1 of the floater removal: in front of a training camera, closer than 0.65 z_min(c)
-    const inNearCameraCone = (x, y, z) => trainImgs.some(({ R, t, camera, zMin }) => {
-      const zc = R[6] * x + R[7] * y + R[8] * z + t[2];
-      if (!(zc > 0 && zc < 0.65 * zMin)) return false;
-      const u = camera.fx * ((R[0] * x + R[1] * y + R[2] * z + t[0]) / zc) + camera.cx;
-      const v = camera.fy * ((R[3] * x + R[4] * y + R[5] * z + t[1]) / zc) + camera.cy;
-      return u >= 0 && u <= camera.width && v >= 0 && v <= camera.height;
-    });
+    const nearCamera = nearCameraCone(images, { depth: floaterDepth });
 
     for (let i = 0; i < count; i++) {
       const b = i * SPLAT_FLOATS, m = i * MOMENT_FLOATS;
-      const x = params[b], y = params[b + 1], z = params[b + 2];
       const alpha = sigmoid(params[b + 3]);
       const maxS = Math.exp(Math.max(params[b + 4], params[b + 5], params[b + 6]));
       const leaf = this.leaves[clamp(params[b + 7] | 0, 0, this.leaves.length - 1)];
@@ -697,125 +624,278 @@ export class LooseOctree {
 
       // A. Prune transparent / oversized splats
       if (alpha < pruneOpacity || maxS > this.sceneRadius * 0.5) {
-        if (!tryMcmcTeleport()) nPruned++;
+        if (!teleport()) stats.pruned++;
         continue;
       }
-
-      // B. Floaters: near-camera carve; single-view billboards (N_eff = W^2 / S < 1.45) in
-      //    well-seen cells; faint splats in isolated leaves. High-error occluders lose opacity.
+      // B. Floaters (removed, or teleported); high-error occluders lose opacity
       if (enableFloaters) {
-        const nEff = S > 1e-8 ? (W * W) / S : 1.0;
-        if (inNearCameraCone(x, y, z) ||
-            (leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) ||
-            (leaf && leaf.state === 3 && alpha < 0.25)) {
-          if (!tryMcmcTeleport()) nFloaters++;
+        if (isFloater(params, b, alpha, leaf, W, S, R, nearCamera)) {
+          if (!teleport()) stats.floaters++;
           continue;
         }
         if (W > 1.0 && (R / W) > 0.22 && alpha > 0.15) params[b + 3] = logit(alpha * 0.65);
       }
-
       // C. Split when R > Tu (sim_anneal: also Tl < R <= Tu, with Boltzmann probability).
-      let shouldSplit = (R > Tu && Tu > 1e-4);
-      if (!shouldSplit && optMethod === 'sim_anneal' && R > Tl && Tu > 1e-4) {
-        const boltzmann = Math.exp(-(Tu - R) / Math.max(1e-6, saTemp * avgR));
+      let shouldSplit = (R > err.Tu && err.Tu > 1e-4);
+      if (!shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
+        const boltzmann = Math.exp(-(err.Tu - R) / Math.max(1e-6, saTemp * err.avgR));
         if (Math.random() < boltzmann * 0.35) shouldSplit = true;
       }
       // budget: splats kept so far + the ones still to visit + this one's extra child
-      if (enableSplit && shouldSplit && kept.length + (count - i) + 1 <= maxSplats) {
-        // error centroid offset d and covariance E (regularized diagonal)
-        const invR = 1 / Math.max(1e-8, R);
-        const dx = moments[m + 3] * invR, dy = moments[m + 4] * invR, dz = moments[m + 5] * invR;
-        const epsIso = 1e-4 * maxS * maxS;
-        const exx = Math.max(epsIso, moments[m + 6] * invR - dx * dx);
-        const eyy = Math.max(epsIso, moments[m + 7] * invR - dy * dy);
-        const ezz = Math.max(epsIso, moments[m + 8] * invR - dz * dz);
-        const exy = moments[m + 9]  * invR - dx * dy;
-        const exz = moments[m + 10] * invR - dx * dz;
-        const eyz = moments[m + 11] * invR - dy * dz;
-        // principal axis v by 4 power iterations
-        let vx = exx >= eyy ? 1 : 0, vy = exx < eyy ? 1 : 0, vz = 0.5;
-        for (let it = 0; it < 4; it++) {
-          const nx = exx * vx + exy * vy + exz * vz;
-          const ny = exy * vx + eyy * vy + eyz * vz;
-          const nz = exz * vx + eyz * vy + ezz * vz;
-          const len = Math.hypot(nx, ny, nz) || 1;
-          vx = nx / len; vy = ny / len; vz = nz / len;
-        }
-        const lambdaMax = Math.max(0,
-          vx * (exx * vx + exy * vy + exz * vz) +
-          vy * (exy * vx + eyy * vy + eyz * vz) +
-          vz * (exz * vx + eyz * vy + ezz * vz));
-        const errStd = clamp(Math.sqrt(lambdaMax), maxS * 0.35, maxS * 1.2);
-        const shiftNorm = Math.min(maxS, Math.hypot(dx, dy, dz));
-
-        if (maxS > this.sceneRadius * 0.006) {
-          // large: two children +-0.65 errStd along v (kept within 0.65 sigma on each splat
-          // axis, so v's component off a flat splat's plane doesn't lift them off it), scales / 1.55
-          const [sx, sy, sz] = clampToSplat(params.subarray(b, b + SPLAT_FLOATS),
-            [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65], 0.65);
-          const logShrink = Math.log(1 / 1.55);
-          for (const sign of [-1, 1]) {
-            const c = copyOf(i);
-            c[0] = x + sign * sx; c[1] = y + sign * sy; c[2] = z + sign * sz;
-            c[4] += logShrink; c[5] += logShrink; c[6] += logShrink;
-            push(c, -1);
-          }
-          splitVectors.push(x - sx, y - sy, z - sz, x + sx, y + sy, z + sz);
-          nSplit++;
-          continue;
-        } else if (shiftNorm > 1e-5) {
-          // small: keep the parent, clone at the error centroid (within 1 sigma on each axis)
-          const child = copyOf(i);
-          const [ox, oy, oz] = clampToSplat(child, [dx, dy, dz], 1.0);
-          child[0] = x + ox; child[1] = y + oy; child[2] = z + oz;
-          push(copyOf(i), i);
-          push(child, -1);
-          nCloned++;
-          continue;
-        }
+      if (enableSplit && shouldSplit && out.n + (count - i) + 1 <= maxSplats) {
+        const how = splitSplat(out, i, moments, maxS, this.sceneRadius);
+        if (how) { stats[how]++; continue; }
       }
-      push(copyOf(i), i);
+      out.add(i, i);
     }
 
-    // D. Merge consecutive (same leaf neighborhood) overlapping splats of similar color:
-    //    opacity-weighted position / color, combined opacity 1 - (1 - a)(1 - b).
-    if (enableMerge && kept.length > 16) {
-      for (let i = 0; i + 1 < kept.length; i++) {
-        if (keptSrc[i] < 0 || keptSrc[i + 1] < 0) continue;  // don't undo this pass's new splats
-        const a = kept[i], b = kept[i + 1];
-        const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
-        const sa = Math.exp(Math.max(a[4], a[5], a[6]));
-        const sb = Math.exp(Math.max(b[4], b[5], b[6]));
-        const colDiff = Math.abs(a[12] - b[12]) + Math.abs(a[13] - b[13]) + Math.abs(a[14] - b[14]);
-        if (dx * dx + dy * dy + dz * dz < 0.08 * (sa * sa + sb * sb) && colDiff < 0.25) {
-          const wa = sigmoid(a[3]), wb = sigmoid(b[3]);
-          const wSum = wa + wb + 1e-6;
-          for (const k of [0, 1, 2, 12, 13, 14]) a[k] = (wa * a[k] + wb * b[k]) / wSum;
-          a[3] = logit(1 - (1 - wa) * (1 - wb));
-          kept[i + 1] = null;
-          nMerged++;
-          i++;
-        }
-      }
-    }
-
-    // E. Compact, append stipple seeds within the maxSplats budget, rebuild
-    const finalSplats = kept.filter(Boolean);
-    const finalSrc = keptSrc.filter((_, k) => kept[k]);
-    const nSeeds = seedSplats
-      ? Math.max(0, Math.min(seedSplats.length / SPLAT_FLOATS, maxSplats - finalSplats.length)) : 0;
-    const newCount = finalSplats.length + nSeeds;
-    const newParams = new Float32Array(newCount * SPLAT_FLOATS);
-    finalSplats.forEach((s, k) => newParams.set(s, k * SPLAT_FLOATS));
-    if (nSeeds > 0) newParams.set(seedSplats.subarray(0, nSeeds * SPLAT_FLOATS), finalSplats.length * SPLAT_FLOATS);
-    const srcIdx = new Int32Array(newCount).fill(-1);
-    srcIdx.set(finalSrc);
-
-    this.lastStats = {
-      split: nSplit, cloned: nCloned, pruned: nPruned, floaters: nFloaters,
-      merged: nMerged, teleported: nTeleported, seeded: nSeeds,
-    };
-    this.build(newParams, newCount, images);
-    return { count: newCount, params: newParams, srcIdx, splitVectors: new Float32Array(splitVectors), stats: this.lastStats };
+    if (enableMerge) stats.merged = mergeOverlaps(out);
+    const res = compactWithSeeds(out, seedSplats, maxSplats);
+    stats.seeded = res.nSeeds;
+    this.lastStats = stats;
+    this.build(res.params, res.count, images);
+    return { count: res.count, params: res.params, srcIdx: res.srcIdx, splitVectors: new Float32Array(out.splitVectors), stats };
   }
+}
+
+// ── reconcileAndGrow() phases ────────────────────────────────────────────────
+
+// Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds Tu / Tl, and the
+// R-weighted CDF used to pick MCMC teleport parents.
+function errorStats(moments, count, hysteresis) {
+  let totalR = 0, activeCount = 0, cdfSum = 0;
+  const cdfIdx = [], cdfVal = [];
+  for (let i = 0; i < count; i++) {
+    const W = moments[i * MOMENT_FLOATS], R = moments[i * MOMENT_FLOATS + 2];
+    if (!(W > 1e-3)) continue;
+    totalR += R;
+    activeCount++;
+    if (R > 0) { cdfSum += R; cdfIdx.push(i); cdfVal.push(cdfSum); }
+  }
+  const avgR = activeCount > 0 ? totalR / activeCount : 0;
+  return { avgR, Tu: (1 + hysteresis) * avgR, Tl: (1 - hysteresis) * avgR, cdfIdx, cdfVal, cdfSum };
+}
+
+// Output splats of the pass, in one growable buffer (a small array per splat cost ~100 ms per
+// rebalance at 300k splats): row k of `buf`, its source input splat src[k] (-1 = new) and
+// alive[k] (0 = merged away); keptOf maps an input splat to its row.
+class KeptSplats {
+  constructor(params, count) {
+    this.params = params;
+    this.n = 0;
+    this._grow(count + (count >> 2) + 64);
+    this.keptOf = new Int32Array(count).fill(-1);
+    this.splitVectors = [];  // split axes, for the 3D overlay
+  }
+  _grow(cap) {
+    const buf = new Float32Array(cap * SPLAT_FLOATS), src = new Int32Array(cap);
+    if (this.buf) { buf.set(this.buf.subarray(0, this.n * SPLAT_FLOATS)); src.set(this.src.subarray(0, this.n)); }
+    this.buf = buf; this.src = src; this.cap = cap;
+  }
+  // a copy of input splat i as a new row (src = i: its kept copy, -1: a new splat); returns the row
+  add(i, src) {
+    if (this.n === this.cap) this._grow(2 * this.cap);
+    const k = this.n++;
+    this.buf.set(this.params.subarray(i * SPLAT_FLOATS, (i + 1) * SPLAT_FLOATS), k * SPLAT_FLOATS);
+    this.src[k] = src;
+    if (src >= 0) this.keptOf[src] = k;
+    return k;
+  }
+  row(k) { return this.buf.subarray(k * SPLAT_FLOATS, (k + 1) * SPLAT_FLOATS); }
+}
+
+// monte_carlo: instead of dropping a splat, respawn it as a jittered copy of a parent drawn
+// with probability ~ R; parent and child share the parent's opacity (1 - (1 - a')^2 = a).
+// The parent's opacity changes in `params` (and in its kept copy, if already made).
+function mcmcTeleport(out, { cdfIdx, cdfVal, cdfSum }, pruneOpacity) {
+  if (cdfIdx.length === 0 || cdfSum <= 0) return false;
+  const params = out.params;
+  const u = Math.random() * cdfSum;
+  let lo = 0, hi = cdfVal.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cdfVal[mid] < u) lo = mid + 1; else hi = mid;
+  }
+  const p = cdfIdx[lo], pb = p * SPLAT_FLOATS;
+  const alphaP = sigmoid(params[pb + 3]);
+  if (alphaP < pruneOpacity * 2) return false;
+  const opNew = logit(Math.max(0.05, 1.0 - Math.sqrt(Math.max(0.01, 1.0 - alphaP))));
+  params[pb + 3] = opNew;
+  if (out.keptOf[p] >= 0) out.buf[out.keptOf[p] * SPLAT_FLOATS + 3] = opNew;  // parent already copied out
+  const child = out.row(out.add(p, -1));
+  const Rm = quatToMat3([child[8], child[9], child[10], child[11]]);
+  const jx = randn() * Math.exp(child[4]) * 0.5;
+  const jy = randn() * Math.exp(child[5]) * 0.5;
+  const jz = randn() * Math.exp(child[6]) * 0.5;
+  child[0] += Rm[0] * jx + Rm[1] * jy + Rm[2] * jz;  // R * j (Rm is row-major)
+  child[1] += Rm[3] * jx + Rm[4] * jy + Rm[5] * jz;
+  child[2] += Rm[6] * jx + Rm[7] * jy + Rm[8] * jz;
+  return true;
+}
+
+// Rule 1 of the floater removal: (x, y, z) -> in front of a training camera, closer than 0.65 z(c).
+// depth: 'observed', z = zMin (of the points the camera observed: a camera walking past things,
+// e.g. gare-st-lazare, carves the ones other cameras saw near it, half the SfM points there), or
+// 'view', z = zView (of all the points in its view, colmap.js computeCameraDepthStats)
+export function nearCameraCone(images, { depth = 'observed' } = {}) {
+  const trainImgs = images ? images.filter(im => !im.isValidation) : [];
+  const uv = [0, 0];
+  const near = depth === 'view' ? (im) => im.zView ?? im.zMin : (im) => im.zMin;
+  const inCone = (im, x, y, z) => {
+    const { R, t, camera } = im, zc = projectPinhole(R, t, camera, x, y, z, uv);
+    return zc > 0 && zc < 0.65 * near(im) && uv[0] >= 0 && uv[0] <= camera.width && uv[1] >= 0 && uv[1] <= camera.height;
+  };
+  // Testing every camera for every splat cost ~1 s per rebalance at 300k splats, 370 cameras.
+  // Instead each camera goes into the grid cells its cone (a pyramid of depth D = 0.65 z)
+  // can reach, so a splat only tests the few cameras of its cell. A cell is skipped when it lies
+  // entirely outside one of the pyramid's planes n.(R X + t) >= 0 (camera frame), a conservative
+  // test; the pyramid's bounding box bounds the cells visited.
+  const grid = new Map(), cones = [];
+  for (const im of trainImgs) {
+    const { R, t, camera: c } = im, D = 0.65 * near(im);
+    if (!(D > 0)) continue;
+    const planes = [[0, 0, 1, 0], [0, 0, -1, D], [c.fx, 0, c.cx, 0], [-c.fx, 0, c.width - c.cx, 0],
+                    [0, c.fy, c.cy, 0], [0, -c.fy, c.height - c.cy, 0]].map(([x, y, z, d]) => {
+      const w = [0, 1, 2].map(k => R[k] * x + R[3 + k] * y + R[6 + k] * z);  // R^T n: the plane in the world
+      return [w[0], w[1], w[2], x * t[0] + y * t[1] + z * t[2] + d, Math.abs(w[0]) + Math.abs(w[1]) + Math.abs(w[2])];
+    });
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (const [u, v, z] of [[0, 0, 0], [0, 0, 1], [c.width, 0, 1], [0, c.height, 1], [c.width, c.height, 1]]) {
+      const pc = [(u - c.cx) / c.fx * D * z, (v - c.cy) / c.fy * D * z, D * z];  // apex, base corners
+      for (let k = 0; k < 3; k++) {
+        const X = R[k] * (pc[0] - t[0]) + R[3 + k] * (pc[1] - t[1]) + R[6 + k] * (pc[2] - t[2]);
+        lo[k] = Math.min(lo[k], X); hi[k] = Math.max(hi[k], X);
+      }
+    }
+    cones.push({ im, planes, lo, hi, size: Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) });
+  }
+  if (!cones.length) return () => false;
+  // cells of half the median cone: on jardin5 (425 cameras, 300k splats) 22 candidate cameras
+  // per splat and 75 ms in all; smaller cells cost more to fill than they save
+  const sizes = cones.map(s => s.size).sort((a, b) => a - b), cell = sizes[sizes.length >> 1] / 2, h = 0.5 * cell;
+  const key = (i, j, k) => (i * 73856093) ^ (j * 19349663) ^ (k * 83492791);  // collisions only add candidates
+  for (const { im, planes, lo, hi } of cones) {
+    const a = lo.map(v => Math.floor(v / cell)), b = hi.map(v => Math.floor(v / cell));
+    for (let i = a[0]; i <= b[0]; i++) for (let j = a[1]; j <= b[1]; j++) for (let k = a[2]; k <= b[2]; k++) {
+      const q = [(i + 0.5) * cell, (j + 0.5) * cell, (k + 0.5) * cell];
+      if (planes.some(([x, y, z, d, l1]) => x * q[0] + y * q[1] + z * q[2] + d + h * l1 < 0)) continue;
+      const hk = key(i, j, k);
+      if (!grid.has(hk)) grid.set(hk, []);
+      grid.get(hk).push(im);
+    }
+  }
+  return (x, y, z) => {
+    const list = grid.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell)));
+    return !!list && list.some(im => inCone(im, x, y, z));
+  };
+}
+
+// Floaters: near-camera carve; single-view billboards (N_eff = W^2 / S < 1.45) in well-seen
+// cells; faint splats in isolated leaves.
+function isFloater(params, b, alpha, leaf, W, S, R, nearCamera) {
+  const nEff = S > 1e-8 ? (W * W) / S : 1.0;
+  return nearCamera(params[b], params[b + 1], params[b + 2]) ||
+         (leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) ||
+         (leaf && leaf.state === 3 && alpha < 0.25);
+}
+
+// Split splat i along its error covariance: a large one into two children, a small one keeps
+// itself and clones at the error centroid. Returns 'split' | 'cloned', or null (nothing pushed).
+function splitSplat(out, i, moments, maxS, sceneRadius) {
+  const b = i * SPLAT_FLOATS, m = i * MOMENT_FLOATS, params = out.params;
+  const x = params[b], y = params[b + 1], z = params[b + 2], R = moments[m + 2];
+  // error centroid offset d and covariance E (regularized diagonal)
+  const invR = 1 / Math.max(1e-8, R);
+  const dx = moments[m + 3] * invR, dy = moments[m + 4] * invR, dz = moments[m + 5] * invR;
+  const epsIso = 1e-4 * maxS * maxS;
+  const exx = Math.max(epsIso, moments[m + 6] * invR - dx * dx);
+  const eyy = Math.max(epsIso, moments[m + 7] * invR - dy * dy);
+  const ezz = Math.max(epsIso, moments[m + 8] * invR - dz * dz);
+  const exy = moments[m + 9]  * invR - dx * dy;
+  const exz = moments[m + 10] * invR - dx * dz;
+  const eyz = moments[m + 11] * invR - dy * dz;
+  // principal axis v by 4 power iterations
+  let vx = exx >= eyy ? 1 : 0, vy = exx < eyy ? 1 : 0, vz = 0.5;
+  for (let it = 0; it < 4; it++) {
+    const nx = exx * vx + exy * vy + exz * vz;
+    const ny = exy * vx + eyy * vy + eyz * vz;
+    const nz = exz * vx + eyz * vy + ezz * vz;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    vx = nx / len; vy = ny / len; vz = nz / len;
+  }
+  const lambdaMax = Math.max(0,
+    vx * (exx * vx + exy * vy + exz * vz) +
+    vy * (exy * vx + eyy * vy + eyz * vz) +
+    vz * (exz * vx + eyz * vy + ezz * vz));
+  const errStd = clamp(Math.sqrt(lambdaMax), maxS * 0.35, maxS * 1.2);
+  const shiftNorm = Math.min(maxS, Math.hypot(dx, dy, dz));
+
+  if (maxS > sceneRadius * 0.006) {
+    // large: two children +-0.65 errStd along v (kept within 0.65 sigma on each splat
+    // axis, so v's component off a flat splat's plane doesn't lift them off it), scales / 1.55
+    const [sx, sy, sz] = clampToSplat(params.subarray(b, b + SPLAT_FLOATS),
+      [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65], 0.65);
+    const logShrink = Math.log(1 / 1.55);
+    for (const sign of [-1, 1]) {
+      const c = out.row(out.add(i, -1));
+      c[0] = x + sign * sx; c[1] = y + sign * sy; c[2] = z + sign * sz;
+      c[4] += logShrink; c[5] += logShrink; c[6] += logShrink;
+    }
+    out.splitVectors.push(x - sx, y - sy, z - sz, x + sx, y + sy, z + sz);
+    return 'split';
+  }
+  if (shiftNorm > 1e-5) {
+    // small: keep the parent, clone at the error centroid (within 1 sigma on each axis)
+    out.add(i, i);
+    const child = out.row(out.add(i, -1));
+    const [ox, oy, oz] = clampToSplat(child, [dx, dy, dz], 1.0);
+    child[0] = x + ox; child[1] = y + oy; child[2] = z + oz;
+    return 'cloned';
+  }
+  return null;
+}
+
+// D. Merge consecutive (same leaf neighborhood) overlapping splats of similar color:
+//    opacity-weighted position / color, combined opacity 1 - (1 - a)(1 - b). Returns the count.
+function mergeOverlaps(out) {
+  const { buf, src, n } = out, F = SPLAT_FLOATS;
+  out.alive = new Uint8Array(n).fill(1);
+  if (n <= 16) return 0;
+  let nMerged = 0;
+  for (let i = 0; i + 1 < n; i++) {
+    if (src[i] < 0 || src[i + 1] < 0) continue;  // don't undo this pass's new splats
+    const a = i * F, b = a + F;
+    const dx = buf[a] - buf[b], dy = buf[a + 1] - buf[b + 1], dz = buf[a + 2] - buf[b + 2];
+    const sa = Math.exp(Math.max(buf[a + 4], buf[a + 5], buf[a + 6]));
+    const sb = Math.exp(Math.max(buf[b + 4], buf[b + 5], buf[b + 6]));
+    const colDiff = Math.abs(buf[a + 12] - buf[b + 12]) + Math.abs(buf[a + 13] - buf[b + 13]) + Math.abs(buf[a + 14] - buf[b + 14]);
+    if (dx * dx + dy * dy + dz * dz < 0.08 * (sa * sa + sb * sb) && colDiff < 0.25) {
+      const wa = sigmoid(buf[a + 3]), wb = sigmoid(buf[b + 3]);
+      const wSum = wa + wb + 1e-6;
+      for (const k of [0, 1, 2, 12, 13, 14]) buf[a + k] = (wa * buf[a + k] + wb * buf[b + k]) / wSum;
+      buf[a + 3] = logit(1 - (1 - wa) * (1 - wb));
+      out.alive[i + 1] = 0;
+      nMerged++;
+      i++;
+    }
+  }
+  return nMerged;
+}
+
+// E. Compact the kept splats and append stipple seeds within the maxSplats budget.
+// Returns { count, params, srcIdx, nSeeds }.
+function compactWithSeeds({ buf, src, n, alive }, seedSplats, maxSplats) {
+  const F = SPLAT_FLOATS;
+  let nKept = 0;
+  for (let k = 0; k < n; k++) nKept += alive ? alive[k] : 1;
+  const nSeeds = seedSplats ? Math.max(0, Math.min(seedSplats.length / F, maxSplats - nKept)) : 0;
+  const count = nKept + nSeeds;
+  const params = new Float32Array(count * F), srcIdx = new Int32Array(count).fill(-1);
+  for (let k = 0, j = 0; k < n; k++) {
+    if (alive && !alive[k]) continue;
+    params.set(buf.subarray(k * F, (k + 1) * F), j * F);
+    srcIdx[j++] = src[k];
+  }
+  if (nSeeds > 0) params.set(seedSplats.subarray(0, nSeeds * F), nKept * F);
+  return { count, params, srcIdx, nSeeds };
 }

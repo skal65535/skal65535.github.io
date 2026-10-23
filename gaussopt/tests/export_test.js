@@ -1,0 +1,58 @@
+// export.js round trip through Gauss-Opt's own COLMAP parsers (colmap.js)
+import { makeSyntheticScene } from '../src/sfm/synth.js';
+import { reconstruct } from '../src/sfm/reconstruct.js';
+import { datasetFromMapper, writeColmapModel } from '../src/sfm/export.js';
+import { parseCamerasBin, parseImagesBin, parsePoints3DBin } from '../src/colmap.js';
+import { project } from '../src/sfm/camera.js';
+import { assert, assertClose } from './util.js';
+
+Deno.test('exported COLMAP model parses back with colmap.js and reprojects as PINHOLE', () => {
+  const scene = makeSyntheticScene({ numFrames: 20, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500,
+                                     params: [1100, 1100, 960, 540, -0.08, 0.01, 0, 0] });
+  const { mapper } = reconstruct(scene.input, { sweeps: 1 });
+  const ds = datasetFromMapper(mapper);
+  const files = writeColmapModel(ds);
+  const cameras = parseCamerasBin(files['cameras.bin']);
+  const images = parseImagesBin(files['images.bin'], cameras);
+  const points = parsePoints3DBin(files['points3D.bin']);
+  assert(cameras.size === 1 && cameras.get(1).model === 'PINHOLE', 'one PINHOLE camera');
+  assert(images.length === ds.images.length && points.count === ds.points.length, 'counts');
+  const cam = cameras.get(1);
+  const byName = new Map(ds.images.map(im => [im.name, im]));
+  let n = 0, err = 0;
+  for (const im of images) {
+    const src = byName.get(im.name);
+    assertClose(im.R, src.R, 1e-9, `${im.name} rotation`);
+    assertClose(im.t, src.t, 1e-9, `${im.name} translation`);
+    for (let o = 0; o < im.obs2D.length; o += 3) {  // undistorted keypoints reproject through the pinhole
+      const i = points.pointIndexById.get(im.obs2D[o + 2]);
+      const X = [0, 1, 2].map(k => points.positions[3 * i + k]);
+      const q = [0, 1, 2].map(r => im.R[3 * r] * X[0] + im.R[3 * r + 1] * X[1] + im.R[3 * r + 2] * X[2] + im.t[r]);
+      err += Math.hypot(cam.fx * q[0] / q[2] + cam.cx - im.obs2D[o], cam.fy * q[1] / q[2] + cam.cy - im.obs2D[o + 1]);
+      n++;
+    }
+  }
+  assert(n > 1000 && err / n < 1.5, `${n} observations, mean pinhole reprojection ${(err / n).toFixed(3)} px`);
+});
+
+Deno.test('the distorted model (pinhole: false) keeps the SfM camera and the detected pixels', () => {
+  const scene = makeSyntheticScene({ numFrames: 20, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500,
+                                     params: [1100, 1100, 960, 540, -0.08, 0.01, 0, 0] });
+  const { mapper } = reconstruct(scene.input, { sweeps: 1 });
+  const ds = datasetFromMapper(mapper, { pinhole: false }), gs = datasetFromMapper(mapper);
+  const files = writeColmapModel(ds);
+  const cameras = parseCamerasBin(files['cameras.bin']);
+  const images = parseImagesBin(files['images.bin'], cameras);
+  const points = parsePoints3DBin(files['points3D.bin']);
+  assert(cameras.get(1).model === 'OPENCV' && images.length === gs.images.length && points.count === gs.points.length,
+         'an OPENCV camera, the same images and points as the PINHOLE model');
+  let n = 0, err = 0;
+  for (const im of ds.images) {
+    for (const [u, v, pid] of im.points2D) {  // detected pixels reproject through the distorted camera
+      const [pu, pv] = project(ds.camera, im, ds.points[pid - 1].X);
+      err += Math.hypot(pu - u, pv - v);
+      n++;
+    }
+  }
+  assert(n > 1000 && err / n < 1.5, `${n} observations, mean reprojection ${(err / n).toFixed(3)} px`);
+});

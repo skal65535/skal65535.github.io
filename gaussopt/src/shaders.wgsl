@@ -18,12 +18,10 @@
 
 struct RenderUniforms {
   view       : mat4x4f,
-  proj       : mat4x4f, // unused
-  cam_pos    : vec4f,   // xyz = camera center (unused), w = scene_radius
   intrinsics : vec4f,   // fx, fy, cx, cy
-  screen     : vec4f,   // W, H, num_visible (unused), haze (scale multiplier)
+  screen     : vec4f,   // W, H, haze (scale multiplier), scene_radius
   modes      : vec4u,   // x = visu_mode, y = color_mode, zw unused
-  thresholds : vec4f,   // x = avg_R, y = opacity_scale, z = znear, w = zfar
+  thresholds : vec4f,   // x = avg_R, y = znear, z = zfar, w unused
 };
 
 @group(0) @binding(0) var<uniform> u : RenderUniforms;
@@ -106,7 +104,7 @@ fn vs(@builtin(vertex_index) vid: u32,
   let p3 = splats[b + 3u];
 
   let vpos = u.view * vec4f(p0.xyz, 1.0);
-  if (vpos.z <= u.thresholds.z) {
+  if (vpos.z <= u.thresholds.y) {
     out.pos = vec4f(0.0, 0.0, 2.0, 1.0); // clipped
     return out;
   }
@@ -118,7 +116,7 @@ fn vs(@builtin(vertex_index) vid: u32,
   let v0 = fy * vpos.y * inv_z + u.intrinsics.w;
 
   let R = quat_to_mat3(p2);
-  let s = exp(clamp(p1.xyz, vec3f(-12.0), vec3f(4.0))) * u.screen.w;
+  let s = exp(clamp(p1.xyz, vec3f(-12.0), vec3f(4.0))) * u.screen.z;
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
   let T = ewa_jacobian(u.view, vpos.xyz, fx, fy,
                        frustum_lim(u.screen.x, u.screen.y, fx, fy, u.intrinsics.z, u.intrinsics.w));
@@ -144,11 +142,11 @@ fn vs(@builtin(vertex_index) vid: u32,
   let px = vec2f(u0, v0) + quad.x * major_px + quad.y * minor_px;
   let ndc_x = (px.x / u.screen.x) * 2.0 - 1.0;
   let ndc_y = 1.0 - (px.y / u.screen.y) * 2.0;
-  let clip_z = clamp((vpos.z - u.thresholds.z) / (u.thresholds.w - u.thresholds.z), 0.0, 0.9999);
+  let clip_z = clamp((vpos.z - u.thresholds.y) / (u.thresholds.z - u.thresholds.y), 0.0, 0.9999);
   out.pos = vec4f(ndc_x, ndc_y, clip_z, 1.0);
   out.uv  = quad;
 
-  let alpha = min(0.99, sigmoid(p0.w) * u.thresholds.y);
+  let alpha = min(0.99, sigmoid(p0.w));
   var rgb = clamp(vec3f(0.5) + SH_C0 * p3.xyz, vec3f(0.0), vec3f(1.0));
   let cmode = u.modes.y;
   if (cmode == 1u) {        // octree leaf id
@@ -161,7 +159,7 @@ fn vs(@builtin(vertex_index) vid: u32,
     let n_eff = select(1.0, (m0.x * m0.x) / max(1e-6, m0.y), m0.y > 1e-6);
     rgb = mix(vec3f(1.0, 0.1, 0.8), vec3f(0.1, 0.95, 0.4), clamp((n_eff - 1.0) / 4.0, 0.0, 1.0));
   } else if (cmode == 4u) { // depth
-    rgb = heatmap_coolwarm(1.0 - clamp(vpos.z / max(1.0, u.cam_pos.w * 2.5), 0.0, 1.0));
+    rgb = heatmap_coolwarm(1.0 - clamp(vpos.z / max(1.0, u.screen.w * 2.5), 0.0, 1.0));
   }
   out.color = vec4f(rgb, alpha);
   return out;
@@ -203,6 +201,7 @@ struct WireUniforms {
   view       : mat4x4f,
   intrinsics : vec4f, // fx, fy, cx, cy
   screen     : vec4f, // W, H, znear, zfar
+  fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
 };
 
 @group(0) @binding(0) var<uniform> wu : WireUniforms;
@@ -228,8 +227,14 @@ struct WireOut {
 fn vs(@builtin(vertex_index) vid: u32) -> WireOut {
   var out : WireOut;
   let v = verts[vid];
-  out.pos   = vec4f(wire_project(v.xyz).xyz, 1.0);
+  let p = wire_project(v.xyz);
+  out.pos   = vec4f(p.xyz, 1.0);
   out.color = unpack4x8unorm(bitcast<u32>(v.w));
+  // octree boxes (the first vertices) fade with depth, so the far ones don't clog the view
+  if (f32(vid) < wu.fade.x) {
+    let f = clamp((wu.fade.z - p.w) / (wu.fade.z - wu.fade.y), 0.0, 1.0);
+    out.color.a = max(min(out.color.a, wu.fade.w), out.color.a * f);
+  }
   return out;
 }
 
@@ -247,6 +252,7 @@ struct WireUniforms {
   view       : mat4x4f,
   intrinsics : vec4f, // fx, fy, cx, cy
   screen     : vec4f, // W, H, znear, zfar
+  fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
 };
 
 @group(0) @binding(0) var<uniform> wu : WireUniforms;
@@ -397,11 +403,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
 struct TrainUniforms {
   view       : mat4x4f,
-  cam_pos    : vec4f, // xyz = camera center, w = Adam step (1-based)
   intrinsics : vec4f, // fx, fy, cx, cy
   dims       : vec4u, // W, H, num_visible, total_splats
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = scene_radius
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
 };
 
@@ -664,11 +669,10 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 
 struct TrainUniforms {
   view       : mat4x4f,
-  cam_pos    : vec4f, // xyz = camera center, w = Adam step (1-based)
   intrinsics : vec4f, // fx, fy, cx, cy
   dims       : vec4u, // W, H, num_visible, total_splats
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = scene_radius
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
 };
 
@@ -706,7 +710,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         @builtin(local_invocation_index) lid: u32) {
   let W = tu.dims.x;
   let H = tu.dims.y;
-  let num_vis = tu.dims.z;
   let in_bounds = gid.x < W && gid.y < H;
   let px = vec2f(gid.xy) + 0.5;
   let tile_c = vec2f(wgid.xy * 16u) + 8.0;
@@ -794,11 +797,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 
 struct TrainUniforms {
   view       : mat4x4f,
-  cam_pos    : vec4f, // xyz = camera center, w = Adam step (1-based)
   intrinsics : vec4f, // fx, fy, cx, cy
   dims       : vec4u, // W, H, num_visible, total_splats
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = scene_radius
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
 };
 
@@ -889,7 +891,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         @builtin(local_invocation_index) lid: u32) {
   let W = tu.dims.x;
   let H = tu.dims.y;
-  let num_vis = tu.dims.z;
   let in_bounds = gid.x < W && gid.y < H;
   let px = vec2f(gid.xy) + 0.5;
   let tile_c = vec2f(wgid.xy * 16u) + 8.0;
@@ -1076,11 +1077,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 
 struct TrainUniforms {
   view       : mat4x4f,
-  cam_pos    : vec4f, // xyz = camera center, w = Adam step (1-based)
   intrinsics : vec4f, // fx, fy, cx, cy
   dims       : vec4u, // W, H, num_visible, total_splats
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = scene_radius
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
 };
 
@@ -1272,7 +1272,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     qw * (G0.y - G1.x) + qx * (G0.z + G2.x) + qy * (G1.z + G2.y) - 2.0 * qz * (G0.x + G1.y)
   );
 
-  let step = max(1.0, tu.cam_pos.w);
+  let step = max(1.0, tu.opt_params.w);
   let step_u = u32(step);
   let bc = vec2f(1.0 - pow(0.9, step), 1.0 - pow(0.999, step));
 

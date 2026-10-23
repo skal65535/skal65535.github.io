@@ -8,13 +8,20 @@
 //   gui.add({ reset: () => resetSim() }, 'reset').name('Reset');
 //   const sub = gui.addFolder('Camera');
 //   sub.add(params.cam, 'fov', 5, 180, 1);
+//   gui.add(params, 'fov', 5, 180, 1).tip('vertical field of view, in degrees');
+//
+// Tooltips: .tip(text) on a control or a folder, or mkGui(parent, { tips }) with a map from a
+// control's key (or a folder's name) to its text, which also covers controls added later (the
+// map goes to sub-folders). They show in one popup (installTips), which also takes over the
+// `title` of any element of the page (its native tooltip is slow and unstyled).
 //
 // Layout: each control is a <div class="skal-row skal-row-{type}"> containing
 // its own label/input/readout. The panel itself is a flex column. This keeps
 // mobile reflow simple (rows can stack their internals) and lets the panel
 // float anywhere on desktop without grid-track surprises.
 
-export function mkGui(parent, { title = '', collapsed = false, draggable = true } = {}) {
+export function mkGui(parent, { title = '', collapsed = false, draggable = true, tips = null } = {}) {
+  installTips();
   const root = document.createElement('div');
   root.className = 'skal-gui';
   if (collapsed) root.classList.add('collapsed');
@@ -30,7 +37,49 @@ export function mkGui(parent, { title = '', collapsed = false, draggable = true 
   body.className = 'skal-gui-body';
   root.appendChild(body);
   parent.appendChild(root);
-  return new GuiGroup(body);
+  return new GuiGroup(body, tips);
+}
+
+// The tooltip popup, once per page: shown after a short hover on an element with a `data-tip`
+// (or a `title`, moved to `data-tip` on the way, so a title set later is followed too), under it
+// (above near the bottom of the window), hidden on leave, press, scroll or key
+const TIP_DELAY_MS = 350;
+let tipEl = null;
+export function installTips() {
+  if (tipEl || typeof document === 'undefined') return;
+  tipEl = document.createElement('div');
+  tipEl.className = 'skal-tip';
+  tipEl.setAttribute('role', 'tooltip');
+  Object.assign(tipEl.style, {
+    position: 'fixed', zIndex: 10000, maxWidth: '320px', padding: '6px 9px', borderRadius: '6px', pointerEvents: 'none',
+    background: '#0b0c10f2', color: '#dde', border: '1px solid #3a3e50', boxShadow: '0 4px 14px #0008',
+    font: '12px/1.4 system-ui, sans-serif', whiteSpace: 'pre-line', display: 'none',
+  });
+  document.body.appendChild(tipEl);
+  let over = null, timer = 0;
+  const hide = () => { clearTimeout(timer); timer = 0; tipEl.style.display = 'none'; };
+  const show = () => {
+    const text = over?.isConnected && over.dataset.tip;
+    if (!text) return hide();
+    tipEl.textContent = text;
+    tipEl.style.display = 'block';
+    const r = over.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+    const x = Math.max(4, Math.min(innerWidth - w - 4, r.left + Math.min(r.width, 160) / 2 - 12));
+    const y = r.bottom + 6 + h < innerHeight ? r.bottom + 6 : Math.max(4, r.top - 6 - h);
+    tipEl.style.left = `${x}px`;
+    tipEl.style.top = `${y}px`;
+  };
+  document.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    const el = e.target.closest?.('[data-tip], [title]');
+    if (el?.title) { el.dataset.tip = el.title; el.removeAttribute('title'); }
+    if (el !== over) { hide(); over = el; if (el) timer = setTimeout(show, TIP_DELAY_MS); }
+    else if (el && tipEl.style.display === 'block' && tipEl.textContent !== el.dataset.tip) show();  // a live tip (canvas)
+  }, { passive: true });
+  const reset = () => { hide(); over = null; };
+  for (const type of ['pointerdown', 'keydown', 'scroll']) document.addEventListener(type, reset, { capture: true, passive: true });
+  window.addEventListener('blur', reset);
+  document.documentElement.addEventListener('pointerleave', reset);
 }
 
 // Pointer-event drag on the title bar. Click (no drag) toggles collapse.
@@ -67,10 +116,14 @@ function installDrag(root, handle) {
 }
 
 class GuiGroup {
-  constructor(host) {
+  constructor(host, tips = null, title = null) {
     this._host     = host;
     this._controls = [];   // direct children (controls and sub-groups)
+    this._tips     = tips; // key or folder name -> tooltip, for the controls added here and below
+    this._title    = title;
   }
+
+  tip(text) { if (this._title) setTip(this._title, text); return this; }
 
   add(obj, key, a, b, c) {
     const v = obj[key];
@@ -104,7 +157,8 @@ class GuiGroup {
     body.className = 'skal-folder-body';
     wrap.appendChild(body);
     this._host.appendChild(wrap);
-    const group = new GuiGroup(body);
+    const group = new GuiGroup(body, this._tips, t);
+    if (this._tips?.[name]) group.tip(this._tips[name]);
     this._controls.push(group);
     return group;
   }
@@ -119,8 +173,22 @@ class GuiGroup {
     return out;
   }
 
+  // Remove every control and sub-group (e.g. to rebuild a select with new options).
+  clear() {
+    this._host.replaceChildren();
+    this._controls = [];
+    return this;
+  }
+
+  // Re-read every control's obj[key] (params changed outside the GUI).
+  updateDisplay() {
+    for (const c of this.controllersRecursive()) c.updateDisplay();
+    return this;
+  }
+
   _mount(ctrl) {
     ctrl._mount(this._host);
+    if (this._tips?.[ctrl.property]) ctrl.tip(this._tips[ctrl.property]);
     this._controls.push(ctrl);
     return ctrl;
   }
@@ -138,6 +206,7 @@ class Ctrl {
   }
   name(text) { this._labelText = text; if (this._label) this._label.textContent = text; return this; }
   onChange(cb) { this._cb = cb; return this; }
+  tip(text) { if (this._row_el) setTip(this._row_el, text); return this; }
   _fire() { if (this._cb) this._cb(this._obj[this._key]); }
 
   // Disable user interaction. Used by demos for read-only displays
@@ -169,6 +238,8 @@ class Ctrl {
     return this;
   }
   _refresh(_v) { /* subclasses override to push v back into their inputs */ }
+  // lil-gui compatibility: show the current obj[key].
+  updateDisplay() { this._refresh(this._obj[this._key]); return this; }
 
   _row(type) {
     const row = document.createElement('div');
@@ -220,6 +291,9 @@ class SliderCtrl extends Ctrl {
     row.appendChild(this._range);
     host.appendChild(row);
   }
+  // lil-gui compatibility: change the range after creation (the value is not clamped).
+  min(v) { this._min = v; if (this._range) this._range.min = v; return this.updateDisplay(); }
+  max(v) { this._max = v; if (this._range) this._range.max = v; return this.updateDisplay(); }
   _refresh(v) {
     if (this._range) this._range.value = v;
     if (this._read)  this._read.textContent = fmt(v, this._step);
@@ -335,6 +409,7 @@ class TextCtrl extends Ctrl {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function setTip(el, text) { if (text) el.dataset.tip = text; else delete el.dataset.tip; }
 function autoStep(min, max) {
   const span = Math.abs(max - min);
   if (span >= 100) return 1;

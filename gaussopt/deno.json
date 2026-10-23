@@ -1,0 +1,6 @@
+{
+  "tasks": {
+    "test": "deno test --parallel --allow-read --allow-env tests/",
+    "test:slow": "SLOW=1 deno test --allow-read --allow-env --allow-run --allow-write tests/"
+  }
+}

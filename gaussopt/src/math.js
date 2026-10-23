@@ -2,7 +2,7 @@
 //   - scalars: clamp, wrapPi, approach, sigmoid / logit, random numbers
 //   - vec3 helpers, Rodrigues rotation
 //   - quaternions / rotation matrices, symmetric 3x3 eigen-decomposition
-//   - camera geometry: OpenCV view / projection matrices, orbit frame, world-up, intrinsics fit
+//   - camera geometry: OpenCV view matrices, pinhole projection, orbit frame, world-up, intrinsics fit
 // Conventions: 3x3 matrices are flat row-major; 4x4 matrices are flat column-major (WGSL mat4x4f).
 // Quaternions are [w, x, y, z]. Camera space is OpenCV/COLMAP: +X right, +Y down, +Z forward.
 "use strict";
@@ -29,7 +29,7 @@ export function randn() {
   return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
 }
 
-// Deterministic RNG in [0, 1) (same mulberry-style generator as stipple.js seedPoints)
+// Deterministic RNG in [0, 1) (mulberry32)
 export function makeRng(seed) {
   let s = seed >>> 0;
   return () => {
@@ -172,17 +172,13 @@ export function viewTransform(v, p) {
   return [0, 1, 2].map(k => v[k] * p[0] + v[4 + k] * p[1] + v[8 + k] * p[2] + v[12 + k]);
 }
 
-// 4x4 WebGPU projection from OpenCV intrinsics: camera space (z in [znear, zfar])
-// -> NDC x, y in [-1, 1] (+Y up, i.e. image v flipped), z in [0, 1]
-export function makeProjectionMatrix(fx, fy, cx, cy, W, H, znear = 0.05, zfar = 200.0) {
-  const A = zfar / (zfar - znear);
-  const B = -(zfar * znear) / (zfar - znear);
-  return new Float32Array([
-    2 * fx / W,  0,           0,  0,
-    0,          -2 * fy / H,  0,  0,
-    2 * (cx / W) - 1, 1 - 2 * (cy / H), A, 1,
-    0,           0,           B,  0,
-  ]);
+// World point (x, y, z) -> pixel [u, v] (into `out`) of pinhole camera `cam` ({ fx, fy, cx, cy })
+// at pose x_cam = R x + t; returns the camera-space depth z. u, v divide by max(zFloor, z).
+export function projectPinhole(R, t, cam, x, y, z, out, zFloor = -Infinity) {
+  const zc = R[6] * x + R[7] * y + R[8] * z + t[2], zd = Math.max(zFloor, zc);
+  out[0] = cam.fx * ((R[0] * x + R[1] * y + R[2] * z + t[0]) / zd) + cam.cx;
+  out[1] = cam.fy * ((R[3] * x + R[4] * y + R[5] * z + t[1]) / zd) + cam.cy;
+  return zc;
 }
 
 // Orthonormal orbit frame around world `up`: e1, e2 span the horizontal plane (e1 ~ world +X).

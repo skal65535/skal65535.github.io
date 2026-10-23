@@ -1,0 +1,12 @@
+{
+  "name": "gaussopt-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser end-to-end tests (DESIGN-sfm §8.1, DESIGN.md §3.6): headless Chrome with WebGPU via Playwright, or Safari",
+  "scripts": {
+    "test": "node sfm.e2e.js && node project.e2e.js"
+  },
+  "devDependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

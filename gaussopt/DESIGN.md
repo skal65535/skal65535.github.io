@@ -48,7 +48,7 @@
   * `pos`: `vec3f` world space $(x, y, z)$, plus `opacity`: `f32` in logit space $\ln(\alpha / (1 - \alpha))$
   * `scale`: `vec3f` in log-space $(\ln s_x, \ln s_y, \ln s_z)$, plus `leaf_id`: `f32`
   * `quat`: `vec4f` $(q_w, q_x, q_y, q_z)$ normalized
-  * `f_dc`: `vec3f` SH degree 0 coefficients where $c_{\text{rgb}} = \text{clamp}(0.5 + C_0 \cdot \mathbf{f}_{\text{dc}}, 0, 1)$ with $C_0 = 0.28209479177$, plus `_pad1`: `f32`
+  * `f_dc`: `vec3f` SH degree 0 coefficients where $c_{\text{rgb}} = \text{clamp}(0.5 + C_0 \cdot \mathbf{f}_{\text{dc}}, 0, 1)$ with $C_0 = 0.28209479177$, plus `flags`: `f32` (unused, written 0)
 * **Why `f_dc` storage:** Matches Brush and standard 3DGS `.ply` files directly for lossless import/resume/export.
 
 ---
@@ -62,7 +62,7 @@ A lightweight Python script (`gaussopt/serve.py`) acts as the local bridge:
 ```bash
 ./gaussopt/serve.py /Users/skal/gskal/skal65535/Hierarchical-Localization/datasets/jardin1_gs [--ply splats/jardin1_05000.ply]
 ```
-1. **HTTP Mounting:** Serves `skal65535.github.io/` on `http://localhost:8000/`, mounts the target `gs/` directory at `/dataset/`, and exposes `GET /dataset/info.json` (listing any existing `.ply` checkpoints in `splats*/` or `init.ply`).
+1. **HTTP Mounting:** Serves `skal65535.github.io/` on `http://localhost:8000/`, mounts the target `gs/` directory at `/dataset/`, and exposes `GET /dataset/info.json` (listing existing checkpoints: `*.ply`, `splats/*.ply`, `splats_*/*.ply`, `*.splat`, `splats/*.splat`, `*.gosnap`, `splats_*/*.gosnap`, in the dataset directory and, when it is named `gs/`, in its parent).
 2. **Direct Binary Ingestion (`src/colmap.js`):**
    * Fetches `/dataset/sparse/cameras.bin` $\to$ intrinsics $(W, H, f_x, f_y, c_x, c_y)$.
    * Fetches `/dataset/sparse/images.bin` $\to$ world-to-camera $(q, t)$, observed `point3D_id`s (to compute each camera's near-field depth guard $z_{\min}(c)$), and image filenames.
@@ -70,6 +70,7 @@ A lightweight Python script (`gaussopt/serve.py`) acts as the local bridge:
    * Streams `/dataset/images/<filename>` via `createImageBitmap`.
 3. **Checkpoint & Octree Export (`POST /save`):**
    * Exposes `POST /save?name=splat_05000.ply` so the browser can write `.ply` / `.splat` / `.octree.json` files directly into `<dataset>/splats_gaussopt/` on disk.
+4. **Project folders (`--projects DIR`, default `~/gaussopt-projects`):** `GET /projects.json`, and `GET` / `PUT` / `DELETE /project/<name>/<path>` (`?list` on a directory), the store of §3.6 for any browser. Uploads are streamed to a temporary file and renamed. Every write (`POST /save` too) is refused unless `Host` names the server as localhost and `Origin`, when present, is the server itself, so another site open in the browser cannot write to disk through it (`tests/serve_test.py`).
 
 ### 3.2 Path B: Zero-Server Static Browser Mode (Drag-and-Drop / Folder Picker)
 When running statically on `https://skal65535.github.io/gaussopt/`:
@@ -89,7 +90,7 @@ Because `LooseOctree.build()` reorders the splat array so every leaf $l$ occupie
 1. **Embedded in `.ply` Checkpoints (`element octree_node <M>`):**
    * When exporting a `.ply` from Gauss-Opt (`exportPlyBuffer(params, count, octree)`), we append a second standard PLY element block after `element vertex <N>`:
      ```text
-     comment gaussopt_octree_v1 beta=0.20 max_leaf=256 cx=... cy=... cz=... radius=...
+     comment gaussopt_octree_v1 beta=0.20 max_leaf=256 max_depth=10 cx=... cy=... cz=... radius=...
      element octree_node <M>
      property float cx
      property float cy
@@ -100,6 +101,7 @@ Because `LooseOctree.build()` reorders the splat array so every leaf $l$ occupie
      property int count_or_depth
      property int state
      ```
+   * Fields missing from the comment take the `LooseOctree` defaults (`OCTREE_DEFAULTS`: `max_leaf` 256, `max_depth` 10, `beta` 0.20).
    * Standard 3DGS viewers read `element vertex <N>` and ignore `element octree_node <M>`, while `parsePlyBuffer` in `gaussopt/` and `splats/` restores the entire `LooseOctree` in **$< 0.2\text{ ms}$** without rebuilding or re-compacting.
 2. **Standalone `.octree.json` Export / Import:**
    * `octree.toJSON()` / `LooseOctree.fromJSON(json)` exports/imports the serialized node flat-array (`nodes`, `beta`, `maxLeafSize`, `sceneCenter`, `sceneRadius`) as a compact JSON sidecar (`save .octree` button in UI).
@@ -108,6 +110,13 @@ Because `LooseOctree.build()` reorders the splat array so every leaf $l$ occupie
      * Subtrees completely outside the view frustum are culled in $O(1)$ at high-level internal nodes (skipping $50\%\text{--}80\%$ of splats in a single test when zoomed in).
      * Visible leaves are visited in exact front-to-back order (`rank ^ mask`) and sorted locally inside each leaf (`sort_name = 'Octree'` in [`splats/index.html`](../splats/index.html)).
 
+### 3.6 Project Folders (`src/project/`, Project phase)
+Everything a project produces goes into one folder, laid out like `video2splat.py`'s `OUT/` so COLMAP and serve.py read it: `project.json` (format, source video, one entry per phase: options and counts), `images/` (the keyframes as extracted, distorted), `sharpness.csv` (every sampled frame), `sparse/0/` (the distorted model of `images/`, the SfM camera, e.g. OPENCV; `colmap model_analyzer` reads it), `gs/` (the trainer's undistorted dataset), `splats/` (snapshots, `.ply`, `.octree.json`) and `cache/` (the SfM session, to resume repairs). The worker writes `images/`, `sharpness.csv`, `sparse/0/`, `gs/` and `cache/` as they are made; the page writes `project.json` (last, after each change) and `splats/`.
+* **Where** (`store.js`, one interface: read, write, list, remove): a folder the user picks (File System Access API, Chrome / Edge; the handle is kept in IndexedDB and offered again after a reload, which needs a click to re-grant write permission), or a project on serve.py (any browser, local). Without either, **Download as .zip** packs the same layout (`zip.js`, stored, no ZIP64). The keyed OPFS session cache of DESIGN-sfm §4 stays the default when no folder is chosen: copying every keyframe again into the browser's storage would double its size.
+* **Tested** by `e2e/project.e2e.js`: a 12 s clip to 300 training steps, a new project on serve.py (the files on disk, `colmap model_analyzer` on `sparse/0/`), a reload without the video that reopens it at the same step and repairs, the same project into a folder handle (the browser's private storage hands out the same `FileSystemDirectoryHandle` a picked folder does, so the folder path is covered headless), and the `.zip` (Python's `zipfile`).
+* **Attaching** a folder: an empty one is filled with what the page has (the worker writes its whole session, `flush`; the trainer a snapshot); an existing project is reopened: its SfM session (repairs work without the video), its `gs/` dataset and the snapshot `project.json` names as the latest. Snapshots, autosnaps and saves then go to `splats/`.
+
+
 ---
 
 ## 4. Ray Integration & Sub-Task Training Modes
@@ -115,7 +124,7 @@ Because `LooseOctree.build()` reorders the splat array so every leaf $l$ occupie
 $$\hat{C}(\mathbf{p}) = C_{\text{fg}}(\mathbf{p}) + T_{\text{fg}}(\mathbf{p}) \cdot \Big( C_{\text{active}}(\mathbf{p}) + T_{\text{active}}(\mathbf{p}) \cdot C_{\text{bg}}(\mathbf{p}) \Big)$$
 
 * **Mode A: Full-Ray Octree Traversal (Global View Step):** All visible octree leaves for the selected training camera are queued in front-to-back order.
-* **Mode B: Block-Coordinate Sub-Task Optimization (Local Subtree Step):** Pre-renders frozen foreground $(C_{\text{fg}}, T_{\text{fg}})$ and background $(C_{\text{bg}})$ for a local octree subtree $B$.
+* **Mode B: Block-Coordinate Sub-Task Optimization (Local Subtree Step):** Pre-renders frozen foreground $(C_{\text{fg}}, T_{\text{fg}})$ and background $(C_{\text{bg}})$ for a local octree subtree $B$. **Not implemented** (the leaf state 1 reserved for it is never assigned).
 
 ---
 
@@ -141,13 +150,14 @@ Every $K$ steps, we compute the mean error mass $\bar{R}$ and hysteresis thresho
 
 ### 5.2 Octree-Guided Floater Removal (Integrated in the $K$-Step Loop)
 1. **Near-Camera Free-Space Carve:** Prune any splat inside a camera's near-field cone $z < 0.65 \, z_{\min}(c)$.
-2. **Multi-View Participation Ratio ($N_{\text{eff}}$ Check):** In cells intersected by $M_{\text{cell}} \ge 4$ camera frustums, prune single-view billboards with $N_{\text{eff}}(i) = W_i^2 / S_i < 1.45$.
-3. **Octree Topological Isolation:** Prune sparse leaves ($\le 3$ splats) that have zero populated neighbor leaves.
+2. **Multi-View Participation Ratio ($N_{\text{eff}}$ Check):** In cells intersected by $M_{\text{cell}} \ge 4$ camera frustums, prune single-view billboards with $N_{\text{eff}}(i) = W_i^2 / S_i < 1.45$ (and $W_i > 0.5$, $R_i / W_i > 0.12$).
+3. **Octree Topological Isolation:** A leaf with $\le 3$ splats and no other leaf within $1.25 \times$ (sum of half-sizes) is marked isolated (state 3); only its splats with $\alpha < 0.25$ are removed (`isFloater`).
 4. **Selective Sightline Opacity Decay:** Decay opacity for high-error occluders ($R_i / W_i > 0.22$).
 
 ### 5.3 Overlap Reconciliation & Octree Rebalancing
 1. **Overlap Reconciliation (Moment-Matching Merge):** Merge redundant overlapping Gaussians with small relative distance and color difference.
 2. **Octree Rebuild:** Re-bin splats into contiguous leaves ($N_{\text{leaf}} \le 256$).
+3. **Cost (TODO):** the whole outer loop (readback, `reconcileAndGrow`, Adam gather, upload) runs on the main thread inside a step, so the page freezes for its duration. jardin5 at 300k splats: ~1 s, then ~210 ms once the near-camera floater test used a grid of the camera cones (it projected every splat into every training camera) and kept splats went into one buffer. Next: `reconcileAndGrow` and the gather in a worker on transferred buffers, training going on with the old splats until the result is swapped in.
 
 ### 5.4 Extra Optimizer Methods: Monte-Carlo (SGLD / MCMC) & Simulated Annealing (SA)
 In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stochastic optimization methods selectable live in the GUI:
@@ -163,7 +173,9 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
    * **Inner Loop (Metropolis-Hastings Per-Splat Perturbation):** Each splat tracks its local WLBG mean error energy $E_i^{(t)} = e_{\text{view}}(i)$ in `adam_v[b+1].w` and its last accepted position displacement in `adam_m[b+1].w`, `adam_m[b+3].w`, `adam_v[b+3].w`. At each step:
      * Compare current local error $E_i^{(t)}$ against previous $E_i^{(t-1)}$.
      * Compute Boltzmann acceptance probability $P_{\text{acc}} = \exp(-\max(0, E_i^{(t)} - E_i^{(t-1)}) / T(t))$.
-     * If rejected ($u > P_{\text{acc}}$), partially revert the last position/scale perturbation and sample a new temperature-scaled Cauchy/Gaussian proposal $\Delta \boldsymbol{\mu}_i \propto T(t) \mathbf{R}_i \mathbf{s}_i \boldsymbol{\xi}_i$.
+     * If rejected ($u > P_{\text{acc}}$), fully undo the last jump and draw a new Gaussian proposal $\Delta \boldsymbol{\mu}_i = 0.25\, T(t)\, \mathbf{R}_i \mathbf{s}_i \boldsymbol{\xi}_i$.
+     * If accepted, update the energy baseline ($E \leftarrow 0.7 E + 0.3 E_i^{(t)}$, the first value as is) and jump $0.15\, T(t) \max(0.05, E_i^{(t)})\, \mathbf{R}_i \mathbf{s}_i \boldsymbol{\xi}_i$.
+     * Positions only: no Cauchy proposal, no scale perturbation.
    * **Outer Loop (Boltzmann Split Acceptance):** Candidate splat splits with intermediate error $R_i \in [T_l, T_u]$ are accepted stochastically with probability $\exp(-(T_u - R_i) / (T(t) \bar{R}))$.
 
 ---
@@ -178,7 +190,9 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
    * `3D octree boxes`: Nominal ($L$) or loose ($(1+2\beta)L$) leaf wireframes colored by state.
    * `COLMAP frustums`: Camera pyramids colored by train/val/active status.
    * `WLBG split axes`: 3D principal error axes on newly split splats.
-4. **Side-Canvas Inspector & Telemetry (`#side-canvas`):** Rolling PSNR curve, optimizer temperature $T(t)$, and Octree/WLBG rebalance stats.
+4. **Side-Canvas Inspector & Telemetry (`#side-canvas`):** Rolling train PSNR curve with held-out validation PSNR points, and Octree/WLBG rebalance stats; the SA temperature $T(t)$ is shown in the status line only, not plotted.
+5. **Validation (`?val=N`, every N steps):** the held-out views (never trained on) are rendered at training resolution and scored by PSNR, SSIM (11x11 Gaussian window, as the 3DGS code) and PSNR at 1/4 of that resolution (`metrics.js`), each the mean over the views; all three are logged and kept in `valHistory`. PSNR is dominated by large areas; the 1/4-resolution PSNR shows coarse agreement only (colors, shapes, small pose errors forgiven) and SSIM structure and sharpness, so a variant that wins on one and loses on another trades detail for structure. Held-out views (`?val_split=`, applied on load): `every8` (default) is one view in 8, each between two training views, so it only tests interpolation along the path; `block` holds out a contiguous tenth of the path around its middle (name order), views away from any training view, where floaters that hide from the training views show.
+6. **Layout and phases (`src/ui/`):** one window-high grid (`gaussopt.css`): a header, a **stepper** of the project phases (Project · Video · Keyframes · Cameras · Train · Export), the 3D view with its toolbar (the keyframe contact sheet `frames.js`, shown over the view in the Keyframes phase; hold target; a *view* popover with the Visualization and Camera controls), an **inspector** on the right with the current phase's controls and its next-step buttons pinned at the bottom, and a **dock** under the view with Timeline (the video's frame strip), Charts (the side canvas) and Log tabs. Each step's state (todo, running, done, stale, skipped) and one-line summary are derived from what is loaded and running (`phases.js`, never stored); a finished step moves the inspector forward, never back. Loading a COLMAP dataset marks Video and Keyframes skipped and Cameras done. The canvas backing store takes the dataset's aspect (long side 960) and is scaled to fit the view (`shell.js`). Every control has a tooltip: the GUI panels pass a table of texts by key or folder name (`mkGui(..., { tips })`, `common/controls.js`), HTML elements a `title`; one styled popup shows both. Below 1000 px the columns stack and the page scrolls. All lines go to one log (`log.js`), tagged by source (app, sfm, train) with a filter.
 
 ---
 
@@ -194,7 +208,7 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
 | **A6** | **Suffix Color Transmittance Scaling in `dL_dalpha`** | Since `accum_rec` tracks the unattenuated suffix color $\tilde{C}_{>i} = T_{i+1}^{-1}\sum_{j>i} T_j \alpha_j c_j$, `dL_dalpha` uses exact $T_i \cdot (\text{dL\_dC} \cdot (c_i - \tilde{C}_{>i}))$ without double-dividing by $(1 - \alpha_i)$. |
 | **A7** | **Column-Major Quaternion Rotation Gradient (`dL_dq`)** | Matched skew-symmetric cross-terms `(G1.z - G2.y)`, `(G2.x - G0.z)`, `(G0.y - G1.x)` to WGSL's column-major `mat3x3f` layout. |
 | **A8** | **Stale Adam Momentum / SA State Across Octree Reordering** | Adam state is carried across rebalances: `reconcileAndGrow()` returns `srcIdx` (source splat of each survivor, -1 for new children) and `build()` records `lastPerm` (its leaf-order permutation); the trainer gathers m/v through both. New splats start from zero. |
-| **A9** | **Concurrent `step()` / `mapAsync` Re-Entrancy** | All GPU readbacks (step, validation, snapshot, .ply sync, E1) run under `GaussOptTrainer._withStepLock()`, so no two `mapAsync()` sequences overlap. |
+| **A9** | **Concurrent `step()` / `mapAsync` Re-Entrancy** | Readbacks that touch shared state (validation, snapshot, .ply sync, and the rebalance inside `step()`) run under the step lock (`GaussOptTrainer._withStepLock()`), so they cannot overlap a step. The loss poll and the tile-list size poll each read their own staging buffer, guarded by a pending promise (no second `mapAsync` while one is in flight). |
 | **A10** | **Rank-Deficient Single-View 2nd Error Moment $\mathbf{E}_i$** | Added isotropic diagonal regularization $\epsilon_{\text{iso}} = 10^{-4} s_{\max}^2 \mathbf{I}_3$ before power iteration in `reconcileAndGrow()`. |
 | **A11** | **Progressive Streaming Octree Rebuild Thrashing in `splats/`** | Throttled `LooseOctree.buildIndexOnly()` during HTTP streaming to only rebuild every $\ge 16{,}384$ newly arrived splats and once upon stream completion. |
 
@@ -205,20 +219,33 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
 ```text
 skal65535.github.io/gaussopt/
 ├── DESIGN.md              # Architecture, decisions, adversarial review, MC/SA & Octree spec
-├── serve.py               # Local HTTP bridge: mounts COLMAP gs/ dirs, lists .ply checkpoints, handles POST /save
+├── DESIGN-sfm.md          # In-browser video -> cameras (SfM); its §10 lists src/sfm/, tests/, tools/, e2e/
+├── deno.json              # deno task test / test:slow
+├── serve.py               # Local HTTP bridge: mounts COLMAP gs/ dirs, lists .ply/.splat/.gosnap checkpoints, POST /save, project folders
 ├── index.html             # Page markup + bootstrap (imports src/app.js)
-├── gaussopt.css           # Page layout (canvas + controls columns), overlays (#info, #frustum-thumb)
+├── gaussopt.css           # Page layout (grid: header, stepper, view, inspector, dock), overlays
+├── e2e/                   # Browser end-to-end tests (Playwright, headless Chrome; BROWSER=safari: safaridriver): the SfM
+│                          #   panel (sfm.e2e.js), project folders (project.e2e.js); harness.js: server, clip, browser
+├── tests/                 # deno test: SfM unit / solver / GPU / synthetic tests, .ply octree round trip
+├── tools/                 # Deno / Python command-line tools for the SfM (DESIGN-sfm §10)
 └── src/
     ├── app.js             # App: GUI & URL params, dataset/snapshot loading, frame loop, cameras (orbit/drone/fly-to)
     ├── colmap.js          # Binary parser for COLMAP *.bin + .ply/.splat import/export (with embedded octree)
-    ├── math.js            # Shared math: vec3, quaternions, 3x3 eigen, OpenCV view/proj, orbit frame, intrinsics fit
+    ├── math.js            # Shared math: vec3, quaternions, 3x3 eigen, OpenCV view matrices, pinhole projection, orbit frame, intrinsics fit
     ├── octree.js          # Loose Octree build, JSON/PLY serialization, front-to-back sort, WLBG/MCMC/SA growth
     ├── render.js          # Pure draw layer: free-view splats, 3D octree & camera wireframes, side-canvas telemetry
-    ├── drone.js           # 'Drone fly' free camera: angle-mode quadcopter model (mouse stick, arrow throttle/yaw)
+    ├── drone.js           # 'Drone fly' free camera: angle-mode quadcopter model (mouse stick, arrows forward/back + yaw, E/Q climb/descend)
+    ├── demo.js            # 'Demo' free camera (G): slow elastic flight along the capture path; any input hands over to the drone
     ├── trainer.js         # GPU/CPU hybrid training loop (Adam, Monte-Carlo SGLD, Simulated Annealing)
+    ├── metrics.js         # Validation metrics: PSNR, SSIM (3DGS convention), PSNR at 1/4 resolution
     ├── shaders.wgsl       # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
     ├── snapshot.js        # .gosnap full training-state snapshot codec (splats + Adam + moments + octree)
-    └── stipple.js         # E4: residual stippling -> unprojected seed splats (reuses ../stipple/ Voronoi)
+    ├── stipple.js         # E4: residual stippling -> unprojected seed splats (reuses ../stipple/ Voronoi)
+    ├── project/           # Project folders (§3.6): store.js (folder / serve.py / memory), project.js (manifest), zip.js
+    ├── ui/                # Page code (DOM; engine modules stay DOM-free): shell.js (layout, stepper, inspector, dock),
+    │                      #   phases.js (phase states, DOM-free), log.js, frames.js (keyframe contact sheet),
+    │                      #   project_panel.js (Project phase), sfm_panel.js (the video phases' controls)
+    └── sfm/               # In-browser SfM: worker, GPU SIFT / matching, mapper (DESIGN-sfm §10)
 ```
 
 ---
@@ -243,6 +270,6 @@ skal65535.github.io/gaussopt/
   2. Leaf traversal order is a valid visibility order for points, but splats have extent: two splats in neighbouring leaves overlap on screen while lying on different rays, and the leaf order decides arbitrarily. Mis-orders span whole leaves (mean rank displacement 11–18% of the list), so **no local fix** (sliding window, GPU refine) recovers more than ~1.5 dB.
   3. $z$-order and radial order agree to 41–46 dB, so $z$-sort is a valid reference — the octree order really is worse, not just different.
   4. Weighted child order is free and strictly better (+0.3 to +1.7 dB); kept for traversal (also used by `splats/`).
-* **Decision:** training and display use octree culling + exact radix sort (bit-exact vs the exhaustive sort, 10–14× faster: 0.7–2.7 ms vs 7–30 ms for 27k–112k visible splats). Sliding window and GPU refine were removed. The "Run Exp E1" button now only checks octree+radix against the exhaustive sort (expect 99.9 dB).
+* **Decision:** training and display use octree culling + exact radix sort (bit-exact vs the exhaustive sort, 10–14× faster: 0.7–2.7 ms vs 7–30 ms for 27k–112k visible splats). Sliding window and GPU refine were removed. The "Run Exp E1" button that checked octree+radix against the exhaustive sort in the page (99.9 dB) was removed once settled; `tests/ply_octree_test.js` checks the same visible sets on the CPU (`sortGlobalExact`).
 * **Open:** does exact order improve *training* PSNR vs the old leaf order? (A/B on held-out views, once validation PSNR exists.)
 

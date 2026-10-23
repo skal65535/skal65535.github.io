@@ -107,7 +107,7 @@ export function buildViewDepthGrid(img, points3D, sx, sy, W, H, cell = 16) {
 }
 
 // Depth at training pixel (u, v): nearest non-empty grid cell (ring search), else median.
-export function lookupDepth(dg, u, v, maxRing = 6) {
+function lookupDepth(dg, u, v, maxRing = 6) {
   const cx = clamp(Math.floor(u / dg.cell), 0, dg.gw - 1);
   const cy = clamp(Math.floor(v / dg.cell), 0, dg.gh - 1);
   for (let r = 0; r <= maxRing; r++) {
@@ -127,7 +127,7 @@ export function lookupDepth(dg, u, v, maxRing = 6) {
 }
 
 // Training pixel (u, v) at camera depth z -> world position (img.R is row-major world->cam)
-export function unprojectPixel(img, fx, fy, cx, cy, u, v, z) {
+function unprojectPixel(img, fx, fy, cx, cy, u, v, z) {
   const xc = (u - cx) / fx * z, yc = (v - cy) / fy * z;
   const R = img.R, c = img.center;
   return [
@@ -151,16 +151,11 @@ export function makeSeedSplats({
     const u = sites.xs[k] * W, v = sites.ys[k] * H;
     const px = Math.min(W - 1, u | 0), py = Math.min(H - 1, v | 0);
     const p = (py * W + px) * 4;
-    let z;
-    if (pix[p] < 0.5 && pix[p + 1] > 0.05) {
-      z = pix[p + 1];
-      covered++;
-    } else {
-      const d = lookupDepth(depthGrid, u, v);
-      z = d.z;
-      if (d.fromPoints) fromPoints++; else fromMedian++;
-    }
+    const cov = pix[p] < 0.5 && pix[p + 1] > 0.05;
+    const d = cov ? { z: pix[p + 1] } : lookupDepth(depthGrid, u, v);
+    const z = d.z;
     if (!(z > 0.05)) continue;
+    if (cov) covered++; else if (d.fromPoints) fromPoints++; else fromMedian++;
     const pos = unprojectPixel(img, fx, fy, cx, cy, u, v, z);
     const rPx = clamp(Math.sqrt(sites.area[k] / Math.PI), 0.5, maxRadiusPx);
     const o = py * bytesPerRow + px * 4;

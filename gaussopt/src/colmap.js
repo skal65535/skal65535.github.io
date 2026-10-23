@@ -2,7 +2,9 @@
 //             and 3DGS .ply / .splat checkpoint import & export (.ply may embed the Loose Octree).
 "use strict";
 
-import { sigmoid, logit, quatToMat3, makeViewMatrix, makeProjectionMatrix } from './math.js';
+import { sigmoid, logit, quatToMat3, makeViewMatrix, projectPinhole } from './math.js';
+import { CAMERA_MODELS, intrinsics, distortionParams, poseCenter } from './sfm/camera.js';
+import { hashString } from './sfm/util.js';
 
 export const SH_C0 = 0.28209479177387814;
 export const SPLAT_FLOATS = 16; // 64 bytes/splat:
@@ -22,17 +24,12 @@ function setSplat(params, i, x, y, z, op, sx, sy, sz, qw, qx, qy, qz, dc0, dc1, 
 
 // ── COLMAP binary parsers ────────────────────────────────────────────────────
 
-// model_id -> [name, #params]; params are (f | fx, fy), cx, cy, distortion... (distortion ignored:
-// images are expected to be undistorted already)
-const CAMERA_MODELS = {
-  0: ['SIMPLE_PINHOLE', 3],  // f, cx, cy
-  1: ['PINHOLE',        4],  // fx, fy, cx, cy
-  2: ['SIMPLE_RADIAL',  4],  // f, cx, cy, k
-  3: ['RADIAL',         5],  // f, cx, cy, k1, k2
-  4: ['OPENCV',         8],  // fx, fy, cx, cy, k1, k2, p1, p2
-};
+// model_id -> [name, #params]
+const MODEL_BY_ID = Object.fromEntries(Object.entries(CAMERA_MODELS).map(([name, [id, names]]) => [id, [name, names.length]]));
 const u64 = (dv, off) => Number(dv.getBigUint64(off, true));
 
+// Only the pinhole part is kept: images are expected to be undistorted already (the in-browser
+// SfM hands over PINHOLE), so non-zero distortion only gets a warning.
 export function parseCamerasBin(buffer) {
   const dv = new DataView(buffer);
   const cameras = new Map();
@@ -43,11 +40,14 @@ export function parseCamerasBin(buffer) {
     const width   = u64(dv, off + 8);
     const height  = u64(dv, off + 16);
     off += 24;
-    const info = CAMERA_MODELS[modelId];
+    const info = MODEL_BY_ID[modelId];
     if (!info) throw new Error(`Unsupported COLMAP camera model_id=${modelId}`);
     const p = [];
     for (let k = 0; k < info[1]; k++, off += 8) p.push(dv.getFloat64(off, true));
-    const [fx, fy, cx, cy] = (modelId === 1 || modelId === 4) ? p : [p[0], p[0], p[1], p[2]];
+    const cam = { model: info[0], params: p };
+    const dist = distortionParams(cam);
+    if (dist.some(k => k !== 0)) console.warn(`COLMAP camera ${id} (${info[0]}): distortion k1, k2, p1, p2 = ${dist} ignored (images assumed undistorted)`);
+    const [fx, fy, cx, cy] = intrinsics(cam);
     cameras.set(id, { id, model: info[0], width, height, fx, fy, cx, cy });
   }
   return cameras;
@@ -79,27 +79,27 @@ export function parseImagesBin(buffer, cameras) {
       if (pid >= 0) obs2D.push(dv.getFloat64(off, true), dv.getFloat64(off + 8, true), pid);
     }
 
-    const R = quatToMat3([qw, qx, qy, qz]);
-    const t = [tx, ty, tz];
-    const center = [  // C = -R^T t
-      -(R[0] * tx + R[3] * ty + R[6] * tz),
-      -(R[1] * tx + R[4] * ty + R[7] * tz),
-      -(R[2] * tx + R[5] * ty + R[8] * tz),
-    ];
-    const forward = [R[6], R[7], R[8]];  // camera +Z in world = 3rd row of R
     const cam = cameras.get(cameraId) || cameras.values().next().value;
-    images.push({
+    images.push(setPose({
       id, name, cameraId, camera: cam,
-      q: [qw, qx, qy, qz], t, R, center, forward,
-      view: makeViewMatrix(R, t),
-      proj: makeProjectionMatrix(cam.fx, cam.fy, cam.cx, cam.cy, cam.width, cam.height),
       obs2D: new Float64Array(obs2D),
       zMin: 0.2, zMax: 50.0,  // refined by computeCameraDepthStats()
       isValidation: false,
-    });
+    }, quatToMat3([qw, qx, qy, qz]), [tx, ty, tz]));
   }
   images.sort((a, b) => a.name.localeCompare(b.name));
   return images;
+}
+
+// World -> camera pose (x_cam = R x + t) of an image and what derives from it: center, forward,
+// view matrix (also used when the SfM panel moves cameras into the splats' frame)
+export function setPose(img, R, t) {
+  img.R = R;
+  img.t = t;
+  img.center = poseCenter(img);
+  img.forward = [R[6], R[7], R[8]];  // camera +Z in world = 3rd row of R
+  img.view = makeViewMatrix(R, t);
+  return img;
 }
 
 export function parsePoints3DBin(buffer) {
@@ -107,7 +107,6 @@ export function parsePoints3DBin(buffer) {
   const count = u64(dv, 0);
   const positions = new Float32Array(count * 3);
   const colors    = new Uint8Array(count * 3);
-  const errors    = new Float32Array(count);
   const pointIndexById = new Map();
   let off = 8;
   for (let i = 0; i < count; i++) {
@@ -115,19 +114,23 @@ export function parsePoints3DBin(buffer) {
     for (let k = 0; k < 3; k++) {
       positions[3 * i + k] = dv.getFloat64(off + 8 + 8 * k, true);
       colors[3 * i + k] = dv.getUint8(off + 32 + k);
-    }
-    errors[i] = dv.getFloat64(off + 35, true);
+    }  // then the reprojection error (f64, unused)
     const trackLen = u64(dv, off + 43);
     off += 51 + trackLen * 8;  // skip track: [image_id (i32), point2D_idx (i32)]
   }
-  return { count, positions, colors, errors, pointIndexById };
+  return { count, positions, colors, pointIndexById };
 }
 
-// Per-camera 5th / 95th percentile depth of its observed points (zMin feeds the near-camera
-// floater carve, DESIGN §5.2) + mean COLMAP reprojection error (sanity check).
+const VIEW_DEPTH_POINTS = 50000;  // points sampled for zView (cost: cameras x these projections)
+
+// Per-camera 5th / 95th percentile depth of its observed points (zMin, zMax), 5th percentile of
+// all the points in its view (zView: also the ones other cameras saw, e.g. the pavement a walking
+// camera passes over), for the near-camera floater carve (DESIGN §5.2) + mean COLMAP reprojection
+// error (sanity check).
 export function computeCameraDepthStats(images, points3D) {
   const { positions, pointIndexById } = points3D;
   let totalReprojErr = 0, totalObs = 0;
+  const uv = [0, 0];
   for (const img of images) {
     const depths = [];
     const { R, t, camera, obs2D } = img;
@@ -135,19 +138,25 @@ export function computeCameraDepthStats(images, points3D) {
       const idx = pointIndexById.get(obs2D[k + 2]);
       if (idx === undefined) continue;
       const X = positions[3 * idx], Y = positions[3 * idx + 1], Z = positions[3 * idx + 2];
-      const xc = R[0] * X + R[1] * Y + R[2] * Z + t[0];
-      const yc = R[3] * X + R[4] * Y + R[5] * Z + t[1];
-      const zc = R[6] * X + R[7] * Y + R[8] * Z + t[2];
+      const zc = projectPinhole(R, t, camera, X, Y, Z, uv);
       if (zc <= 0.01) continue;
       depths.push(zc);
-      totalReprojErr += Math.hypot(camera.fx * (xc / zc) + camera.cx - obs2D[k],
-                                   camera.fy * (yc / zc) + camera.cy - obs2D[k + 1]);
+      totalReprojErr += Math.hypot(uv[0] - obs2D[k], uv[1] - obs2D[k + 1]);
       totalObs++;
     }
     if (depths.length > 0) {
       depths.sort((a, b) => a - b);
       img.zMin = depths[Math.floor(depths.length * 0.05)];
       img.zMax = depths[Math.floor(depths.length * 0.95)];
+    }
+    const inView = [], stride = Math.max(1, Math.ceil(positions.length / 3 / VIEW_DEPTH_POINTS));
+    for (let i = 0; i < positions.length / 3; i += stride) {
+      const zc = projectPinhole(R, t, camera, positions[3 * i], positions[3 * i + 1], positions[3 * i + 2], uv);
+      if (zc > 0.01 && uv[0] >= 0 && uv[0] <= camera.width && uv[1] >= 0 && uv[1] <= camera.height) inView.push(zc);
+    }
+    if (inView.length > 0) {
+      inView.sort((a, b) => a - b);
+      img.zView = inView[Math.floor(inView.length * 0.05)];
     }
   }
   return { meanReprojError: totalObs > 0 ? totalReprojErr / totalObs : 0, totalObs };
@@ -205,12 +214,13 @@ export function parsePlyBuffer(buffer) {
     if (parts[0] === 'format') {
       format = parts[1] || '';
     } else if (parts[0] === 'comment' && parts[1] === 'gaussopt_octree_v1') {
-      octreeMeta = { beta: 0.20, maxLeafSize: 256, maxDepth: 8, sceneCenter: [0, 0, 0], sceneRadius: 2.0 };
+      octreeMeta = { sceneCenter: [0, 0, 0] };  // missing fields: LooseOctree defaults
       for (const kv of parts.slice(2)) {
         const [k, v] = kv.split('=');
         const num = parseFloat(v);
         if (k === 'beta') octreeMeta.beta = num;
         else if (k === 'max_leaf') octreeMeta.maxLeafSize = num | 0;
+        else if (k === 'max_depth') octreeMeta.maxDepth = num | 0;
         else if (k === 'radius') octreeMeta.sceneRadius = num;
         else if (k === 'cx' || k === 'cy' || k === 'cz') octreeMeta.sceneCenter['xyz'.indexOf(k[1])] = num;
       }
@@ -252,23 +262,31 @@ export function parsePlyBuffer(buffer) {
              get('rot_0', 1), get('rot_1'), get('rot_2'), get('rot_3'), ...dc);
   }
 
-  // Embedded octree (fixed layout, right after the vertices). Leaves get sequential leaf_ids.
+  // Embedded octree (fixed layout, right after the vertices). Non-empty leaves get leaf_ids in
+  // depth-first octant order, as LooseOctree.fromSerializedNodes() numbers them.
   let octreeData = null;
   if (numOctreeNodes > 0 && octreeMeta && pos + vertexBytes + numOctreeNodes * OCTREE_NODE_BYTES <= buffer.byteLength) {
     const nodes = new Array(numOctreeNodes);
-    let leafId = 0;
     for (let i = 0; i < numOctreeNodes; i++) {
       const no = vertexBytes + i * OCTREE_NODE_BYTES;
       const n = {};
       PLY_OCTREE_PROPS.forEach(([, type, field], k) =>
         n[field] = (type === 'float') ? dv.getFloat32(no + 4 * k, true) : dv.getInt32(no + 4 * k, true));
       nodes[i] = n;
-      if (n.isLeaf && n.countOrDepth > 0) {
+    }
+    let leafId = 0;
+    const visit = (i) => {
+      const n = nodes[i];
+      if (!n) return;
+      if (!n.isLeaf) {
+        for (let oct = 0; oct < 8; oct++) visit(n.firstChildOrStart + oct);
+      } else if (n.countOrDepth > 0) {
         const end = Math.min(numVertices, n.firstChildOrStart + n.countOrDepth);
         for (let s = n.firstChildOrStart; s < end; s++) params[s * SPLAT_FLOATS + 7] = leafId;
         leafId++;
       }
-    }
+    };
+    visit(0);
     octreeData = { meta: octreeMeta, nodes };
   }
   return { count: numVertices, params, octreeData };
@@ -299,7 +317,7 @@ export function exportPlyBuffer(params, count, octree = null) {
   const header = ['ply', 'format binary_little_endian 1.0', 'comment Exported from Gauss-Opt', 'comment Vertical axis: y'];
   if (nodes.length > 0) {
     const [cx, cy, cz] = octree.sceneCenter;
-    header.push(`comment gaussopt_octree_v1 beta=${octree.beta.toFixed(4)} max_leaf=${octree.maxLeafSize} ` +
+    header.push(`comment gaussopt_octree_v1 beta=${octree.beta.toFixed(4)} max_leaf=${octree.maxLeafSize} max_depth=${octree.maxDepth} ` +
                 `cx=${cx.toFixed(5)} cy=${cy.toFixed(5)} cz=${cz.toFixed(5)} radius=${octree.sceneRadius.toFixed(5)}`);
   }
   header.push(`element vertex ${count}`, ...PLY_VERTEX_PROPS.map(([name]) => `property float ${name}`));
@@ -349,14 +367,31 @@ export function exportSplatBuffer(params, count) {
 
 // ── Dataset loaders (HTTP base URL or dropped folder) ────────────────────────
 
-// Parse the sparse model; every 8th view (i % 8 == 4) is held out for validation when >= 8 views.
+// Held-out validation views (never trained on), when there are >= 8 views. mode 'every8': one view
+// in 8, by index, or by a hash of the name (byHash); 'block': a contiguous tenth of the path in name
+// (capture) order, around its middle. Those are views off the training path, where floaters that
+// hide from the neighbouring training views show (every8 views sit between two trained ones).
+export function splitValidation(images, mode = 'every8', { byHash = false } = {}) {
+  for (const im of images) im.isValidation = false;
+  const n = images.length;
+  if (n < 8) return;
+  if (mode === 'block') {
+    const order = images.map((im, i) => i).sort((a, b) => images[a].name.localeCompare(images[b].name));
+    const len = Math.round(n / 10), lo = (n - len) >> 1;
+    for (const i of order.slice(lo, lo + len)) images[i].isValidation = true;
+  } else {
+    images.forEach((im, i) => { im.isValidation = (byHash ? hashString(im.name) : i) % 8 === 4; });
+  }
+}
+
+// Parse the sparse model; validation views by splitValidation(valSplit).
 // points3D.bin is optional (ptBuf = null): an empty point set, see fallbackPoints3D().
-function buildDataset([camBuf, imgBuf, ptBuf]) {
+function buildDataset([camBuf, imgBuf, ptBuf], valSplit, { byHash = false } = {}) {
   const cameras  = parseCamerasBin(camBuf);
   const images   = parseImagesBin(imgBuf, cameras);
   const points3D = ptBuf ? parsePoints3DBin(ptBuf) : fallbackPoints3D(images);
   const stats    = computeCameraDepthStats(images, points3D);
-  images.forEach((im, i) => { im.isValidation = images.length >= 8 && (i % 8) === 4; });
+  splitValidation(images, valSplit, { byHash });
   return { cameras, images, points3D, stats };
 }
 const SPARSE_FILES = ['sparse/cameras.bin', 'sparse/images.bin', 'sparse/points3D.bin'];
@@ -379,10 +414,10 @@ function fallbackPoints3D(images, perCam = 200) {
       for (let k = 0; k < 3; k++) positions[p + k] = center[k] + R[k] * x + R[3 + k] * y + R[6 + k] * z;  // R^T [x y z]
     }
   }
-  return { count: n, positions, colors, errors: new Float32Array(n), pointIndexById: new Map(), fallback: true };
+  return { count: n, positions, colors, pointIndexById: new Map(), fallback: true };
 }
 
-export async function loadColmapFromUrl(baseUrl, { onProgress } = {}) {
+export async function loadColmapFromUrl(baseUrl, { onProgress, valSplit } = {}) {
   const base = baseUrl.replace(/\/$/, '');
   onProgress?.('Fetching COLMAP sparse model...');
   let info = { plys: [] };
@@ -397,12 +432,23 @@ export async function loadColmapFromUrl(baseUrl, { onProgress } = {}) {
       throw new Error(`Missing ${base}/${f}`);
     }
     return r.arrayBuffer();
-  })));
+  })), valSplit);
   for (const im of ds.images) im.imageUrl = `${base}/images/${im.name}`;
   return { baseUrl: base, ...ds, availablePlys: info.plys || [] };
 }
 
-export async function loadColmapFromFiles(fileList, { onProgress } = {}) {
+// In-memory model from the in-browser SfM (src/sfm/worker.js): sparse = { 'cameras.bin':
+// ArrayBuffer, 'images.bin', 'points3D.bin' }, images = [{ name, blob }] (undistorted JPEGs)
+// every8 held-out views by a hash of the name (DESIGN-sfm §3), not by index: keyframes inserted
+// or dropped by a repair then leave the other views' split, and PSNRs comparable.
+export function loadColmapFromMemory(sparse, images, { valSplit } = {}) {
+  const ds = buildDataset(SPARSE_FILES.map(f => sparse[f.replace('sparse/', '')] ?? null), valSplit, { byHash: true });
+  const blobs = new Map(images.map(im => [im.name, im.blob]));
+  for (const im of ds.images) im.fileBlob = blobs.get(im.name);
+  return { baseUrl: null, ...ds, availablePlys: [], fromSfm: true };
+}
+
+export async function loadColmapFromFiles(fileList, { onProgress, valSplit } = {}) {
   const byRel = new Map();  // path relative to the dropped root, and bare file name
   for (const f of fileList) {
     byRel.set((f.webkitRelativePath || f.name).replace(/^[^/]+\//, ''), f);
@@ -416,7 +462,7 @@ export async function loadColmapFromFiles(fileList, { onProgress } = {}) {
       throw new Error(`Missing ${rel} in dropped files`);
     }
     return f.arrayBuffer();
-  })));
+  })), valSplit);
   for (const im of ds.images) {
     const f = byRel.get(`images/${im.name}`) || byRel.get(im.name);
     if (f) im.fileBlob = f;

@@ -82,7 +82,9 @@ export function evaluateCameraSpline(anim, nowMs = performance.now()) {
 
 // ── GPU renderer ─────────────────────────────────────────────────────────────
 
-const ZNEAR = 0.05, ZFAR = 200.0;  // display clip range (matches makeProjectionMatrix defaults)
+const ZNEAR = 0.05, ZFAR = 200.0;  // display clip range
+// Octree boxes: full alpha up to 0.25 scene radii of depth, fading linearly to 2 radii, never below 0.2
+const OCTREE_FADE = [0.25, 2.0, 0.2];
 const blend = (srcFactor, dstFactor) => {
   const c = { srcFactor, dstFactor, operation: 'add' };
   return { color: c, alpha: c };
@@ -120,7 +122,6 @@ export class GaussOptRenderer {
   async _init(device, context, format) {
     this.device  = device;
     this.context = context;
-    this.format  = format;
     const mods   = await loadShaders(device);
     const pipe = (module, topology, blend) => device.createRenderPipeline({
       layout: 'auto',
@@ -134,13 +135,14 @@ export class GaussOptRenderer {
     this.pipeBlit       = pipe(mods.compare_blit,     'triangle-strip', null);
 
     const ubuf = (size, label) => device.createBuffer({ size, label, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.renderUniformBuf = ubuf(256, 'render_uniforms');
-    this.wireUniformBuf   = ubuf(96,  'wire_uniforms');
+    this.renderUniformBuf = ubuf(128, 'render_uniforms');
+    this.wireUniformBuf   = ubuf(112, 'wire_uniforms');
     this.blitUniformBuf   = ubuf(16,  'blit_uniforms');
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
     this.wireBuf           = null;  // line vertices: xyz + bitcast ABGR color
     this.wireCount         = 0;
+    this.octreeVertCount   = 0;     // the first wireBuf vertices are octree boxes (faded with depth)
     this.frustumQuadBuf    = null;  // per camera: 4 strip corners (xyz + alpha)
     this.frustumGeoms      = [];    // per camera: { camIdx, pts: [apex, p1..p4] } for picking
     this.frustumBindGroups = new WeakMap();  // texture -> bind group (reset when frustumQuadBuf moves)
@@ -185,6 +187,7 @@ export class GaussOptRenderer {
     let ptr = 0;
     const put = (p, col, o = 0) => { verts[ptr] = p[o]; verts[ptr + 1] = p[o + 1]; verts[ptr + 2] = p[o + 2]; vu32[ptr + 3] = col; ptr += 4; };
     if (octVerts) { verts.set(octVerts.buffer); ptr = octVerts.vertexCount * 4; }
+    this.octreeVertCount = octVerts ? octVerts.vertexCount : 0;
 
     this.frustumGeoms = [];
     if (numCams > 0) {
@@ -199,7 +202,7 @@ export class GaussOptRenderer {
         this.frustumGeoms.push({ camIdx: i, pts });
         const active = (i === activeCamIdx);
         [1, 2, 4, 3].forEach((k, j) => quads.set([...pts[k], active ? 0.94 : 0.80], i * 16 + j * 4));
-        const col = active ? COL_ACTIVE : img.isValidation ? COL_VAL : COL_TRAIN;
+        const col = active ? COL_ACTIVE : img.wireColor ?? (img.isValidation ? COL_VAL : COL_TRAIN);  // wireColor: SfM quality
         for (const [a, b] of FRUSTUM_EDGES) { put(pts[a], col); put(pts[b], col); }
       });
       if (this._ensureStorage('frustumQuadBuf', quads.length, 64, 'frustum_quads')) this.frustumBindGroups = new WeakMap();
@@ -240,21 +243,20 @@ export class GaussOptRenderer {
   // frustumTextures: iterable of [camIdx, GPUTexture].
   renderScene({
     splatsBuf, momentsBuf, sortedIdxBuf, numVisible,
-    view, proj, camCenter, sceneRadius = 2.0,
+    view, sceneRadius = 2.0,
     fx, fy, cx, cy, W, H,
     visuMode = 0, colorMode = 0, haze = 1.0, avgR = 0.01,
-    drawWireframes = true, frustumTextures = null,
+    frustumTextures = null,
   }) {
     const dev = this.device;
-    // RenderUniforms: view, proj, cam_pos, intrinsics, screen, modes, thresholds
-    const uBuf = new ArrayBuffer(256);
+    // RenderUniforms: view, intrinsics, screen, modes, thresholds
+    const uBuf = new ArrayBuffer(128);
     const f32  = new Float32Array(uBuf);
     const u32  = new Uint32Array(uBuf);
     f32.set(view, 0);
-    if (proj) f32.set(proj, 16);
-    f32.set([...camCenter, sceneRadius, fx, fy, cx, cy, W, H, numVisible, haze], 32);
-    u32.set([visuMode, colorMode, 1, 0], 44);  // show_sh = 1
-    f32.set([Math.max(1e-5, avgR), 1.0, ZNEAR, ZFAR], 48);
+    f32.set([fx, fy, cx, cy, W, H, haze, sceneRadius], 16);
+    u32.set([visuMode, colorMode], 24);
+    f32.set([Math.max(1e-5, avgR), ZNEAR, ZFAR], 28);
     dev.queue.writeBuffer(this.renderUniformBuf, 0, uBuf);
 
     const enc = dev.createCommandEncoder({ label: 'render_scene' });
@@ -271,12 +273,13 @@ export class GaussOptRenderer {
       pass.draw(4, numVisible);
     }
 
-    const drawWires  = drawWireframes && this.wireCount > 0 && this.wireBuf;
+    const drawWires  = this.wireCount > 0 && this.wireBuf;
     const drawImages = frustumTextures && frustumTextures.length > 0 && this.frustumQuadBuf;
-    if (drawWires || drawImages) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar)
-      const wf = new Float32Array(24);
+    if (drawWires || drawImages) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar), fade
+      const wf = new Float32Array(28);
       wf.set(view, 0);
       wf.set([fx, fy, cx, cy, W, H, ZNEAR, ZFAR], 16);
+      wf.set([this.octreeVertCount, OCTREE_FADE[0] * sceneRadius, OCTREE_FADE[1] * sceneRadius, OCTREE_FADE[2]], 24);
       dev.queue.writeBuffer(this.wireUniformBuf, 0, wf);
     }
     if (drawImages) {
