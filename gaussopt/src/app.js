@@ -90,8 +90,8 @@ const TIPS = {
   enable_rebalance: 'grow and prune splats at each rebalance (off: their number stays fixed)',
   remove_floaters: 'at each rebalance, remove floaters: splats in front of the cameras, single-view billboards, isolated leaves',
   floater_depth: 'which splats count as too near a camera (closer than 0.65 x this depth). observed: the depth of the ' +
-                 'points the camera sees (the default, best on jardin7). view: of all points in its view, which removes ' +
-                 'less (keeps objects close to the path, e.g. on gare-st-lazare)',
+                 'points the camera sees (the default, best at 30k steps on 4 of 5 test scenes). view: of all points ' +
+                 'in its view, also those only other cameras saw (better early in training on gare-st-lazare)',
   enable_split: 'split splats with much unexplained error along the main axis of that error, or clone small ones',
   enable_merge: 'merge overlapping splats of nearly the same color',
   max_splats: 'growth stops at this many splats',
