@@ -186,7 +186,7 @@ export class GaussOptTrainer {
     this.adamVBuf      = this._buffer('adam_v',   splatBytes,  BUF_RW());
     this.sortedIdxBuf  = this._buffer('sorted_idx',      capacity * 4, IDX);
     this.viewIdxBuf    = this._buffer('view_sorted_idx', capacity * 4, IDX);
-    this.projSplatsBuf = this._buffer('proj_splats',     capacity * 32, IDX);  // 2 vec4f / visible splat
+    this.projSplatsBuf = this._buffer('proj_splats',     capacity * 32, BUF_RW());  // 2 vec4f / visible splat
     this.projTilesBuf  = this._buffer('proj_tiles',      capacity * 8, BUF_RW());  // tile rect / visible splat
     this.sortedIdx = new Uint32Array(capacity);
     this.viewIdx   = new Uint32Array(capacity);

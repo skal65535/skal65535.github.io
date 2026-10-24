@@ -1,5 +1,7 @@
 // tiles.e2e.js — The tile rasterizer kernels on synthetic scenes (Deno's WebGPU has no
 // 'subgroups', hence a browser test):
+//   - project_splats' tile rects: each the tiles whose pixel centers its 3-sigma box meets
+//     (half-widths 3 sqrt(cov_xx|yy), from the conic), no more, no less;
 //   - tile_backward with subgroups vs without (the per-thread path, lines tagged @nosg): one
 //     render on two devices, same splats and target; grads_2d and the WLBG moments agree slot
 //     by slot (only the float summation order differs);
@@ -28,7 +30,8 @@ try {
 
     // One render of `splats` ([camera-frame xyz, logit opacity, log scales xyz, rgb dc]) on a
     // new device; backward: also tile_backward (adam_step skipped: it would consume grads_2d),
-    // with depth distortion weight `dist`. Returns per splat (trainer order) its camera z.
+    // with depth distortion weight `dist`. Returns per splat (trainer order) its camera z, and
+    // per sorted slot proj_splats and its tile rect (proj_tiles).
     const render = async (splats, { features = [], backward = false, dist = 0 } = {}) => {
       const device = await (await navigator.gpu.requestAdapter()).requestDevice({ requiredFeatures: features });
       const N = splats.length, params = new Float32Array(N * SPLAT_FLOATS);
@@ -48,11 +51,14 @@ try {
       const pass = tr._pass;
       tr._pass = function (enc, pipe, ...a) { if (pipe !== this.pipeAdam) pass.call(this, enc, pipe, ...a); };
       tr._runPasses(backward ? gt : null);
-      const [g, m, pix] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * 48 },
-                                                     { buf: tr.pixStateBuf, bytes: W * H * 16 }]);
+      const [g, m, pix, proj, rects] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * 48 },
+                                                     { buf: tr.pixStateBuf, bytes: W * H * 16 },
+                                                     { buf: tr.projSplatsBuf, bytes: tr.numVisible * 32 },
+                                                     { buf: tr.projTilesBuf, bytes: tr.numVisible * 8 }]);
       const z = Array.from({ length: N }, (_, i) => { const P = tr.cpuParams.subarray(i * SPLAT_FLOATS);
         return R[6] * P[0] + R[7] * P[1] + R[8] * P[2]; });
-      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix, z };
+      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix, z,
+                    proj: Array.from(proj), rects: Array.from(new Uint32Array(rects.buffer, rects.byteOffset, rects.length)) };
       device.destroy();
       return out;
     };
@@ -67,6 +73,7 @@ try {
     const a = await render(random, { features: ['subgroups'], backward: true });
     const b = await render(random, { backward: true });
     const backward = { sgA: a.sg, sgB: b.sg, visible: a.visible, slots: [] };
+    const tiles = { W, H, proj: a.proj, rects: a.rects };
     // slot c of every splat: relative L2 difference; grads slot 11 and moments slot 1 (S) stay 0
     for (const [name, x, y, slots] of [['grads_2d', a.g, b.g, 11], ['moments', a.m, b.m, 12]]) {
       for (let c = 0; c < slots; c++) {
@@ -101,7 +108,7 @@ try {
     for (const z of [2, 4]) { const { pix } = await render([wide(z)]); alphas.push(Array.from({ length: W * H }, (_, p) => 1 - pix[4 * p])); }
     const distortion = [0, 1].map(i => ({ z: d1.z[i], dlogit: d1.g[i * 12 + 3] - d0.g[i * 12 + 3], dz: d1.g[i * 12 + 11] - d0.g[i * 12 + 11],
                                           dz0: d0.g[i * 12 + 11] }));
-    return { backward, spread, distortion, alphas, pixels: W * H };
+    return { backward, tiles, spread, distortion, alphas, pixels: W * H };
   });
 
   const bw = r.backward;
@@ -110,6 +117,33 @@ try {
   for (const s of bw.slots) {
     if (!(s.norm > 0)) fail(`${s.name} is 0 everywhere without subgroups`);
     else if (!(s.rel < 1e-4)) fail(`${s.name}: subgroups differ by ${s.rel.toExponential(2)} (relative L2)`);
+  }
+  // Tile rects of the random scene against the exact 3-sigma boxes: tile t's pixel centers are
+  // [16 t + 0.5, 16 t + 15.5]; the kernel pads the box by 0.1 px for rounding, 0.2 here
+  {
+    const { W, H, proj, rects } = r.tiles, nx = Math.ceil(W / 16), ny = Math.ceil(H / 16);
+    const clamp = (t, n) => Math.min(n - 1, Math.max(0, t));
+    const span = (c, e, n, pad) => [clamp(Math.ceil((c - e - 15.5 - pad) / 16), n), clamp(Math.floor((c + e - 0.5 + pad) / 16), n)];
+    let drawn = 0, entries = 0, exact = 0, bad = [];
+    for (let k = 0; k < rects.length / 2; k++) {
+      const [u, v, , rad, ca, cb, cc] = proj.slice(8 * k, 8 * k + 7);
+      if (!(rad > 0)) continue;
+      drawn++;
+      const det = ca * cc - cb * cb, ex = 3 * Math.sqrt(cc / det), ey = 3 * Math.sqrt(ca / det);  // conic = inverse covariance
+      const got = [rects[2 * k] & 0xffff, rects[2 * k + 1] & 0xffff, rects[2 * k] >>> 16, rects[2 * k + 1] >>> 16];
+      const [ix, iy, ox, oy] = [span(u, ex, nx, 0), span(v, ey, ny, 0), span(u, ex, nx, 0.2), span(v, ey, ny, 0.2)];
+      entries += (got[1] - got[0] + 1) * (got[3] - got[2] + 1);
+      exact += (ix[1] - ix[0] + 1) * (iy[1] - iy[0] + 1);
+      // inside the padded box, around the exact one
+      const ok = got[0] >= ox[0] && got[0] <= ix[0] && got[1] <= ox[1] && got[1] >= ix[1] &&
+                 got[2] >= oy[0] && got[2] <= iy[0] && got[3] <= oy[1] && got[3] >= iy[1];
+      if (!ok && bad.length < 3) bad.push(`slot ${k} at (${u.toFixed(2)}, ${v.toFixed(2)}), half-widths ${ex.toFixed(2)} x ${ey.toFixed(2)}: ` +
+                                          `tiles x ${got[0]}..${got[1]} y ${got[2]}..${got[3]}, exact x ${ix.join('..')} y ${iy.join('..')}`);
+      else if (!ok) bad.push('');
+    }
+    console.log(`tile rects: ${drawn} splats drawn, ${entries} tile entries (exact boxes: ${exact})`);
+    if (drawn < 1000) fail(`tile rects: only ${drawn} splats drawn`);
+    if (bad.length) fail(`tile rects: ${bad.length} not the tiles of their 3-sigma box, e.g.\n  ${bad.filter(Boolean).join('\n  ')}`);
   }
   // (z_q3 - z_q1) / z_med: 0 on one sheet, (4 - 2) / 2 and (2.2 - 2) / 2 on two
   for (const [name, want, all] of [['one sheet', 0, true], ['2 and 4', 1, true], ['2 and 2.2', 0.1, true], ['T > 0.25', null, false]]) {
@@ -141,7 +175,7 @@ try {
   }
   const errs = await errors();
   if (errs.length) fail(`page errors:\n${errs.join('\n')}`);
-  if (!process.exitCode) console.log(`OK (${NAME}): tile_backward with subgroups = without on every slot; depth spread and distortion gradients of flat sheets`);
+  if (!process.exitCode) console.log(`OK (${NAME}): tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread and distortion gradients of flat sheets`);
 } catch (e) {
   fail(e.message);
 } finally {

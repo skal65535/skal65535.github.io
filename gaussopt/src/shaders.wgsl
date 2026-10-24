@@ -467,9 +467,10 @@ fn write_culled(k: u32, idx: u32) {
   proj_tiles[k] = vec2u(1u, 0u);  // empty rect
 }
 
-// Tiles t whose pixel centers [16 t + 0.5, 16 t + 15.5] meet [c - e, c + e], padded for rounding.
+// Tiles t whose pixel centers [16 t + 0.5, 16 t + 15.5] meet [c - e, c + e], padded by 0.1 px
+// for rounding: the first has 16 t + 15.5 >= c - e, the last 16 t + 0.5 <= c + e.
 fn tile_span(c: f32, e: f32, n: u32) -> vec2u {
-  let lo = i32(floor((c - e - 15.6) / 16.0));
+  let lo = i32(ceil((c - e - 15.6) / 16.0));
   let hi = i32(floor((c + e - 0.4) / 16.0));
   return vec2u(u32(clamp(lo, 0, i32(n) - 1)), u32(clamp(hi, 0, i32(n) - 1)));
 }
