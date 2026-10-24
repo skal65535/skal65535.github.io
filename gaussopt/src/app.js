@@ -22,6 +22,7 @@ import { LogPanel } from './ui/log.js';
 import { Shell } from './ui/shell.js';
 import { FramesSheet } from './ui/frames.js';
 import { ProjectPanel } from './ui/project_panel.js';
+import { FramePacer } from './pace.js';
 
 const VISU_MODES = { 'gaussian': 0, 'cone': 1, 'ellipsis': 2, 'small_dot': 3, 'axis': 4 };
 
@@ -135,7 +136,8 @@ const URL_ALIASES = {
 // Other URL params read by the app: &video=URL (SfM panel), &nosg, &sfm_* (src/ui/sfm_panel.js)
 const isOtherUrlParam = k => k === 'video' || k === 'nosg' || k.startsWith('sfm_');
 
-// CPU time budget per frame for training steps (steps_per_frame is the upper bound)
+// CPU time budget per frame for training steps (FramePacer sets their count, steps_per_frame
+// bounds it)
 const TRAIN_BUDGET_MS = 20;
 
 // Params saved in / restored from a .gosnap snapshot (optimizer + growth settings)
@@ -151,7 +153,7 @@ const SNAPSHOT_PARAMS = [
 // Settings kept in a project's project.json and applied when it is reopened: the training ones
 // and the view's, not the session state (dataset, checkpoint, camera pose, training on / off)
 const PROJECT_PARAMS = [
-  ...SNAPSHOT_PARAMS, 'steps_per_frame', 'downsample', 'aniso_init', 'val_every', 'val_split', 'stop_after', 'autosnap_every',
+  ...SNAPSHOT_PARAMS, 'downsample', 'aniso_init', 'val_every', 'val_split', 'stop_after', 'autosnap_every',
   'split_x', 'visu_mode', 'color_mode', 'compare_mode', 'haze',
   'show_octree', 'show_loose', 'show_cameras', 'show_path', 'show_splits', 'frustum_images', 'frustum_scale',
 ];
@@ -194,7 +196,7 @@ export class GaussOptApp {
       dataset_url:     parse_arg_str('dataset', '/datasets/jardin1_gs'),
       resume_ply:      parse_arg_str('ply', POINTS3D),
       training:        parse_arg_bool('train'),
-      steps_per_frame: parse_arg('spf', 2, 1, 20),
+      steps_per_frame: parse_arg('spf', 8, 1, 20),
       downsample:      parse_arg('ds', 4, 1, 8),
 
       // Optimizer: 'adam' | 'monte_carlo' (SGLD/MCMC) | 'sim_anneal'
@@ -284,7 +286,8 @@ export class GaussOptApp {
     this.plyFromFile = false; // model loaded from a local file (no URL form)
     this.gtAvailable = false; // training photos of the loaded dataset readable
     this.serverOk    = null;  // serve.py reachable (POST /save), see _probeServer()
-    this.gpuIdle     = null;  // onSubmittedWorkDone() of the last training frame
+    this.gpuFrames   = [];    // training frames submitted, not yet done on the GPU: { done }
+    this.pacer       = new FramePacer();  // steps per training frame, from their GPU time
     this._loggedStats = null; // octree.lastStats already logged by _logRebalance()
     this.shell       = null;  // layout and phases (src/ui/shell.js)
     this.frames      = null;  // keyframe contact sheet (src/ui/frames.js)
@@ -1237,6 +1240,7 @@ export class GaussOptApp {
     if (colmap) this.shell.advance('train');
     if (this.trainer) this.retired.push(this.trainer);
     this.trainer = trainer;
+    this.pacer   = new FramePacer();  // another scene: another GPU time per step
     this.octree  = octree;
     if (ply !== undefined) this.params.resume_ply = ply;
     this.loadedPly = this.params.resume_ply;
@@ -1519,16 +1523,20 @@ export class GaussOptApp {
     const dtFrame = Math.min(0.05, (nowT - this.lastFrameT) / 1000);
     this.lastFrameT = nowT;
     const P = this.params;
-    // Replaced trainers: no frame work is pending on them here
+    // Replaced trainers, also when a frame in flight still uses them: destroy() lets work already
+    // submitted finish (WebGPU spec, buffer and texture destruction)
     for (const t of this.retired.splice(0)) t.destroy?.();
     const tr = this.trainer;
+    let t0 = 0, steps = 0;
     if (tr && P.training) {
-      // Keep the GPU at most ~1 frame behind: otherwise training dispatches pile up in the
-      // queue and every displayed frame (and input response) waits behind them.
-      if (this.gpuIdle) await this.gpuIdle;
-      const t0 = performance.now();
+      // One frame in flight: the GPU runs the previous frame's work while this one is encoded.
+      // More, and training dispatches pile up in the queue and every displayed frame (and
+      // input response) waits behind them.
+      while (this.gpuFrames.length > 1) await this.gpuFrames.shift().done;
+      t0 = performance.now();
+      const n = this.pacer.steps(P.steps_per_frame), s0 = tr.stepCount;
       try {
-        for (let s = 0; s < P.steps_per_frame && tr === this.trainer; s++) {
+        for (let s = 0; s < n && tr === this.trainer; s++) {
           this.lastStepOut = await tr.step();
           if (performance.now() - t0 > TRAIN_BUDGET_MS) break;
         }
@@ -1538,6 +1546,7 @@ export class GaussOptApp {
           this.showError(`Training step failed, paused: ${e.message}`);
         }
       }
+      steps = tr.stepCount - s0;
       if (tr !== this.trainer) {
         this.lastStepOut = null;  // of the replaced trainer
       } else {
@@ -1571,7 +1580,12 @@ export class GaussOptApp {
     else if (this.sfm) this.statusEl.textContent = `Video → Cameras: ${this.sfm.state.status}`;
     if (nowT - (this.shellT ?? 0) > 200) { this.shellT = nowT; this.shell?.refresh(); }
 
-    this.gpuIdle = P.training ? this.gpu.device.queue.onSubmittedWorkDone() : null;
+    if (P.training && steps > 0) {
+      const pacer = this.pacer;
+      this.gpuFrames.push({ done: this.gpu.device.queue.onSubmittedWorkDone().then(() => pacer.done(t0, performance.now(), steps)) });
+    } else if (!P.training) {
+      this.gpuFrames = [];
+    }
   }
 
   async _draw(dtFrame) {
