@@ -6,6 +6,7 @@
 "use strict";
 
 import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer } from '../../../common/webgpu.js';
+import { computePipelines, dispatch } from '../gpu.js';
 
 const NORM = 1 / (512 * 512);
 const angle = (dot) => Math.acos(Math.min(1, dot * NORM));
@@ -58,14 +59,10 @@ export function matchCPU(descA, descB, options = {}) {
 export class GpuMatcher {
   static async create(device = null) {
     device ??= (await initGPU(null)).device;
-    let code = await (await fetch(new URL('./match.wgsl', import.meta.url))).text();
-    if (!navigator.gpu.wgslLanguageFeatures?.has('packed_4x8_integer_dot_product')) {
-      code = code.replace('return dot4U8Packed(a, b);', 'return dot(unpack4xU8(a), unpack4xU8(b));');
-    }
-    const pipeline = device.createComputePipeline({
-      layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
-    });
-    return new GpuMatcher(device, pipeline);
+    const packedDot = navigator.gpu.wgslLanguageFeatures?.has('packed_4x8_integer_dot_product');
+    const { main } = await computePipelines(device, new URL('./match.wgsl', import.meta.url), ['main'], code =>
+      packedDot ? code : code.replace('return dot4U8Packed(a, b);', 'return dot(unpack4xU8(a), unpack4xU8(b));'));
+    return new GpuMatcher(device, main);
   }
 
   constructor(device, pipeline) {
@@ -127,16 +124,9 @@ export class GpuMatcher {
       const uni = createUniformBuffer(device, 16);
       device.queue.writeBuffer(uni, 0, Uint32Array.of(Q.n, R.n, 0, 0));
       temp.push(uni);
-      // each job writes its own slice of `out`
-      const bind = device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-        { binding: 0, resource: { buffer: uni } }, { binding: 1, resource: { buffer: Q.buf } },
-        { binding: 2, resource: { buffer: R.buf } },
-        { binding: 3, resource: { buffer: out, offset: 16 * offsets[k], size: 16 * Math.max(1, Q.n) } } ] });
-      const pass = enc.beginComputePass();
-      pass.setPipeline(this.pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.max(1, Math.ceil(Q.n / 64)));  // 64 queries per workgroup
-      pass.end();
+      // each job writes its own slice of `out`; 64 queries per workgroup
+      dispatch(device, enc, this.pipeline, [uni, Q.buf, R.buf, { buffer: out, offset: 16 * offsets[k], size: 16 * Math.max(1, Q.n) }],
+               Math.max(1, Math.ceil(Q.n / 64)));
     });
     enc.copyBufferToBuffer(out, 0, read, 0, 16 * Math.max(1, total));
     device.queue.submit([enc.finish()]);

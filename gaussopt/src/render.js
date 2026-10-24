@@ -6,14 +6,24 @@
 "use strict";
 
 import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics } from './math.js';
+import { bindGroup } from './gpu.js';
 
 let _shaderCache = null;
 
+// `// === <name> ===` sections -> { name: code }, the `_*` ones (shared code) inserted at each
+// `// #include _<name>` line and left out
 function splitWgslSource(src) {
-  const out = {};
+  const sections = {}, out = {};
   const re = /\/\/\s*===\s*([a-zA-Z0-9_]+)\s*===\s*\n/g;
   const parts = src.split(re);
-  for (let i = 1; i < parts.length; i += 2) out[parts[i]] = parts[i + 1];
+  for (let i = 1; i < parts.length; i += 2) sections[parts[i]] = parts[i + 1];
+  for (const [name, code] of Object.entries(sections)) {
+    if (name.startsWith('_')) continue;
+    out[name] = code.replace(/^\/\/ #include (_\w+)$/gm, (_, inc) => {
+      if (!(inc in sections)) throw new Error(`shaders.wgsl ${name}: no section ${inc}`);
+      return sections[inc];
+    });
+  }
   return out;
 }
 
@@ -149,12 +159,7 @@ export class GaussOptRenderer {
   }
 
   // Bind group 0 of `pipeline`, binding i = resources[i] (GPUBuffers wrapped as { buffer })
-  _bindGroup(pipeline, ...resources) {
-    return this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: resources.map((r, binding) => ({ binding, resource: (typeof r.mapAsync === 'function') ? { buffer: r } : r })),
-    });
-  }
+  _bindGroup(pipeline, ...resources) { return bindGroup(this.device, pipeline, resources); }
 
   // Grow-only storage buffer this[key] of at least nFloats floats; true if (re)allocated
   _ensureStorage(key, nFloats, minFloats, label) {

@@ -8,7 +8,7 @@
 // The clip is the first SFM_E2E_SECONDS (default 12) of jardin5.mp4, cut with ffmpeg into .cache/.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { APP, SECONDS, PORT, NAME, fail, clip, urlOf, server, browser } from './harness.js';
+import { SECONDS, NAME, fail, clip, urlOf, appUrl, run } from './harness.js';
 
 const VAL_STEPS = 500;
 // Validation PSNR after VAL_STEPS: the default 12 s clip (35 views) reaches 17.0-17.5 dB; on long
@@ -16,11 +16,9 @@ const VAL_STEPS = 500;
 const MIN_PSNR = Number(process.env.SFM_E2E_MIN_PSNR ?? (SECONDS === 12 ? 16 : 12));
 
 const video = clip();
-const srv = await server();
-const { page, close, errors } = await browser();
-const t0 = Date.now();
-try {
-  await page.goto(`http://localhost:${PORT}${urlOf(join(APP, 'index.html'))}?video=${encodeURIComponent(urlOf(video))}&val=${VAL_STEPS}`);
+await run(async (page) => {
+  const t0 = Date.now();
+  await page.goto(appUrl(`?video=${encodeURIComponent(urlOf(video))}&val=${VAL_STEPS}`));
   if (!await page.evaluate(async () => !!await navigator.gpu?.requestAdapter())) throw new Error(`no WebGPU adapter in ${NAME}`);
 
   // the panel opens from ?video=, then runs on demand
@@ -133,15 +131,9 @@ try {
   console.log(`reload: restored ${restored.frames} keyframes, scores ${restored.counts}`);
   if (restored.frames !== kf + added) fail(`restored ${restored.frames} keyframes, expected ${kf + added}`);
   await page.waitForFunction(() => window.app.colmap?.fromSfm && window.app.sfm.state.model.startsWith('the current'), null, { timeout: 120000 });
-
-  const serious = await errors();
-  if (serious.length) fail(`${serious.length} page errors:\n  ${serious.slice(0, 10).join('\n  ')}`);
-  if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
-} catch (e) {
-  fail(e.message);
-  const panel = await page.evaluate(() => `${window.app.sfm?.state.status}\n${window.app.logText('sfm')}`).catch(() => null);
-  if (panel) console.error(`panel status and log:\n${panel.split('\n').slice(-15).join('\n')}`);
-} finally {
-  await close();
-  srv.kill();
-}
+}, {
+  onFail: async (page) => {
+    const panel = await page.evaluate(() => `${window.app.sfm?.state.status}\n${window.app.logText('sfm')}`);
+    return `panel status and log:\n${panel.split('\n').slice(-15).join('\n')}`;
+  },
+});

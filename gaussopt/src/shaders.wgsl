@@ -1,9 +1,9 @@
 // shaders.wgsl — WGSL kernels for Gauss-Opt.
 //
 // Each `// === <name> ===` section is compiled as an independent module by
-// loadShaders() (src/render.js), so shared structs/helpers are duplicated per
-// module and must stay byte-identical. Layouts must match src/render.js and
-// src/trainer.js.
+// loadShaders() (src/render.js), except the `_*` ones: those hold the shared
+// structs/helpers, inserted where a module has `// #include _<name>`. Layouts must
+// match src/render.js and src/trainer.js.
 //
 // Splat layout (4 vec4f): [x, y, z, logit_op], [log_sx, log_sy, log_sz, leaf_id],
 //                         [qw, qx, qy, qz], [f_dc_r, f_dc_g, f_dc_b, flags]
@@ -11,37 +11,7 @@
 // Grads   (12 f32): dL/drgb.xyz, dL/dlogit_op, dL/du0, dL/dv0,
 //                   dL/dconic.(a, b, c), w_view, w_err_view, dL/dz_cam
 
-// === splats_render ===
-// Instanced quad renderer for the interactive view: 2.5-sigma screen-space
-// quads per sorted splat, shape modes (vs/fs) and diagnostic color modes.
-// Bindings: 0 RenderUniforms, 1 splats, 2 moments, 3 sorted_idx.
-
-struct RenderUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f,   // fx, fy, cx, cy
-  screen     : vec4f,   // W, H, haze (scale multiplier), scene_radius
-  modes      : vec4u,   // x = visu_mode, y = color_mode, zw unused
-  thresholds : vec4f,   // x = avg_R, y = znear, z = zfar, w unused
-};
-
-@group(0) @binding(0) var<uniform> u : RenderUniforms;
-@group(0) @binding(1) var<storage, read> splats     : array<vec4f>; // 4 per splat
-@group(0) @binding(2) var<storage, read> moments    : array<vec4f>; // 3 per splat
-@group(0) @binding(3) var<storage, read> sorted_idx : array<u32>;
-
-struct VOut {
-  @builtin(position) pos   : vec4f,
-  @location(0)       uv    : vec2f,
-  @location(1) @interpolate(flat) color : vec4f,
-};
-
-const kQuad = array<vec2f, 4>(
-  vec2f(-2.5, -2.5),
-  vec2f( 2.5, -2.5),
-  vec2f(-2.5,  2.5),
-  vec2f( 2.5,  2.5),
-);
-
+// === _math ===
 const SH_C0 : f32 = 0.28209479177387814;
 
 fn sigmoid(x: f32) -> f32 {
@@ -78,6 +48,91 @@ fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat
 fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
   return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
 }
+
+// === _train ===
+struct TrainUniforms {
+  view       : mat4x4f,
+  intrinsics : vec4f, // fx, fy, cx, cy
+  dims       : vec4u, // W, H, num_visible, total_splats
+  lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
+  limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
+  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
+};
+
+@group(0) @binding(0) var<uniform> tu : TrainUniforms;
+
+// === _raster ===
+const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
+
+// Conservative tile test: the splat's 3-sigma box overlaps the 16x16 tile.
+fn tile_hit(pr0: vec4f, tile_c: vec2f) -> bool {
+  return pr0.w > 0.0 && all(abs(pr0.xy - tile_c) <= vec2f(pr0.w + 8.5));
+}
+
+// === _bin ===
+struct BinUniforms {
+  n_vis    : u32,  // sorted slots
+  tiles_x  : u32,
+  n_tiles  : u32,
+  capacity : u32,  // tile_list length
+};
+
+@group(0) @binding(0) var<uniform> bu : BinUniforms;
+
+// === _wire ===
+struct WireUniforms {
+  view       : mat4x4f,
+  intrinsics : vec4f, // fx, fy, cx, cy
+  screen     : vec4f, // W, H, znear, zfar
+  fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
+};
+
+@group(0) @binding(0) var<uniform> wu : WireUniforms;
+
+// World point -> (ndc_x, ndc_y, clip_z, view z). clip_z = 2 (clipped) if z <= 0.05.
+fn wire_project(p: vec3f) -> vec4f {
+  let vpos = wu.view * vec4f(p, 1.0);
+  let z = max(0.05, vpos.z);
+  let px = wu.intrinsics.xy * (vpos.xy / z) + wu.intrinsics.zw;
+  let ndc_x = (px.x / wu.screen.x) * 2.0 - 1.0;
+  let ndc_y = 1.0 - (px.y / wu.screen.y) * 2.0;
+  let clip_z = select(2.0, clamp((z - wu.screen.z) / (wu.screen.w - wu.screen.z), 0.0, 0.999), vpos.z > 0.05);
+  return vec4f(ndc_x, ndc_y, clip_z, vpos.z);
+}
+
+// === splats_render ===
+// Instanced quad renderer for the interactive view: 2.5-sigma screen-space
+// quads per sorted splat, shape modes (vs/fs) and diagnostic color modes.
+// Bindings: 0 RenderUniforms, 1 splats, 2 moments, 3 sorted_idx.
+
+struct RenderUniforms {
+  view       : mat4x4f,
+  intrinsics : vec4f,   // fx, fy, cx, cy
+  screen     : vec4f,   // W, H, haze (scale multiplier), scene_radius
+  modes      : vec4u,   // x = visu_mode, y = color_mode, zw unused
+  thresholds : vec4f,   // x = avg_R, y = znear, z = zfar, w unused
+};
+
+@group(0) @binding(0) var<uniform> u : RenderUniforms;
+@group(0) @binding(1) var<storage, read> splats     : array<vec4f>; // 4 per splat
+@group(0) @binding(2) var<storage, read> moments    : array<vec4f>; // 3 per splat
+@group(0) @binding(3) var<storage, read> sorted_idx : array<u32>;
+
+struct VOut {
+  @builtin(position) pos   : vec4f,
+  @location(0)       uv    : vec2f,
+  @location(1) @interpolate(flat) color : vec4f,
+};
+
+const kQuad = array<vec2f, 4>(
+  vec2f(-2.5, -2.5),
+  vec2f( 2.5, -2.5),
+  vec2f(-2.5,  2.5),
+  vec2f( 2.5,  2.5),
+);
+
+// #include _math
 
 fn palette_leaf(leaf_id: u32) -> vec3f {
   let h = (leaf_id * 2654435761u) ^ (leaf_id >> 13u);
@@ -197,26 +252,8 @@ fn fs(in: VOut) -> @location(0) vec4f {
 // 3D line segments (octree boxes, camera frustums, WLBG split axes).
 // Bindings: 0 WireUniforms, 1 verts (xyz, bitcast<f32>(abgr u32)).
 
-struct WireUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  screen     : vec4f, // W, H, znear, zfar
-  fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
-};
-
-@group(0) @binding(0) var<uniform> wu : WireUniforms;
+// #include _wire
 @group(0) @binding(1) var<storage, read> verts : array<vec4f>;
-
-// World point -> (ndc_x, ndc_y, clip_z, view z). clip_z = 2 (clipped) if z <= 0.05.
-fn wire_project(p: vec3f) -> vec4f {
-  let vpos = wu.view * vec4f(p, 1.0);
-  let z = max(0.05, vpos.z);
-  let px = wu.intrinsics.xy * (vpos.xy / z) + wu.intrinsics.zw;
-  let ndc_x = (px.x / wu.screen.x) * 2.0 - 1.0;
-  let ndc_y = 1.0 - (px.y / wu.screen.y) * 2.0;
-  let clip_z = select(2.0, clamp((z - wu.screen.z) / (wu.screen.w - wu.screen.z), 0.0, 0.999), vpos.z > 0.05);
-  return vec4f(ndc_x, ndc_y, clip_z, vpos.z);
-}
 
 struct WireOut {
   @builtin(position) pos   : vec4f,
@@ -248,28 +285,10 @@ fn fs(in: WireOut) -> @location(0) vec4f {
 // Bindings: 0 WireUniforms, 1 quad_verts (4 corners per camera, .w = alpha),
 //           2 cam_tex, 3 cam_samp.
 
-struct WireUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  screen     : vec4f, // W, H, znear, zfar
-  fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
-};
-
-@group(0) @binding(0) var<uniform> wu : WireUniforms;
+// #include _wire
 @group(0) @binding(1) var<storage, read> quad_verts : array<vec4f>;
 @group(0) @binding(2) var cam_tex  : texture_2d<f32>;
 @group(0) @binding(3) var cam_samp : sampler;
-
-// World point -> (ndc_x, ndc_y, clip_z, view z). clip_z = 2 (clipped) if z <= 0.05.
-fn wire_project(p: vec3f) -> vec4f {
-  let vpos = wu.view * vec4f(p, 1.0);
-  let z = max(0.05, vpos.z);
-  let px = wu.intrinsics.xy * (vpos.xy / z) + wu.intrinsics.zw;
-  let ndc_x = (px.x / wu.screen.x) * 2.0 - 1.0;
-  let ndc_y = 1.0 - (px.y / wu.screen.y) * 2.0;
-  let clip_z = select(2.0, clamp((z - wu.screen.z) / (wu.screen.w - wu.screen.z), 0.0, 0.999), vpos.z > 0.05);
-  return vec4f(ndc_x, ndc_y, clip_z, vpos.z);
-}
 
 struct FrustumImgOut {
   @builtin(position) pos   : vec4f,
@@ -413,53 +432,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Each covered tile's tile_counts entry is incremented (tile_scan / fill / sort build the lists).
 // Bindings: 0 TrainUniforms, 1 splats, 2 sorted_idx, 3 proj_splats, 4 proj_tiles, 5 tile_counts.
 
-struct TrainUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  dims       : vec4u, // W, H, num_visible, total_splats
-  lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
-  limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
-  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
-};
-
-@group(0) @binding(0) var<uniform> tu : TrainUniforms;
+// #include _train
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       sorted_idx  : array<u32>;
 @group(0) @binding(3) var<storage, read_write> proj_splats : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> proj_tiles  : array<vec2u>;
 @group(0) @binding(5) var<storage, read_write> tile_counts : array<atomic<u32>>;
 
-// q = (w, x, y, z), normalized here. Returns column-major R.
-fn quat_to_mat3(q: vec4f) -> mat3x3f {
-  let n = max(1e-8, length(q));
-  let w = q.x / n; let x = q.y / n; let y = q.z / n; let z = q.w / n;
-  return mat3x3f(
-    vec3f(1.0 - 2.0*(y*y + z*z), 2.0*(x*y + w*z),       2.0*(x*z - w*y)),
-    vec3f(2.0*(x*y - w*z),       1.0 - 2.0*(x*x + z*z), 2.0*(y*z + w*x)),
-    vec3f(2.0*(x*z + w*y),       2.0*(y*z - w*x),       1.0 - 2.0*(x*x + y*y))
-  );
-}
-
-// EWA: T = J * W (pixel Jacobian at view-space point vpos times view rotation).
-// Screen covariance is T * Sigma * T^T. As in 3DGS, J is evaluated with x/z, y/z clamped
-// to `lim` (1.3x the frustum, see frustum_lim): off-axis splats near the camera would
-// otherwise project to huge ellipses.
-fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat3x2f {
-  let inv_z  = 1.0 / vpos.z;
-  let t = clamp(vpos.xy * inv_z, -lim, lim);  // clamped x/z, y/z
-  let J = mat3x2f(
-    vec2f(fx * inv_z, 0.0),
-    vec2f(0.0, fy * inv_z),
-    vec2f(-fx * t.x * inv_z, -fy * t.y * inv_z)
-  );
-  return J * mat3x3f(view[0].xyz, view[1].xyz, view[2].xyz);
-}
-
-// |x/z|, |y/z| bounds of 1.3x the view frustum (W x H, principal point cx, cy).
-fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
-  return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
-}
+// #include _math
 
 fn write_culled(k: u32, idx: u32) {
   proj_splats[k * 2u + 0u] = vec4f(-1e5, -1e5, -1.0, 0.0);
@@ -531,14 +511,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // start (for tile_fill), bin_stats[0] = total entries (unclipped, for resizing).
 // Bindings: 0 BinUniforms, 1 tile_counts, 2 tile_ranges, 3 tile_cursor, 4 bin_stats.
 
-struct BinUniforms {
-  n_vis    : u32,  // sorted slots
-  tiles_x  : u32,
-  n_tiles  : u32,
-  capacity : u32,  // tile_list length
-};
-
-@group(0) @binding(0) var<uniform> bu : BinUniforms;
+// #include _bin
 @group(0) @binding(1) var<storage, read>       tile_counts : array<u32>;
 @group(0) @binding(2) var<storage, read_write> tile_ranges : array<vec2u>;
 @group(0) @binding(3) var<storage, read_write> tile_cursor : array<u32>;
@@ -578,14 +551,7 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 // tile_sort restores the depth order). Entries past the capacity are dropped.
 // Bindings: 0 BinUniforms, 1 proj_tiles, 2 tile_cursor, 3 tile_list.
 
-struct BinUniforms {
-  n_vis    : u32,  // sorted slots
-  tiles_x  : u32,
-  n_tiles  : u32,
-  capacity : u32,  // tile_list length
-};
-
-@group(0) @binding(0) var<uniform> bu : BinUniforms;
+// #include _bin
 @group(0) @binding(1) var<storage, read>       proj_tiles  : array<vec2u>;
 @group(0) @binding(2) var<storage, read_write> tile_cursor : array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> tile_list   : array<u32>;
@@ -614,14 +580,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // rank (own index + binary-searched position in the sibling run). Keys are unique.
 // Bindings: 0 BinUniforms, 1 tile_ranges, 2 tile_list, 3 tile_scratch.
 
-struct BinUniforms {
-  n_vis    : u32,  // sorted slots
-  tiles_x  : u32,
-  n_tiles  : u32,
-  capacity : u32,  // tile_list length
-};
-
-@group(0) @binding(0) var<uniform> bu : BinUniforms;
+// #include _bin
 @group(0) @binding(1) var<storage, read>       tile_ranges  : array<vec2u>;
 @group(0) @binding(2) var<storage, read_write> tile_list    : array<u32>;
 @group(0) @binding(3) var<storage, read_write> tile_scratch : array<u32>;
@@ -685,17 +644,7 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
 //           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
 
-struct TrainUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  dims       : vec4u, // W, H, num_visible, total_splats
-  lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
-  limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
-  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
-};
-
-@group(0) @binding(0) var<uniform> tu : TrainUniforms;
+// #include _train
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       proj_splats : array<vec4f>;
 @group(0) @binding(3) var                      out_tex     : texture_storage_2d<rgba8unorm, write>;
@@ -704,7 +653,6 @@ struct TrainUniforms {
 @group(0) @binding(6) var<storage, read>       tile_list   : array<u32>;
 
 const BATCH : u32 = 64u;
-const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
 
 var<workgroup> wg_u0v0zr : array<vec4f, BATCH>;
 var<workgroup> wg_conic  : array<vec4f, BATCH>;
@@ -712,16 +660,8 @@ var<workgroup> wg_rgba   : array<vec4f, BATCH>;
 var<workgroup> wg_k      : array<u32, BATCH>;
 var<workgroup> wg_hits   : atomic<u32>;
 
-const SH_C0 : f32 = 0.28209479177387814;
-
-fn sigmoid(x: f32) -> f32 {
-  return 1.0 / (1.0 + exp(-clamp(x, -15.0, 15.0)));
-}
-
-// Conservative tile test: the splat's 3-sigma box overlaps the 16x16 tile.
-fn tile_hit(pr0: vec4f, tile_c: vec2f) -> bool {
-  return pr0.w > 0.0 && all(abs(pr0.xy - tile_c) <= vec2f(pr0.w + 8.5));
-}
+// #include _math
+// #include _raster
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) gid: vec3u,
@@ -830,17 +770,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
 //           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list.
 
-struct TrainUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  dims       : vec4u, // W, H, num_visible, total_splats
-  lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
-  limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
-  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
-};
-
-@group(0) @binding(0) var<uniform> tu : TrainUniforms;
+// #include _train
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       proj_splats : array<vec4f>;
 @group(0) @binding(3) var                      gt_tex      : texture_2d<f32>;
@@ -854,7 +784,6 @@ struct TrainUniforms {
 
 const BATCH : u32 = 32u;
 const SLOTS : u32 = BATCH * 12u;
-const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
 
 var<workgroup> wg_u0v0zr     : array<vec4f, BATCH>;
 var<workgroup> wg_conic      : array<vec4f, BATCH>;
@@ -867,16 +796,8 @@ var<workgroup> wg_mse        : atomic<u32>;
 var<workgroup> wg_hits       : atomic<u32>;
 var<workgroup> wg_max_last_k : atomic<u32>;
 
-const SH_C0 : f32 = 0.28209479177387814;
-
-fn sigmoid(x: f32) -> f32 {
-  return 1.0 / (1.0 + exp(-clamp(x, -15.0, 15.0)));
-}
-
-// Conservative tile test: the splat's 3-sigma box overlaps the 16x16 tile.
-fn tile_hit(pr0: vec4f, tile_c: vec2f) -> bool {
-  return pr0.w > 0.0 && all(abs(pr0.xy - tile_c) <= vec2f(pr0.w + 8.5));
-}
+// #include _math
+// #include _raster
 
 // f32 atomic adds via CAS (WGSL has no pointer params to workgroup/storage
 // atomics, hence one copy per array). Tiny values are skipped.
@@ -1132,57 +1053,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 //      m[1].w, m[3].w, v[3].w = last jump xyz, v[1].w = energy baseline.
 // Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments.
 
-struct TrainUniforms {
-  view       : mat4x4f,
-  intrinsics : vec4f, // fx, fy, cx, cy
-  dims       : vec4u, // W, H, num_visible, total_splats
-  lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
-  limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
-  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
-};
-
-@group(0) @binding(0) var<uniform> tu : TrainUniforms;
+// #include _train
 @group(0) @binding(1) var<storage, read_write> splats   : array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> grads_2d : array<u32>;
 @group(0) @binding(3) var<storage, read_write> adam_m   : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> adam_v   : array<vec4f>;
 @group(0) @binding(5) var<storage, read_write> moments  : array<u32>;
 
-fn sigmoid(x: f32) -> f32 {
-  return 1.0 / (1.0 + exp(-clamp(x, -15.0, 15.0)));
-}
-
-// q = (w, x, y, z), normalized here. Returns column-major R.
-fn quat_to_mat3(q: vec4f) -> mat3x3f {
-  let n = max(1e-8, length(q));
-  let w = q.x / n; let x = q.y / n; let y = q.z / n; let z = q.w / n;
-  return mat3x3f(
-    vec3f(1.0 - 2.0*(y*y + z*z), 2.0*(x*y + w*z),       2.0*(x*z - w*y)),
-    vec3f(2.0*(x*y - w*z),       1.0 - 2.0*(x*x + z*z), 2.0*(y*z + w*x)),
-    vec3f(2.0*(x*z + w*y),       2.0*(y*z - w*x),       1.0 - 2.0*(x*x + y*y))
-  );
-}
-
-// EWA: T = J * W (pixel Jacobian at view-space point vpos times view rotation).
-// Screen covariance is T * Sigma * T^T. As in 3DGS, J is evaluated with x/z, y/z clamped
-// to `lim` (1.3x the frustum, see frustum_lim): off-axis splats near the camera would
-// otherwise project to huge ellipses.
-fn ewa_jacobian(view: mat4x4f, vpos: vec3f, fx: f32, fy: f32, lim: vec2f) -> mat3x2f {
-  let inv_z  = 1.0 / vpos.z;
-  let t = clamp(vpos.xy * inv_z, -lim, lim);  // clamped x/z, y/z
-  let J = mat3x2f(
-    vec2f(fx * inv_z, 0.0),
-    vec2f(0.0, fy * inv_z),
-    vec2f(-fx * t.x * inv_z, -fy * t.y * inv_z)
-  );
-  return J * mat3x3f(view[0].xyz, view[1].xyz, view[2].xyz);
-}
-
-// |x/z|, |y/z| bounds of 1.3x the view frustum (W x H, principal point cx, cy).
-fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
-  return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
-}
+// #include _math
 
 fn pcg_hash(v_in: u32) -> u32 {
   let state = v_in * 747796405u + 2891336453u;

@@ -4,7 +4,8 @@
 // uint8 descriptors (128 per keypoint), the strongest maxFeatures by DoG response.
 "use strict";
 
-import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer, createBindGroup } from '../../../common/webgpu.js';
+import { initGPU, createGPUBuffer, createUniformBuffer, createStorageBuffer } from '../../../common/webgpu.js';
+import { computePipelines, dispatch } from '../gpu.js';
 
 export const SIFT_DEFAULTS = {
   maxFeatures: 4096, numOctaves: 4, levels: 3, sigma0: 1.6, inputSigma: 0.5,
@@ -22,10 +23,7 @@ function gaussianWeights(sigma) {
 export class GpuSift {
   static async create(device = null) {
     device ??= (await initGPU(null)).device;
-    const code = await (await fetch(new URL('./sift.wgsl', import.meta.url))).text();
-    const module = device.createShaderModule({ code });
-    const pipelines = Object.fromEntries(ENTRIES.map(e => [e, device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: e } })]));
-    return new GpuSift(device, pipelines);
+    return new GpuSift(device, await computePipelines(device, new URL('./sift.wgsl', import.meta.url), ENTRIES));
   }
 
   constructor(device, pipelines) { this.device = device; this.pipelines = pipelines; }
@@ -47,19 +45,10 @@ export class GpuSift {
       u[12] = o.maxKeypoints;
       device.queue.writeBuffer(buf, 0, u);
       temp.push(buf);
-      return { buffer: buf };
+      return buf;
     };
     const enc = device.createCommandEncoder();
-    const run = (entry, resources, groups) => {
-      const pass = enc.beginComputePass();
-      pass.setPipeline(pipelines[entry]);
-      pass.setBindGroup(0, device.createBindGroup({
-        layout: pipelines[entry].getBindGroupLayout(0),
-        entries: Object.entries(resources).map(([binding, resource]) => ({ binding: Number(binding), resource })),
-      }));
-      pass.dispatchWorkgroups(...groups);
-      pass.end();
-    };
+    const run = (entry, resources, groups) => dispatch(device, enc, pipelines[entry], resources, ...groups);
     const grid = (w, h) => [Math.ceil(w / 16), Math.ceil(h / 16)];
 
     const padded = new Uint8Array(Math.ceil(gray.length / 4) * 4);
@@ -75,8 +64,8 @@ export class GpuSift {
       const { r, w: wts } = gaussianWeights(sigma);
       const wb = createGPUBuffer(device, wts);
       temp.push(wb);
-      run('blur_h', { 0: params({ w, h, radius: r, src_off: src * w * h }), 3: { buffer: stack }, 4: { buffer: wb }, 5: { buffer: tmp } }, grid(w, h));
-      run('blur_v', { 0: params({ w, h, radius: r, dst_off: dst * w * h }), 3: { buffer: stack }, 4: { buffer: wb }, 5: { buffer: tmp } }, grid(w, h));
+      run('blur_h', { 0: params({ w, h, radius: r, src_off: src * w * h }), 3: stack, 4: wb, 5: tmp }, grid(w, h));
+      run('blur_v', { 0: params({ w, h, radius: r, dst_off: dst * w * h }), 3: stack, 4: wb, 5: tmp }, grid(w, h));
     };
 
     let prev = null, w = width, h = height;
@@ -85,20 +74,20 @@ export class GpuSift {
       const gauss = createStorageBuffer(device, 4 * L * n), dog = createStorageBuffer(device, 4 * (L - 1) * n), tmp = createStorageBuffer(device, 4 * n);
       temp.push(gauss, dog, tmp);
       if (oct === 0) {
-        run('to_float', { 0: params({ w, h }), 1: { buffer: grayBuf }, 2: { buffer: gauss } }, [Math.ceil(n / 256)]);
+        run('to_float', { 0: params({ w, h }), 1: grayBuf, 2: gauss }, [Math.ceil(n / 256)]);
         blur(gauss, tmp, w, h, 0, 0, Math.sqrt(o.sigma0 ** 2 - o.inputSigma ** 2));
       } else {
         // level S of the previous octave has sigma 2 sigma0 = sigma0 at this octave's resolution
-        run('downsample', { 0: params({ w, h, radius: prev.w, src_off: S * prev.w * prev.h }), 3: { buffer: gauss }, 6: { buffer: prev.gauss } }, grid(w, h));
+        run('downsample', { 0: params({ w, h, radius: prev.w, src_off: S * prev.w * prev.h }), 3: gauss, 6: prev.gauss }, grid(w, h));
       }
       for (let k = 1; k < L; k++) blur(gauss, tmp, w, h, k - 1, k, o.sigma0 * Math.sqrt(2 ** (2 * k / S) - 2 ** (2 * (k - 1) / S)));
-      for (let k = 0; k < L - 1; k++) run('diff', { 0: params({ w, h, level: k }), 6: { buffer: gauss }, 7: { buffer: dog } }, [Math.ceil(n / 256)]);
-      run('snapshot', { 0: params({ w, h, octave: oct }), 9: { buffer: counters } }, [1]);
+      for (let k = 0; k < L - 1; k++) run('diff', { 0: params({ w, h, level: k }), 6: gauss, 7: dog }, [Math.ceil(n / 256)]);
+      run('snapshot', { 0: params({ w, h, octave: oct }), 9: counters }, [1]);
       for (let k = 1; k <= S; k++) {
-        run('extrema', { 0: params({ w, h, level: k, octave: oct, scale }), 6: { buffer: dog }, 8: { buffer: kp }, 9: { buffer: counters } }, grid(w, h));
+        run('extrema', { 0: params({ w, h, level: k, octave: oct, scale }), 6: dog, 8: kp, 9: counters }, grid(w, h));
       }
-      run('orient', { 0: params({ w, h, octave: oct, scale }), 6: { buffer: gauss }, 8: { buffer: kp }, 9: { buffer: counters }, 10: { buffer: okp } }, [Math.ceil(o.maxKeypoints / 64)]);
-      run('describe', { 0: params({ w, h, octave: oct, scale }), 6: { buffer: gauss }, 9: { buffer: counters }, 10: { buffer: okp }, 11: { buffer: desc } }, [Math.ceil(o.maxKeypoints / 64)]);
+      run('orient', { 0: params({ w, h, octave: oct, scale }), 6: gauss, 8: kp, 9: counters, 10: okp }, [Math.ceil(o.maxKeypoints / 64)]);
+      run('describe', { 0: params({ w, h, octave: oct, scale }), 6: gauss, 9: counters, 10: okp, 11: desc }, [Math.ceil(o.maxKeypoints / 64)]);
       prev = { gauss, w, h };
       w = Math.floor(w / 2); h = Math.floor(h / 2);
     }

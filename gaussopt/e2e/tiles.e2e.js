@@ -9,12 +9,10 @@
 //     two sheets apart, and two sheets close;
 //   - the depth distortion gradients (tile_backward) of two sheets against the closed form.
 //   cd e2e && node tiles.e2e.js   (env: see harness.js)
-import { APP, PORT, NAME, fail, urlOf, server, browser } from './harness.js';
+import { APP, PORT, fail, urlOf, run } from './harness.js';
 import { join } from 'node:path';
 
-const srv = await server();
-const { page, close, errors } = await browser();
-try {
+await run(async (page) => {
   await page.goto(`http://localhost:${PORT}${urlOf(join(APP, 'DESIGN.md'))}`);  // same origin, no app (and no dataset load)
   const r = await page.evaluate(async () => {
     const { GaussOptTrainer } = await import('./src/trainer.js');
@@ -173,12 +171,5 @@ try {
       if (!(Math.abs(d[k] - w[k]) < 1e-3 * Math.abs(w[k]))) fail(`distortion, sheet at z ${d.z.toFixed(1)}: ${k} ${d[k]}, expected ${w[k]} (0.1%)`);
     }
   }
-  const errs = await errors();
-  if (errs.length) fail(`page errors:\n${errs.join('\n')}`);
-  if (!process.exitCode) console.log(`OK (${NAME}): tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread and distortion gradients of flat sheets`);
-} catch (e) {
-  fail(e.message);
-} finally {
-  await close();
-  srv.kill();
-}
+  return 'tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread and distortion gradients of flat sheets';
+});

@@ -309,7 +309,7 @@ gaussopt/
 ├── deno.json              # deno task test / test:slow
 ├── e2e/sfm.e2e.js         # Browser end-to-end test (Playwright, headless Chrome)
 ├── e2e/project.e2e.js     # Project folders end to end (DESIGN.md §3.6)
-├── e2e/harness.js         # What the e2e tests share: clip, serve.py, browser and its errors
+├── e2e/harness.js         # What the e2e tests share: clip, serve.py, browser and its errors, run()
 ├── e2e/safari.js          # The page calls the e2e tests use, on Safari through safaridriver (W3C WebDriver)
 ├── src/ui/sfm_panel.js    # The "Video → Cameras" panel (§7), loaded on first use
 ├── src/sfm/

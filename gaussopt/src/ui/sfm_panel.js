@@ -545,7 +545,6 @@ export class SfmPanel {
   // ── the strip ────────────────────────────────────────────────────────────────
 
   _x(t) { return (t / (this.duration || 1)) * this.strip.width; }
-  _t(x) { return (x / this.strip.width) * (this.duration || 1); }
 
   _stripEvents() {
     const c = this.strip, at = (e) => (e.offsetX / c.clientWidth) * c.width;

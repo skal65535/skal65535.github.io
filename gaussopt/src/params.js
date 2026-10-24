@@ -1,0 +1,240 @@
+// params.js — The app's params: defaults (defaultParams), their URL form (URL_ALIASES,
+// applyUrlParams), the GUI's choice lists and tooltips, and which ones snapshots and project.json
+// keep. Needs ../common/args.js (parse_arg*) loaded as a classic script before this module.
+"use strict";
+
+import { TRAIN_DEFAULTS } from './trainer.js';
+
+export const VISU_MODES = { 'gaussian': 0, 'cone': 1, 'ellipsis': 2, 'small_dot': 3, 'axis': 4 };
+
+export const COLOR_MODES = {
+  'learned_rgb':     0,
+  'octree_leaf':     1,
+  'wlbg_error (R)':  2,
+  'view_div (Neff)': 3,
+  'depth':           4,
+};
+
+export const COMPARE_MODES = {
+  '3D Free / Snap View': 0,
+  'Split (GT | Render)': 1,
+  'Residual |GT - Hat|': 2,
+  'Depth spread': 3,
+};
+
+export const FRUSTUM_IMAGES = { 'Off': 'off', 'Active Cam Only': 'active', 'All Cameras': 'all' };
+
+export const OPT_METHODS = {
+  'Adam (deterministic)':      'adam',
+  'Monte-Carlo (SGLD / MCMC)': 'monte_carlo',
+  'Simulated Annealing (SA)':  'sim_anneal',
+};
+
+// Tooltips of the trainer, view and project controls (mkGui tips: by key, or by folder name)
+export const TIPS = {
+  'Example datasets': 'COLMAP datasets this page can load: the /datasets/ ones when serve.py mounts them',
+  dataset_url: 'loads a COLMAP dataset (cameras, points, photos) and starts new splats from its points',
+  'Checkpoint / Resume': 'start from the COLMAP points, or resume from a saved .ply / snapshot of this dataset',
+  resume_ply: 'the splats to start from: the COLMAP points3D, or a checkpoint saved by serve.py',
+  'Optimizer (Adam / MC / SA)': 'how the splats are updated at each step (DESIGN §5.4)',
+  opt_method: 'Adam: plain gradient descent. Monte-Carlo: Adam plus Langevin noise on transparent splats, ' +
+              'and dead splats teleported to high-error places. Simulated annealing: Metropolis jumps of the positions',
+  mc_noise: 'Monte-Carlo: strength of the position noise, along each splat\'s axes, faded by its opacity',
+  sa_temp: 'Simulated annealing: starting temperature (larger: more jumps accepted)',
+  sa_cooling: 'Simulated annealing: the temperature is multiplied by this every 50 steps',
+  sa_reheat: 'Simulated annealing: back to the starting temperature every 2 K steps (at least 100)',
+  Visualization: 'how the splats are drawn, and the overlays',
+  visu_mode: 'gaussian: the real render. cone, ellipsis, small dot, axis: shapes to inspect the splats',
+  color_mode: 'learned colors, or a diagnostic: octree leaf, error mass R (WLBG), effective view count Neff, depth',
+  compare_mode: '3D view (free or snapped to a camera), a split wipe photo | render, the residual |photo - render|, or ' +
+                'the depth spread: how far apart in depth the middle half of each pixel\'s opacity is (red at 7% of the depth, white at 20%: ' +
+                'e.g. a wall rendered as two layers; blue: not enough opacity to tell). ' +
+                'The 2D modes show the camera being trained, or the camera # of the Camera folder when paused',
+  split_x: 'Split mode: where the wipe between the photo (left) and the render (right) is',
+  haze: 'draws every splat this much larger (view only, training is not changed)',
+  show_octree: 'wireframes of the octree leaves, colored by state',
+  show_loose: 'the loose boxes of the leaves, (1 + 2β) times their nominal size',
+  show_cameras: 'the training cameras as frustums (validation ones in another color, the active one highlighted)',
+  show_path: 'a line through the camera centers, in capture order',
+  show_splits: 'the error axes along which the last rebalance split splats',
+  frustum_images: 'the training photos drawn inside the frustums: none, the active camera\'s, or all',
+  frustum_scale: 'size of the drawn frustums',
+  Camera: 'the view: free (orbit, drone, demo flight) or snapped to a training camera',
+  snap_to_colmap: 'look through the training camera chosen below',
+  cam_idx: 'the training camera to look through, or to fly from',
+  camera_mode: 'orbit: drag to turn around the target. drone: arrows fly and turn, drag pitches and rolls, E / Q climb (key F). ' +
+               'demo: a slow flight along the capture path (key G). H lists all the keys',
+  demo_speed: 'demo flight: speed along the capture path, in scene radii per second',
+  demo_wander: 'demo flight: how far it wanders off the path, in units of the cameras\' near depth',
+  fov: 'vertical field of view of the free camera, in degrees',
+  radius: 'orbit camera: distance to the target',
+  'Octree & WLBG Growth': 'every K steps: grow, prune and move splats, remove floaters, rebuild the octree (DESIGN §5)',
+  max_leaf_size: 'most splats an octree leaf holds (one GPU workgroup); the octree is rebuilt',
+  beta: 'looseness of the octree boxes: a splat stays in its leaf while it fits in (1 + 2β) times the box',
+  rebalance_every: 'K: steps between two rebalances (growth, pruning, floater removal, octree rebuild)',
+  rebalance_every_cap: 'steps between two rebalances once the splat count is at max splats (0: K); also one at each opacity reset',
+  enable_rebalance: 'grow and prune splats at each rebalance (off: their number stays fixed)',
+  remove_floaters: 'at each rebalance, remove floaters: splats in front of the cameras, single-view billboards, isolated leaves',
+  floater_depth: 'which splats count as too near a camera (closer than 0.65 x this depth). observed: the depth of the ' +
+                 'points the camera sees (the default, best at 30k steps on 4 of 5 test scenes). view: of all points ' +
+                 'in its view, also those only other cameras saw (better early in training on gare-st-lazare)',
+  enable_split: 'split splats with much unexplained error along the main axis of that error, or clone small ones',
+  enable_merge: 'merge overlapping splats of nearly the same color',
+  max_splats: 'growth stops at this many splats',
+  max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats)',
+  depth_dist: 'weight of the depth distortion loss: it pulls the splats that make a pixel together in depth ' +
+              '(one surface, not a fog or two sheets; the Depth spread view shows what is left). 0: off (the default: ' +
+              'from the first step it costs 0.15-0.7 dB of validation PSNR at 30k steps on the test scenes)',
+  max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles)',
+  opacity_reset: 'every N steps, all opacities are lowered to 0.01 so useless splats fade out and get pruned (0: never). ' +
+                 'Validation right at a reset reads low',
+  stipple_seed: 'experiment E4: new splats seeded where the residual is large, by stippling the error image',
+  stipple_count: 'E4: how many seeds at each rebalance',
+  Evaluation: 'PSNR / SSIM on held-out cameras, never trained on',
+  val_every: 'evaluate the held-out views every N steps (0: never)',
+  val: 'evaluate the held-out views now',
+  'Snapshots (Export: save one now)': 'the full training state, to resume later',
+  autosnap_every: 'save a snapshot every N steps (0: never); each one replaces the last',
+};
+
+// Example datasets: the /datasets/* ones are listed only when serve.py mounts them
+export const DATASETS = {
+  'jardin1_gs (16 views)':  '/datasets/jardin1_gs',
+  'jardin3_gs (120 views)': '/datasets/jardin3_gs',
+  'jardin3-2_gs (359 views)': '/datasets/jardin3-2_gs',
+  '[synthetic ring]':       '[synth]',
+};
+export const NOT_A_URL = '[none]';  // dataset_url while the cameras come from a video or a dropped folder
+
+export const POINTS3D = '[points3D.bin]';  // resume_ply value: init from COLMAP points
+
+// Short URL aliases (?dataset=...&ply=...&train&spf=4...); every param is also settable by name.
+const URL_ALIASES = {
+  dataset_url: 'dataset', resume_ply: 'ply', training: 'train', steps_per_frame: 'spf',
+  downsample: 'ds', opt_method: 'opt', stipple_seed: 'stipple', val_every: 'val',
+  autosnap_every: 'autosnap',
+  max_splats: 'max_splats',  // parsed (and clamped) by parse_arg below
+};
+// Other URL params read by the app: &video=URL (SfM panel), &nosg, &sfm_* (src/ui/sfm_panel.js)
+const isOtherUrlParam = k => k === 'video' || k === 'nosg' || k.startsWith('sfm_');
+
+// Params saved in / restored from a .gosnap snapshot (optimizer + growth settings)
+export const SNAPSHOT_PARAMS = [
+  'opt_method', 'mc_noise', 'sa_temp', 'sa_cooling', 'sa_reheat',
+  'max_leaf_size', 'beta', 'rebalance_every', 'rebalance_every_cap',
+  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth',
+  'max_splats', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count',
+  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'depth_dist',
+  'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset',
+];
+
+// Settings kept in a project's project.json and applied when it is reopened: the training ones
+// and the view's, not the session state (dataset, checkpoint, camera pose, training on / off)
+export const PROJECT_PARAMS = [
+  ...SNAPSHOT_PARAMS, 'downsample', 'aniso_init', 'val_every', 'val_split', 'stop_after', 'autosnap_every',
+  'split_x', 'visu_mode', 'color_mode', 'compare_mode', 'haze',
+  'show_octree', 'show_loose', 'show_cameras', 'show_path', 'show_splits', 'frustum_images', 'frustum_scale',
+];
+
+// The params of a new app: defaults, the aliased URL params already parsed (parse_arg*)
+export function defaultParams() {
+  return {
+    dataset_url:     parse_arg_str('dataset', '/datasets/jardin1_gs'),
+    resume_ply:      parse_arg_str('ply', POINTS3D),
+    training:        parse_arg_bool('train'),
+    steps_per_frame: parse_arg('spf', 8, 1, 20),
+    downsample:      parse_arg('ds', 4, 1, 8),
+
+    // Optimizer: 'adam' | 'monte_carlo' (SGLD/MCMC) | 'sim_anneal'
+    opt_method:      parse_arg_str('opt', 'adam'),
+    // learning rates, MC / SA, shape limits, opacity reset (trainer.js)
+    ...TRAIN_DEFAULTS,
+
+    // Camera & view
+    snap_to_colmap:  false,
+    camera_mode:     'orbit',  // free camera: 'orbit' | 'drone' (src/drone.js) | 'demo' (src/demo.js)
+    demo_speed:      0.05,     // demo flight along the capture path, scene radii per second
+    demo_wander:     0.5,      // demo wander around the path, in cameras' near depths (demo.js)
+    cam_idx:         0,
+    fov:             60,
+    radius:          3.5,
+    theta:           -90,
+    phi:             15,
+    target:          [0, 0, 0],
+    split_x:         0.5,
+
+    // Visualization
+    visu_mode:       0,
+    color_mode:      0,
+    compare_mode:    0,
+    haze:            1.0,
+    show_octree:     true,
+    show_loose:      false,
+    show_cameras:    true,
+    show_path:       false,  // COLMAP camera path (centers in capture order)
+    show_splits:     true,
+    frustum_images:  'off',
+    frustum_scale:   1.0,
+
+    // Octree & WLBG growth
+    max_leaf_size:   256,
+    aniso_init:      true,   // init splats from the PCA of their 8 nearest COLMAP points
+    beta:            0.20,
+    rebalance_every: 100,
+    rebalance_every_cap: 400,  // once the count is at max_splats (0: rebalance_every), DESIGN.md §5.3
+    enable_rebalance:true,
+    enable_split:    true,
+    enable_merge:    true,
+    remove_floaters: true,
+    floater_depth:   'observed',  // near-camera carve depth: 'observed' | 'view' (octree.js nearCameraCone)
+    max_splats:      parse_arg('max_splats', 300000, 1000, 2000000),
+    prune_opacity:   0.008,
+    hysteresis:      0.35,
+    stipple_seed:    parse_arg_bool('stipple'), // E4: seed new splats from residual stippling
+    stipple_count:   2000,
+
+    // Evaluation: held-out (validation camera) PSNR every N training steps (0 = off)
+    val_every:       parse_arg('val', 500, 0, 100000),
+    val_split:       'every8',  // held-out views, on load: 'every8' or 'block' (colmap.js splitValidation)
+    stop_after:      0,  // pause training (and run validation) N steps after training (re)starts (0 = never)
+
+    // Auto-snapshot every N steps (0 = off), overwriting gaussopt_snap_latest.gosnap
+    autosnap_every:  parse_arg('autosnap', 0, 0, 100000),
+  };
+}
+
+// Applies ?name=value of `search` to every param of `params` (aliases are already parsed by
+// parse_arg*). Returns the set of param names given in the URL (they win over snapshot params).
+export function applyUrlParams(params, search = location.search) {
+  const args = new URLSearchParams(search);
+  const aliases = Object.values(URL_ALIASES);
+  const keys = new Set();
+  for (const [k, def] of Object.entries(params)) {
+    const alias = URL_ALIASES[k];
+    const name = (alias && args.has(alias)) ? alias : k;
+    if (!args.has(name)) continue;
+    // aliased numbers / strings are parsed (and clamped) by parse_arg*; booleans only by presence
+    if (name === alias && typeof def !== 'boolean') { keys.add(k); continue; }
+    const v = args.get(name);
+    if (typeof def === 'boolean') {
+      params[k] = !['0', 'false', 'off', 'no'].includes(v.toLowerCase());
+    } else if (typeof def === 'number') {
+      const x = parseFloat(v);
+      if (!Number.isFinite(x)) { console.warn(`URL param ${k}=${v}: not a number`); continue; }
+      params[k] = x;
+    } else if (typeof def === 'string') {
+      params[k] = v;
+    } else if (Array.isArray(def)) {
+      const a = v.split(',').map(parseFloat);
+      if (a.length !== def.length || a.some(x => !Number.isFinite(x))) continue;
+      params[k] = a;
+    } else {
+      continue;
+    }
+    keys.add(k);
+  }
+  for (const k of args.keys()) {
+    if (!(k in params) && !aliases.includes(k) && !isOtherUrlParam(k)) console.warn(`Unknown URL param: ${k}`);
+  }
+  return keys;
+}

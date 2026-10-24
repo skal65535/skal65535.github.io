@@ -4,14 +4,14 @@
 "use strict";
 
 import { initGPU } from '../../../common/webgpu.js';
+import { computePipelines, dispatch } from '../gpu.js';
 import { intrinsics, distortionParams } from './camera.js';
 
 export class GpuUndistort {
   static async create(device = null) {
     device ??= (await initGPU(null)).device;
-    const code = await (await fetch(new URL('./undistort.wgsl', import.meta.url))).text();
-    const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-    return new GpuUndistort(device, pipeline);
+    const { main } = await computePipelines(device, new URL('./undistort.wgsl', import.meta.url));
+    return new GpuUndistort(device, main);
   }
 
   constructor(device, pipeline) { this.device = device; this.pipeline = pipeline; this.size = 0; }
@@ -37,13 +37,8 @@ export class GpuUndistort {
     u.set([fx, fy, cx, cy, ...intrinsics(camera), ...distortionParams(camera)], 4);
     device.queue.writeBuffer(this.uniform, 0, u);
     device.queue.writeBuffer(this.src, 0, rgba.buffer, rgba.byteOffset, 4 * w * h);
-    const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
-    pass.setPipeline(this.pipeline);
-    pass.setBindGroup(0, device.createBindGroup({ layout: this.pipeline.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: this.uniform } }, { binding: 1, resource: { buffer: this.src } },
-      { binding: 2, resource: { buffer: this.dst } }] }));
-    pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
-    pass.end();
+    const enc = device.createCommandEncoder();
+    dispatch(device, enc, this.pipeline, [this.uniform, this.src, this.dst], Math.ceil(w / 16), Math.ceil(h / 16));
     enc.copyBufferToBuffer(this.dst, 0, this.read, 0, 4 * w * h);
     device.queue.submit([enc.finish()]);
     await this.read.mapAsync(GPUMapMode.READ);

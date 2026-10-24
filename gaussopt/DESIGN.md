@@ -159,7 +159,18 @@ Every $K$ steps, we compute the mean error mass $\bar{R}$ and hysteresis thresho
 ### 5.3 Overlap Reconciliation & Octree Rebalancing
 1. **Overlap Reconciliation (Moment-Matching Merge):** Merge redundant overlapping Gaussians with small relative distance and color difference.
 2. **Octree Rebuild:** Re-bin splats into contiguous leaves ($N_{\text{leaf}} \le 256$).
-3. **Cost:** the whole outer loop (readback, `reconcileAndGrow`, Adam gather, upload) runs on the main thread inside a step, so the page freezes for its duration. jardin5 at 300k splats: ~1 s, then ~210 ms once the near-camera floater test used a grid of the camera cones (it projected every splat into every training camera) and kept splats went into one buffer. Now 160-200 ms at the 300k cap (jardin4/5/6/7, gare), every 100 steps; ~33% of the training time since the backward got faster and the tile lists shorter (D3; steps back to back: 5.4 vs 3.6 ms per step without rebalances on gare, 6.8 vs 4.5 on jardin7). A worker is not planned: running `reconcileAndGrow` there (most of the pause; the readback and upload stay on the main thread) gains at most that 33%, while the splats it replaces keep training and their gradients and Adam state would have to be reconciled at the swap. If the pause matters, rebalancing less often once the count is at the cap is simpler (a training change: A/B it).
+3. **Cost:** the whole outer loop (readback, `reconcileAndGrow`, Adam gather, upload) runs on the main thread inside a step, so the page freezes for its duration. jardin5 at 300k splats: ~1 s, then ~210 ms once the near-camera floater test used a grid of the camera cones (it projected every splat into every training camera) and kept splats went into one buffer. Now 160-200 ms at the 300k cap (jardin4/5/6/7, gare), every 100 steps; ~33% of the training time since the backward got faster and the tile lists shorter (D3; steps back to back: 5.4 vs 3.6 ms per step without rebalances on gare, 6.8 vs 4.5 on jardin7). A worker is not planned: running `reconcileAndGrow` there (most of the pause; the readback and upload stay on the main thread) gains at most that 33%, while the splats it replaces keep training and their gradients and Adam state would have to be reconciled at the swap. Rebalancing less often once the count is at the cap (4.) cut it instead.
+4. **Schedule (`rebalanceDue`, trainer.js):** every `rebalance_every` = 100 steps, every `rebalance_every_cap` = 400 once the count is at 99% of `max_splats`, and at each opacity reset (so the reset stays on its step; with the 100-step default those were rebalance steps already). 30k-step A/B on the v3 bench, the gap at the cap 100 (the old schedule) / 200 / 400, everything else default; val PSNR / SSIM at the last validation before the step-30,000 opacity reset (29,500 to 29,680: the later schedules shift the validation steps), and the wall time (two runs at a time on one GPU, so rough):
+
+| Scene (val views) | 100 | 200 | 400 | wall time, 100 → 400 |
+| :--- | :---: | :---: | :---: | :---: |
+| gare (49) | 16.35 / 0.497 | 16.64 / 0.498 | 16.48 / 0.494 | 282 → 232 s |
+| jardin4 (110) | 17.20 / 0.423 | 18.06 / 0.455 | 18.42 / 0.468 | 370 → 341 s |
+| jardin5 (54) | 18.29 / 0.430 | 18.88 / 0.457 | 19.13 / 0.468 | 307 → 215 s |
+| jardin6 (65) | 17.08 / 0.347 | 17.94 / 0.380 | 18.27 / 0.392 | 261 → 187 s |
+| jardin7 (10) | 23.32 / 0.734 | 23.36 / 0.737 | 23.37 / 0.737 | 276 → 244 s |
+
+   The count is at the cap by steps 2,000–4,000. The 100 runs repeat the 0 runs of the depth distortion A/B (E2, §9) within 0.06 dB. On jardin4–6 the gap opens early (+0.5 to +0.6 dB at 10k for 400) and grows: from 20k to 29k the 100 runs stay flat or drop (jardin4 17.45 → 17.06) while the 400 ones hold or improve (jardin5 19.01 → 19.12). Why (e.g. the splats replaced at each rebalance losing their training) was not measured.
 
 ### 5.4 Extra Optimizer Methods: Monte-Carlo (SGLD / MCMC) & Simulated Annealing (SA)
 In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stochastic optimization methods selectable live in the GUI:
@@ -171,7 +182,7 @@ In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stoc
    * **Outer Loop (MCMC Error-Proportional Teleportation):** During `reconcileAndGrow`, pruned/dead splats are **teleported (resampled)** onto high-error parent splats chosen via roulette-wheel sampling proportional to WLBG error mass $R_j$, preserving total splat count while concentrating density where residual error is highest.
 
 2. **Simulated Annealing (`opt_method = 2`, `sim_anneal`):**
-   * **Temperature Schedule:** Maintains an annealing temperature $T(t) = T_0 \cdot \gamma^{t/50}$ with optional periodic re-heating at rebalance intervals.
+   * **Temperature Schedule:** Maintains an annealing temperature $T(t) = T_0 \cdot \gamma^{t/50}$ with optional periodic re-heating every $\max(100, 2K)$ steps.
    * **Inner Loop (Metropolis-Hastings Per-Splat Perturbation):** Each splat tracks its local WLBG mean error energy $E_i^{(t)} = e_{\text{view}}(i)$ in `adam_v[b+1].w` and its last accepted position displacement in `adam_m[b+1].w`, `adam_m[b+3].w`, `adam_v[b+3].w`. At each step:
      * Compare current local error $E_i^{(t)}$ against previous $E_i^{(t-1)}$.
      * Compute Boltzmann acceptance probability $P_{\text{acc}} = \exp(-\max(0, E_i^{(t)} - E_i^{(t-1)}) / T(t))$.
@@ -227,21 +238,23 @@ skal65535.github.io/gaussopt/
 ├── index.html             # Page markup + bootstrap (imports src/app.js)
 ├── gaussopt.css           # Page layout (grid: header, stepper, view, inspector, dock), overlays
 ├── e2e/                   # Browser end-to-end tests (Playwright, headless Chrome; BROWSER=safari: safaridriver): the SfM
-│                          #   panel (sfm.e2e.js), project folders (project.e2e.js); harness.js: server, clip, browser
+│                          #   panel (sfm.e2e.js), project folders (project.e2e.js), tile kernels (tiles.e2e.js); harness.js: server, clip, browser, run()
 ├── tests/                 # deno test: SfM unit / solver / GPU / synthetic tests, .ply octree round trip
 ├── tools/                 # Deno / Python command-line tools for the SfM (DESIGN-sfm §10)
 └── src/
-    ├── app.js             # App: GUI & URL params, dataset/snapshot loading, frame loop, cameras (orbit/drone/fly-to)
+    ├── app.js             # App: GUI, dataset/snapshot loading, frame loop, cameras (orbit/drone/fly-to)
+    ├── params.js          # The app's params: defaults, URL params, GUI choices and tooltips, what snapshots / project.json keep
     ├── colmap.js          # Binary parser for COLMAP *.bin + .ply/.splat import/export (with embedded octree)
     ├── math.js            # Shared math: vec3, quaternions, 3x3 eigen, OpenCV view matrices, pinhole projection, orbit frame, intrinsics fit
     ├── octree.js          # Loose Octree build, JSON/PLY serialization, front-to-back sort, WLBG/MCMC/SA growth
     ├── render.js          # Pure draw layer: free-view splats, 3D octree & camera wireframes, side-canvas telemetry
+    ├── gpu.js             # WebGPU compute helpers: bind groups, one-dispatch passes, pipelines from a .wgsl file
     ├── drone.js           # 'Drone fly' free camera: angle-mode quadcopter model (mouse stick, arrows forward/back + yaw, E/Q climb/descend)
     ├── demo.js            # 'Demo' free camera (G): slow elastic flight along the capture path; any input hands over to the drone
     ├── trainer.js         # GPU/CPU hybrid training loop (Adam, Monte-Carlo SGLD, Simulated Annealing)
     ├── metrics.js         # Validation metrics: PSNR, SSIM (3DGS convention), PSNR at 1/4 resolution
     ├── pace.js            # FramePacer: training steps per display frame, from their GPU time
-    ├── shaders.wgsl       # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render
+    ├── shaders.wgsl       # WGSL kernels: projection, tile forward/backward+WLBG moments, Adam/MC/SA update, render (+ shared _* sections)
     ├── snapshot.js        # .gosnap full training-state snapshot codec (splats + Adam + moments + octree)
     ├── stipple.js         # E4: residual stippling -> unprojected seed splats (reuses ../stipple/ Voronoi)
     ├── project/           # Project folders (§3.6): store.js (folder / serve.py / memory), project.js (manifest), zip.js

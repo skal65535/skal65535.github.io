@@ -6,6 +6,7 @@
 import { SPLAT_FLOATS } from './colmap.js';
 import { MOMENT_FLOATS } from './octree.js';
 import { loadShaders } from './render.js';
+import { dispatch } from './gpu.js';
 import { residualDensity, stippleSites, buildViewDepthGrid, makeSeedSplats } from './stipple.js';
 import { rgbPsnr, rgbPsnrDown, rgbSsim } from './metrics.js';
 
@@ -14,6 +15,38 @@ const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry p
 const OPT_METHODS   = { adam: 0, monte_carlo: 1, sim_anneal: 2 };
 const BUF_RW   = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 const BUF_READ = () => GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST;
+
+// Defaults of the params a training step reads (the app's params start from these)
+export const TRAIN_DEFAULTS = {
+  // Optimizer extras: Monte-Carlo noise, simulated annealing T0, cooling and restarts
+  mc_noise:        0.08,
+  sa_temp:         0.15,
+  sa_cooling:      0.96,
+  sa_reheat:       true,
+  // Learning rates
+  lr_pos:          0.00016,
+  lr_pos_final:    0.01,   // lr_pos decays exponentially to lr_pos * lr_pos_final ...
+  lr_decay_steps:  30000,  // ... over this many steps
+  lr_scale:        0.005,
+  lr_quat:         0.002,
+  lr_color:        0.0025,
+  lr_opacity:      0.05,
+  depth_dist:      0,      // depth distortion loss weight (0 = off), see tile_backward
+  opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)
+  // Shape limits (applied every Adam step): huge splats & needles are almost always wrong
+  max_splat_angle: 0.03,   // max axis scale / depth, in the training view
+  max_splat_scale: 0.1,    // max axis scale, as a fraction of the scene radius
+  max_anisotropy:  10,     // max ratio of the largest axis to the median one
+};
+
+// Whether step `step` rebalances, the last rebalance at step `last`: rebalance_every steps
+// after it, rebalance_every_cap once `count` is at the splat cap (0: rebalance_every), and at
+// every opacity reset
+export function rebalanceDue(P, step, last, count) {
+  const atCap = P.rebalance_every_cap > 0 && count >= 0.99 * P.max_splats;
+  return step - last >= (atCap ? P.rebalance_every_cap : P.rebalance_every) ||
+         (P.opacity_reset > 0 && step % P.opacity_reset === 0);
+}
 
 // Fixed-point (x65536) 64-bit squared-error sum [lo, hi] of loss_acc
 const lossFixed = (u32) => u32[1] * 4294967296 + u32[0];
@@ -43,7 +76,9 @@ function gatherRows(src, idx, stride) {
 }
 
 export class GaussOptTrainer {
+  // params: kept (the app changes them while training), missing TRAIN_DEFAULTS filled in
   static async create(device, octree, initialSplats, images, params) {
+    for (const [k, v] of Object.entries(TRAIN_DEFAULTS)) params[k] ??= v;
     const t = new GaussOptTrainer(device, octree, initialSplats, images, params);
     await t._init();
     return t;
@@ -62,11 +97,12 @@ export class GaussOptTrainer {
     this.sortGen    = 0;      // bumped whenever cpuParams / octree change: invalidates the CPU sorts
 
     this.stepCount     = 0;
+    this.lastRebalanceStep = 0;  // step of the last rebalance (rebalanceDue)
     this.adamStepCount = 0;   // steps since the Adam state was last reset (bias correction)
     this.stepInFlight  = false;  // step lock, see _withStepLock()
     this.avgR          = 0.01;
     this.lastPsnr      = 0;
-    this.currentTemp   = params.sa_temp || 0.15;
+    this.currentTemp   = params.sa_temp;
     this.history       = [];  // { step, psnr, count, temp } training-loss PSNR
     this.valHistory    = [];  // { step, psnr, count, views } from evaluateValidation()
     this.splitVectors  = null;
@@ -276,17 +312,7 @@ export class GaussOptTrainer {
   }
 
   // Compute pass with bind group 0 = `resources` (GPUBuffer or texture view, binding = index).
-  _pass(enc, pipeline, resources, wx, wy = 1) {
-    const bg = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: resources.map((r, i) => ({ binding: i, resource: (r instanceof GPUBuffer) ? { buffer: r } : r })),
-    });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wx, wy);
-    pass.end();
-  }
+  _pass(enc, pipeline, resources, wx, wy = 1) { dispatch(this.device, enc, pipeline, resources, wx, wy); }
 
   // tile_list / tile_scratch with room for `capacity` (tile, splat) entries
   _allocateTileLists(capacity) {
@@ -526,23 +552,23 @@ export class GaussOptTrainer {
 
     const P = this.params, R = this.octree.sceneRadius;
     const optMethod = OPT_METHODS[P.opt_method] ?? 0;
-    // SA temperature T = T0 * cooling^(t/50), t optionally restarting every 2 rebalances
+    // SA temperature T = T0 * cooling^(t/50), t optionally restarting every max(100, 2 K) steps
     const cycleSteps = P.sa_reheat ? (this.stepCount % Math.max(100, P.rebalance_every * 2)) : this.stepCount;
-    this.currentTemp = (P.sa_temp || 0.15) * Math.pow(P.sa_cooling || 0.96, cycleSteps / 50.0);
+    this.currentTemp = P.sa_temp * Math.pow(P.sa_cooling, cycleSteps / 50.0);
     // 50-step lr warmup (matters when resuming), exponential lr_pos decay to lr_pos * lr_pos_final
     const warmup = Math.min(1.0, this.stepCount / 50.0);
-    const decayT = Math.min(1, this.stepCount / Math.max(1, P.lr_decay_steps || 30000));
-    const posDecay = Math.pow(P.lr_pos_final ?? 0.01, decayT);
+    const decayT = Math.min(1, this.stepCount / Math.max(1, P.lr_decay_steps));
+    const posDecay = Math.pow(P.lr_pos_final, decayT);
     this._writeUniforms(img, k, [
       P.lr_pos * R * warmup * posDecay, P.lr_scale * warmup, P.lr_quat * warmup, P.lr_color,  // lrs
-      optMethod, (optMethod === 1) ? (P.mc_noise || 0.08) : this.currentTemp, Math.random(), this.adamStepCount,  // opt_params
-      P.max_splat_angle ?? 0.03, (P.max_splat_scale ?? 0.1) * R,                              // limits
-      Math.log(Math.max(1, P.max_anisotropy ?? 10)), P.lr_opacity ?? 0.05,
-      P.depth_dist ?? 0, 0, 0, 0,                                                               // loss
+      optMethod, (optMethod === 1) ? P.mc_noise : this.currentTemp, Math.random(), this.adamStepCount,  // opt_params
+      P.max_splat_angle, P.max_splat_scale * R,                                                 // limits
+      Math.log(Math.max(1, P.max_anisotropy)), P.lr_opacity,
+      P.depth_dist, 0, 0, 0,                                                                    // loss
     ]);
     this.device.queue.writeBuffer(this.lossBuf, 0, new Uint32Array(4));
 
-    const needRebalance = (this.stepCount % P.rebalance_every === 0);
+    const needRebalance = rebalanceDue(P, this.stepCount, this.lastRebalanceStep, this.count);
     const needLossPoll  = !needRebalance && (this.stepCount % 5 === 0) && !this.pendingLossRead;
     this._runPasses(gtTex, needLossPoll ? enc => enc.copyBufferToBuffer(this.lossBuf, 0, this.lossReadBuf, 0, 16) : null);
 
@@ -629,6 +655,7 @@ export class GaussOptTrainer {
       return {
         count:         this.count,
         stepCount:     this.stepCount,
+        lastRebalanceStep: this.lastRebalanceStep,
         adamStepCount: this.adamStepCount,
         currentTemp:   this.currentTemp,
         avgR:          this.avgR,
@@ -659,6 +686,8 @@ export class GaussOptTrainer {
       this.adamStepCount = state.adamStepCount | 0;
     }
     this.stepCount   = state.stepCount | 0;
+    // older snapshots: the last multiple of rebalance_every (their schedule)
+    this.lastRebalanceStep = state.lastRebalanceStep ?? this.stepCount - this.stepCount % this.params.rebalance_every;
     this.currentTemp = state.currentTemp ?? this.currentTemp;
     this.avgR        = state.avgR ?? this.avgR;
     this.lastPsnr    = state.lastPsnr ?? 0;
@@ -736,8 +765,8 @@ export class GaussOptTrainer {
   // prune-grow-rebuild (or just rebuild) the octree, carry Adam state over, re-upload.
   // Returns true when stipple seeding rendered another view into hatTex.
   // Everything here runs on the main thread, so the page stops drawing meanwhile (300k splats:
-  // 160-200 ms, mostly reconcileAndGrow, then the readback, gather and upload; ~11% of the
-  // training time at one rebalance per 100 steps). No worker: DESIGN.md §5.3.
+  // 160-200 ms, mostly reconcileAndGrow, then the readback, gather and upload; ~33% of the
+  // training time at one rebalance per 100 steps, hence 400 at the cap). No worker: DESIGN.md §5.3.
   async _rebalance() {
     const ms = {}, t = [performance.now()], lap = (k) => { t.push(performance.now()); ms[k] = t.at(-1) - t.at(-2); };
     await this._drainLossRead();  // keep history in step order
@@ -806,8 +835,8 @@ export class GaussOptTrainer {
 
     // Periodic opacity reset (3DGS): cap alpha at 0.01, so splats that don't earn their
     // opacity back before the next prune get removed
-    const every = P.opacity_reset || 0;
-    if (every > 0 && Math.floor(this.stepCount / every) > Math.floor((this.stepCount - P.rebalance_every) / every)) {
+    const every = P.opacity_reset;
+    if (every > 0 && Math.floor(this.stepCount / every) > Math.floor(this.lastRebalanceStep / every)) {
       const cap = Math.log(0.01 / 0.99);
       for (let b = 3; b < this.count * SPLAT_FLOATS; b += SPLAT_FLOATS) {
         if (this.cpuParams[b] > cap) {
@@ -821,6 +850,7 @@ export class GaussOptTrainer {
     lap('upload');
     ms.total = t.at(-1) - t[0];
     this.lastRebalanceMs = ms;  // phase times (ms) of the last rebalance, for the log
+    this.lastRebalanceStep = this.stepCount;
     return hatUsed;
   }
 }

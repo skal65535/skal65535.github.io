@@ -50,6 +50,32 @@ export async function server(args = []) {
   throw new Error(`serve.py did not start on port ${PORT}`);
 }
 
+// The app's page URL, `query` ('?...') appended
+export const appUrl = (query = '') => `http://localhost:${PORT}${urlOf(join(APP, 'index.html'))}${query}`;
+
+// One test: serve.py (serverArgs) and a browser around body(page), then a FAIL for page errors or
+// PASS, with body's return value as a summary. After a failure, onFail(page) returns what to log
+// (or null); cleanup() runs last.
+export async function run(body, { serverArgs = [], onFail = null, cleanup = null } = {}) {
+  const srv = await server(serverArgs);
+  const { page, close, errors } = await browser();
+  const t0 = Date.now();
+  try {
+    const summary = await body(page);
+    const serious = await errors();
+    if (serious.length) fail(`${serious.length} page errors:\n  ${serious.slice(0, 10).join('\n  ')}`);
+    if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s)${summary ? `: ${summary}` : ''}`);
+  } catch (e) {
+    fail(e.message);
+    const log = await onFail?.(page).catch(() => null);
+    if (log) console.error(log);
+  } finally {
+    await close();
+    srv.kill();
+    cleanup?.();
+  }
+}
+
 // { page, close, errors(): the page errors so far, favicon misses aside }
 export async function browser() {
   if (SAFARI) {  // the errors are kept in the page: banked before each navigation

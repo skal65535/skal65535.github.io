@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { APP, PORT, NAME, SAFARI, fail, clip, urlOf, server, browser } from './harness.js';
+import { SAFARI, fail, clip, urlOf, appUrl, run } from './harness.js';
 
 const STEPS = 300, PROJECT = 'e2e-project';
 const projects = mkdtempSync(join(tmpdir(), 'gaussopt-projects-'));
@@ -16,20 +16,16 @@ const walk = (d, pre = '') => readdirSync(d).flatMap(n => statSync(join(d, n)).i
 const shape = (files) => files.map(f => f.replace(/^(images|gs\/images)\/.*/, '$1/*.jpg')).filter((f, i, a) => a.indexOf(f) === i).sort();
 
 const video = clip();
-const srv = await server(['--projects', projects]);
-const { page, close, errors } = await browser();
-const app = `http://localhost:${PORT}${urlOf(join(APP, 'index.html'))}`;
-const wait = (fn, arg, timeout = 600000) => page.waitForFunction(fn, arg, { timeout, polling: 500 });
-const attach = (kind, name) => page.evaluate(async ([kind, name]) => {
-  const { ServerStore, DirStore } = await import('./src/project/store.js');
-  const store = kind === 'server' ? new ServerStore(name)
-    : new DirStore(await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true }));
-  await window.app.projectPanel.attach(store);
-  return window.app.project?.where ?? null;
-}, [kind, name]);
-const t0 = Date.now();
-try {
-  await page.goto(`${app}?video=${encodeURIComponent(urlOf(video))}&val=0`);
+await run(async (page) => {
+  const wait = (fn, arg, timeout = 600000) => page.waitForFunction(fn, arg, { timeout, polling: 500 });
+  const attach = (kind, name) => page.evaluate(async ([kind, name]) => {
+    const { ServerStore, DirStore } = await import('./src/project/store.js');
+    const store = kind === 'server' ? new ServerStore(name)
+      : new DirStore(await (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true }));
+    await window.app.projectPanel.attach(store);
+    return window.app.project?.where ?? null;
+  }, [kind, name]);
+  await page.goto(appUrl(`?video=${encodeURIComponent(urlOf(video))}&val=0`));
   await wait(() => window.app?.sfm?.state.status === 'ready');
   await page.evaluate(() => window.app.sfm.run(null, true));
   await wait(() => window.app.trainer?.count > 0 && window.app.colmap?.fromSfm && window.app.gtAvailable);  // the photos are readable
@@ -80,7 +76,7 @@ try {
   if (!saved) fail(`project.json settings: ${JSON.stringify(JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')).settings)}`);
 
   // a reload without the video reopens the project: session (repairs), gs/ dataset, snapshot, settings
-  await page.goto(`${app}?dataset=[synth]`);
+  await page.goto(appUrl(`?dataset=[synth]`));
   await wait(() => !!(window.app?.trainer && window.app.projectPanel));
   await attach('server', PROJECT);
   await wait(() => window.app.colmap?.fromSfm && window.app.sfm?.quality && window.app.trainer?.stepCount > 0);
@@ -123,16 +119,8 @@ try {
     console.log(`zip: ${d.suggestedFilename()}, ${names.length} files, ${(statSync(path).size / 1e6).toFixed(0)} MB`);
     if (JSON.stringify(shape(names).map(f => f.replace(/_\d{5}\.gosnap$/, '.gosnap'))) !== JSON.stringify(served)) fail(`zip files: ${JSON.stringify(shape(names))}`);
   }
-
-  const serious = await errors();
-  if (serious.length) fail(`${serious.length} page errors:\n  ${serious.slice(0, 10).join('\n  ')}`);
-  if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
-} catch (e) {
-  fail(e.message);
-  const log = await page.evaluate(() => window.app.logText()).catch(() => null);
-  if (log) console.error(`log:\n${log.split('\n').slice(-15).join('\n')}`);
-} finally {
-  await close();
-  srv.kill();
-  rmSync(projects, { recursive: true, force: true });
-}
+}, {
+  serverArgs: ['--projects', projects],
+  onFail: async (page) => { const log = await page.evaluate(() => window.app.logText()); return `log:\n${log.split('\n').slice(-15).join('\n')}`; },
+  cleanup: () => rmSync(projects, { recursive: true, force: true }),
+});
