@@ -160,17 +160,17 @@ Every $K$ steps, we compute the mean error mass $\bar{R}$ and hysteresis thresho
 1. **Overlap Reconciliation (Moment-Matching Merge):** Merge redundant overlapping Gaussians with small relative distance and color difference.
 2. **Octree Rebuild:** Re-bin splats into contiguous leaves ($N_{\text{leaf}} \le 256$).
 3. **Cost:** the whole outer loop (readback, `reconcileAndGrow`, Adam gather, upload) runs on the main thread inside a step, so the page freezes for its duration. jardin5 at 300k splats: ~1 s, then ~210 ms once the near-camera floater test used a grid of the camera cones (it projected every splat into every training camera) and kept splats went into one buffer. Now 160-200 ms at the 300k cap (jardin4/5/6/7, gare), every 100 steps; ~33% of the training time since the backward got faster and the tile lists shorter (D3; steps back to back: 5.4 vs 3.6 ms per step without rebalances on gare, 6.8 vs 4.5 on jardin7). A worker is not planned: running `reconcileAndGrow` there (most of the pause; the readback and upload stay on the main thread) gains at most that 33%, while the splats it replaces keep training and their gradients and Adam state would have to be reconciled at the swap. Rebalancing less often once the count is at the cap (4.) cut it instead.
-4. **Schedule (`rebalanceDue`, trainer.js):** every `rebalance_every` = 100 steps, every `rebalance_every_cap` = 400 once the count is at 99% of `max_splats`, and at each opacity reset (so the reset stays on its step; with the 100-step default those were rebalance steps already). 30k-step A/B on the v3 bench, the gap at the cap 100 (the old schedule) / 200 / 400, everything else default; val PSNR / SSIM at the last validation before the step-30,000 opacity reset (29,500 to 29,680: the later schedules shift the validation steps), and the wall time (two runs at a time on one GPU, so rough):
+4. **Schedule (`rebalanceDue`, trainer.js):** every `rebalance_every` = 100 steps, every `rebalance_every_cap` = 400 once the count is at 99% of `max_splats`, and at each opacity reset (so the reset stays on its step; with the 100-step default those were rebalance steps already). 30k-step A/B on the v3 bench, the gap at the cap 100 (the old schedule) / 200 / 400 / 800, everything else default; val PSNR / SSIM at the last validation before the step-30,000 opacity reset (29,500 to 29,680: the later schedules shift the validation steps), and the wall time (two runs at a time on one GPU, so rough):
 
-| Scene (val views) | 100 | 200 | 400 | wall time, 100 → 400 |
-| :--- | :---: | :---: | :---: | :---: |
-| gare (49) | 16.35 / 0.497 | 16.64 / 0.498 | 16.48 / 0.494 | 282 → 232 s |
-| jardin4 (110) | 17.20 / 0.423 | 18.06 / 0.455 | 18.42 / 0.468 | 370 → 341 s |
-| jardin5 (54) | 18.29 / 0.430 | 18.88 / 0.457 | 19.13 / 0.468 | 307 → 215 s |
-| jardin6 (65) | 17.08 / 0.347 | 17.94 / 0.380 | 18.27 / 0.392 | 261 → 187 s |
-| jardin7 (10) | 23.32 / 0.734 | 23.36 / 0.737 | 23.37 / 0.737 | 276 → 244 s |
+| Scene (val views) | 100 | 200 | 400 | 800 | wall time, 100 → 400 → 800 |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| gare (49) | 16.35 / 0.497 | 16.64 / 0.498 | 16.48 / 0.494 | 16.61 / 0.493 | 282 → 232 → 227 s |
+| jardin4 (110) | 17.20 / 0.423 | 18.06 / 0.455 | 18.42 / 0.468 | 18.42 / 0.471 | 370 → 341 → 320 s |
+| jardin5 (54) | 18.29 / 0.430 | 18.88 / 0.457 | 19.13 / 0.468 | 19.21 / 0.474 | 307 → 215 → 293 s |
+| jardin6 (65) | 17.08 / 0.347 | 17.94 / 0.380 | 18.27 / 0.392 | 18.41 / 0.397 | 261 → 187 → 197 s |
+| jardin7 (10) | 23.32 / 0.734 | 23.36 / 0.737 | 23.37 / 0.737 | 23.35 / 0.736 | 276 → 244 → 253 s |
 
-   The count is at the cap by steps 2,000–4,000. The 100 runs repeat the 0 runs of the depth distortion A/B (E2, §9) within 0.06 dB. On jardin4–6 the gap opens early (+0.5 to +0.6 dB at 10k for 400) and grows: from 20k to 29k the 100 runs stay flat or drop (jardin4 17.45 → 17.06) while the 400 ones hold or improve (jardin5 19.01 → 19.12). Why (e.g. the splats replaced at each rebalance losing their training) was not measured.
+   The count is at the cap by steps 2,000–4,000. The 100 runs repeat the 0 runs of the depth distortion A/B (E2, §9) within 0.06 dB. On jardin4–6 the gap opens early (+0.5 to +0.6 dB at 10k for 400) and grows: from 20k to 29k the 100 runs stay flat or drop (jardin4 17.45 → 17.06) while the 400 ones hold or improve (jardin5 19.01 → 19.12). Why (e.g. the splats replaced at each rebalance losing their training) was not measured. 800 (run later, one run per scene, so its wall times ran beside other runs than the others' did) is +0.07 dB on average over 400 (−0.02 on jardin7 to +0.14 on jardin6, against the 0.06 dB repeat above), SSIM up on three scenes and down on two, and not faster: 400 stays the default.
 
 ### 5.4 Extra Optimizer Methods: Monte-Carlo (SGLD / MCMC) & Simulated Annealing (SA)
 In addition to standard **Adam** (`opt_method = 0`), Gauss-Opt provides two stochastic optimization methods selectable live in the GUI:
