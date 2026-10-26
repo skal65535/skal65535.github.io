@@ -88,7 +88,7 @@ Deno.test('BA converges from perturbed poses, points and focal to the noise floo
 Deno.test('BA with a Huber loss is robust to 5% outlier observations', () => {
   const r = rng(32);
   const prob = problemFrom(SCENE, r, { outliers: 0.05 });
-  bundleAdjust(prob, { refine: ['f'], loss: 'huber', lossScale: 2, maxIterations: 50 });
+  bundleAdjust(prob, { refine: ['f'], lossScale: 2, maxIterations: 50 });
   const errs = Array.from(reprojectionErrors(prob)).sort((a, b) => a - b);
   assert(errs[Math.floor(0.5 * errs.length)] < 1, `median reprojection ${errs[errs.length >> 1]}`);
   assertClose(prob.camera.params[0], 1230, 1230 * 5e-3, 'focal');

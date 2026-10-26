@@ -4,11 +4,13 @@
 
 import { svd, transpose, matMul, det3, mulVec3 } from './linalg.js';
 
+// The centroid of points [[x, y, z]]
+export const mean = (P) => [0, 1, 2].map(k => P.reduce((s, p) => s + p[k], 0) / P.length);
+
 // src, dst: arrays of [x, y, z] (same length >= 3). withScale = false gives a rigid fit (s = 1).
 export function umeyama(src, dst, { withScale = true } = {}) {
   const n = src.length;
   if (n < 3 || dst.length !== n) throw new Error(`umeyama needs >= 3 matched points, got ${n}/${dst.length}`);
-  const mean = (P) => [0, 1, 2].map(k => P.reduce((s, p) => s + p[k], 0) / n);
   const ms = mean(src), md = mean(dst);
   const cov = new Float64Array(9);  // (1/n) sum (d - md)(s - ms)^T
   let varS = 0;

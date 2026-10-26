@@ -1,12 +1,13 @@
 // render.js — Pure draw layer for Gauss-Opt:
 //   - Free-view & COLMAP-pose splat renderer (shapes + diagnostic heatmaps)
-//   - 3D wireframe overlays (Loose Octree boxes, COLMAP camera frustums, WLBG split vectors)
+//   - 3D wireframe overlays (Loose Octree boxes, COLMAP camera frustums, camera path, WLBG split vectors)
 //   - Split-screen Target / Render / Residual comparison
 //   - Side-canvas rolling PSNR & Octree/WLBG/MC/SA telemetry plot
 "use strict";
 
 import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics } from './math.js';
 import { bindGroup } from './gpu.js';
+import { mipLevels } from './mesh_image.js';
 
 let _shaderCache = null;
 
@@ -51,10 +52,11 @@ export async function loadShaders(device) {
 
 // Fly-to animation: cubic Bezier for the camera center (bowed outward from `sceneCenter`
 // and slightly towards -Y, so it arcs instead of cutting through the scene), slerp for the
-// orientation, linear blend of the intrinsics.
+// orientation, linear blend of the intrinsics, over FLY_MS.
+const FLY_MS = 680;
 export function createCameraSplineAnimation({
   fromView, fromCenter, fromFx, fromFy, fromCx, fromCy,
-  toImg, W, H, sceneCenter = [0, 0, 0], durationMs = 680,
+  toImg, W, H, sceneCenter = [0, 0, 0],
 }) {
   const p0 = [...fromCenter], p3 = [...toImg.center];
   const d = sub(p3, p0);
@@ -67,15 +69,15 @@ export function createCameraSplineAnimation({
   };
   const { fx: toFx, fy: toFy, cx: toCx, cy: toCy } = fitIntrinsics(toImg.camera, W, H);
   return {
-    startTime: performance.now(), durationMs,
+    startTime: performance.now(),
     p0, p1: ctrl(0.33), p2: ctrl(0.67), p3,
     q0: viewMatToQuat(fromView), q1: viewMatToQuat(toImg.view),
     fromFx, fromFy, fromCx, fromCy, toFx, toFy, toCx, toCy,
   };
 }
 
-export function evaluateCameraSpline(anim, nowMs = performance.now()) {
-  const t = clamp((nowMs - anim.startTime) / anim.durationMs, 0, 1);
+export function evaluateCameraSpline(anim) {
+  const t = clamp((performance.now() - anim.startTime) / FLY_MS, 0, 1);
   const s = t * t * t * (t * (t * 6 - 15) + 10);  // quintic smoothstep (C2 easing)
   const u = 1 - s;
   const b = [u * u * u, 3 * u * u * s, 3 * u * s * s, s * s * s];
@@ -101,6 +103,11 @@ const blend = (srcFactor, dstFactor) => {
 };
 const BLEND_UNDER = blend('one-minus-dst-alpha', 'one');  // front-to-back splats
 const BLEND_OVER  = blend('one', 'one-minus-src-alpha');  // premultiplied overlays
+// The free view's depth buffer (linear view depth, see mesh_render): only the mesh writes it
+const DEPTH_FORMAT = 'depth32float';
+const depthState = (depthCompare, depthWriteEnabled = false) => ({ format: DEPTH_FORMAT, depthCompare, depthWriteEnabled });
+// mesh display modes (params.js MESH_VIEWS)
+export const MESH_OFF = 0, MESH_OVER = 1, MESH_ONLY = 2, MESH_WIRE = 3;
 
 // Camera frustum drawn as a pyramid: points [apex, p1..p4] (image-plane corners, clockwise)
 const FRUSTUM_EDGES = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]];
@@ -133,16 +140,31 @@ export class GaussOptRenderer {
     this.device  = device;
     this.context = context;
     const mods   = await loadShaders(device);
-    const pipe = (module, topology, blend) => device.createRenderPipeline({
+    // depth: the free view's pass has a depth attachment (renderScene); the compare blit's has none
+    const pipe = (module, topology, blend, { depth = depthState('always'), fs = 'fs', buffers = undefined } = {}) => device.createRenderPipeline({
       layout: 'auto',
-      vertex:   { module, entryPoint: 'vs' },
-      fragment: { module, entryPoint: 'fs', targets: [blend ? { format, blend } : { format }] },
+      vertex:   { module, entryPoint: 'vs', buffers },
+      fragment: { module, entryPoint: fs, targets: [blend === undefined ? { format, writeMask: 0 } : blend ? { format, blend } : { format }] },
       primitive: { topology, cullMode: 'none' },
+      ...(depth && { depthStencil: depth }),
     });
     this.pipeSplats     = pipe(mods.splats_render,    'triangle-strip', BLEND_UNDER);
+    this.pipeSplatsHid  = pipe(mods.splats_render,    'triangle-strip', BLEND_UNDER, { depth: depthState('less') });  // behind the mesh: hidden
     this.pipeWire       = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER);
     this.pipeFrustumImg = pipe(mods.frustum_image,    'triangle-strip', BLEND_OVER);
-    this.pipeBlit       = pipe(mods.compare_blit,     'triangle-strip', null);
+    this.pipeBlit       = pipe(mods.compare_blit,     'triangle-strip', null, { depth: null });
+    const meshBuffers = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
+                         { arrayStride: 4,  attributes: [{ shaderLocation: 1, offset: 0, format: 'unorm8x4' }] },
+                         { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x2' }] }];
+    const mesh = (topology, blend, fs, depth) => pipe(mods.mesh_render, topology, blend, { fs, depth, buffers: meshBuffers });
+    this.pipeMeshDepth  = mesh('triangle-list', undefined,   'fs_depth',  depthState('less', true));  // no color written
+    this.pipeMeshColor  = mesh('triangle-list', BLEND_UNDER, 'fs_color',  depthState('less-equal'));
+    this.pipeMeshTex    = mesh('triangle-list', BLEND_UNDER, 'fs_tex',    depthState('less-equal'));
+    this.pipeMeshShaded = mesh('triangle-list', BLEND_UNDER, 'fs_shaded', depthState('less-equal'));
+    this.pipeMeshLine   = mesh('line-list',     BLEND_OVER,  'fs_line',   depthState('less-equal'));
+    this.depthTex = null;
+    this.mesh = null;  // setMesh(): { pos, col, uv, tex, idx, idxCount, edges, edgeCount, bg: per pipeline }
+    this.meshSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' });
 
     const ubuf = (size, label) => device.createBuffer({ size, label, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.renderUniformBuf = ubuf(128, 'render_uniforms');
@@ -156,6 +178,58 @@ export class GaussOptRenderer {
     this.frustumQuadBuf    = null;  // per camera: 4 strip corners (xyz + alpha)
     this.frustumGeoms      = [];    // per camera: { camIdx, pts: [apex, p1..p4] } for picking
     this.frustumBindGroups = new WeakMap();  // texture -> bind group (reset when frustumQuadBuf moves)
+  }
+
+  // The mesh to show (DESIGN.md §9 E5): { positions: Float32Array 3V, faces: Uint32Array 3F, colors?:
+  // Uint8Array 3V, uvs?: Float32Array 2V, image?: its texture, { data: RGBA bytes, width, height } }
+  // or null; uploaded once, with its unique edges for the wireframe and the texture's mip levels
+  setMesh(m) {
+    for (const k of ['pos', 'col', 'uv', 'tex', 'idx', 'edges']) this.mesh?.[k]?.destroy();
+    this.mesh = null;
+    if (!m || !m.faces.length) return;
+    const dev = this.device, nv = m.positions.length / 3;
+    const buf = (data, usage, label) => {  // padded to 4 bytes, as writeBuffer wants
+      const bytes = new Uint8Array(Math.ceil(data.byteLength / 4) * 4);
+      bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+      const b = dev.createBuffer({ size: bytes.length, usage: usage | GPUBufferUsage.COPY_DST, label });
+      dev.queue.writeBuffer(b, 0, bytes);
+      return b;
+    };
+    const col = new Uint8Array(4 * nv).fill(255);
+    for (let i = 0; i < nv; i++) for (let k = 0; k < 3; k++) col[4 * i + k] = m.colors ? m.colors[3 * i + k] : 180;
+    const seen = new Set(), edges = [];
+    for (let f = 0; f < m.faces.length; f += 3) for (let k = 0; k < 3; k++) {
+      const a = m.faces[f + k], b = m.faces[f + (k + 1) % 3], key = a < b ? a * nv + b : b * nv + a;
+      if (!seen.has(key)) { seen.add(key); edges.push(a, b); }
+    }
+    let tex = null;
+    if (m.uvs && m.image) {
+      const levels = mipLevels(m.image);
+      tex = dev.createTexture({ size: [m.image.width, m.image.height], format: 'rgba8unorm', mipLevelCount: levels.length,
+                                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, label: 'mesh_tex' });
+      levels.forEach((l, i) => dev.queue.writeTexture({ texture: tex, mipLevel: i }, l.data, { bytesPerRow: 4 * l.width }, [l.width, l.height]));
+    }
+    this.mesh = {
+      pos: buf(m.positions, GPUBufferUsage.VERTEX, 'mesh_pos'), col: buf(col, GPUBufferUsage.VERTEX, 'mesh_col'),
+      uv: buf(tex ? m.uvs : new Float32Array(2 * nv), GPUBufferUsage.VERTEX, 'mesh_uv'), tex,
+      idx: buf(m.faces, GPUBufferUsage.INDEX, 'mesh_idx'), idxCount: m.faces.length,
+      edges: buf(Uint32Array.from(edges), GPUBufferUsage.INDEX, 'mesh_edges'), edgeCount: edges.length,
+      bg: new Map(),
+    };
+  }
+
+  _drawMesh(pass, pipeline, lines = false) {
+    const m = this.mesh;
+    let bg = m.bg.get(pipeline);
+    if (!bg) m.bg.set(pipeline, bg = pipeline === this.pipeMeshTex ? this._bindGroup(pipeline, this.wireUniformBuf, m.tex.createView(), this.meshSampler)
+                                                                   : this._bindGroup(pipeline, this.wireUniformBuf));
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bg);
+    pass.setVertexBuffer(0, m.pos);
+    pass.setVertexBuffer(1, m.col);
+    pass.setVertexBuffer(2, m.uv);
+    pass.setIndexBuffer(lines ? m.edges : m.idx, 'uint32');
+    pass.drawIndexed(lines ? m.edgeCount : m.idxCount);
   }
 
   // Bind group 0 of `pipeline`, binding i = resources[i] (GPUBuffers wrapped as { buffer })
@@ -174,16 +248,17 @@ export class GaussOptRenderer {
 
   // Rebuild the line buffer (octree leaves + camera frustums + camera path + WLBG split vectors)
   // and frustum quads. splitVectors: flat [x0, y0, z0, x1, y1, z1, ...] segments.
-  // The camera path joins the camera centers in image-name order (= capture order for video frames).
+  // The camera path joins the camera centers in pathOrder (indices into images; null: image-name
+  // order, = capture order for video frames and photo sets; DESIGN-sfm §13.3 P7).
   updateWireframes({
     octree, images, activeCamIdx = -1,
     showOctree = true, showLoose = false, showCameras = true, showPath = false,
-    frustumScale = 1.0, splitVectors = null,
+    frustumScale = 1.0, splitVectors = null, pathOrder = null,
   }) {
     const octVerts = (showOctree && octree && octree.leaves.length > 0) ? octree.buildWireframeVertices({ showLoose }) : null;
     const numCams  = (showCameras && images) ? images.length : 0;
     const numSplit = splitVectors ? Math.floor(splitVectors.length / 6) : 0;
-    const path = (showPath && images?.length > 1) ? images.map(im => im.center) : [];  // images are name-sorted
+    const path = (showPath && images?.length > 1) ? (pathOrder ?? images.map((_, i) => i)).map(i => images[i].center) : [];
     const numPath = Math.max(0, path.length - 1);
     const totalVerts = (octVerts ? octVerts.vertexCount : 0) + numCams * 16 + numSplit * 2 + numPath * 2;
 
@@ -246,12 +321,15 @@ export class GaussOptRenderer {
 
   // Splats (sorted, front-to-back) + frustum image quads + wireframes onto the canvas.
   // frustumTextures: iterable of [camIdx, GPUTexture].
+  // meshMode (with setMesh's mesh): MESH_OVER: the mesh's depth first, the splats behind it hidden, then
+  // the mesh blended under the rest; MESH_ONLY: the mesh alone; MESH_WIRE: its depth only (the splats
+  // behind it hidden), its visible edges over the rest. meshShaded: gray lit by the camera instead of the vertex colors.
   renderScene({
     splatsBuf, momentsBuf, sortedIdxBuf, numVisible,
     view, sceneRadius = 2.0,
     fx, fy, cx, cy, W, H,
     visuMode = 0, colorMode = 0, haze = 1.0, avgR = 0.01,
-    frustumTextures = null,
+    frustumTextures = null, meshMode = MESH_OFF, meshShaded = false,
   }) {
     const dev = this.device;
     // RenderUniforms: view, intrinsics, screen, modes, thresholds
@@ -265,28 +343,37 @@ export class GaussOptRenderer {
     dev.queue.writeBuffer(this.renderUniformBuf, 0, uBuf);
 
     const enc = dev.createCommandEncoder({ label: 'render_scene' });
+    const target = this.context.getCurrentTexture();
+    if (!this.depthTex || this.depthTex.width !== target.width || this.depthTex.height !== target.height) {
+      this.depthTex?.destroy();
+      this.depthTex = dev.createTexture({ size: [target.width, target.height], format: DEPTH_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT, label: 'view_depth' });
+    }
     const pass = enc.beginRenderPass({
       colorAttachments: [{
-        view: this.context.getCurrentTexture().createView(),
+        view: target.createView(),
         loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 },
       }],
+      depthStencilAttachment: { view: this.depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     });
 
-    if (numVisible > 0 && splatsBuf && sortedIdxBuf) {
-      pass.setPipeline(this.pipeSplats);
-      pass.setBindGroup(0, this._bindGroup(this.pipeSplats, this.renderUniformBuf, splatsBuf, momentsBuf, sortedIdxBuf));
-      pass.draw(4, numVisible);
-    }
-
+    const mesh = this.mesh && meshMode !== MESH_OFF;
     const drawWires  = this.wireCount > 0 && this.wireBuf;
     const drawImages = frustumTextures && frustumTextures.length > 0 && this.frustumQuadBuf;
-    if (drawWires || drawImages) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar), fade
+    if (drawWires || drawImages || mesh) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar), fade
       const wf = new Float32Array(28);
       wf.set(view, 0);
       wf.set([fx, fy, cx, cy, W, H, ZNEAR, ZFAR], 16);
       wf.set([this.octreeVertCount, OCTREE_FADE[0] * sceneRadius, OCTREE_FADE[1] * sceneRadius, OCTREE_FADE[2]], 24);
       dev.queue.writeBuffer(this.wireUniformBuf, 0, wf);
     }
+    if (mesh) this._drawMesh(pass, this.pipeMeshDepth);
+    if (numVisible > 0 && splatsBuf && sortedIdxBuf && !(mesh && meshMode === MESH_ONLY)) {
+      const p = mesh ? this.pipeSplatsHid : this.pipeSplats;
+      pass.setPipeline(p);
+      pass.setBindGroup(0, this._bindGroup(p, this.renderUniformBuf, splatsBuf, momentsBuf, sortedIdxBuf));
+      pass.draw(4, numVisible);
+    }
+    if (mesh && meshMode !== MESH_WIRE) this._drawMesh(pass, meshShaded ? this.pipeMeshShaded : this.mesh.tex ? this.pipeMeshTex : this.pipeMeshColor);
     if (drawImages) {
       pass.setPipeline(this.pipeFrustumImg);
       for (const [camIdx, tex] of frustumTextures) {
@@ -305,14 +392,16 @@ export class GaussOptRenderer {
       pass.setBindGroup(0, this._bindGroup(this.pipeWire, this.wireUniformBuf, this.wireBuf));
       pass.draw(this.wireCount);
     }
+    if (mesh && meshMode === MESH_WIRE) this._drawMesh(pass, this.pipeMeshLine, true);
     pass.end();
     dev.queue.submit([enc.finish()]);
   }
 
   // Fullscreen target / render / residual / depth-spread comparison (mode: see compare_blit
   // BlitParams); pixState: the trainer's pix_state, of the render in hatTex
-  renderCompare({ gtTex, hatTex, pixState, mode = 0, splitX = 0.5, amp = mode === 3 ? 5.0 : 3.0 }) {
+  renderCompare({ gtTex, hatTex, pixState, mode = 0, splitX = 0.5 }) {
     if (!gtTex || !hatTex || !pixState) return;
+    const amp = mode === 3 ? 5.0 : 3.0;
     const b = new ArrayBuffer(16);
     new Uint32Array(b)[0] = mode;
     new Float32Array(b).set([splitX, amp], 1);

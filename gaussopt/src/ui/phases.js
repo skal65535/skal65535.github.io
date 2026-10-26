@@ -1,15 +1,22 @@
-// phases.js — The phases of a project (Project · Video · Keyframes · Cameras · Train · Export) and
+// phases.js — The phases of a project (Project · Video · Keyframes · Cameras · Train · Export; a photo
+// set: Project · Photos · Cameras · Train · Export) and
 // their states, derived from what is loaded and running, never stored: the stepper of shell.js
 // shows them. DOM-free (tests/phases_test.js).
 "use strict";
 
 export const PHASES = ['project', 'video', 'keyframes', 'cameras', 'train', 'export'];
-export const PHASE_LABELS = { project: 'Project', video: 'Video', keyframes: 'Keyframes', cameras: 'Cameras', train: 'Train', export: 'Export' };
+const PHASE_LABELS = { project: 'Project', video: 'Video', keyframes: 'Keyframes', cameras: 'Cameras', train: 'Train', export: 'Export' };
+
+// A photo set (DESIGN-sfm §13.3 P5): one Photos phase in place of Video and Keyframes (the photos are
+// the keyframes); the stepper hides Keyframes
+export const phaseLabel = (phase, { photos = false } = {}) => (photos && phase === 'video' ? 'Photos' : PHASE_LABELS[phase]);
+export const phaseShown = (phase, { photos = false } = {}) => !(photos && phase === 'keyframes');
 export const STATE_ICONS = { todo: '○', running: '●', done: '✓', stale: '⟳', skipped: '⤼' };
 
 // s: {
 //   label:   what is loaded, for the Project step ('' when nothing)
-//   video:   { name, projectOnly } | null      the open video, or the one a .gosfm was made from
+//   video:   { name, projectOnly, photos? } | null  the open video, or the one a .gosfm was made from; photos:
+//            the number of photos of an open photo set
 //   sfm:     { running: 'keyframes' | 'cameras' | null, busy, keyframes: n | null,
 //              quality: { keyframes, registered, problems, version } | null, sentVersion: n | null } | null
 //   colmap:  { cams, fromSfm } | null           the trainer's cameras
@@ -22,10 +29,12 @@ export function phaseStates(s) {
   const out = {};
   out.project = (s.label || s.video || s.colmap) ? { state: 'done', summary: s.label } : { state: 'todo', summary: '' };
 
-  if (s.video) out.video = { state: 'done', summary: s.video.projectOnly ? `${s.video.name} (not open)` : s.video.name };
+  if (s.video?.photos) out.video = { state: 'done', summary: `${s.video.photos} photos` };
+  else if (s.video) out.video = { state: 'done', summary: s.video.projectOnly ? `${s.video.name} (not open)` : s.video.name };
   else out.video = external ? { state: 'skipped', summary: 'COLMAP input' } : { state: 'todo', summary: '' };
 
-  if (sfm?.running === 'keyframes') out.keyframes = { state: 'running', summary: '' };
+  if (s.video?.photos) out.keyframes = { state: 'skipped', summary: '' };  // the photos are the keyframes
+  else if (sfm?.running === 'keyframes') out.keyframes = { state: 'running', summary: '' };
   else if (sfm?.keyframes) out.keyframes = { state: 'done', summary: `${sfm.keyframes}` };
   else out.keyframes = external ? { state: 'skipped', summary: '' } : { state: 'todo', summary: '' };
 

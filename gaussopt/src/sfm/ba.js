@@ -2,9 +2,10 @@
 // (DESIGN-sfm D2, JS f64 reference backend). Sized for windows (tens of cameras, ~1e5 points):
 // the reduced camera system is dense and solved by Cholesky.
 //
-// Parameters: free camera poses (camera-frame update q' = exp(dw) q + dt: 6 each), shared
-// intrinsics (any of 'f', 'k1', 'k2'; fy keeps its ratio to fx, principal point and tangential
-// terms stay fixed), and all observed points (3 each). Fixed poses still constrain the points.
+// Parameters: free camera poses (camera-frame update q' = exp(dw) q + dt: 6 each), the intrinsics
+// of each camera model shared by its poses (any of 'f', 'k1', 'k2'; fy keeps its ratio to fx,
+// principal point and tangential terms stay fixed; a model per lens and zoom, DESIGN-sfm §13 P8),
+// and all observed points (3 each). Fixed poses still constrain the points.
 "use strict";
 
 import { expSO3, mul3, mulVec3, choleskySolve } from './linalg.js';
@@ -66,26 +67,27 @@ export function linearizeObservation(camera, pose, X, uv) {
   return { r, Jpose, Jpoint, Jintr: Array.from(tmp.dk) };
 }
 
-const robust = {
-  // [rho(s), rho'(s)] for squared residual s and scale d
-  huber: (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / Math.sqrt(s)]),
-  cauchy: (s, d) => [d * d * Math.log1p(s / (d * d)), 1 / (1 + s / (d * d))],
-  none: (s) => [s, 1],
-};
+// Huber loss: [rho(s), rho'(s)] for squared residual s and scale d
+const rho = (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / Math.sqrt(s)]);
 
 // problem: {
-//   camera: { model, width, height, params },  replaced when intrinsics are refined
+//   camera: { model, width, height, params },  one camera model for every pose, or
+//   cameras: [camera] and poseCam: Int32Array (the model of each pose); refined ones are replaced
 //   poses: [{ R, t }] (free ones replaced), free: Uint8Array per pose
 //   points: Float64Array(3 n) (updated in place),
 //   obsCam: Int32Array, obsPoint: Int32Array, obsUV: Float64Array(2 m)
 // }
-// opts: { refine: ['f', 'k1'], loss: 'huber', lossScale: 2 (px), maxIterations: 30, fixPoints: false }; stops
-// when an accepted step lowers the cost by less than 1e-7 (relative)
+// opts: { refine: ['f', 'k1'], refineCameras: [bool] per camera model (default: all of them),
+// lossScale: 2 (px, of the Huber loss), maxIterations: 30, fixPoints: false }; stops when an accepted step lowers the cost by
+// less than 1e-7 (relative)
 // Returns { initialCost, cost, iterations, rmse (px, of the non-robust residuals) }.
 export function bundleAdjust(problem, opts = {}) {
-  const { refine = [], loss = 'huber', lossScale = 2, maxIterations = 30, fixPoints = false } = opts;
+  const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false } = opts;
   const { poses, free, points, obsCam, obsPoint, obsUV } = problem;
-  const model = problem.camera.model;
+  const single = !problem.cameras, poseCam = problem.poseCam ?? new Int32Array(poses.length);
+  let cams = single ? [problem.camera] : [...problem.cameras];
+  const model = cams[0].model;
+  if (cams.some(c => c.model !== model)) throw new Error('bundleAdjust: the camera models must be of one type');
   const slot = (name) => (name === 'f' ? Math.max(paramIndex(model, 'f'), paramIndex(model, 'fx')) : paramIndex(model, name));
   const kIdx = INTRINSICS.map((name, k) => [name, k]).filter(([name]) => refine.includes(name) && slot(name) >= 0).map(([, k]) => k);
   const ni = kIdx.length;
@@ -93,8 +95,12 @@ export function bundleAdjust(problem, opts = {}) {
   const camBlock = new Int32Array(poses.length).fill(-1);
   let nc = 0;
   for (let c = 0; c < poses.length; c++) if (free[c]) camBlock[c] = nc++;
-  const m = 6 * nc + ni, iOff = 6 * nc;  // reduced system: free poses, then intrinsics
-  const rho = robust[loss];
+  // the intrinsics blocks: one per refined camera model that some pose of the problem uses
+  const used = new Set(poseCam), intrBlock = new Int32Array(cams.length).fill(-1);
+  let nm = 0;
+  if (ni) cams.forEach((_, k) => { if (used.has(k) && (!refineCameras || refineCameras[k])) intrBlock[k] = nm++; });
+  const m = 6 * nc + ni * nm, iOff = 6 * nc;  // reduced system: free poses, then intrinsics per model
+  const camOfObs = (o) => cams[poseCam[obsCam[o]]], intrOfObs = (o) => intrBlock[poseCam[obsCam[o]]];
 
   // Observations of each point
   const ptStart = new Int32Array(numPoints + 1);
@@ -109,11 +115,11 @@ export function bundleAdjust(problem, opts = {}) {
   const tmp = scratch();
   const pointOf = (X, p) => [X[3 * p], X[3 * p + 1], X[3 * p + 2]];
 
-  const evalCost = (cam, P, X) => {
+  const evalCost = (C, P, X) => {
     let cost = 0, sq = 0, n = 0;
     const r = [0, 0], junk = new Float64Array(18);  // Jacobians are not needed here
     for (let o = 0; o < numObs; o++) {
-      if (!linearize(cam, P[obsCam[o]], pointOf(X, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1], tmp, r, 0, junk, 0, junk, 12)) {
+      if (!linearize(C[poseCam[obsCam[o]]], P[obsCam[o]], pointOf(X, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1], tmp, r, 0, junk, 0, junk, 12)) {
         cost += rho(1e6, lossScale)[0];  // behind the camera: large constant penalty
         continue;
       }
@@ -125,7 +131,7 @@ export function bundleAdjust(problem, opts = {}) {
 
   const linearizeAll = () => {
     for (let o = 0; o < numObs; o++) {
-      if (!linearize(problem.camera, poses[obsCam[o]], pointOf(points, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1],
+      if (!linearize(camOfObs(o), poses[obsCam[o]], pointOf(points, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1],
                      tmp, res, 2 * o, Jc, 12 * o, Jp, 6 * o)) { wgt[o] = 0; continue; }
       wgt[o] = rho(res[2 * o] ** 2 + res[2 * o + 1] ** 2, lossScale)[1];
       for (let k = 0; k < ni; k++) { Ji[2 * ni * o + k] = tmp.dk[kIdx[k]]; Ji[2 * ni * o + ni + k] = tmp.dk[3 + kIdx[k]]; }
@@ -136,7 +142,7 @@ export function bundleAdjust(problem, opts = {}) {
   const blocksOf = (o) => {
     const out = [];
     if (camBlock[obsCam[o]] >= 0) out.push([6 * camBlock[obsCam[o]], 6, Jc, 12 * o]);
-    if (ni) out.push([iOff, ni, Ji, 2 * ni * o]);
+    if (ni && intrOfObs(o) >= 0) out.push([iOff + ni * intrOfObs(o), ni, Ji, 2 * ni * o]);
     return out;
   };
 
@@ -215,16 +221,19 @@ export function bundleAdjust(problem, opts = {}) {
       return { R: mul3(dR, pose.R), t: [t[0] + d[3], t[1] + d[4], t[2] + d[5]] };
     });
     const X = Float64Array.from(points, (x, i) => x + dPts[i]);
-    let cam = problem.camera;
-    kIdx.forEach((k, j) => {
-      const step = dCam[iOff + j];
-      if (k === 0) cam = withFocal(cam, cam.params[0] + step);
-      else { const params = [...cam.params]; params[slot(INTRINSICS[k])] += step; cam = { ...cam, params }; }
+    const C = cams.map((cam, c) => {
+      if (intrBlock[c] < 0) return cam;
+      kIdx.forEach((k, j) => {
+        const step = dCam[iOff + ni * intrBlock[c] + j];
+        if (k === 0) cam = withFocal(cam, cam.params[0] + step);
+        else { const params = [...cam.params]; params[slot(INTRINSICS[k])] += step; cam = { ...cam, params }; }
+      });
+      return cam;
     });
-    return { P, X, cam };
+    return { P, X, C };
   };
 
-  let { cost, rmse } = evalCost(problem.camera, poses, points);
+  let { cost, rmse } = evalCost(cams, poses, points);
   const initialCost = cost;
   let lambda = 1e-4, it = 0;
   for (; it < maxIterations; it++) {
@@ -234,12 +243,14 @@ export function bundleAdjust(problem, opts = {}) {
       const step = solve(lambda);
       if (!step) { lambda *= 10; continue; }
       const cand = apply(step);
-      const e = evalCost(cand.cam, cand.P, cand.X);
+      const e = evalCost(cand.C, cand.P, cand.X);
       if (e.cost >= cost) { lambda *= 5; continue; }
       converged = (cost - e.cost) / Math.max(cost, 1e-300) < 1e-7;
       cand.P.forEach((p, c) => { poses[c] = p; });
       points.set(cand.X);
-      problem.camera = cand.cam;
+      cams = cand.C;
+      if (single) problem.camera = cams[0];
+      else problem.cameras = cams;
       cost = e.cost; rmse = e.rmse;
       lambda = Math.max(1e-10, lambda / 3);
       accepted = true;
@@ -263,11 +274,12 @@ function invert3(A, out) {
 
 // Reprojection error (px) of every observation of a problem, without optimizing
 export function reprojectionErrors(problem) {
-  const { camera, poses, points, obsCam, obsPoint, obsUV } = problem;
+  const { poses, points, obsCam, obsPoint, obsUV } = problem;
+  const cams = problem.cameras ?? [problem.camera], poseCam = problem.poseCam ?? new Int32Array(poses.length);
   const out = new Float64Array(obsCam.length), tmp = scratch(), r = [0, 0], junk = new Float64Array(18);
   for (let o = 0; o < obsCam.length; o++) {
     const p = obsPoint[o];
-    out[o] = linearize(camera, poses[obsCam[o]], [points[3 * p], points[3 * p + 1], points[3 * p + 2]],
+    out[o] = linearize(cams[poseCam[obsCam[o]]], poses[obsCam[o]], [points[3 * p], points[3 * p + 1], points[3 * p + 2]],
                        obsUV[2 * o], obsUV[2 * o + 1], tmp, r, 0, junk, 0, junk, 12) ? Math.hypot(r[0], r[1]) : Infinity;
   }
   return out;

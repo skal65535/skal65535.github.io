@@ -8,7 +8,7 @@
 import { svd } from './linalg.js';
 import { essentialFromFundamental } from './geometry.js';
 
-export function focalCost(F, f, cx, cy) {
+function focalCost(F, f, cx, cy) {
   const E = essentialFromFundamental(F, [f, f, cx, cy]);
   const { S } = svd(Float64Array.from(E), 3, 3);
   return (S[0] - S[1]) / (S[0] + S[1] || 1);

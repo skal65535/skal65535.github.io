@@ -13,21 +13,22 @@ import { triangulationAngle } from './geometry.js';
 // mapper: SequentialMapper after reconstruct(); segment: id to export (default: the largest).
 // pinhole: false keeps the SfM camera (e.g. OPENCV) and the keypoints' pixels as detected, the
 // model of the distorted keyframes (a project's sparse/0, for COLMAP's own tools); the same points.
-// Returns { camera (PINHOLE, or the SfM camera), distorted (the SfM camera),
-//           images: [{ id, name, R, t, points2D: [x, y, pid] }], points: [{ id, X, rgb, error, track: [[imageId, point2DIdx]] }] }
+// A camera per lens (DESIGN-sfm §13 P8): image k uses camera cameraId (1-based), in `cameras`.
+// Returns { camera, distorted (camera 1's, as below), cameras (PINHOLE, or the SfM cameras),
+//           distortedCameras (the SfM cameras), images: [{ id, name, cameraId, R, t, points2D: [x, y, pid] }],
+//           points: [{ id, X, rgb, error, track: [[imageId, point2DIdx]] }] }
 export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, minObs = 3, minAngleDeg = 1.5, pinhole = true } = {}) {
-  const counts = new Map();
-  for (let k = 0; k < mapper.n; k++) if (mapper.poses[k]) counts.set(mapper.segment[k], (counts.get(mapper.segment[k]) ?? 0) + 1);
-  const seg = segment ?? [...counts].sort((a, b) => b[1] - a[1])[0][0];
-  const cam = mapper.camera;
-  const [fx, fy, cx, cy] = intrinsics(cam);
-  const camera = pinhole ? { model: 'PINHOLE', width: cam.width, height: cam.height, params: [fx, fy, cx, cy] }
-                         : { ...cam, params: [...cam.params] };
+  const seg = segment ?? mapper.largestSegment();
+  const sfmCams = mapper.cameras ?? [mapper.camera], camOf = (k) => mapper.camOf?.[k] ?? 0;
+  const cameras = sfmCams.map(cam => {
+    const [fx, fy, cx, cy] = intrinsics(cam);
+    return pinhole ? { model: 'PINHOLE', width: cam.width, height: cam.height, params: [fx, fy, cx, cy] } : { ...cam, params: [...cam.params] };
+  });
 
   const frames = [];
   for (let k = 0; k < mapper.n; k++) if (mapper.poses[k] && mapper.segment[k] === seg) frames.push(k);
   const imageId = new Map(frames.map((k, i) => [k, i + 1]));
-  const images = frames.map(k => ({ id: imageId.get(k), name: mapper.images[k].name, R: mapper.poses[k].R, t: mapper.poses[k].t, points2D: [] }));
+  const images = frames.map(k => ({ id: imageId.get(k), name: mapper.images[k].name, cameraId: camOf(k) + 1, R: mapper.poses[k].R, t: mapper.poses[k].t, points2D: [] }));
   const centers = new Map(frames.map(k => [k, poseCenter(mapper.poses[k])]));
   const minAngle = minAngleDeg * Math.PI / 180;
   const points = [];
@@ -36,6 +37,7 @@ export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, min
     const obs = [];
     for (const [img, kp] of P.obs) {
       if (!imageId.has(img)) return;  // points of this segment only
+      const cam = sfmCams[camOf(img)];
       const [u, v] = mapper.pixel(img, kp), [pu, pv, z] = project(cam, mapper.poses[img], P.X);
       const err = z > 0 ? Math.hypot(pu - u, pv - v) : Infinity;
       if (err <= maxReprojPx) obs.push({ img, u, v, err });
@@ -46,12 +48,14 @@ export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, min
       const im = images[imageId.get(img) - 1];
       track.push([im.id, im.points2D.length]);
       if (!pinhole) { im.points2D.push([u, v, id]); continue; }
+      const cam = sfmCams[camOf(img)], [fx, fy, cx, cy] = intrinsics(cam);
       const [x, y] = normalizedFromImage(cam, u, v);
       im.points2D.push([fx * x + cx, fy * y + cy, id]);
     }
     points.push({ id, X: P.X, rgb: [128, 128, 128], error: obs.reduce((s, o) => s + o.err, 0) / obs.length, track });
   });
-  return { segment: seg, camera, distorted: { ...cam, params: [...cam.params] }, images, points };
+  const distortedCameras = sfmCams.map(c => ({ ...c, params: [...c.params] }));
+  return { segment: seg, camera: cameras[0], distorted: distortedCameras[0], cameras, distortedCameras, images, points };
 }
 
 // Some two of the camera centers see X at least minAngle apart
@@ -60,18 +64,21 @@ function wideEnough(centers, X, minAngle) {
   return false;
 }
 
-// COLMAP binary files (little endian) for a dataset of datasetFromMapper's shape
-export function writeColmapModel({ camera, images, points }) {
+// COLMAP binary files (little endian) for a dataset of datasetFromMapper's shape (cameras: one or more)
+export function writeColmapModel({ camera, cameras: list = [camera], images, points }) {
   const enc = new TextEncoder();
   const cameras = new Writer();
-  cameras.u64(1).i32(1).i32(CAMERA_MODELS[camera.model][0]).u64(camera.width).u64(camera.height);
-  for (const p of camera.params) cameras.f64(p);
+  cameras.u64(list.length);
+  list.forEach((c, k) => {
+    cameras.i32(k + 1).i32(CAMERA_MODELS[c.model][0]).u64(c.width).u64(c.height);
+    for (const p of c.params) cameras.f64(p);
+  });
 
   const ims = new Writer();
   ims.u64(images.length);
   for (const im of images) {
     const [qw, qx, qy, qz] = mat3ToQuat(im.R);
-    ims.i32(im.id).f64(qw).f64(qx).f64(qy).f64(qz).f64(im.t[0]).f64(im.t[1]).f64(im.t[2]).i32(1);
+    ims.i32(im.id).f64(qw).f64(qx).f64(qy).f64(qz).f64(im.t[0]).f64(im.t[1]).f64(im.t[2]).i32(im.cameraId ?? 1);
     ims.bytes(enc.encode(im.name)).u8(0).u64(im.points2D.length);
     for (const [x, y, pid] of im.points2D) ims.f64(x).f64(y).i64(pid);
   }

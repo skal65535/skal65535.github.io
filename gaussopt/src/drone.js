@@ -12,7 +12,7 @@
 // and linear drag gives a terminal speed. All distances scale with the scene radius.
 "use strict";
 
-import { clamp, wrapPi, approach, dot, cross, sub, madd, normalize, rotate, orbitBasis, viewFromAxes } from './math.js';
+import { clamp, wrapPi, approach, dot, cross, sub, madd, scale, normalize, rotate, orbitBasis, viewFromAxes } from './math.js';
 
 const DEG = Math.PI / 180;
 const GIMBAL_MIN = -30 * DEG, GIMBAL_MAX = 85 * DEG;  // camera tilt range (radians, > 0 = down)
@@ -54,7 +54,7 @@ export class Drone {
   // World-space body axes: forward f, right r, down d (OpenCV camera axes, as buildOrbitViewMatrix)
   _axes(extraPitch = 0) {
     const { U, e1, e2 } = orbitBasis(this.up);
-    let f = madd(madd([0, 0, 0], e1, Math.cos(this.yaw)), e2, Math.sin(this.yaw));
+    let f = madd(scale(e1, Math.cos(this.yaw)), e2, Math.sin(this.yaw));
     let r = normalize(cross(f, U));
     f = rotate(f, r, -(this.pitch + extraPitch));  // nose down around the right axis
     r = rotate(r, f, this.roll);                   // right wing down
@@ -114,7 +114,7 @@ export class Drone {
     const thrust = g * (1 + 0.8 * this.throttle) / cosTilt;
     const vUp = dot(this.vel, U);
     const vH = madd(this.vel, U, -vUp);
-    let acc = madd([0, 0, 0], bodyUp, thrust);
+    let acc = scale(bodyUp, thrust);
     acc = madd(acc, U, -g);
     acc = madd(acc, vH, -(drag + extraDrag));
     acc = madd(acc, U, -(2.5 + extraDrag) * vUp);

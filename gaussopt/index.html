@@ -16,7 +16,7 @@
   <header id="go-header">
     <a id="skal-back" href="https://skal65535.github.io/">‹ Home</a>
     <h2>Gauss-Opt</h2>
-    <span class="go-sub">3D Gaussian Splatting in the browser: video → keyframes → cameras → training</span>
+    <span class="go-sub">3D Gaussian Splatting in the browser: video or photos → cameras → training</span>
     <span id="project-label" title="what is loaded"></span>
     <button id="BtnHelp" title="keys &amp; mouse (H)">?</button>
   </header>
@@ -25,7 +25,7 @@
 
   <form style="display:none">
     <input type="file" id="FolderElmt" webkitdirectory directory multiple>
-    <input type="file" id="PlyElmt" accept=".ply,.splat,.json,.gosnap">
+    <input type="file" id="PlyElmt" accept=".ply,.splat,.json,.gosnap,.glb">
   </form>
 
   <div id="go-view">
@@ -90,17 +90,30 @@
     <div id="phase-head"><span id="phase-title"></span><span id="phase-summary"></span></div>
     <div id="phase-body">
       <section data-phase="project">
-        <p class="hint">Start from a <b>video</b>, or open a COLMAP <b>gs/</b> folder (sparse/ + images/) or a
-          checkpoint. Files can also be dropped on the page.</p>
+        <p class="hint">Start from a <b>video</b> or a set of <b>photos</b> (JPEG), or open a COLMAP <b>gs/</b> folder
+          (sparse/ + images/) or a checkpoint. Files can also be dropped on the page.</p>
+        <details class="shoot-guide">
+          <summary>How to shoot a photo set</summary>
+          <ul>
+            <li><b>Walk, don't pivot:</b> take each photo from a new spot. Photos turning from one spot give no depth.</li>
+            <li><b>Small steps:</b> from one photo to the next, turn at most 30° and move at most half the distance to
+              the subject. Around an object, that is 12 photos per full turn.</li>
+            <li><b>Overlap:</b> every part of the scene in 3 photos or more: the more photos see a part, the better it
+              looks from in between.</li>
+            <li><b>Lenses and zoom can be mixed</b> (a camera model each), and so can portrait and landscape; a lens with
+              fewer than 5 photos is not calibrated on its own.</li>
+            <li><b>Something to match:</b> avoid photos of only a plain wall, a window or the sky.</li>
+          </ul>
+        </details>
         <div class="actions">
-          <button class="button" id="BtnVideo" title="video file -> keyframes -> cameras, in the browser (no COLMAP)">Open video…</button>
+          <button class="button" id="BtnVideo" title="video file or photos -> keyframes -> cameras, in the browser (no COLMAP)">Open video or photos…</button>
           <label class="button" for="FolderElmt" title="COLMAP gs/ folder: sparse/ + images/">Open gs/ folder…</label>
-          <label class="button" for="PlyElmt" title=".ply / .splat / .gosnap checkpoint, or .octree.json for the current splats">Open checkpoint…</label>
+          <label class="button" for="PlyElmt" title=".ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
         </div>
         <div class="gui-host" id="project-folder"></div>
         <div class="gui-host" id="project-gui"></div>
       </section>
-      <section data-phase="video"><p class="hint">Open a video (Project, or drop it on the page).</p></section>
+      <section data-phase="video"><p class="hint">Open a video or photos (Project, or drop them on the page).</p></section>
       <section data-phase="keyframes"><p class="hint">Open a video first.</p></section>
       <section data-phase="cameras"><p class="hint">Open a video first.</p></section>
       <section data-phase="train">
@@ -114,6 +127,7 @@
         <div class="actions">
           <button class="button" id="BtnExportPly" title="the splats as a standard 3DGS .ply, with the octree appended (other viewers ignore it)">Save .ply (+ octree)</button>
           <button class="button" id="BtnExportOctree" title="the octree of the current splats as a .octree.json sidecar">Save .octree</button>
+          <button class="button" id="BtnExportMesh" title="a triangle mesh (.glb) from the rendered depth of every camera, simplified, textured from the photos (Visualization > mesh texture; off: vertex colors); also shown in the 3D view (Visualization > mesh; DESIGN §9 E5)">Save mesh</button>
           <button class="button" id="BtnSnapshot" title="full training state (splats + Adam + moments + octree), resumable">Save snapshot</button>
         </div>
         <div class="gui-host" id="export-sfm"></div>

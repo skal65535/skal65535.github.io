@@ -36,7 +36,7 @@ console.log(`features: ${feats.length} frames, ${Math.round(feats.reduce((s, f) 
 
 const t1 = performance.now();
 const { mapper, model, stats, input, matched } = await reconstructFromFeatures(feats, size[0], size[1], matcher,
-  { maxFeatures, window, loops: !noLoops, log: (s) => console.log(s) });
+  { window, loops: !noLoops, log: (s) => console.log(s) });
 console.log(`  (${formatTimings(stats.timings)}, ${seconds(t1)} after the features)`);
 if (loopRef) {
   const meta = JSON.parse(await Deno.readTextFile(`${loopRef}/dump.json`));

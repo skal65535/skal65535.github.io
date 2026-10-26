@@ -5,7 +5,7 @@
 "use strict";
 
 import { SPLAT_FLOATS, rgbToSh0 } from './colmap.js';
-import { clamp, logit, sigmoid, randn, quatToMat3, mat3ToQuat, symEigen3, projectPinhole } from './math.js';
+import { clamp, logit, sigmoid, quatToMat3, mat3ToQuat, symEigen3, projectPinhole } from './math.js';
 
 // LooseOctree constructor defaults (also for a .ply / JSON octree that doesn't record them)
 export const OCTREE_DEFAULTS = { maxLeafSize: 256, maxDepth: 10, beta: 0.20 };
@@ -538,6 +538,9 @@ export class LooseOctree {
     const ids = this._leafIds, depths = this._leafDepths, indexMap = this.leafIndices;
     let writePos = 0;
     for (const leaf of visibleLeaves) {
+      // a leaf over maxLeafSize (maxDepth reached: a few far splats can make the root huge) gets a sort in
+      // O(k log k), the insertion sort being O(k^2) (the gallery's jardin7-latest, a leaf of 82k: 39 ms a frame, 6 after)
+      const big = leaf.count > this.maxLeafSize;
       let valid = 0;
       for (let k = leaf.start, end = leaf.start + leaf.count; k < end; k++) {
         const idx = indexMap ? indexMap[k] : k;
@@ -547,11 +550,16 @@ export class LooseOctree {
         // stable insertion sort of the f32 depth into ids/depths[0..valid]
         const z = Math.fround(zv);
         let j = valid++;
-        for (; j > 0 && depths[j - 1] > z; j--) { ids[j] = ids[j - 1]; depths[j] = depths[j - 1]; }
+        if (!big) for (; j > 0 && depths[j - 1] > z; j--) { ids[j] = ids[j - 1]; depths[j] = depths[j - 1]; }
         ids[j] = idx;
         depths[j] = z;
       }
-      for (let k = 0; k < valid; k++) outIdx[writePos++] = ids[k];
+      if (big) {  // stable too: ties in file order
+        const order = Uint32Array.from({ length: valid }, (_, k) => k).sort((a, b) => depths[a] - depths[b] || a - b);
+        for (let k = 0; k < valid; k++) outIdx[writePos++] = ids[order[k]];
+      } else {
+        for (let k = 0; k < valid; k++) outIdx[writePos++] = ids[k];
+      }
     }
     return writePos;
   }
@@ -599,21 +607,40 @@ export class LooseOctree {
       hysteresis     = 0.35,
       enableFloaters = true,
       floaterDepth   = 'observed',  // nearCameraCone's depth
+      floaterSpare   = null,        // nearCameraCone's spare: { positions, count, radius } (the SfM points)
+      splitMinViews  = 0,           // > 0: no split / clone of a splat seen from fewer views (N_eff / visitsPerView)
+      visitsPerView  = 1,           // steps per training view since the moments were zeroed: N_eff = W^2 / S counts
+                                    // view visits (S grows each step), so a photo set's one view counts K / n times
+      splitMinErr    = 0,           // > 0: no split / clone of a splat whose mean error under its footprint, R / W, is below (E9)
+      growRate       = 0,           // > 0: at most this share of `count` new splats, the highest R first (E9)
+      splitInPlane   = false,       // split / clone offsets off the splat's thinnest axis (E9)
+      growScore      = null,        // Float32Array(count): splits / clones go by this score > growThreshold instead of
+      growThreshold  = 0,           // R > Tu (E9's grow_by 'grad': the mean positional gradient per view, as brush)
+      splitMode      = 'error',     // 'error': along the error moments (splitSplat); 'shape': within the splat (splitByShape)
       enableSplit    = true,
       enableMerge    = true,
       optMethod      = 'adam',  // 'adam' | 'monte_carlo' | 'sim_anneal'
+      relocateBy     = 'opacity',  // monte_carlo: the live splats the dead ones move onto, drawn ~ 'opacity' or 'error' (R)
+      relocateMode   = 'copy',  // ... as copies in place (3DGS-MCMC) or 'shape': split within their shape (brush, relocate)
       saTemp         = 0.15,    // current SA temperature T(t)
       seedSplats     = null,    // Float32Array of splats to append (stipple seeding)
+      repairMask     = null,    // Uint8Array(count), 1: in a stuck region (regions.js RegionTracker, E7): its splits
+      repairBoost    = 0,       // need R > Tu / (1 + repairBoost), and monte_carlo relocates onto it (1 + repairBoost) as often
+      keepScore      = null,    // Float32Array(count): over maxSplats (the cap lease's consolidation, trainer.js
+                                // splatBudget), the rows of the lowest scores go (default: the window's W)
+      bounds         = null,    // { center, halfSize }: a center out of this cube is dead, as a transparent splat
+                                // (monte_carlo: its noise has no bound, trainer.js sceneBox)
     } = opts;
     const err = errorStats(moments, count, hysteresis);
+    const growCut = growRate > 0 ? growthCut(moments, count, growScore ?? err.Tu, growThreshold, splitMinErr, Math.ceil(growRate * count)) : 0;
+    // stipple seeds come before splits: the room they need is kept free (at the cap, the room the prunes free)
+    const nSeeds = seedSplats ? seedSplats.length / SPLAT_FLOATS : 0;
     const out = new KeptSplats(params, count);
-    const stats = { split: 0, cloned: 0, pruned: 0, floaters: 0, merged: 0, teleported: 0, seeded: 0 };
-    const teleport = () => {
-      if (optMethod !== 'monte_carlo' || !mcmcTeleport(out, err, pruneOpacity)) return false;
-      stats.teleported++;
-      return true;
-    };
-    const nearCamera = nearCameraCone(images, { depth: floaterDepth });
+    const stats = { split: 0, cloned: 0, pruned: 0, floaters: 0, floaterRules: [0, 0, 0], merged: 0, teleported: 0, seeded: 0 };
+    // monte_carlo: the dead splats (pruned, floaters) are not dropped but moved onto live ones, after the pass
+    let dead = 0;
+    const teleport = () => optMethod === 'monte_carlo' && ++dead > 0;
+    const nearCamera = nearCameraCone(images, { depth: floaterDepth, spare: floaterSpare });
 
     for (let i = 0; i < count; i++) {
       const b = i * SPLAT_FLOATS, m = i * MOMENT_FLOATS;
@@ -622,34 +649,58 @@ export class LooseOctree {
       const leaf = this.leaves[clamp(params[b + 7] | 0, 0, this.leaves.length - 1)];
       const W = moments[m], S = moments[m + 1], R = moments[m + 2];
 
-      // A. Prune transparent / oversized splats
-      if (alpha < pruneOpacity || maxS > this.sceneRadius * 0.5) {
+      // A. Prune transparent / oversized splats, and those out of `bounds`
+      const away = bounds && Math.max(Math.abs(params[b] - bounds.center[0]), Math.abs(params[b + 1] - bounds.center[1]),
+                                      Math.abs(params[b + 2] - bounds.center[2])) > bounds.halfSize;
+      if (alpha < pruneOpacity || maxS > this.sceneRadius * 0.5 || away) {
         if (!teleport()) stats.pruned++;
         continue;
       }
       // B. Floaters (removed, or teleported); high-error occluders lose opacity
       if (enableFloaters) {
-        if (isFloater(params, b, alpha, leaf, W, S, R, nearCamera)) {
+        const rule = isFloater(params, b, alpha, leaf, W, S, R, nearCamera);
+        if (rule) {
+          stats.floaterRules[rule - 1]++;
           if (!teleport()) stats.floaters++;
           continue;
         }
         if (W > 1.0 && (R / W) > 0.22 && alpha > 0.15) params[b + 3] = logit(alpha * 0.65);
       }
       // C. Split when R > Tu (sim_anneal: also Tl < R <= Tu, with Boltzmann probability).
-      let shouldSplit = (R > err.Tu && err.Tu > 1e-4);
-      if (!shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
+      const Tu = repairMask?.[i] ? err.Tu / (1 + repairBoost) : err.Tu;
+      const G = growScore ? growScore[i] : R;
+      let shouldSplit = growScore ? G > growThreshold : (R > Tu && err.Tu > 1e-4);
+      if (!growScore && !shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
         const boltzmann = Math.exp(-(err.Tu - R) / Math.max(1e-6, saTemp * err.avgR));
         if (Math.random() < boltzmann * 0.35) shouldSplit = true;
       }
-      // budget: splats kept so far + the ones still to visit + this one's extra child
-      if (enableSplit && shouldSplit && out.n + (count - i) + 1 <= maxSplats) {
-        const how = splitSplat(out, i, moments, maxS, this.sceneRadius);
+      if (shouldSplit && splitMinViews > 0 && !(S > 1e-8 && (W * W) / S / visitsPerView >= splitMinViews)) {
+        shouldSplit = false;
+        stats.splitTooFewViews = (stats.splitTooFewViews ?? 0) + 1;
+      }
+      if (shouldSplit && splitMinErr > 0 && !(W > 1e-8 && R / W > splitMinErr)) {
+        shouldSplit = false;
+        stats.splitLowError = (stats.splitLowError ?? 0) + 1;
+      }
+      if (shouldSplit && G < growCut) {
+        shouldSplit = false;
+        stats.splitOverRate = (stats.splitOverRate ?? 0) + 1;
+      }
+      // budget: splats kept so far + the ones still to visit + this one's extra child + the seeds, or the
+      // dead ones relocated (monte_carlo) when there are more of them
+      if (enableSplit && shouldSplit && out.n + (count - i) + 1 + Math.max(nSeeds, dead) <= maxSplats) {
+        const how = splitMode === 'shape' ? splitByShape(out, i) : splitSplat(out, i, moments, maxS, this.sceneRadius, splitInPlane);
         if (how) { stats[how]++; continue; }
       }
       out.add(i, i);
     }
 
+    // monte_carlo: the dead become the seeds first, the others copies of live splats, within the cap
+    const toCopy = Math.max(0, Math.min(dead - nSeeds, maxSplats - out.n - nSeeds));
+    if (toCopy > 0) stats.teleported = relocate(out, toCopy, relocateBy === 'error' ? moments : null, repairMask, repairBoost, relocateMode);
+    stats.pruned += Math.max(0, dead - nSeeds) - stats.teleported;
     if (enableMerge) stats.merged = mergeOverlaps(out);
+    stats.trimmed = trimToCap(out, maxSplats, keepScore ?? moments, keepScore ? 1 : MOMENT_FLOATS);
     const res = compactWithSeeds(out, seedSplats, maxSplats);
     stats.seeded = res.nSeeds;
     this.lastStats = stats;
@@ -660,20 +711,29 @@ export class LooseOctree {
 
 // ── reconcileAndGrow() phases ────────────────────────────────────────────────
 
-// Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds Tu / Tl, and the
-// R-weighted CDF used to pick MCMC teleport parents.
+// growRate's cut: the score of the `room`-th largest among the splats that pass the split's gates (R > Tu, or with
+// a growScore array its score > threshold; R / W > minErr); 0 when fewer pass (no cut)
+function growthCut(moments, count, TuOrScore, threshold, minErr, room) {
+  const rs = [], score = typeof TuOrScore === 'number' ? null : TuOrScore;
+  for (let i = 0; i < count; i++) {
+    const W = moments[i * MOMENT_FLOATS], R = moments[i * MOMENT_FLOATS + 2], G = score ? score[i] : R;
+    if ((score ? G > threshold : R > TuOrScore) && !(minErr > 0 && !(W > 1e-8 && R / W > minErr))) rs.push(G);
+  }
+  if (rs.length <= room) return 0;
+  return Float64Array.from(rs).sort().reverse()[room - 1];
+}
+
+// Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds Tu / Tl
 function errorStats(moments, count, hysteresis) {
-  let totalR = 0, activeCount = 0, cdfSum = 0;
-  const cdfIdx = [], cdfVal = [];
+  let totalR = 0, activeCount = 0;
   for (let i = 0; i < count; i++) {
     const W = moments[i * MOMENT_FLOATS], R = moments[i * MOMENT_FLOATS + 2];
     if (!(W > 1e-3)) continue;
     totalR += R;
     activeCount++;
-    if (R > 0) { cdfSum += R; cdfIdx.push(i); cdfVal.push(cdfSum); }
   }
   const avgR = activeCount > 0 ? totalR / activeCount : 0;
-  return { avgR, Tu: (1 + hysteresis) * avgR, Tl: (1 - hysteresis) * avgR, cdfIdx, cdfVal, cdfSum };
+  return { avgR, Tu: (1 + hysteresis) * avgR, Tl: (1 - hysteresis) * avgR };
 }
 
 // Output splats of the pass, in one growable buffer (a small array per splat cost ~100 ms per
@@ -704,40 +764,76 @@ class KeptSplats {
   row(k) { return this.buf.subarray(k * SPLAT_FLOATS, (k + 1) * SPLAT_FLOATS); }
 }
 
-// monte_carlo: instead of dropping a splat, respawn it as a jittered copy of a parent drawn
-// with probability ~ R; parent and child share the parent's opacity (1 - (1 - a')^2 = a).
-// The parent's opacity changes in `params` (and in its kept copy, if already made).
-function mcmcTeleport(out, { cdfIdx, cdfVal, cdfSum }, pruneOpacity) {
-  if (cdfIdx.length === 0 || cdfSum <= 0) return false;
-  const params = out.params;
-  const u = Math.random() * cdfSum;
-  let lo = 0, hi = cdfVal.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (cdfVal[mid] < u) lo = mid + 1; else hi = mid;
+// monte_carlo (3DGS-MCMC, Kheradmand et al. 2024, §4.2): `n` dead splats moved onto live rows of `out`,
+// drawn with probability ~ their opacity (moments null) or their error mass R (the moments; new rows: 0).
+// A row drawn j times becomes N = j + 1 copies at its place whose opacity and scale keep the look:
+// o' = 1 - (1 - o)^(1/N), s' = s o / sum_{i=1..N} sum_{k=0..i-1} C(i-1, k) (-1)^k o'^(k+1) / sqrt(k+1).
+// The copies differ in their sort order, so their gradients split them. Returns how many moved.
+// mask (by input splat, E7's stuck regions): those rows drawn (1 + boost) times as often.
+// mode 'shape' (brush): each of n distinct rows drawn splits into two halves within its shape (splitRowByShape);
+// a row is drawn again only when there are fewer rows than n.
+export function relocate(out, n, moments = null, mask = null, boost = 0, mode = 'copy') {
+  const rows = [], cdf = [];
+  let acc = 0;
+  for (let k = 0; k < out.n; k++) {
+    let w = moments ? (out.src[k] >= 0 ? moments[out.src[k] * MOMENT_FLOATS + 2] : 0) : sigmoid(out.buf[k * SPLAT_FLOATS + 3]);
+    if (mask && out.src[k] >= 0 && mask[out.src[k]]) w *= 1 + boost;
+    if (!(w > 0)) continue;
+    acc += w; rows.push(k); cdf.push(acc);
   }
-  const p = cdfIdx[lo], pb = p * SPLAT_FLOATS;
-  const alphaP = sigmoid(params[pb + 3]);
-  if (alphaP < pruneOpacity * 2) return false;
-  const opNew = logit(Math.max(0.05, 1.0 - Math.sqrt(Math.max(0.01, 1.0 - alphaP))));
-  params[pb + 3] = opNew;
-  if (out.keptOf[p] >= 0) out.buf[out.keptOf[p] * SPLAT_FLOATS + 3] = opNew;  // parent already copied out
-  const child = out.row(out.add(p, -1));
-  const Rm = quatToMat3([child[8], child[9], child[10], child[11]]);
-  const jx = randn() * Math.exp(child[4]) * 0.5;
-  const jy = randn() * Math.exp(child[5]) * 0.5;
-  const jz = randn() * Math.exp(child[6]) * 0.5;
-  child[0] += Rm[0] * jx + Rm[1] * jy + Rm[2] * jz;  // R * j (Rm is row-major)
-  child[1] += Rm[3] * jx + Rm[4] * jy + Rm[5] * jz;
-  child[2] += Rm[6] * jx + Rm[7] * jy + Rm[8] * jz;
-  return true;
+  if (!(acc > 0)) return 0;
+  const draw = () => {
+    const u = Math.random() * acc;
+    let lo = 0, hi = cdf.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cdf[mid] < u) lo = mid + 1; else hi = mid; }
+    return rows[lo];
+  };
+  if (mode === 'shape') {
+    const picked = new Set();
+    for (let tries = 0; picked.size < Math.min(n, rows.length) && tries < 20 * n; tries++) picked.add(draw());
+    const order = [...picked];
+    for (let j = 0; j < n; j++) splitRowByShape(out, order[j % order.length]);
+    return n;
+  }
+  const picks = new Map();
+  for (let j = 0; j < n; j++) { const k = draw(); picks.set(k, (picks.get(k) ?? 0) + 1); }
+  for (const [k, j] of picks) {
+    const N = j + 1, row = out.row(k), [o, ds] = relocatedOpacityScale(sigmoid(row[3]), N);
+    row[3] = logit(o);
+    for (let c = 4; c < 7; c++) row[c] += Math.log(ds);
+    for (let c = 0; c < j; c++) {
+      if (out.n === out.cap) out._grow(2 * out.cap);
+      const r = out.n++;
+      out.buf.copyWithin(r * SPLAT_FLOATS, k * SPLAT_FLOATS, (k + 1) * SPLAT_FLOATS);
+      out.src[r] = -1;
+    }
+  }
+  return n;
+}
+
+// relocate's opacity and scale factor for one splat of opacity o split into N
+export function relocatedOpacityScale(o, N) {
+  const on = 1 - Math.pow(1 - o, 1 / N);
+  let sum = 0;
+  for (let i = 1; i <= N; i++) {
+    let binom = 1;  // C(i-1, k)
+    for (let k = 0; k < i; k++) {
+      sum += binom * (k % 2 ? -1 : 1) * Math.pow(on, k + 1) / Math.sqrt(k + 1);
+      binom = binom * (i - 1 - k) / (k + 1);
+    }
+  }
+  return [Math.max(on, 1e-4), o / sum];
 }
 
 // Rule 1 of the floater removal: (x, y, z) -> in front of a training camera, closer than 0.65 z(c).
 // depth: 'observed', z = zMin (of the points the camera observed: a camera walking past things,
 // e.g. gare-st-lazare, carves the ones other cameras saw near it, half the SfM points there), or
-// 'view', z = zView (of all the points in its view, colmap.js computeCameraDepthStats)
-export function nearCameraCone(images, { depth = 'observed' } = {}) {
+// 'view', z = zView (of all the points in its view, colmap.js computeCameraDepthStats).
+// spare: { positions, count, radius }: a splat within `radius` of one of these points (the SfM's) is not in
+// any cone. 'observed' counts only the points a camera itself saw: on gare-st-lazare the cameras walking past
+// the suitcase statue saw none of its points and carved it, all 5271 points of it nearer than 4 units being
+// in some camera's cone.
+export function nearCameraCone(images, { depth = 'observed', spare = null } = {}) {
   const trainImgs = images ? images.filter(im => !im.isValidation) : [];
   const uv = [0, 0];
   const near = depth === 'view' ? (im) => im.zView ?? im.zMin : (im) => im.zMin;
@@ -784,24 +880,57 @@ export function nearCameraCone(images, { depth = 'observed' } = {}) {
       grid.get(hk).push(im);
     }
   }
+  const spared = spare && spare.radius > 0 ? nearPoints(spare.positions, spare.count, spare.radius) : () => false;
   return (x, y, z) => {
     const list = grid.get(key(Math.floor(x / cell), Math.floor(y / cell), Math.floor(z / cell)));
-    return !!list && list.some(im => inCone(im, x, y, z));
+    return !!list && list.some(im => inCone(im, x, y, z)) && !spared(x, y, z);
+  };
+}
+
+// (x, y, z) -> whether one of the `count` points (xyz at positions[3 i]) is within r: a hash of cells of side r,
+// the 27 around (x, y, z) tested
+function nearPoints(positions, count, r) {
+  const cells = new Map(), key = (i, j, k) => `${i},${j},${k}`, r2 = r * r;
+  for (let p = 0; p < count; p++) {
+    const k = key(Math.floor(positions[3 * p] / r), Math.floor(positions[3 * p + 1] / r), Math.floor(positions[3 * p + 2] / r));
+    if (!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(p);
+  }
+  return (x, y, z) => {
+    const i = Math.floor(x / r), j = Math.floor(y / r), k = Math.floor(z / r);
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) for (let dk = -1; dk <= 1; dk++) {
+      const list = cells.get(key(i + di, j + dj, k + dk));
+      if (list?.some(p => (positions[3 * p] - x) ** 2 + (positions[3 * p + 1] - y) ** 2 + (positions[3 * p + 2] - z) ** 2 <= r2)) return true;
+    }
+    return false;
   };
 }
 
 // Floaters: near-camera carve; single-view billboards (N_eff = W^2 / S < 1.45) in well-seen
 // cells; faint splats in isolated leaves.
+// The rule that removes the splat: 1 in a camera's near cone, 2 seen from too few directions for
+// its error, 3 faint in an empty leaf; 0 for none
 function isFloater(params, b, alpha, leaf, W, S, R, nearCamera) {
   const nEff = S > 1e-8 ? (W * W) / S : 1.0;
-  return nearCamera(params[b], params[b + 1], params[b + 2]) ||
-         (leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) ||
-         (leaf && leaf.state === 3 && alpha < 0.25);
+  if (nearCamera(params[b], params[b + 1], params[b + 2])) return 1;
+  if (leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) return 2;
+  if (leaf && leaf.state === 3 && alpha < 0.25) return 3;
+  return 0;
+}
+
+// The offset o without its component along splat p's thinnest axis (E9's splitInPlane): the error
+// offsets are taken in each view's image plane, which a surface seen at a grazing angle is far from
+function inSplatPlane(p, o) {
+  const Rm = quatToMat3([p[8], p[9], p[10], p[11]]);  // row-major; axis k = column k
+  const k = p[4] <= p[5] && p[4] <= p[6] ? 0 : p[5] <= p[6] ? 1 : 2;
+  const d = Rm[k] * o[0] + Rm[3 + k] * o[1] + Rm[6 + k] * o[2];
+  return [o[0] - d * Rm[k], o[1] - d * Rm[3 + k], o[2] - d * Rm[6 + k]];
 }
 
 // Split splat i along its error covariance: a large one into two children, a small one keeps
 // itself and clones at the error centroid. Returns 'split' | 'cloned', or null (nothing pushed).
-function splitSplat(out, i, moments, maxS, sceneRadius) {
+// inPlane: the offsets keep off the splat's thinnest axis (inSplatPlane)
+function splitSplat(out, i, moments, maxS, sceneRadius, inPlane = false) {
   const b = i * SPLAT_FLOATS, m = i * MOMENT_FLOATS, params = out.params;
   const x = params[b], y = params[b + 1], z = params[b + 2], R = moments[m + 2];
   // error centroid offset d and covariance E (regularized diagonal)
@@ -833,8 +962,17 @@ function splitSplat(out, i, moments, maxS, sceneRadius) {
   if (maxS > sceneRadius * 0.006) {
     // large: two children +-0.65 errStd along v (kept within 0.65 sigma on each splat
     // axis, so v's component off a flat splat's plane doesn't lift them off it), scales / 1.55
-    const [sx, sy, sz] = clampToSplat(params.subarray(b, b + SPLAT_FLOATS),
-      [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65], 0.65);
+    const p = params.subarray(b, b + SPLAT_FLOATS);
+    let o = [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65];
+    if (inPlane) {
+      const q = inSplatPlane(p, o);
+      // v (nearly) along the thinnest axis: the children apart along the longest axis instead
+      if (Math.hypot(...q) < 0.25 * errStd * 0.65) {
+        const Rm = quatToMat3([p[8], p[9], p[10], p[11]]), k = p[4] >= p[5] && p[4] >= p[6] ? 0 : p[5] >= p[6] ? 1 : 2;
+        o = [Rm[k] * errStd * 0.65, Rm[3 + k] * errStd * 0.65, Rm[6 + k] * errStd * 0.65];
+      } else o = q;
+    }
+    const [sx, sy, sz] = clampToSplat(p, o, 0.65);
     const logShrink = Math.log(1 / 1.55);
     for (const sign of [-1, 1]) {
       const c = out.row(out.add(i, -1));
@@ -848,11 +986,41 @@ function splitSplat(out, i, moments, maxS, sceneRadius) {
     // small: keep the parent, clone at the error centroid (within 1 sigma on each axis)
     out.add(i, i);
     const child = out.row(out.add(i, -1));
-    const [ox, oy, oz] = clampToSplat(child, [dx, dy, dz], 1.0);
+    const [ox, oy, oz] = clampToSplat(child, inPlane ? inSplatPlane(child, [dx, dy, dz]) : [dx, dy, dz], 1.0);
     child[0] = x + ox; child[1] = y + oy; child[2] = z + oz;
     return 'cloned';
   }
   return null;
+}
+
+// Split splat i as brush (v0.3, train.rs refine_splats): the parent and a fresh child at -o / +o, o drawn from the
+// splat's own shape (N(0, 0.5) along each axis x its scale), both scales / sqrt(2), both opacities
+// 1 - sqrt(1 - o) (together they cover what the parent did). Returns 'split'.
+function splitByShape(out, i) {
+  return splitRowByShape(out, out.add(i, i));
+}
+
+// row k of `out` split as splitByShape, the second half a new row (src -1); also monte_carlo's relocation with
+// relocateMode 'shape' (relocate)
+function splitRowByShape(out, k) {
+  if (out.n === out.cap) out._grow(2 * out.cap);
+  const kc = out.n++;
+  out.src[kc] = -1;
+  const p = out.row(k), c = out.row(kc);  // rows after the growth
+  const Rm = quatToMat3([p[8], p[9], p[10], p[11]]);  // row-major; axis k = column k
+  const e = [0, 1, 2].map(a => 0.5 * gaussRand() * Math.exp(p[4 + a]));
+  const o = [0, 1, 2].map(r => Rm[3 * r] * e[0] + Rm[3 * r + 1] * e[1] + Rm[3 * r + 2] * e[2]);
+  const a = 1 - Math.sqrt(1 - sigmoid(p[3]));
+  for (let c = 4; c < 7; c++) p[c] -= 0.5 * Math.LN2;
+  p[3] = logit(Math.max(a, 1e-4));
+  c.set(p);
+  for (let r = 0; r < 3; r++) { c[r] = p[r] + o[r]; p[r] -= o[r]; }
+  out.splitVectors?.push(p[0], p[1], p[2], c[0], c[1], c[2]);
+  return 'split';
+}
+
+function gaussRand() {
+  return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 }
 
 // D. Merge consecutive (same leaf neighborhood) overlapping splats of similar color:
@@ -880,6 +1048,22 @@ function mergeOverlaps(out) {
     }
   }
   return nMerged;
+}
+
+// Over the cap (the count above maxSplats: the lease's consolidation, or max_splats lowered), the rows of the lowest score go (alive = 0).
+// score[src * stride]: the input splat's; new rows of this pass (src -1: children, copies) stay. Returns how many went.
+function trimToCap(out, maxSplats, score, stride) {
+  out.alive ??= new Uint8Array(out.n).fill(1);
+  const rows = [];
+  for (let k = 0; k < out.n; k++) if (out.alive[k] && out.src[k] >= 0) rows.push(k);
+  let alive = 0;
+  for (let k = 0; k < out.n; k++) alive += out.alive[k];
+  const excess = Math.min(rows.length, alive - maxSplats);
+  if (!(excess > 0)) return 0;
+  const key = Float32Array.from(rows, k => score[out.src[k] * stride]);
+  const order = Uint32Array.from(rows.keys()).sort((a, b) => key[a] - key[b]);
+  for (let j = 0; j < excess; j++) out.alive[rows[order[j]]] = 0;
+  return excess;
 }
 
 // E. Compact the kept splats and append stipple seeds within the maxSplats budget.

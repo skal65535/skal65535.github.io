@@ -1,8 +1,7 @@
 // store.js — Where a project folder lives, behind one interface (paths are relative, '/'-separated):
-//   read(path) -> Blob | null, write(path, Blob | ArrayBuffer | string), list(dir) -> [{ name, kind }],
-//   remove(path).
+//   read(path) -> Blob | null, write(path, Blob | ArrayBuffer | string), list(dir) -> [{ name, kind }].
 // DirStore: a folder the user picked (File System Access API, Chrome / Edge).
-// ServerStore: serve.py's /project/<name>/<path> (GET / PUT / DELETE), any browser.
+// ServerStore: serve.py's /project/<name>/<path> (GET / PUT), any browser.
 // MemoryStore: files in memory, the content of a project .zip (zip.js).
 // A store is posted to a worker as describe()'s result and rebuilt there by storeFrom() (a
 // MemoryStore as an empty one, whose files the worker posts back).
@@ -12,7 +11,6 @@ const parts = (path) => path.split('/').filter(Boolean);
 
 export class DirStore {
   constructor(root) {
-    this.kind = 'folder';
     this.root = root;
     this.name = root.name;
   }
@@ -66,21 +64,11 @@ export class DirStore {
     }
   }
 
-  async remove(path) {
-    const p = parts(path);
-    try {
-      await (await this._dir(p.slice(0, -1), false)).removeEntry(p.at(-1), { recursive: true });
-    } catch (e) {
-      if (e.name !== 'NotFoundError') throw e;
-    }
-  }
-
   describe() { return { type: 'dir', root: this.root }; }
 }
 
 export class ServerStore {
   constructor(name, base = '') {
-    this.kind = 'server';
     this.name = name;
     this.base = `${base}/project/${encodeURIComponent(name)}`;
   }
@@ -121,17 +109,11 @@ export class ServerStore {
     return (await r.json()).entries;
   }
 
-  async remove(path) {
-    const r = await fetch(this._url(path), { method: 'DELETE' });
-    if (!r.ok && r.status !== 404) throw new Error(`DELETE ${path}: ${r.status} ${r.statusText}`);
-  }
-
   describe() { return { type: 'server', name: this.name, base: this.base.slice(0, this.base.indexOf('/project/')) }; }
 }
 
 export class MemoryStore {
   constructor(name) {
-    this.kind = 'memory';
     this.name = name;
     this.files = new Map();  // path -> Blob
   }
@@ -141,7 +123,6 @@ export class MemoryStore {
 
   async read(path) { return this.files.get(parts(path).join('/')) ?? null; }
   async write(path, data) { this.files.set(parts(path).join('/'), data instanceof Blob ? data : new Blob([data])); }
-  async remove(path) { this.files.delete(parts(path).join('/')); }
 
   async list(dir = '') {
     const pre = parts(dir).join('/'), out = new Map();

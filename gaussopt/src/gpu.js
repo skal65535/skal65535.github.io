@@ -1,11 +1,11 @@
 // gpu.js — WebGPU compute helpers shared by the trainer, the renderer and the SfM kernels.
 "use strict";
 
-// Bind group `group` of `pipeline`: resources[binding] (an array, or an object for sparse
+// Bind group 0 of `pipeline`: resources[binding] (an array, or an object for sparse
 // bindings), GPUBuffers wrapped as { buffer }
-export function bindGroup(device, pipeline, resources, group = 0) {
+export function bindGroup(device, pipeline, resources) {
   return device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(group),
+    layout: pipeline.getBindGroupLayout(0),
     entries: Object.entries(resources).map(([binding, r]) =>
       ({ binding: Number(binding), resource: (typeof r.mapAsync === 'function') ? { buffer: r } : r })),
   });

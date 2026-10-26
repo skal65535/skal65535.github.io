@@ -14,6 +14,8 @@ import { umeyama } from '../sfm/align.js';
 import { compose, inverse, apply, fromPose, toPose } from '../sfm/sim3.js';
 import { rotationAngle } from '../sfm/linalg.js';
 import { SESSION_DEFAULTS } from '../sfm/defaults.js';
+import { DirStore } from '../project/store.js';
+import { downloadBlob } from './download.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
 const STAGES = { analyze: 'analyzing frames', features: 'keyframes + SIFT', match: 'matching', register: 'mapping: registered',
@@ -97,13 +99,27 @@ function urlOptions() {
   return out;
 }
 
+// The worker's photo filter from the panel's toggles: per label, the values on, when not all of them
+function filterOf(labels, on) {
+  const out = {};
+  for (const [label, values] of Object.entries(labels)) {
+    const kept = values.filter(v => on[`${label}:${v}`] !== false);
+    if (kept.length < values.length) out[label] = kept;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+// A photo of a photo set (JPEG; HEIC is not decoded everywhere, DESIGN-sfm §13.3 P1)
+export const isPhoto = (f) => /^image\/jpeg$/.test(f.type ?? '') || /\.jpe?g$/i.test(f.name ?? '');
+
 export class SfmPanel {
   constructor(app) {
     this.app = app;
     this.o = { ...DEFAULTS, ...known(app.project?.manifest.settings?.sfm), ...urlOptions() };
     this.state = { source: '(no video)', status: 'idle', selection: '(none)', model: '' };
     this.worker = null;
-    this.file = null;           // the open video (null for a .gosfm alone)
+    this.file = null;           // the open video (null for a .gosfm alone, or photos)
+    this.photos = null;         // the open photo set: [File] (DESIGN-sfm §13), null for a video
     this.videoName = null;      // the open video's name, or the one a .gosfm was made from
     this.keyframeCount = null;  // keyframes of the last selection + features (worker 'keyframes')
     this.result = null;     // last { sparse, images, summary } from the worker
@@ -136,9 +152,13 @@ export class SfmPanel {
     };
 
     const vid = host('video');
-    vid.add(s, 'source').name('video').listen().disable();
-    vid.add({ pick: () => this._pickFile() }, 'pick').name('Choose another video…');
+    vid.add(s, 'source').name('source').listen().disable();
+    vid.add({ pick: () => this._pickFile() }, 'pick').name('Choose another video or photos…');
     vid.add(s, 'status').name('status').listen().disable();
+    this.filterFolder = vid.addFolder('Use only… (photo labels)');  // photo sets: _buildPhotoFilter
+    this.filterFolder._host.parentElement.hidden = true;  // the folder (controls.js GuiGroup): shown for photo sets
+    const guide = document.querySelector('#phase-body .shoot-guide');  // index.html, Project phase
+    if (guide) shell.section('video').append(guide.cloneNode(true));
 
     const kf = host('keyframes');
     kf.add(s, 'status').name('status').listen().disable();
@@ -152,6 +172,12 @@ export class SfmPanel {
     cams.add(s, 'status').name('status').listen().disable();
     cams.add(s, 'model').name('training has').listen().disable();
     cams.add(o, 'autoSend').name('train when found');
+    // a photo set: what to shoot next (coverage.js), above the controls
+    this.adviceEl = document.createElement('div');
+    this.adviceEl.className = 'sfm-advice';
+    this.adviceEl.hidden = true;
+    shell.section('cameras').prepend(this.adviceEl);
+    this.addPhotosBtn = cams.add({ add: () => this._pickPhotosToAdd() }, 'add').name('Add photos… (where the advice says)');
     // DESIGN-sfm §6.3
     const fix = cams.addFolder('Repair (selection on the timeline)');
     fix.add(s, 'selection').name('selected').listen().disable();
@@ -197,6 +223,8 @@ export class SfmPanel {
   _enable() {
     const ready = this.ready;
     for (const b of this.repairBtns) b.enable(ready);
+    this.addPhotosBtn.enable(ready && !!this.photos);
+    if (this.addPhotosBtn._row_el) this.addPhotosBtn._row_el.hidden = !this.photos;  // photo sets only
     this.exportBtn.enable(!!this.result && !this.busy && !this.running);
     this.saveBtn.enable(ready);
     this.app.shell.refresh();
@@ -209,9 +237,81 @@ export class SfmPanel {
   _pickFile() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'video/*,.mp4,.mov,.m4v,.gosfm';
-    input.onchange = () => input.files[0] && this.load(input.files[0]);
+    input.accept = 'video/*,.mp4,.mov,.m4v,.gosfm,image/jpeg,.jpg,.jpeg';
+    input.multiple = true;  // several photos: a photo set
+    input.onchange = () => input.files.length > 1 || isPhoto(input.files[0] ?? {}) ? this.load([...input.files]) : input.files[0] && this.load(input.files[0]);
     input.click();
+  }
+
+  // c: { inMain, total, seenBy, advice } of a photo set, null for a video (hidden)
+  _showAdvice(c) {
+    const el = this.adviceEl;
+    el.hidden = !c;
+    if (!c) return;
+    const head = document.createElement('div');
+    head.className = 'sfm-advice-head';
+    head.textContent = `${c.inMain} of ${c.total} photos in one piece; ${(100 * c.seenBy.threePlus).toFixed(0)}% of its points seen by 3+ photos`;
+    const list = document.createElement('ul');
+    for (const a of c.advice.length ? c.advice : ['nothing to add: every photo is linked']) {
+      const li = document.createElement('li');
+      li.textContent = a;
+      list.append(li);
+    }
+    el.replaceChildren(head, list);
+    if (c.advice.length) el.prepend(Object.assign(document.createElement('b'), { textContent: 'To shoot next' }));
+  }
+
+  // The label filters of a photo set (DESIGN-sfm §13.3 P8.5): a toggle per lens, zoom and orientation
+  // the set has; all of a label on = no constraint on it. labels: { lens: [..], zoom: [..], orientation: [..] }
+  _buildPhotoFilter(labels, filter) {
+    const f = this.filterFolder;
+    f.clear();
+    f._host.parentElement.hidden = false;
+    const on = {};
+    for (const [label, values] of Object.entries(labels)) {
+      if (values.length < 2) continue;  // nothing to choose
+      for (const v of values) {
+        const k = `${label}:${v}`;
+        on[k] = !filter?.[label]?.length || filter[label].includes(v);
+        f.add(on, k).name(label === 'zoom' ? `${v}x zoom` : `${v}`).onChange(() => this.setPhotoFilter(filterOf(labels, on)));
+      }
+    }
+    if (!Object.keys(on).length) { f.add({ none: 'one lens, zoom and orientation' }, 'none').name('labels').disable(); return; }
+    f.add({ all: () => this.setPhotoFilter(null) }, 'all').name('All photos');
+    if (this.filterChanges) f.add({ undo: () => this.undo() }, 'undo').name('↶ Undo the last filter change');
+  }
+
+  // filter: { lens?, zoom?, orientation?: [values] } | null (every photo). The map is of other photos
+  // afterwards: Run maps the filtered ones (features of photos already seen are cached)
+  setPhotoFilter(filter) {
+    if (!this.photos || this.running || this.busy) { this._log('photo filter: stop the current work first', 'warn'); return; }
+    this.busy = true;
+    this.filterChanges = (this.filterChanges ?? 0) + 1;
+    this.result = this.quality = null;
+    this.state.status = 'filtering the photos…';
+    this._enable();
+    this.worker.postMessage({ type: 'photoFilter', filter });
+  }
+
+  // Add photos to the open set (DESIGN-sfm §13.3 P4): matched against every photo, registered,
+  // pieces apart regrown; undone like a repair
+  _pickPhotosToAdd() {
+    if (!this.ready || !this.photos) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,.jpg,.jpeg';
+    input.multiple = true;
+    input.onchange = () => { if (input.files.length) this.addPhotos([...input.files]); };
+    input.click();
+  }
+
+  addPhotos(files) {
+    if (!this.ready || !this.photos) return;
+    this.pendingPhotos = files;  // into this.photos once the worker has them (a reopened worker re-plans them all)
+    this.busy = true;
+    this.state.status = `adding ${files.length} photo(s)…`;
+    this._enable();
+    this.worker.postMessage({ type: 'action', op: 'addPhotos', args: [files] });
   }
 
   _log(text, level = 'info') { this.app.log(text, level || 'info', 'sfm'); }
@@ -224,21 +324,39 @@ export class SfmPanel {
     this.worker.onerror = (e) => { this._fail(e.message || 'worker failed to start'); };
     if (this.storeDesc) this.worker.postMessage({ type: 'store', store: this.storeDesc });
     if (reopen && this.file) this.worker.postMessage({ type: 'open', file: this.file });
+    if (reopen && this.photos) this.worker.postMessage({ type: 'photos', files: this.photos });
     return this.worker;
   }
 
+  // file: a video, a .gosfm, or [File] photos (a photo set)
   load(file) {
+    if (Array.isArray(file)) return this._loadPhotos(file);
     if (this.running || this.busy) { this._log(`${file.name}: stop the current work first`, 'warn'); return; }
     this.file = file;
-    this.videoName = file.name;
-    this.result = this.quality = this.frameAnalysis = this.duration = this.keyframeCount = null;
-    this.selected = [];
-    this.state.source = file.name;
-    this.state.status = 'opening…';
-    this._enable();
+    this.photos = null;
+    this._opening(file.name, 'opening…');
     const project = /\.gosfm$/i.test(file.name);  // a saved session: repairs, no re-run without the video
     if (project) this.file = null;
     (this.worker ?? this._worker(false)).postMessage({ type: project ? 'project' : 'open', file });
+  }
+
+  _loadPhotos(files) {
+    if (this.running || this.busy) { this._log(`${files.length} photos: stop the current work first`, 'warn'); return; }
+    this.file = null;
+    this.photos = files;
+    this.filterChanges = 0;  // a new set: no filter change to undo
+    this._opening(`${files.length} photos`, 'reading the photos…');
+    (this.worker ?? this._worker(false)).postMessage({ type: 'photos', files });
+  }
+
+  // A new source (video, project, photo set): nothing of the previous one is shown
+  _opening(name, status) {
+    this.videoName = name;
+    this.result = this.quality = this.frameAnalysis = this.duration = this.keyframeCount = null;
+    this.selected = [];
+    this.state.source = name;
+    this.state.status = status;
+    this._enable();
   }
 
   // ── project folder (src/project/, src/ui/project_panel.js) ──────────────────────
@@ -271,10 +389,14 @@ export class SfmPanel {
     this.state.model = 'the current model (from the project)';
   }
 
+  // The trainer's held-out views: none for a photo set (each photo counts, DESIGN-sfm §13.3 P6)
+  get valSplit() { return this.photos ? 'none' : this.app.params.val_split; }
+
   sourceInfo() {
     const v = this.videoInfo ?? {}, f = this.file;
     return { name: v.name ?? this.videoName, size: f?.size ?? null, lastModified: f?.lastModified ?? null,
-             duration: v.duration ?? null, width: v.width ?? null, height: v.height ?? null, fps: v.fps ?? null };
+             duration: v.duration ?? null, width: v.width ?? null, height: v.height ?? null, fps: v.fps ?? null,
+             ...(this.photos ? { photos: this.photos.length } : {}) };
   }
 
   // The Keyframes phase of the manifest (null before the keyframes exist)
@@ -283,7 +405,6 @@ export class SfmPanel {
     return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, blurRel, maxDim, maxFeatures } } } } : null;
   }
 
-  // The project's manifest (no project: nothing)
   // The options the controls set, for project.json (app.js settings())
   settings() { return known(this.o); }
 
@@ -309,7 +430,7 @@ export class SfmPanel {
   // then into the trainer when `send`
   run(until = null, send = this.o.autoSend) {
     if (this.running || this.busy) return;
-    if (!this.file) { this._pickFile(); return; }
+    if (!this.file && !this.photos) { this._pickFile(); return; }
     this.running = true;
     this.runUntil = until;
     this.quality = null;
@@ -378,7 +499,8 @@ export class SfmPanel {
   }
 
   undo() {
-    if (!this.ready) return;
+    // a filter change (P8.5) is undone too, with no map yet (it discarded the one before)
+    if (this.busy || this.running || (!this.quality && !this.filterChanges)) return;
     this.busy = true;
     this._enable();
     this.worker.postMessage({ type: 'undo' });
@@ -458,6 +580,14 @@ export class SfmPanel {
       this.videoName = v.name;
       this.videoInfo = v;
       this.state.status = 'ready';
+      if (v.photos && !v.project) {  // a photo set (worker openPhotos, planSet)
+        this.state.source = `${v.photos} of ${v.total} photos — ${v.width}×${v.height}` + (v.skipped ? `, ${v.skipped} left out` : '');
+        if (this.app.project) this._record({ source: this.sourceInfo() });
+        this._log(`${v.total} photos: ${v.groups.map(g => `${g.count} × ${g.key}`).join('; ')}`);
+        if (v.filterUndone) this.filterChanges--;
+        if (v.labels) this._buildPhotoFilter(v.labels, v.filter);
+        return;
+      }
       if (v.project) {
         this.state.source = `${v.project} — of ${v.name}, ${v.duration.toFixed(1)} s (repairs only)`;
         this._log(`${v.project}: a project of ${v.name}; densify and Run all need the video`);
@@ -480,7 +610,7 @@ export class SfmPanel {
       this.app.shell.refresh();
     } else if (m.type === 'thumbs') {
       this.app.frames.set(m.frames, m.aspect);
-      if (this.app.shell.current === 'keyframes') this.app.frames.toggle(true);
+      if (this.app.shell.current === 'keyframes' || (this.photos && this.app.shell.current === 'video')) this.app.frames.toggle(true);
       this._select(this.selected);
     } else if (m.type === 'quality') {
       this.quality = m.quality;
@@ -489,9 +619,16 @@ export class SfmPanel {
       const c = m.quality.counts;
       if (m.action) {
         this.busy = false;
+        if (m.action.op === 'addPhotos' && this.pendingPhotos) {
+          (this.addedPhotos ??= []).push(this.photos.length);
+          this.photos = [...this.photos, ...this.pendingPhotos];
+          this.pendingPhotos = null;
+        }
+        if (m.action.op === 'undo' && m.action.undone === 'insert' && this.addedPhotos?.length) this.photos = this.photos.slice(0, this.addedPhotos.pop());
         this.state.status = `${m.action.op} done: ${c.green} green, ${c.amber} amber, ${c.red} red`;
         if (this.app.colmap?.fromSfm) this.state.model = 'an older model: Update trainer cameras';
       }
+      this._showAdvice(m.quality.coverage ?? null);
       this._select(this.selected);
       this._enable();
     } else if (m.type === 'result') {
@@ -530,14 +667,11 @@ export class SfmPanel {
       this._enable();
     } else if (m.type === 'project') {
       this.busy = false;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(m.blob);
-      a.download = m.name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      downloadBlob(m.blob, m.name);
       this.state.status = `saved ${m.name} (${(m.blob.size / 1e6).toFixed(0)} MB)`;
       this._enable();
     } else if (m.type === 'error') {
+      this.pendingPhotos = null;
       this._fail(m.message);
     }
   }
@@ -626,8 +760,15 @@ export class SfmPanel {
   async send() {
     if (!this.result) return;
     const app = this.app;
+    // photo sets: the floater removal's near depth from every point in a camera's view, not only the
+    // ones it observed (minerals' close-ups: +2.7 dB held out, cuisine and salon unchanged; DESIGN-sfm §13.3 P6)
+    if (this.photos && !app.urlKeys.has('floater_depth') && app.params.floater_depth !== 'view') {
+      app.params.floater_depth = 'view';
+      app._refreshGui();
+      this._log("photo set: floater removal by the depth of every point in each camera's view (floater_depth 'view')");
+    }
     try {
-      if (await app.loadColmap(loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: app.params.val_split }), { label: 'Video → Cameras' })) {
+      if (await app.loadColmap(loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit }), { label: 'Video → Cameras' })) {
         this.sent = this.result.summary;
         this.state.model = `the current model (${this.result.summary.exported} cameras)`;
         this._record({ phases: { train: { fromCameras: this.sent.version } } });
@@ -647,7 +788,7 @@ export class SfmPanel {
     const app = this.app, old = app.colmap;
     if (!this.result || !old?.fromSfm || !app.trainer) return this.send();
     try {
-      const ds = loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: app.params.val_split });
+      const ds = loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit });
       const before = new Map(old.images.map(im => [im.name, im]));
       const common = ds.images.filter(im => before.has(im.name));
       if (common.length < 3) throw new Error(`only ${common.length} keyframes in common with the trainer's model`);
@@ -661,7 +802,8 @@ export class SfmPanel {
       for (let k = 0; k < P.length; k += 3) P.set(apply(G, [P[k], P[k + 1], P[k + 2]]), k);
       const radius = app.octree.sceneRadius, moved = common.map(im => Math.hypot(...im.center.map((x, d) => x - before.get(im.name).center[d])) / radius);
       const turned = common.map(im => rotationAngle(im.R, before.get(im.name).R) * 180 / Math.PI);
-      const keepTextures = JSON.stringify(this.result.summary.distorted) === JSON.stringify(this.sent?.distorted);
+      const lens = (x) => JSON.stringify([x?.distorted, x?.distortedCameras]);  // every lens's camera (P8)
+      const keepTextures = lens(this.result.summary) === lens(this.sent);
       const r = await app.swapCameras(ds, { keepTextures });
       const q = (v, p) => [...v].sort((a, b) => a - b)[Math.min(v.length - 1, Math.floor(p * v.length))];
       const msg = `cameras updated, splats kept: ${r.kept} kept, ${r.added} added, ${r.dropped} dropped; moved by ` +
@@ -694,15 +836,9 @@ export class SfmPanel {
         this._enable();
         await new Promise((resolve, reject) => { this.pending = { resolve, reject }; this.worker.postMessage({ type: 'send' }); });
       }
-      const write = async (dir, name, data) => {
-        const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
-        await w.write(data);
-        await w.close();
-      };
-      const sparse = await root.getDirectoryHandle('sparse', { create: true });
-      for (const [name, buf] of Object.entries(this.result.sparse)) await write(sparse, name, buf);
-      const images = await root.getDirectoryHandle('images', { create: true });
-      for (const { name, blob } of this.result.images) await write(images, name, blob);
+      const out = new DirStore(root);
+      for (const [name, buf] of Object.entries(this.result.sparse)) await out.write(`sparse/${name}`, buf);
+      for (const { name, blob } of this.result.images) await out.write(`images/${name}`, blob);
       this._log(`exported ${this.result.images.length} images + sparse/ to ${root.name}/`, 'ok');
     } catch (e) {
       if (e.name !== 'AbortError') this.app.showError(`Export failed: ${e.message}`);

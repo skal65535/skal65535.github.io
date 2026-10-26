@@ -1,6 +1,7 @@
 // frontend.js matchPairs: GPU descriptor lifetime (one upload per frame, all released at the end,
 // none reused from an earlier call), with a matcher that only counts.
 import { matchPairs } from '../src/sfm/frontend.js';
+import { makeRng } from '../src/math.js';
 import { assert } from './util.js';
 
 function countingMatcher() {
@@ -39,4 +40,34 @@ Deno.test('matchPairs: descriptors left by an interrupted call are not reused', 
   m.matchBatch = async (entries) => { seen = entries; return entries.map(() => new Uint32Array(0)); };
   await matchPairs(features, m, [[0, 1, 'seq']], { rng: Math.random });
   assert(seen[0][1] !== stale && seen[0][1].n === 1, 'stale descriptors of frame 1 used');
+});
+
+// Ten views of 300 points, a third of each pair's matches wrong: the pairs verified on the worker
+// pool are those verified inline, inliers and F alike (each pair's RANSAC draws from its own seed)
+Deno.test('matchPairs: the verification pool gives the inline results', async () => {
+  const rng = makeRng(7), n = 10, N = 300;
+  const points = Array.from({ length: N }, () => [4 * rng() - 2, 3 * rng() - 1.5, 4 + 3 * rng()]);
+  const features = Array.from({ length: n }, (_, c) => {
+    const kp = new Float32Array(4 * N), yaw = 0.04 * c;
+    points.forEach(([x, y, z], k) => {
+      const X = Math.cos(yaw) * x - Math.sin(yaw) * z + 0.15 * c, Z = Math.sin(yaw) * x + Math.cos(yaw) * z;
+      kp[4 * k] = 500 + 800 * X / Z; kp[4 * k + 1] = 400 + 800 * y / Z;
+    });
+    return { keypoints: kp, descriptors: new Uint8Array(128 * N) };
+  });
+  const todo = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) todo.push([i, j, 'seq']);
+  // per pair: k -> k, a third of them to a random point; the same raw matches for both runs
+  const fixed = todo.map(() => {
+    const r = new Uint32Array(2 * N);
+    for (let k = 0; k < N; k++) { r[2 * k] = k; r[2 * k + 1] = rng() < 0.33 ? Math.floor(rng() * N) : k; }
+    return r;
+  });
+  const matcher = (calls) => ({ ...countingMatcher(), async matchBatch(entries) { return entries.map(() => fixed[calls.k++].slice()); } });
+  const inline = await matchPairs(features, matcher({ k: 0 }), todo, { rng: makeRng(1), workers: 0 });
+  const pooled = await matchPairs(features, matcher({ k: 0 }), todo, { rng: makeRng(1), workers: 4 });
+  assert(pooled.stats.workers === 4 && inline.stats.workers === 0, `workers ${pooled.stats.workers}, ${inline.stats.workers}`);
+  assert(inline.pairs.length === todo.length, `${inline.pairs.length} of ${todo.length} verified inline`);
+  const key = (p) => `${p.i},${p.j}:${p.matches.join()}:${p.F.join()}`;
+  inline.pairs.forEach((p, k) => assert(key(p) === key(pooled.pairs[k]), `pair ${p.i},${p.j} differs on the pool`));
 });

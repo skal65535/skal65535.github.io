@@ -2,7 +2,7 @@
 // modes (orbit, drone, COLMAP snap, spline fly-to), training loop triggers and the action log.
 
 import { initGPU } from '../../common/webgpu.js';
-import { mkGui }   from '../../common/controls.js';
+import { mkGui, onAnyChange } from '../../common/controls.js';
 import {
   SPLAT_FLOATS, rgbToSh0,
   loadColmapFromUrl, loadColmapFromFiles,
@@ -12,31 +12,59 @@ import { LooseOctree } from './octree.js';
 import {
   GaussOptRenderer, drawTelemetryPanel, createCameraSplineAnimation, evaluateCameraSpline,
 } from './render.js';
-import { logit, buildOrbitViewMatrix, estimateWorldUp, orbitAnglesFromCenter, fitIntrinsics } from './math.js';
+import { readGlb, writeGlb } from './glb.js';
+import { encodeJpeg, decodeImage } from './mesh_image.js';
+import { clamp, dot, sub, madd, logit, buildOrbitViewMatrix, estimateWorldUp, orbitAnglesFromCenter, fitIntrinsics } from './math.js';
 import { GaussOptTrainer } from './trainer.js';
 import {
-  VISU_MODES, COLOR_MODES, COMPARE_MODES, FRUSTUM_IMAGES, OPT_METHODS, TIPS, DATASETS, NOT_A_URL, POINTS3D,
-  SNAPSHOT_PARAMS, PROJECT_PARAMS, defaultParams, applyUrlParams,
+  VISU_MODES, COLOR_MODES, COMPARE_MODES, FRUSTUM_IMAGES, MESH_VIEWS, MESH_TEXTURES, OPT_METHODS, TIPS, DATASETS, NOT_A_URL, POINTS3D,
+  SNAPSHOT_PARAMS, PROJECT_PARAMS, defaultParams, applyUrlParams, urlNamesOf, urlAfterChange, URL_FLAGS,
 } from './params.js';
 import { Drone } from './drone.js';
 import { DemoFlight } from './demo.js';
+import { shortestPath, pathStats } from './path.js';
 import { encodeSnapshot, decodeSnapshot, isSnapshotName, SNAPSHOT_EXT } from './snapshot.js';
+import { meshFromTrainer, meshFromPly, textureFromTrainer } from './mesh.js';
 import { LogPanel } from './ui/log.js';
 import { Shell } from './ui/shell.js';
 import { FramesSheet } from './ui/frames.js';
 import { ProjectPanel } from './ui/project_panel.js';
+import { downloadBlob } from './ui/download.js';
 import { FramePacer } from './pace.js';
 
 // CPU time budget per frame for training steps (FramePacer sets their count, steps_per_frame
 // bounds it)
 const TRAIN_BUDGET_MS = 20;
+// A still view is redrawn at least this often (ms), for the changes the redraw key misses (App._draw)
+const REDRAW_MS = 1000;
+// the camera path (P7, path.js): the turn weight, measured on cuisine, salon, minerals, out_scene1
+// (photo_runs/logs/pathweights.log: at 2, no step turns more than capture order's largest), the
+// offer's ratio, and the most cameras the shortest path is computed for
+const PATH_ROT_WEIGHT = 2, PATH_OFFER = 1.25, PATH_MAX = 100;
+const pathViews = (images) => images.map(im => ({ center: im.center, forward: im.forward }));
 
 const SETTINGS_DELAY_MS = 800;  // after the last control change, the settings go to project.json
 
 const pad5 = n => String(n).padStart(5, '0');
+
 const mb   = buf => (buf.byteLength / 1048576).toFixed(1);
 // Checkpoint entry name: availablePlys holds strings for URL datasets, {name, file} for dropped folders
 const plyName = p => (typeof p === 'string' ? p : p.name);
+
+// fetch(url), throwing on an HTTP error
+async function fetchOk(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText || 'Not Found'} (${url})`);
+  return resp;
+}
+
+// url as a File named after its last path component, dated by the server, not now: the saved
+// session of a video or photo is found by name, size and date
+async function fetchFile(url, fallbackName, type) {
+  const resp = await fetchOk(url);
+  const lastModified = Date.parse(resp.headers.get('last-modified') ?? '') || 0;
+  return new File([await resp.blob()], url.split('/').pop() || fallbackName, { type, lastModified });
+}
 
 function createSyntheticScene(count = 256) {
   const params = new Float32Array(count * SPLAT_FLOATS);
@@ -118,6 +146,15 @@ export class GaussOptApp {
     this.demo        = new DemoFlight();
     this.demoLive    = false;  // demo flight started on the current images
     this.lastFrameT  = performance.now();
+    // Redraw only when what is drawn may have changed (_draw: its inputs as a key), so a paused, still
+    // view leaves the GPU alone: drawGen counts the changes the key doesn't see (a control, an input
+    // event, the wireframes); a redraw at least every REDRAW_MS catches the rest (e.g. a texture loaded)
+    this.drawGen     = 0;
+    this.lastDrawKey = '';
+    this.lastDrawT   = 0;
+    for (const ev of ['pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'resize']) {
+      window.addEventListener(ev, () => { this.drawGen++; }, { capture: true, passive: true });
+    }
   }
 
   async init() {
@@ -136,11 +173,12 @@ export class GaussOptApp {
       if (e.target.closest?.('.skal-gui')) this._settingsChanged();
     });
     await this._probeServer();
-    // ?video= alone: the cameras come from the panel, no default dataset to load
-    const q = new URLSearchParams(location.search), video = q.get('video');
-    if (!video || q.has('dataset')) await this.loadDatasetUrl(this.params.dataset_url, this.params.resume_ply);
+    // ?video= or ?photos= (comma-separated URLs) alone: the cameras come from the panel, no default dataset to load
+    const q = new URLSearchParams(location.search), video = q.get('video'), photos = q.get('photos');
+    if ((!video && !photos) || q.has('dataset')) await this.loadDatasetUrl(this.params.dataset_url, this.params.resume_ply);
     requestAnimationFrame(() => this.frame());
     if (video) this.openVideoPanel(video);
+    else if (photos) this.openPhotoUrls(photos.split(',').filter(Boolean));
   }
 
   // Controls in three places: the Project phase (example datasets), the Train phase (checkpoint,
@@ -151,6 +189,14 @@ export class GaussOptApp {
     const proj = mkGui(document.getElementById('project-gui'), { draggable: false, tips: TIPS });
     const view = mkGui(this.shell.viewHost, { draggable: false, tips: TIPS });
     this.guis = [proj, gui, view];
+    // a param given in the URL follows its control (the SfM panel's as sfm_<name>): the URL keeps
+    // reloading the page as shown
+    onAnyChange((obj, key, value) => {
+      this.drawGen++;
+      const names = obj === this.params ? urlNamesOf(key) : obj === this.sfm?.o ? [`sfm_${key}`] : [];
+      const q = names.length ? urlAfterChange(location.search, names, value, URL_FLAGS) : null;
+      if (q !== null && q !== location.search) history.replaceState(null, '', `${location.pathname}${q}${location.hash}`);
+    });
     const wire = () => this._refreshWireframes();
 
     this.projectPanel = new ProjectPanel(this, document.getElementById('project-folder'));
@@ -163,11 +209,28 @@ export class GaussOptApp {
 
     const optF = gui.addFolder('Optimizer (Adam / MC / SA)');
     optF.add(P, 'opt_method', OPT_METHODS).name('method');
-    optF.add(P, 'mc_noise', 0.0, 0.5, 0.01).name('MC Langevin η');
+    optF.add(P, 'mc_noise', 0, 2e6, 1e4).name('MC Langevin λ');
+    optF.add(P, 'mc_opacity_reg', 0, 0.1, 0.001).name('MC opacity L1');
+    optF.add(P, 'mc_scale_reg', 0, 0.1, 0.001).name('MC scale L1');
+    optF.add(P, 'mc_relocate', ['opacity', 'error']).name('MC relocate by');
+    optF.add(P, 'mc_relocate_mode', ['copy', 'shape']).name('MC relocate as');
     optF.add(P, 'sa_temp', 0.01, 1.0, 0.01).name('SA temp T₀');
     optF.add(P, 'sa_cooling', 0.80, 0.999, 0.005).name('SA cooling γ');
     optF.add(P, 'sa_reheat').name('SA re-heat @ K');
-    optF.add(P, 'depth_dist', 0, 1, 0.01).name('depth distortion');
+    optF.add(P, 'sa_share', 0, 1, 0.05).name('SA jump share');
+    optF.add(P, 'sa_size', 0, 5, 0.1).name('SA jump size');
+    optF.add(P, 'ssim', 0, 1, 0.05).name('D-SSIM weight');
+    optF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
+    optF.add(P, 'split_min_views', 0, 5, 1).name('split: min views');
+    optF.add(P, 'split_min_err', 0, 0.2, 0.005).name('E9: split min error');
+    optF.add(P, 'grow_rate', 0, 0.2, 0.01).name('E9: growth rate');
+    optF.add(P, 'split_in_plane').name('E9: split in plane');
+    optF.add(P, 'grow_by', ['error', 'grad']).name('E9: grow by');
+    optF.add(P, 'grow_grad', 0, 0.002, 0.00001).name('E9: grow grad threshold');
+    optF.add(P, 'split_mode', ['error', 'shape']).name('E9: split mode');
+    optF.add(P, 'mesh_snap', 0, 1, 0.05).name('E5: mesh snap');
+    optF.add(P, 'mesh_snap_every', 100, 5000, 100).name('E5: snap every');
+    optF.add(P, 'mesh_snap_views', 1, 10, 1).name('E5: snap min views');
 
     const visF = view.addFolder('Visualization');
     visF.add(P, 'visu_mode', VISU_MODES).name('splat shape');
@@ -182,6 +245,11 @@ export class GaussOptApp {
     visF.add(P, 'show_splits').name('WLBG split axes').onChange(wire);
     visF.add(P, 'frustum_images', FRUSTUM_IMAGES).name('frustum images');
     visF.add(P, 'frustum_scale', 0.2, 4.0, 0.05).name('frustum size').onChange(wire);
+    visF.add(P, 'mesh_view', MESH_VIEWS).name('mesh');
+    visF.add(P, 'mesh_shaded').name('mesh shaded');
+    visF.add(P, 'mesh_res', 64, 512, 32).name('mesh grid');
+    visF.add(P, 'mesh_simplify', 0, 4, 0.25).name('mesh simplify (voxels)');
+    visF.add(P, 'mesh_texture', MESH_TEXTURES).name('mesh texture');
 
     const camF = view.addFolder('Camera', { collapsed: true });
     camF.add(P, 'snap_to_colmap').name('snap to COLMAP cam').listen().onChange(v => {
@@ -195,6 +263,7 @@ export class GaussOptApp {
       if (this.pickedCam >= 0) this.openThumbnail(P.cam_idx);
       wire();
     });
+    camF.add(P, 'path_order', ['capture', 'shortest']).name('camera path order').onChange(() => { this._applyPathOrder(); wire(); });
     camF.add(P, 'camera_mode', ['orbit', 'drone', 'demo']).name('free camera (F, G)').listen()
       .onChange(v => this._setCameraMode(v));
     camF.add(P, 'demo_speed', 0.01, 0.3, 0.01).name('demo speed (R/s)');
@@ -221,9 +290,15 @@ export class GaussOptApp {
     octF.add(P, 'enable_rebalance').name('WLBG grow/prune');
     octF.add(P, 'remove_floaters').name('octree floater kill');
     octF.add(P, 'floater_depth', ['observed', 'view']).name('near-camera carve depth');
+    octF.add(P, 'floater_spare', 0, 0.05, 0.001).name('spare near SfM points');
     octF.add(P, 'enable_split').name('error-cov split');
     octF.add(P, 'enable_merge').name('overlap merge');
     octF.add(P, 'max_splats', 10000, 2000000, 10000).name('max splats');
+    octF.add(P, 'train_steps', 0, 100000, 1000).name('E7: planned steps');
+    octF.add(P, 'cap_lease', 0, 1, 0.05).name('E7: cap lease');
+    octF.add(P, 'consolidate_frac', 0.05, 0.5, 0.05).name('E7: consolidation');
+    octF.add(P, 'region_repair', [0, 0.5, 1, 2]).name('E7: stuck-region repair');
+    octF.add(P, 'polish').name('E7: polish (Adam) at the end');
     octF.add(P, 'max_splat_angle', 0.005, 0.2, 0.005).name('max splat angle');
     octF.add(P, 'max_anisotropy', 2, 50, 1).name('max anisotropy');
     octF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
@@ -258,16 +333,16 @@ export class GaussOptApp {
 
   // What is loaded, for the header and the Project step
   projectLabel() {
-    const c = this.colmap, p = this.project ? `project ${this.project.name}: ` : '';
+    const p = this.project ? `project ${this.project.name}: ` : '';
     return p + this._loadedLabel();
   }
 
   _loadedLabel() {
-    const c = this.colmap;
-    if (c?.fromSfm) return `video ${this.sfm?.videoName ?? ''} (${c.images.length} cameras)`;
+    const c = this.colmap, kind = this.sfm?.photos ? '' : 'video ';  // a photo set's name says "N photos"
+    if (c?.fromSfm) return `${kind}${this.sfm?.videoName ?? ''} (${c.images.length} cameras)`;
     if (c?.baseUrl) return `${c.baseUrl} (${c.images.length} cameras)`;
     if (c) return `local folder (${c.images.length} cameras)`;
-    if (this.sfm?.videoName) return `video ${this.sfm.videoName}`;
+    if (this.sfm?.videoName) return `${kind}${this.sfm.videoName}`;
     return this.trainer ? (this.params.dataset_url === '[synth]' ? 'synthetic scene' : 'splats only') : '';
   }
 
@@ -285,13 +360,16 @@ export class GaussOptApp {
     this._rebuildDatasetSelector();
   }
 
+  // Snapshots go into the project's splats/, else to serve.py (POST /save)
+  get snapshotsOk() { return !!this.project || !!this.serverOk; }
+
   _setSnapshotsEnabled(ok) {
     if (this.serverOk !== ok) {
       this.log(ok ? 'serve.py reachable: snapshots enabled'
                   : 'serve.py not reachable: snapshots disabled (saves fall back to downloads)', ok ? 'info' : 'warn');
     }
     this.serverOk = ok;
-    ok ||= !!this.project;  // snapshots go into the project's splats/
+    ok = this.snapshotsOk;
     const btn = document.getElementById('BtnSnapshot');
     btn.disabled = !ok;
     btn.title = ok ? 'full training state (splats + Adam + moments + octree), resumable'
@@ -348,10 +426,6 @@ export class GaussOptApp {
     this.trainBtn.textContent = on ? '⏸ Pause' : '▶ Train';
   }
 
-  _plyNames() {
-    return (this.colmap?.availablePlys || []).map(plyName);
-  }
-
   _rebuildPlySelector(plyList) {
     this.plySelectFolder.clear();
     const opts = { '[init from points3D.bin]': POINTS3D };
@@ -392,11 +466,10 @@ export class GaussOptApp {
       this.mouse.y = e.clientY;
       if (this.params.compare_mode === 1) {
         const rect = cv.getBoundingClientRect();
-        this.params.split_x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+        this.params.split_x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
       } else if (this.params.camera_mode === 'drone' || this.params.camera_mode === 'demo') {
         // stick = drag offset from the press point, full deflection at 120 px
-        if (this.params.camera_mode === 'demo') this._setCameraMode('drone');  // the user takes the stick
-        this._droneTakeover();
+        this._takeStick();
         let sx = (e.clientX - this.mouse.sx) / 120, sy = (this.mouse.sy - e.clientY) / 120;
         const l = Math.hypot(sx, sy);
         if (l > 1) { sx /= l; sy /= l; }
@@ -404,15 +477,14 @@ export class GaussOptApp {
       } else if (dx !== 0 || dy !== 0) {
         this._leaveColmapView();
         this.params.theta += dx * 0.35;
-        this.params.phi = Math.min(89, Math.max(-89, this.params.phi - dy * 0.35));
+        this.params.phi = clamp(this.params.phi - dy * 0.35, -89, 89);
         this.orbitAnim = null;
       }
     });
     cv.addEventListener('wheel', e => {
       e.preventDefault();
       if (this.params.camera_mode === 'drone' || this.params.camera_mode === 'demo') {  // wheel = gimbal tilt
-        if (this.params.camera_mode === 'demo') this._setCameraMode('drone');
-        this._droneTakeover();
+        this._takeStick();
         this.drone.tilt(e.deltaY > 0 ? 0.05 : -0.05);
         return;
       }
@@ -421,7 +493,8 @@ export class GaussOptApp {
       this.params.radius *= (e.deltaY > 0) ? 1.07 : 1 / 1.07;
     }, { passive: false });
 
-    // Keys: H = help, F = orbit / drone, drone flight keys; ignored while typing in the GUI
+    // Keys: H = help, Escape = close the help and the view popover, F = orbit / drone, G = orbit /
+    // demo, drone flight keys (in demo they take over), orbit Space / arrows; ignored while typing in the GUI
     const droneKeys = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'e', 'q']);
     const keyName = e => e.key.toLowerCase();
     const help = $('help-overlay');
@@ -443,8 +516,7 @@ export class GaussOptApp {
         this._setCameraMode(this.params.camera_mode === 'demo' ? 'orbit' : 'demo');
         return;
       }
-      if (this.params.camera_mode === 'demo' && droneKeys.has(key)) this._setCameraMode('drone');  // the user takes over
-      if (this.params.camera_mode !== 'drone') {
+      if (this.params.camera_mode !== 'drone' && this.params.camera_mode !== 'demo') {
         if (key === ' ') { e.preventDefault(); this._recenterOrbit(); }
         if (key.startsWith('arrow')) {  // pan, see _panOrbit()
           e.preventDefault();
@@ -456,7 +528,7 @@ export class GaussOptApp {
       }
       if (!droneKeys.has(key)) return;
       e.preventDefault();
-      this._droneTakeover();
+      this._takeStick();
       this.drone.keys.add(key);
     });
     window.addEventListener('keyup', e => { this.drone.keys.delete(keyName(e)); this.orbitKeys.delete(keyName(e)); });
@@ -473,6 +545,7 @@ export class GaussOptApp {
     });
     $('BtnExportPly').addEventListener('click', () => this.savePlyCheckpoint());
     $('BtnExportOctree').addEventListener('click', () => this.saveOctreeJson());
+    $('BtnExportMesh').addEventListener('click', () => this.saveMesh());
     $('BtnSnapshot').addEventListener('click', () => this.requestSnapshot());
     $('log-clear').addEventListener('click', () => this.logPanel.clear());
 
@@ -480,7 +553,8 @@ export class GaussOptApp {
       if (e.target.files.length > 0) this.loadDroppedFolder(e.target.files);
     });
     $('PlyElmt').addEventListener('change', e => {
-      if (e.target.files.length > 0) this.loadPlyOrOctreeFile(e.target.files[0]);
+      const f = e.target.files[0];
+      if (f) /\.(glb|mesh\.ply)$/i.test(f.name) ? this.loadMeshFile(f) : this.loadPlyOrOctreeFile(f);
     });
     $('BtnVideo').addEventListener('click', () => this.openVideoPanel());
 
@@ -494,6 +568,10 @@ export class GaussOptApp {
       const n = files[0].name;
       if (files.length === 1 && (files[0].type.startsWith('video/') || /\.(mp4|mov|m4v|gosfm)$/i.test(n))) {
         this.openVideoPanel(files[0]);
+      } else if (files.length > 1 && [...files].every(f => /^image\/jpeg$/.test(f.type) || /\.jpe?g$/i.test(f.name))) {
+        this.openVideoPanel([...files]);  // photos, not a COLMAP folder (DESIGN-sfm §13)
+      } else if (files.length === 1 && /\.(glb|mesh\.ply)$/i.test(n)) {
+        this.loadMeshFile(files[0]);
       } else if (files.length === 1 && (/\.(ply|splat|json)$/i.test(n) || isSnapshotName(n))) {
         this.loadPlyOrOctreeFile(files[0]);
       } else {
@@ -502,8 +580,8 @@ export class GaussOptApp {
     });
   }
 
-  // Free camera: 'orbit' (drag = orbit, wheel = zoom) or 'drone' (src/drone.js).
-  // Switching keeps the current pose.
+  // Free camera: 'orbit' (drag = orbit, wheel = zoom), 'drone' (src/drone.js) or 'demo' (a slow
+  // flight along the capture path, src/demo.js). Switching keeps the current pose.
   _setCameraMode(mode) {
     if (mode === 'drone') {
       this.droneLive = false;
@@ -520,6 +598,12 @@ export class GaussOptApp {
     this.params.camera_mode = mode;
     this.drone.keys.clear();
     this.drone.stick = [0, 0];
+  }
+
+  // Drone input in drone or demo mode: the user takes the stick (demo -> drone)
+  _takeStick() {
+    if (this.params.camera_mode === 'demo') this._setCameraMode('drone');
+    this._droneTakeover();
   }
 
   // Drone input takes over from a snapped / in-flight view, starting from the pose on screen
@@ -587,15 +671,14 @@ export class GaussOptApp {
   // `forward` with focal `fyPx` (canvas pixels). Roll is dropped: the orbit camera is level.
   _syncOrbitToPose(c, f, fyPx) {
     const sc = this.octree.sceneCenter;
-    const depth = (sc[0] - c[0]) * f[0] + (sc[1] - c[1]) * f[1] + (sc[2] - c[2]) * f[2];
-    const d = Math.max(0.1 * this.octree.sceneRadius, depth);
-    const target = [c[0] + f[0] * d, c[1] + f[1] * d, c[2] + f[2] * d];
+    const d = Math.max(0.1 * this.octree.sceneRadius, dot(sub(sc, c), f));
+    const target = madd(c, f, d);
     const orb = orbitAnglesFromCenter(target, c, this.worldUp);
     this.params.target = target;
     this.params.radius = orb.radius;
-    this.params.phi    = Math.min(89, Math.max(-89, orb.phi));
+    this.params.phi    = clamp(orb.phi, -89, 89);
     this.params.theta  = orb.theta;
-    this.params.fov    = Math.min(120, Math.max(20, 2 * Math.atan((0.5 * this.canvas.height) / fyPx) * 180 / Math.PI));
+    this.params.fov    = clamp(2 * Math.atan((0.5 * this.canvas.height) / fyPx) * 180 / Math.PI, 20, 120);
   }
 
   // Pinhole intrinsics of the free (orbit / drone) camera, from params.fov (vertical)
@@ -788,7 +871,7 @@ export class GaussOptApp {
   }
 
   // The "Video → Cameras" panel (src/ui/sfm_panel.js, DESIGN-sfm §7), loaded on first use.
-  // file: File | URL string (?video=) | null (choose in the panel)
+  // file: File | URL string (?video=) | [File] (photos) | null (choose in the panel)
   async openVideoPanel(file = null) {
     try {
       const { SfmPanel } = await import('./ui/sfm_panel.js');
@@ -796,15 +879,22 @@ export class GaussOptApp {
       this.shell.show('video');
       if (typeof file === 'string') {
         this._onProgress(`Fetching video ${file}...`);
-        const resp = await fetch(file);
-        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText || 'Not Found'} (${file})`);
-        // the server's date, not now: the saved session of this video is found by name, size and date
-        const lastModified = Date.parse(resp.headers.get('last-modified') ?? '') || 0;
-        file = new File([await resp.blob()], file.split('/').pop() || 'video.mp4', { lastModified });
+        file = await fetchFile(file, 'video.mp4');
       }
       this.sfm.open(file);
     } catch (e) {
       this.showError(`Video panel: ${e.message}`);
+    }
+  }
+
+  // ?photos=: fetched as Files, then opened as a photo set (DESIGN-sfm §13)
+  async openPhotoUrls(urls) {
+    try {
+      this._onProgress(`Fetching ${urls.length} photos...`);
+      const files = await Promise.all(urls.map(u => fetchFile(u, 'photo.jpg', 'image/jpeg')));
+      await this.openVideoPanel(files);
+    } catch (e) {
+      this.showError(`Photos: ${e.message}`);
     }
   }
 
@@ -913,9 +1003,7 @@ export class GaussOptApp {
       }
       const url = `${colmap.baseUrl}/${rel}`;
       this._onProgress(`Fetching checkpoint ${url}...`);
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText || 'Not Found'} (${url})`);
-      const buf = await resp.arrayBuffer();
+      const buf = await (await fetchOk(url)).arrayBuffer();
       if (this._stale(gen)) return;
       if (isSnapshotName(rel)) {
         await this.restoreSnapshot(buf, rel, colmap, gen, { ply: plyRel });
@@ -941,6 +1029,18 @@ export class GaussOptApp {
 
   // Local file: .json (standalone octree for the current splats), .gosnap, .ply or .splat.
   // plyRel: its name in the checkpoint selector (dropped folders), null for a picked / dropped file.
+  // A mesh file (Save mesh's .glb, or a .mesh.ply) shown in the 3D view; not a load (no loadGen)
+  async loadMeshFile(file) {
+    try {
+      const buf = await file.arrayBuffer(), mesh = /\.glb$/i.test(file.name) ? readGlb(buf) : meshFromPly(buf);
+      if (mesh.texture) mesh.image = await decodeImage(mesh.texture);
+      this.showMesh(mesh);
+      this.log(`Mesh ${file.name}: ${mesh.positions.length / 3} vertices, ${mesh.faces.length / 3} faces (Visualization > mesh)`, 'ok');
+    } catch (e) {
+      this.showError(`Failed to load mesh "${file.name}": ${e.message}`);
+    }
+  }
+
   async loadPlyOrOctreeFile(file, colmap = this.colmap, gen = ++this.loadGen, plyRel = null) {
     const name = file.name, lname = name.toLowerCase();
     try {
@@ -951,6 +1051,7 @@ export class GaussOptApp {
         if (this._stale(gen)) return;
         if (this.colmap?.images) oct.updateCameraAndNeighborStats(this.colmap.images);
         this.octree = oct;
+        this.drawGen++;
         this._loggedStats = oct.lastStats;
         if (this.trainer) {
           this.trainer.octree = oct;
@@ -1001,6 +1102,7 @@ export class GaussOptApp {
     if (colmap) this.shell.advance('train');
     if (this.trainer) this.retired.push(this.trainer);
     this.trainer = trainer;
+    this.drawGen++;
     this.pacer   = new FramePacer();  // another scene: another GPU time per step
     this.octree  = octree;
     if (ply !== undefined) this.params.resume_ply = ply;
@@ -1042,6 +1144,7 @@ export class GaussOptApp {
     const r = await trainer.replaceImages(colmap.images, { keepTextures });
     if (this.trainer !== trainer) throw new Error('another model was loaded meanwhile');
     this.colmap = colmap;
+    this.drawGen++;
     trainer.points3D = colmap.points3D;
     this._onImagesChanged(colmap.images);
     return r;
@@ -1050,6 +1153,8 @@ export class GaussOptApp {
   // The trainer's cameras changed (new model or swapCameras): camera slider range, picked /
   // in-flight camera, and per-camera state (lastStepOut.gtTex may be a destroyed texture).
   _onImagesChanged(images) {
+    this._applyPathOrder();
+    this._offerShortestPath();
     const maxIdx = Math.max(0, images.length - 1);
     this.params.cam_idx = Math.min(this.params.cam_idx | 0, maxIdx);
     this.camSlider?.max(maxIdx);
@@ -1060,8 +1165,42 @@ export class GaussOptApp {
     this.closeThumbnail();  // also refreshes the wireframes
   }
 
+  // The camera path (DESIGN-sfm §13.3 P7): colmap.path, an order of the (name-sorted) images that the
+  // path line and the demo flight follow; path_order 'capture' (name order) or 'shortest' (path.js,
+  // up to PATH_MAX cameras). The names, the validation split and the training do not change.
+  _applyPathOrder() {
+    const c = this.colmap;
+    if (!c?.images?.length) return;
+    c.path = c.images.map((_, i) => i);
+    if (this.params.path_order === 'shortest') {
+      if (c.images.length > PATH_MAX) this.log(`camera path: shortest only up to ${PATH_MAX} cameras (${c.images.length}): capture order`, 'warn');
+      else c.path = shortestPath(pathViews(c.images), { rotWeight: PATH_ROT_WEIGHT });
+    }
+    this.demoLive = false;  // the demo path follows it
+  }
+
+  // A photo set whose capture order goes back and forth (cuisine: 2.1x the shortest path's length):
+  // the shortest path is offered when PATH_OFFER times shorter, once per model
+  _offerShortestPath() {
+    const c = this.colmap;
+    if (!c?.fromSfm || !this.sfm?.photos || this.params.path_order !== 'capture' || c.images.length > PATH_MAX || c.pathOffered) return;
+    c.pathOffered = true;
+    const views = pathViews(c.images), capture = pathStats(c.images.map((_, i) => i), views);
+    const short = pathStats(shortestPath(views, { rotWeight: PATH_ROT_WEIGHT }), views), ratio = capture.length / short.length;
+    if (ratio < PATH_OFFER) return;
+    this.log(`camera path: the shortest is ${ratio.toFixed(1)}x shorter than capture order (largest turn ${short.maxTurnDeg.toFixed(0)}° vs ${capture.maxTurnDeg.toFixed(0)}°): ` +
+             'View ▸ Camera ▸ camera path order, for the path line and the demo flight', 'ok');
+  }
+
+  // The images in path order (the demo flight)
+  _pathImages() {
+    const c = this.colmap;
+    return c?.path ? c.path.map(i => c.images[i]) : (c?.images ?? []);
+  }
+
   _refreshWireframes() {
     if (!this.renderer || !this.octree) return;
+    this.drawGen++;
     this.renderer.updateWireframes({
       octree:       this.octree,
       images:       this.colmap?.images || [],
@@ -1070,6 +1209,7 @@ export class GaussOptApp {
       showLoose:    this.params.show_loose,
       showCameras:  this.params.show_cameras,
       showPath:     this.params.show_path,
+      pathOrder:    this.colmap?.path ?? null,
       frustumScale: this.params.frustum_scale,
       splitVectors: this.params.show_splits ? this.trainer?.splitVectors : null,
     });
@@ -1107,16 +1247,12 @@ export class GaussOptApp {
         else { this.log(e.message, 'warn'); why = 'serve.py could not save it'; }
       }
     }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([bytes], { type }));
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    downloadBlob(new Blob([bytes], { type }), name);
     this.log(`Downloaded ${name} (${why})`, 'ok');
   }
 
   requestSnapshot(kind = 'manual') {
-    if (!this.serverOk && !this.project) { this.log('Snapshot unavailable: no project folder, serve.py not reachable', 'warn'); return; }
+    if (!this.snapshotsOk) { this.log('Snapshot unavailable: no project folder, serve.py not reachable', 'warn'); return; }
     if (this.trainer && this.trainer.count > 0) this.snapRequest = kind;
   }
 
@@ -1182,7 +1318,7 @@ export class GaussOptApp {
 
   // Add a newly saved checkpoint to the selector (URL datasets only)
   _addCheckpointEntry(rel) {
-    if (!this.colmap?.baseUrl || this._plyNames().includes(rel)) return;
+    if (!this.colmap?.baseUrl || this.colmap.availablePlys.map(plyName).includes(rel)) return;
     this.colmap.availablePlys.push(rel);
     this.colmap.availablePlys.sort((a, b) => plyName(a).localeCompare(plyName(b)));
     this._rebuildPlySelector(this.colmap.availablePlys);
@@ -1225,6 +1361,65 @@ export class GaussOptApp {
       path => `Saved PLY + embedded octree (${this.octree.leaves.length} leaves) to: ${path}`);
   }
 
+  // DESIGN §9 E5: the rendered depth of every view fused (TSDF) and meshed (training pauses meanwhile),
+  // then simplified in a worker, textured from the photos (mesh_texture; training pauses again) and
+  // written as .glb; shown in the 3D view (mesh_view) and saved
+  async saveMesh() {
+    if (!this.trainer || this.trainer.count === 0) return;
+    const P = this.params, wasTraining = P.training, step = this.trainer.stepCount;
+    this._setTraining(false);
+    let fused;
+    try {
+      this.log(`Meshing @ step ${step}: fusing the depth of ${this.trainer.images.length} views...`);
+      fused = await meshFromTrainer(this.trainer, { res: P.mesh_res });
+    } catch (e) {
+      this.log(`Mesh failed: ${e.message}`, 'warn');
+      return;
+    } finally {
+      if (wasTraining) this._setTraining(true);
+    }
+    const { mesh, info } = fused;
+    this.log(`Mesh: ${info.vertices} vertices, ${info.faces} faces, grid ${info.grid.join(' x ')} (voxel ${info.voxel.toPrecision(3)}), ` +
+             `${(info.ms / 1000).toFixed(1)} s; simplifying...`);
+    const size = P.mesh_texture;
+    const out = await new Promise((resolve) => {
+      const w = new Worker(new URL('./mesh_worker.js', import.meta.url), { type: 'module' });
+      w.onmessage = ({ data }) => { w.terminate(); resolve(data); };
+      w.onerror = (e) => { w.terminate(); resolve({ error: e.message }); };
+      w.postMessage({ mesh, maxError: P.mesh_simplify * info.voxel, up: this.worldUp, glb: !size });
+    });
+    if (out.error) { this.log(`Mesh simplification failed: ${out.error}`, 'warn'); return; }
+    this.log(`Mesh simplified to ${out.mesh.faces.length / 3} faces (error <= ${P.mesh_simplify} voxel) in ${(out.info.ms / 1000).toFixed(1)} s` +
+             (size ? `; texturing (${size} x ${size}) from the photos...` : `, ${(out.glb.length / 1e6).toFixed(1)} MB`), 'ok');
+    let shown = out.mesh, glb = out.glb;
+    if (size) {
+      const was = P.training;
+      this._setTraining(false);
+      try {
+        const t = await textureFromTrainer(this.trainer, out.mesh, { size, tol: info.trunc * info.voxel });
+        const jpeg = await encodeJpeg(t.image, size);
+        glb = writeGlb(t.mesh, { up: this.worldUp, texture: { bytes: jpeg, mimeType: 'image/jpeg' } });
+        shown = { ...t.mesh, image: { data: t.image, width: size, height: size } };
+        this.log(`Mesh textured: ${t.info.charts} charts, ${(100 * t.info.used).toFixed(0)}% of the texels used, ${(100 * t.info.seen).toFixed(0)}% of them seen ` +
+                 `by a photo, in ${(t.info.ms / 1000).toFixed(1)} s; ${(glb.length / 1e6).toFixed(1)} MB (JPEG ${(jpeg.length / 1e6).toFixed(1)} MB)`, 'ok');
+      } catch (e) {
+        this.log(`Mesh texture failed (${e.message}): saved with its vertex colors`, 'warn');
+        glb = writeGlb(out.mesh, { up: this.worldUp });
+      } finally {
+        if (was) this._setTraining(true);
+      }
+    }
+    this.showMesh(shown);
+    await this._saveOrDownload(glb, `gaussopt_${pad5(step)}.mesh.glb`, 'model/gltf-binary', path => `Saved mesh to: ${path}`);
+  }
+
+  // A mesh ({ positions, faces, colors, uvs?, image? }, render.js setMesh) into the 3D view, turned on if it was off
+  showMesh(mesh) {
+    this.renderer.setMesh(mesh);
+    if (mesh && this.params.mesh_view === 0) { this.params.mesh_view = 1; this._refreshGui(); }
+    this.drawGen++;
+  }
+
   async saveOctreeJson() {
     if (!this.octree) return;
     const bytes = new TextEncoder().encode(JSON.stringify(this.octree.toJSON()));
@@ -1235,17 +1430,25 @@ export class GaussOptApp {
   _logRebalance() {
     const st = this._loggedStats = this.octree.lastStats;
     const tr = this.trainer;
-    const extra = (st.seeded ? `, +${st.seeded} stipple` : '') +
-                  (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '');
+    const extra = (st.seeded ? `, +${st.seeded} stipple` : '') + (st.teleported ? `, ${st.teleported} relocated (MC)` : '') + (st.trimmed ? `, ${st.trimmed} trimmed to the budget` : '') +
+                  (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '') +
+                  (tr.lastSnapInfo?.step === tr.stepCount ? `, ${tr.lastSnapInfo.moved} snapped to the mesh (mean ${(tr.lastSnapInfo.meanShift / tr.lastSnapInfo.voxel).toFixed(2)} voxel)` : '');
     this.log(`Rebalance @ step ${tr.stepCount}: +${st.split} split, +${st.cloned} clone, ` +
-             `-${st.pruned} prune, -${st.floaters} floaters, -${st.merged} merge${extra} -> ${tr.count} splats, ` +
+             `-${st.pruned} prune, -${st.floaters} floaters${st.floaterRules ? ` (near ${st.floaterRules[0]}, few views ${st.floaterRules[1]}, empty ${st.floaterRules[2]})` : ''}, -${st.merged} merge${extra} -> ${tr.count} splats, ` +
              `${this.octree.leaves.length} leaves` + (tr.lastRebalanceMs ? ` in ${tr.lastRebalanceMs.total.toFixed(0)} ms` : ''), 'info', 'train');
     const si = tr.lastSeedInfo;
-    if (si?.capped) {
-      this.log(`E4 stipple seeding skipped: ${tr.count} splats >= max_splats (${this.params.max_splats})`, 'warn', 'train');
-    } else if (si) {
-      this.log(`E4 stipple seeds from cam #${si.viewIdx}: ${si.count} sites (depth: ${si.covered} rendered, ` +
+    if (si) {
+      this.log(`E4 stipple seeds from cam #${si.viewIdx}: ${si.count} sites, ${st.seeded ?? 0} added (depth: ${si.covered} rendered, ` +
                `${si.fromPoints} COLMAP pts, ${si.fromMedian} median) in ${si.ms.toFixed(0)} ms`, 'info', 'train');
+    }
+    const gi = tr.lastGrowInfo;
+    if (gi?.step === tr.stepCount) this.log(`E9 grow by grad: score p50 ${gi.p50.toExponential(2)} p90 ${gi.p90.toExponential(2)} ` +
+                                            `p99 ${gi.p99.toExponential(2)}, ${gi.over} over ${this.params.grow_grad}`, 'info', 'train');
+    const rp = tr.lastRepairInfo;
+    if (rp && this.params.region_repair > 0) this.log(`E7 repair: ${rp.cells} stuck cells, ${rp.splats} splats`, 'info', 'train');
+    const sa = tr.lastAnnealInfo;
+    if (sa && this.params.opt_method === 'sim_anneal') {
+      this.log(`SA @ T=${sa.temp.toFixed(4)}: ${sa.accepted} jumps kept, ${sa.rejected} undone, ${sa.proposed} new`, 'info', 'train');
     }
     this._refreshWireframes();
   }
@@ -1261,7 +1464,7 @@ export class GaussOptApp {
                  `(${r.count} splats, ${(performance.now() - t0).toFixed(0)} ms)`, 'ok', 'train');
         if (this.colmap?.fromSfm) this.sfm?.viewPsnr(r.perView);
       } else {
-        this.log('Val PSNR: no validation views (needs >= 8 cameras)', 'warn', 'train');
+        this.log(`Val PSNR: no validation views (${this.colmap?.images.length < 8 ? 'needs >= 8 cameras' : 'every view trains'})`, 'warn', 'train');
       }
     } catch (e) {
       this.showError(`Validation failed: ${e.message}`);
@@ -1349,16 +1552,60 @@ export class GaussOptApp {
     }
   }
 
+  // The free / COLMAP camera of this frame: { view, center, intr: { fx, fy, cx, cy }, flyDone }.
+  // Precedence: fly-to animation > COLMAP snap > drone > demo > orbit
+  _viewCamera(dtFrame, imgs, camIdx, W, H) {
+    const P = this.params;
+    if (this.flyAnim && imgs[this.flyAnim.camIdx]) {
+      const st = evaluateCameraSpline(this.flyAnim);
+      return { view: st.view, center: st.camCenter, intr: st, flyDone: st.done };
+    }
+    if (P.snap_to_colmap && imgs[camIdx]) {
+      const im = imgs[camIdx];
+      return { view: im.view, center: im.center, intr: fitIntrinsics(im.camera, W, H), flyDone: false };
+    }
+    if (P.camera_mode === 'drone' && this.droneLive) {
+      this.drone.update(dtFrame, { sceneCenter: this.octree.sceneCenter, sceneRadius: this.octree.sceneRadius });
+      return { view: this.drone.view(), center: [...this.drone.pos], intr: this._freeIntrinsics(W, H), flyDone: false };
+    }
+    if (P.camera_mode === 'demo' && (this.lastView || imgs.length > 0)) {
+      if (!this.demoLive) {
+        this.demo.start(this._pathImages(), this.lastView ?? imgs[0], this.worldUp, this.octree.sceneCenter, this.octree.sceneRadius);
+        this.demoLive = true;
+      }
+      this.demo.speed = P.demo_speed;
+      this.demo.wander = P.demo_wander;
+      this.demo.update(dtFrame);
+      return { view: this.demo.view(), center: [...this.demo.pos], intr: this._freeIntrinsics(W, H), flyDone: false };
+    }
+    this._stepOrbitAnim();
+    this._panOrbit(dtFrame);
+    const orb = buildOrbitViewMatrix(P.target, P.radius, P.theta, P.phi, this.worldUp);
+    return { view: orb.view, center: orb.center, intr: this._freeIntrinsics(W, H), flyDone: false };
+  }
+
   async _draw(dtFrame) {
     const P = this.params, tr = this.trainer;
     const W = this.canvas.width, H = this.canvas.height;
     const imgs = this.colmap?.images || [];
     const camIdx = Math.min(Math.max(0, P.cam_idx | 0), Math.max(0, imgs.length - 1));
+    // what the frame draws, but the camera (added below): unchanged, and the frame is skipped
+    const nowT = performance.now();
+    const baseKey = [this.drawGen, W, H, tr.stepCount, tr.count, tr.valHistory?.length, tr.gtTextures?.size, camIdx,
+                     this.holdTarget, this.gtAvailable, P.compare_mode, P.split_x].join();
+    const unchanged = (key) => {
+      if (key === this.lastDrawKey && nowT - this.lastDrawT < REDRAW_MS) return true;
+      this.lastDrawKey = key;
+      this.lastDrawT = nowT;
+      return false;
+    };
 
     if (this.holdTarget && imgs[camIdx] && this.gtAvailable) {
+      if (unchanged(`hold,${baseKey}`)) return;
       const gtTex = await tr.ensureGtTexture(camIdx);
       if (gtTex) this.renderer.renderCompare({ gtTex, hatTex: tr.hatTex, pixState: tr.pixStateBuf, mode: 0 });
     } else if (P.compare_mode > 0 && imgs.length > 0 && this.gtAvailable) {
+      if (unchanged(`compare,${baseKey}`)) return;
       const out = (P.training && this.lastStepOut?.gtTex) ? this.lastStepOut : await tr.renderViewForward(camIdx);
       if (out?.gtTex) {
         this.renderer.renderCompare({
@@ -1367,64 +1614,37 @@ export class GaussOptApp {
         });
       }
     } else {
-      // Camera precedence: fly-to animation > COLMAP snap > drone > orbit
-      let view, camCenter, intr, flyDone = false;
-      if (this.flyAnim && imgs[this.flyAnim.camIdx]) {
-        const st = evaluateCameraSpline(this.flyAnim);
-        ({ view, camCenter } = st);
-        intr = st;
-        flyDone = st.done;
-      } else if (P.snap_to_colmap && imgs[camIdx]) {
-        view      = imgs[camIdx].view;
-        camCenter = imgs[camIdx].center;
-        intr      = fitIntrinsics(imgs[camIdx].camera, W, H);
-      } else if (P.camera_mode === 'drone' && this.droneLive) {
-        this.drone.update(dtFrame, { sceneCenter: this.octree.sceneCenter, sceneRadius: this.octree.sceneRadius });
-        view      = this.drone.view();
-        camCenter = [...this.drone.pos];
-        intr      = this._freeIntrinsics(W, H);
-      } else if (P.camera_mode === 'demo' && (this.lastView || imgs.length > 0)) {
-        if (!this.demoLive) {
-          this.demo.start(imgs, this.lastView ?? imgs[0], this.worldUp, this.octree.sceneCenter, this.octree.sceneRadius);
-          this.demoLive = true;
-        }
-        this.demo.speed = P.demo_speed;
-        this.demo.wander = P.demo_wander;
-        this.demo.update(dtFrame);
-        view      = this.demo.view();
-        camCenter = [...this.demo.pos];
-        intr      = this._freeIntrinsics(W, H);
-      } else {
-        this._stepOrbitAnim();
-        this._panOrbit(dtFrame);
-        const orb = buildOrbitViewMatrix(P.target, P.radius, P.theta, P.phi, this.worldUp);
-        view      = orb.view;
-        camCenter = orb.center;
-        intr      = this._freeIntrinsics(W, H);
-      }
+      const { view, center, intr, flyDone } = this._viewCamera(dtFrame, imgs, camIdx, W, H);
       const { fx, fy, cx, cy } = intr;
-      const numVis = tr.sortForDisplay(camCenter, view, 2 * fx / W, 2 * fy / H);
-      this.renderer.renderScene({
-        splatsBuf:      tr.splatsBuf,
-        momentsBuf:     tr.momentsBuf,
-        sortedIdxBuf:   tr.viewIdxBuf,
-        numVisible:     numVis,
-        view,
-        sceneRadius:    this.octree.sceneRadius,
-        fx, fy, cx, cy, W, H,
-        visuMode:       P.visu_mode,
-        colorMode:      P.color_mode,
-        haze:           P.haze,
-        avgR:           tr.avgR,
-        frustumTextures: this._frustumTextures(imgs),
-      });
-      this.lastView = { view, center: camCenter, fx, fy, cx, cy };
-      if (flyDone) this._finishFly(this.flyAnim.camIdx);
+      const frustumTextures = this._frustumTextures(imgs);  // also starts loading the missing ones
+      this.lastView = { view, center, fx, fy, cx, cy };
+      const skip = unchanged(`${Array.from(view).join()},${fx},${fy},${cx},${cy},${baseKey}`);
+      if (!skip) {
+        const numVis = tr.sortForDisplay(center, view, 2 * fx / W, 2 * fy / H);
+        this.renderer.renderScene({
+          splatsBuf:      tr.splatsBuf,
+          momentsBuf:     tr.momentsBuf,
+          sortedIdxBuf:   tr.viewIdxBuf,
+          numVisible:     numVis,
+          view,
+          sceneRadius:    this.octree.sceneRadius,
+          fx, fy, cx, cy, W, H,
+          visuMode:       P.visu_mode,
+          colorMode:      P.color_mode,
+          haze:           P.haze,
+          avgR:           tr.avgR,
+          frustumTextures,
+          meshMode:       P.mesh_view,
+          meshShaded:     P.mesh_shaded,
+        });
+      }
+      if (flyDone) this._finishFly(this.flyAnim.camIdx);  // also when its last frame is skipped
+      if (skip) return;
     }
 
     const psnrTxt = tr.lastPsnr > 0 ? `${tr.lastPsnr.toFixed(2)} dB` : '--';
     const optLabel = P.opt_method === 'sim_anneal'  ? `SA(T=${tr.currentTemp.toFixed(3)})`
-                   : P.opt_method === 'monte_carlo' ? `MC(η=${P.mc_noise})` : 'Adam';
+                   : P.opt_method === 'monte_carlo' ? `MC(λ=${P.mc_noise})` : 'Adam';
     this.statusEl.textContent =
       `[${optLabel}] Step: ${tr.stepCount} | PSNR: ${psnrTxt} | Splats: ${tr.count} (${tr.numVisibleView} vis) | Leaves: ${this.octree.leaves.length}` +
       (P.camera_mode === 'drone' && this.droneLive ? ` | ${this.drone.hud(this.octree.sceneRadius)}` : '') +

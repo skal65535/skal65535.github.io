@@ -30,9 +30,12 @@ export async function reconstructFromFeatures(features, width, height, matcher, 
                                                           onProgress: (d, n) => o.progress('match', d, n) });
   const ms = matched.stats;
   log(`matching: ${ms.matched} pairs, ${ms.verified} verified (loops ${ms.loopsVerified}/${ms.loopsTried}), ` +
-      `${Math.round(ms.inliers / Math.max(1, ms.verified))} inliers per pair in ${seconds(tm)}`);
+      `${Math.round(ms.inliers / Math.max(1, ms.verified))} inliers per pair in ${seconds(tm)} (GPU matching ${(ms.gpuMs / 1000).toFixed(1)} s, verification ${(ms.verifyMs / 1000).toFixed(1)} s of CPU ` +
+      `${ms.workers ? `on ${ms.workers} workers, done ${(ms.waitMs / 1000).toFixed(1)} s after the GPU` : 'inline'})`);
 
-  const input = { camera: o.camera ?? defaultCamera('OPENCV', width, height), images: matched.images, pairs: matched.pairs };
+  // a camera per lens when given (o.cameras, the features' `camera` index: photo sets, DESIGN-sfm §13 P8)
+  const input = { camera: o.camera ?? o.cameras?.[0] ?? defaultCamera('OPENCV', width, height), ...(o.cameras ? { cameras: o.cameras } : {}),
+                  images: matched.images, pairs: matched.pairs };
   const have = new Set(matched.pairs.map(p => `${p.i},${p.j}`));
   const proposeLoops = async (mapper) => {
     const geo = geometricCandidates(mapper, { minGap: 2 * o.window, perFrame: 16, rng }).filter(([i, j]) => !have.has(`${i},${j}`));

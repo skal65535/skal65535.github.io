@@ -82,3 +82,45 @@ Deno.test('near-camera cone: the sphere grid finds exactly the splats a scan of 
   }
   assert(hits > 1000, `only ${hits} points in a cone`);
 });
+
+Deno.test('near-camera cone, spare: a splat near an SfM point is in no cone (a scan of every point)', () => {
+  const r = makeRng(11), uv = [0, 0];
+  const images = Array.from({ length: 40 }, () => {
+    const R = mul3(expSO3([r() - 0.5, 6 * r(), r() - 0.5]), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const C = [8 * r() - 4, r() - 0.5, 8 * r() - 4], t = [0, 1, 2].map(i => -(R[3 * i] * C[0] + R[3 * i + 1] * C[1] + R[3 * i + 2] * C[2]));
+    return { R, t, camera: { fx: 700, fy: 700, cx: 500, cy: 350, width: 1000, height: 700 }, zMin: 1 + 2 * r() };
+  });
+  const count = 3000, positions = Float32Array.from({ length: 3 * count }, (_, i) => i % 3 === 1 ? 3 * r() - 1.5 : 10 * r() - 5);
+  const radius = 0.3, near = nearCameraCone(images, { spare: { positions, count, radius } });
+  const inCone = (x, y, z) => images.some(({ R, t, camera, zMin }) => {
+    const zc = projectPinhole(R, t, camera, x, y, z, uv);
+    return zc > 0 && zc < 0.65 * zMin && uv[0] >= 0 && uv[0] <= camera.width && uv[1] >= 0 && uv[1] <= camera.height;
+  });
+  const nearPoint = (x, y, z) => { for (let p = 0; p < count; p++) if ((positions[3 * p] - x) ** 2 + (positions[3 * p + 1] - y) ** 2 + (positions[3 * p + 2] - z) ** 2 <= radius * radius) return true; return false; };
+  let spared = 0, carved = 0;
+  for (let k = 0; k < 20000; k++) {
+    const x = 10 * r() - 5, y = 3 * r() - 1.5, z = 10 * r() - 5, c = inCone(x, y, z), s = c && nearPoint(x, y, z);
+    assert(near(x, y, z) === (c && !s), `point ${k}: cone ${c}, near a point ${s}, got ${near(x, y, z)}`);
+    spared += s; carved += c && !s;
+  }
+  assert(spared > 100 && carved > 100, `spared ${spared}, carved ${carved}`);
+  assert(nearCameraCone(images, { spare: { positions, count, radius: 0 } })(positions[0], positions[1], positions[2]) === inCone(positions[0], positions[1], positions[2]), 'radius 0: off');
+});
+
+Deno.test('front-to-back sort: a leaf far over maxLeafSize (maxDepth reached) sorted in O(k log k), stable', () => {
+  const n = 100000, rng = makeRng(3), pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { pos[3 * i] = rng() - 0.5; pos[3 * i + 1] = rng() - 0.5; pos[3 * i + 2] = -1 - Math.floor(10000 * rng()) / 100; }
+  const tree = new LooseOctree({ maxLeafSize: 256, maxDepth: 0 }).buildIndexOnly(pos, n);
+  assert(tree.leaves.length === 1 && tree.leaves[0].count === n, `${tree.leaves.length} leaves`);
+  const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), out = new Uint32Array(n);
+  const t0 = performance.now();
+  const m = tree.sortIndexFrontToBack(pos, 3, [0, 0, 0], view, 0, 0, out, -1.0);
+  const ms = performance.now() - t0;
+  // depths in 10000 levels: ties kept in index order (the insertion sort's order)
+  const ref = Array.from({ length: n }, (_, i) => i).sort((a, b) => pos[3 * b + 2] - pos[3 * a + 2] || a - b);
+  assert(m === n, `${m} sorted of ${n}`);
+  let bad = 0;
+  for (let k = 0; k < n; k++) if (out[k] !== ref[k]) bad++;
+  assert(bad === 0, `${bad} out of order`);
+  assert(ms < 300, `${ms.toFixed(0)} ms for one leaf of ${n} (the insertion sort: ~1.5 s)`);
+});

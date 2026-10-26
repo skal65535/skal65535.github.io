@@ -51,37 +51,43 @@ const SSIM_W = (() => {
 })();
 
 export function rgbSsim(a, b, W, H, bpr) {
-  const C1 = 0.01 ** 2, C2 = 0.03 ** 2, n = W * H;
-  const x = new Float32Array(n), y = new Float32Array(n);
-  const tmp = Array.from({ length: 5 }, () => new Float32Array(n));  // horizontal pass of the moments
+  const n = W * H, x = new Float32Array(n), y = new Float32Array(n);
   let sum = 0;
   for (let c = 0; c < 3; c++) {
     for (let j = 0; j < H; j++) {
       for (let i = 0, o = j * bpr + c; i < W; i++, o += 4) { x[j * W + i] = a[o] / 255; y[j * W + i] = b[o] / 255; }
     }
-    const [hx, hy, hxx, hyy, hxy] = tmp;
-    for (let j = 0; j < H; j++) {
-      const row = j * W;
-      for (let i = 0; i < W; i++) {
-        let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-        for (let k = Math.max(-SSIM_R, -i); k <= Math.min(SSIM_R, W - 1 - i); k++) {
-          const g = SSIM_W[k + SSIM_R], u = x[row + i + k], v = y[row + i + k];
-          sx += g * u; sy += g * v; sxx += g * u * u; syy += g * v * v; sxy += g * u * v;
-        }
-        hx[row + i] = sx; hy[row + i] = sy; hxx[row + i] = sxx; hyy[row + i] = syy; hxy[row + i] = sxy;
-      }
-    }
-    for (let j = 0; j < H; j++) {
-      for (let i = 0; i < W; i++) {
-        let mx = 0, my = 0, exx = 0, eyy = 0, exy = 0;
-        for (let k = Math.max(-SSIM_R, -j); k <= Math.min(SSIM_R, H - 1 - j); k++) {
-          const g = SSIM_W[k + SSIM_R], p = (j + k) * W + i;
-          mx += g * hx[p]; my += g * hy[p]; exx += g * hxx[p]; eyy += g * hyy[p]; exy += g * hxy[p];
-        }
-        const vx = exx - mx * mx, vy = eyy - my * my, cxy = exy - mx * my;
-        sum += ((2 * mx * my + C1) * (2 * cxy + C2)) / ((mx * mx + my * my + C1) * (vx + vy + C2));
-      }
-    }
+    sum += ssimSum(x, y, W, H);
   }
   return sum / (3 * n);
+}
+
+// The SSIM map of one channel (x, y: W x H values in [0, 1]) summed over its pixels
+export function ssimSum(x, y, W, H) {
+  const C1 = 0.01 ** 2, C2 = 0.03 ** 2, n = W * H;
+  const [hx, hy, hxx, hyy, hxy] = Array.from({ length: 5 }, () => new Float32Array(n));  // horizontal pass of the moments
+  let sum = 0;
+  for (let j = 0; j < H; j++) {
+    const row = j * W;
+    for (let i = 0; i < W; i++) {
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+      for (let k = Math.max(-SSIM_R, -i); k <= Math.min(SSIM_R, W - 1 - i); k++) {
+        const g = SSIM_W[k + SSIM_R], u = x[row + i + k], v = y[row + i + k];
+        sx += g * u; sy += g * v; sxx += g * u * u; syy += g * v * v; sxy += g * u * v;
+      }
+      hx[row + i] = sx; hy[row + i] = sy; hxx[row + i] = sxx; hyy[row + i] = syy; hxy[row + i] = sxy;
+    }
+  }
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      let mx = 0, my = 0, exx = 0, eyy = 0, exy = 0;
+      for (let k = Math.max(-SSIM_R, -j); k <= Math.min(SSIM_R, H - 1 - j); k++) {
+        const g = SSIM_W[k + SSIM_R], p = (j + k) * W + i;
+        mx += g * hx[p]; my += g * hy[p]; exx += g * hxx[p]; eyy += g * hyy[p]; exy += g * hxy[p];
+      }
+      const vx = exx - mx * mx, vy = eyy - my * my, cxy = exy - mx * my;
+      sum += ((2 * mx * my + C1) * (2 * cxy + C2)) / ((mx * mx + my * my + C1) * (vx + vy + C2));
+    }
+  }
+  return sum;
 }

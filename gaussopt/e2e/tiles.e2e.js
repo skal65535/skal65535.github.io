@@ -6,8 +6,7 @@
 //     render on two devices, same splats and target; grads_2d and the WLBG moments agree slot
 //     by slot (only the float summation order differs);
 //   - tile_forward's depth spread (pix_state.w) on large flat splats: one near-opaque sheet,
-//     two sheets apart, and two sheets close;
-//   - the depth distortion gradients (tile_backward) of two sheets against the closed form.
+//     two sheets apart, and two sheets close.
 //   cd e2e && node tiles.e2e.js   (env: see harness.js)
 import { APP, PORT, fail, urlOf, run } from './harness.js';
 import { join } from 'node:path';
@@ -27,10 +26,9 @@ await run(async (page) => {
     const target = new Uint8Array(W * H * 4).map((_, i) => i % 4 === 3 ? 255 : 128 + 100 * Math.sin(i * 0.013 + (i % 4)));
 
     // One render of `splats` ([camera-frame xyz, logit opacity, log scales xyz, rgb dc]) on a
-    // new device; backward: also tile_backward (adam_step skipped: it would consume grads_2d),
-    // with depth distortion weight `dist`. Returns per splat (trainer order) its camera z, and
-    // per sorted slot proj_splats and its tile rect (proj_tiles).
-    const render = async (splats, { features = [], backward = false, dist = 0 } = {}) => {
+    // new device; backward: also tile_backward (adam_step skipped: it would consume grads_2d).
+    // Returns per sorted slot proj_splats and its tile rect (proj_tiles).
+    const render = async (splats, { features = [], backward = false } = {}) => {
       const device = await (await navigator.gpu.requestAdapter()).requestDevice({ requiredFeatures: features });
       const N = splats.length, params = new Float32Array(N * SPLAT_FLOATS);
       splats.forEach(([xc, op, ls, rgb], i) => params.set([...toWorld(xc), op, ...ls, 0, 1, 0, 0, 0, ...rgb, 0], i * SPLAT_FLOATS));
@@ -45,7 +43,7 @@ await run(async (page) => {
       };
       const k = tr._intrinsics(img), gt = await tr.ensureGtTexture(0);
       tr.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm);
-      tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, dist, 0, 0, 0]);
+      tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, 0, 0, 0, 0]);
       const pass = tr._pass;
       tr._pass = function (enc, pipe, ...a) { if (pipe !== this.pipeAdam) pass.call(this, enc, pipe, ...a); };
       tr._runPasses(backward ? gt : null);
@@ -53,9 +51,7 @@ await run(async (page) => {
                                                      { buf: tr.pixStateBuf, bytes: W * H * 16 },
                                                      { buf: tr.projSplatsBuf, bytes: tr.numVisible * 32 },
                                                      { buf: tr.projTilesBuf, bytes: tr.numVisible * 8 }]);
-      const z = Array.from({ length: N }, (_, i) => { const P = tr.cpuParams.subarray(i * SPLAT_FLOATS);
-        return R[6] * P[0] + R[7] * P[1] + R[8] * P[2]; });
-      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix, z,
+      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix,
                     proj: Array.from(proj), rects: Array.from(new Uint32Array(rects.buffer, rects.byteOffset, rects.length)) };
       device.destroy();
       return out;
@@ -96,17 +92,7 @@ await run(async (page) => {
       }
       spread[name] = { measured, lo, hi };
     }
-    // depth distortion: dL/dlogit_op (slot 3) and dL/dz_cam (slot 11) of each sheet, weight 1
-    // minus weight 0 (the color loss's part cancels out), and each sheet's alpha per pixel
-    // (1 - T_final of a render of it alone)
-    const wide = (z) => [[0, 0, z], Math.log(0.6 / 0.4), [Math.log(20), Math.log(20), Math.log(1e-3)], [0, 0, 0]];
-    const two = [wide(2), wide(4)];
-    const d1 = await render(two, { backward: true, dist: 1 }), d0 = await render(two, { backward: true });
-    const alphas = [];
-    for (const z of [2, 4]) { const { pix } = await render([wide(z)]); alphas.push(Array.from({ length: W * H }, (_, p) => 1 - pix[4 * p])); }
-    const distortion = [0, 1].map(i => ({ z: d1.z[i], dlogit: d1.g[i * 12 + 3] - d0.g[i * 12 + 3], dz: d1.g[i * 12 + 11] - d0.g[i * 12 + 11],
-                                          dz0: d0.g[i * 12 + 11] }));
-    return { backward, tiles, spread, distortion, alphas, pixels: W * H };
+    return { backward, tiles, spread, pixels: W * H };
   });
 
   const bw = r.backward;
@@ -151,25 +137,5 @@ await run(async (page) => {
     if (s.measured !== r.pixels) fail(`spread ${name}: ${s.measured} / ${r.pixels} pixels measured`);
     else if (!(Math.abs(s.lo - want) < 1e-3 && Math.abs(s.hi - want) < 1e-3)) fail(`spread ${name}: [${s.lo}, ${s.hi}], expected ${want}`);
   }
-  // Per pixel, sheets of alpha a1 (z = 2) and a2 (z = 4): L = 2 w1 w2 ln2, w1 = a1, w2 = (1 - a1) a2;
-  // dL/dalpha1 = 2 ln2 a2 (1 - 2 a1), dL/dalpha2 = 2 ln2 a1 (1 - a1), dalpha/dlogit = alpha (1 - 0.6);
-  // dL/dz1 = -2 w1 w2 / 2, dL/dz2 = 2 w1 w2 / 4. The gradients are means over the pixels.
-  const ln2 = Math.log(2), want = { 2: { dlogit: 0, dz: 0 }, 4: { dlogit: 0, dz: 0 } };
-  for (let p = 0; p < r.pixels; p++) {
-    const a1 = r.alphas[0][p], a2 = r.alphas[1][p], w12 = a1 * (1 - a1) * a2;
-    want[2].dlogit += 2 * ln2 * a2 * (1 - 2 * a1) * a1 * 0.4 / r.pixels;
-    want[4].dlogit += 2 * ln2 * a1 * (1 - a1) * a2 * 0.4 / r.pixels;
-    want[2].dz -= 2 * w12 / 2 / r.pixels;
-    want[4].dz += 2 * w12 / 4 / r.pixels;
-  }
-  for (const d of r.distortion) {
-    const w = want[Math.round(d.z)];
-    console.log(`distortion, sheet at z ${d.z.toFixed(3)}: dlogit ${d.dlogit.toFixed(5)} (want ${w?.dlogit.toFixed(5)}), dz ${d.dz.toFixed(5)} (want ${w?.dz.toFixed(5)})`);
-    if (!w) { fail(`distortion: a sheet at z ${d.z}`); continue; }
-    if (d.dz0 !== 0) fail(`distortion off, sheet at z ${d.z.toFixed(1)}: dL/dz ${d.dz0}, expected 0`);
-    for (const k of ['dlogit', 'dz']) {
-      if (!(Math.abs(d[k] - w[k]) < 1e-3 * Math.abs(w[k]))) fail(`distortion, sheet at z ${d.z.toFixed(1)}: ${k} ${d[k]}, expected ${w[k]} (0.1%)`);
-    }
-  }
-  return 'tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread and distortion gradients of flat sheets';
+  return 'tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread of flat sheets';
 });

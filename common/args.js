@@ -20,8 +20,8 @@ function parse_arg_str(arg_value, default_value) {
   return args.has(arg_value) ? args.get(arg_value) : default_value;
 }
 
-function parse_arg_bool(arg_value) {
-  help.B.push(`${arg_value}`.padEnd(32));
+function parse_arg_bool(arg_value, description = '') {
+  help.B.push(`${arg_value}`.padEnd(32) + description);
   return (args.has(arg_value) == true);
 }
 
@@ -40,4 +40,5 @@ function arg_help() {
     for (const C of help.B) str += ` - ${C}\n`;
   }
   console.log(str);
+  return str;
 }

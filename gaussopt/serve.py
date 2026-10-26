@@ -136,6 +136,8 @@ def scan_plys(gs_dir: Path):
         for pat in ["*.ply", "splats/*.ply", "splats_*/*.ply", "*.splat", "splats/*.splat",
                     "*.gosnap", "splats_*/*.gosnap"]:
             for f in sorted(r.glob(pat)):
+                if f.name.endswith(".mesh.ply"):  # src/mesh.js's meshes, not splats
+                    continue
                 try:
                     rel = f.relative_to(r)
                     found.append(str(rel))

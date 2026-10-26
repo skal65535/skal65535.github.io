@@ -20,6 +20,10 @@
 // mobile reflow simple (rows can stack their internals) and lets the panel
 // float anywhere on desktop without grid-track surprises.
 
+// A page-wide hook after every control change, (obj, key, value): e.g. to keep the URL params in sync.
+let changeHook = null;
+export function onAnyChange(fn) { changeHook = fn; }
+
 export function mkGui(parent, { title = '', collapsed = false, draggable = true, tips = null } = {}) {
   installTips();
   const root = document.createElement('div');
@@ -207,7 +211,10 @@ class Ctrl {
   name(text) { this._labelText = text; if (this._label) this._label.textContent = text; return this; }
   onChange(cb) { this._cb = cb; return this; }
   tip(text) { if (this._row_el) setTip(this._row_el, text); return this; }
-  _fire() { if (this._cb) this._cb(this._obj[this._key]); }
+  _fire() {
+    if (this._cb) this._cb(this._obj[this._key]);
+    changeHook?.(this._obj, this._key, this._obj[this._key]);
+  }
 
   // Disable user interaction. Used by demos for read-only displays
   // (combine with .listen() so the displayed value still updates).

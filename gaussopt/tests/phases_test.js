@@ -1,5 +1,5 @@
 // Phase states of the stepper (src/ui/phases.js), derived from what is loaded and running.
-import { phaseStates, advanceTo } from '../src/ui/phases.js';
+import { phaseStates, advanceTo, phaseLabel, phaseShown } from '../src/ui/phases.js';
 import { assert } from './util.js';
 
 const states = (s) => Object.fromEntries(Object.entries(phaseStates({ label: '', video: null, sfm: null, colmap: null, trainer: null, ...s }))
@@ -31,4 +31,13 @@ Deno.test('phases: a finished step moves forward only', () => {
   assert(advanceTo('video', 'keyframes') === 'keyframes');
   assert(advanceTo('cameras', 'train') === 'train');
   assert(advanceTo('export', 'train') === null && advanceTo('train', 'train') === null);
+});
+
+// A photo set (DESIGN-sfm §13.3 P5): Photos in place of Video, no Keyframes step
+Deno.test('phases: a photo set has a Photos phase and no Keyframes', () => {
+  const sfm = { running: null, busy: false, keyframes: 18, quality: { keyframes: 18, registered: 18, problems: 0, version: 0 }, sentVersion: 0 };
+  const s = phaseStates({ label: '', video: { name: '18 photos', photos: 18 }, sfm, colmap: { cams: 12, fromSfm: true }, trainer: null });
+  assert(s.video.state === 'done' && s.video.summary === '18 photos' && s.keyframes.state === 'skipped', JSON.stringify(s));
+  assert(phaseLabel('video', { photos: true }) === 'Photos' && phaseLabel('video') === 'Video' && phaseLabel('cameras', { photos: true }) === 'Cameras');
+  assert(!phaseShown('keyframes', { photos: true }) && phaseShown('keyframes') && phaseShown('video', { photos: true }));
 });

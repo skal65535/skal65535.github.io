@@ -1,6 +1,7 @@
 // demo.js — "Demo" free camera: a slow, hands-off flight that loosely follows the capture path.
 //
-// The path is the dataset's camera centers in capture (name) order, smoothed, walked by arc
+// The path is the dataset's camera centers in path order (capture (name) order, or the shortest path:
+// app.js _pathImages, DESIGN-sfm §13.3 P7), smoothed, walked by arc
 // length at `speed` scene radii per second; it turns back at the ends, or loops when the path
 // closes on itself (no path: a circle around the scene). The camera hangs on a slightly
 // underdamped spring from a target on the path plus a smooth wander offset (in units of the
@@ -8,14 +9,14 @@
 // on a spring of its own: it lags, overshoots a little and drifts, instead of replaying the track.
 "use strict";
 
-import { clamp, dot, cross, sub, madd, normalize, viewFromAxes, orbitBasis } from './math.js';
+import { clamp, dot, cross, sub, madd, scale, normalize, viewFromAxes, orbitBasis } from './math.js';
 
 // Smooth, non-repeating wander in [-1, 1]: three incommensurate sines per channel
 const wander = (t, k) => (Math.sin(0.11 * t + 1.7 * k) + 0.6 * Math.sin(0.27 * t + 4.1 * k) + 0.35 * Math.sin(0.63 * t + 2.3 * k)) / 1.95;
 
 // Damped spring step: x'' = w^2 (target - x) - 2 zeta w x'
 function spring(x, v, target, w, zeta, dt) {
-  const a = madd(madd([0, 0, 0], sub(target, x), w * w), v, -2 * zeta * w);
+  const a = madd(scale(sub(target, x), w * w), v, -2 * zeta * w);
   const v2 = madd(v, a, dt);
   return [madd(x, v2, dt), v2];
 }
@@ -26,7 +27,7 @@ export class DemoFlight {
     this.wander = 0.5;   // wander amplitude, in units of the cameras' near depth (see start)
   }
 
-  // images: name-sorted dataset images ({ center, view, zMin, zMax }); from: the pose on screen
+  // images: the dataset images in path order ({ center, view, zMin, zMax }); from: the pose on screen
   start(images, { center, view }, up, sceneCenter, sceneRadius) {
     this.up = normalize(up);
     this.R = sceneRadius || 1;

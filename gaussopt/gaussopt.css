@@ -90,6 +90,7 @@
 #frames-sheet figure { margin: 0; border: 2px solid #2a2d3a; border-radius: 4px; cursor: pointer; background: #000; }
 #frames-sheet figure.selected { outline: 2px solid #fff; outline-offset: 1px; }
 #frames-sheet img { display: block; width: 100%; aspect-ratio: var(--frame-aspect, 16 / 9); object-fit: cover; }
+#frames-sheet figure.unused { opacity: 0.35; cursor: default; }  /* a photo set's photos left out (filter, size) */
 #frames-sheet figcaption { font: 10px var(--font-mono); color: #aab; padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Keys & mouse help (H): centred over the view */
@@ -221,3 +222,10 @@
   #go-header .go-sub { display: none; }
   #phase-body { max-height: 60vh; }
 }
+
+/* ── photo sets: the shooting guide and the advice after mapping (DESIGN-sfm §13) ── */
+.sfm-advice, .shoot-guide { font-size: 12px; color: var(--ink-dim); margin: 4px 2px 8px; }
+.sfm-advice b, .shoot-guide summary { color: var(--ink); }
+.sfm-advice ul, .shoot-guide ul { margin: 4px 0; padding-left: 18px; }
+.sfm-advice li, .shoot-guide li { margin: 2px 0; }
+.shoot-guide summary { cursor: pointer; }

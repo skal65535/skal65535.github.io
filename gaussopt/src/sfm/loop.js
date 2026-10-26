@@ -39,8 +39,8 @@ function ransacSim3(mapper, corr, { rng, threshold, iterations, minInliers }) {
   const err = (G, c) => {
     let Ginv = inverses.get(G);
     if (!Ginv) { Ginv = inverse(G); inverses.set(G, Ginv); }
-    const [u, v, z] = project(mapper.camera, mapper.poses[c.j], apply(G, mapper.points[c.pa].X));
-    const [u2, v2, z2] = project(mapper.camera, mapper.poses[c.i], apply(Ginv, mapper.points[c.pb].X));
+    const [u, v, z] = project(mapper.cam(c.j), mapper.poses[c.j], apply(G, mapper.points[c.pa].X));
+    const [u2, v2, z2] = project(mapper.cam(c.i), mapper.poses[c.i], apply(Ginv, mapper.points[c.pb].X));
     if (!(z > 0) || !(z2 > 0)) return Infinity;
     const [pu, pv] = mapper.pixel(c.j, c.b), [qu, qv] = mapper.pixel(c.i, c.a);
     return Math.max((u - pu) ** 2 + (v - pv) ** 2, (u2 - qu) ** 2 + (v2 - qv) ** 2);

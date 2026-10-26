@@ -86,5 +86,17 @@ class ServeProjects(unittest.TestCase):
         self.assertEqual(self.request("PUT", "/project/p/", b"x")[0], 400)
 
 
+
+class ScanPlys(unittest.TestCase):
+    def test_meshes_are_not_checkpoints(self):
+        sys.path.insert(0, str(SERVE.parent))
+        from serve import scan_plys
+        with tempfile.TemporaryDirectory() as d:
+            gs = Path(d) / "gs"
+            (gs / "splats_gaussopt").mkdir(parents=True)
+            for rel in ["splats_gaussopt/gaussopt_01000.ply", "splats_gaussopt/gaussopt_01000.mesh.ply", "a.splat"]:
+                (gs / rel).write_bytes(b"x")
+            self.assertEqual(scan_plys(gs), ["a.splat", "splats_gaussopt/gaussopt_01000.ply"])
+
 if __name__ == "__main__":
     unittest.main()

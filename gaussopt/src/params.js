@@ -4,6 +4,7 @@
 "use strict";
 
 import { TRAIN_DEFAULTS } from './trainer.js';
+export { urlAfterChange } from './url.js';
 
 export const VISU_MODES = { 'gaussian': 0, 'cone': 1, 'ellipsis': 2, 'small_dot': 3, 'axis': 4 };
 
@@ -24,6 +25,10 @@ export const COMPARE_MODES = {
 
 export const FRUSTUM_IMAGES = { 'Off': 'off', 'Active Cam Only': 'active', 'All Cameras': 'all' };
 
+// The mesh in the free view (render.js MESH_*; DESIGN.md §9 E5)
+export const MESH_VIEWS = { 'splats only': 0, 'mesh + splats': 1, 'mesh only': 2, 'wireframe + splats': 3 };
+export const MESH_TEXTURES = { 'off (vertex colors)': 0, '1024': 1024, '2048': 2048, '4096': 4096 };
+
 export const OPT_METHODS = {
   'Adam (deterministic)':      'adam',
   'Monte-Carlo (SGLD / MCMC)': 'monte_carlo',
@@ -37,12 +42,18 @@ export const TIPS = {
   'Checkpoint / Resume': 'start from the COLMAP points, or resume from a saved .ply / snapshot of this dataset',
   resume_ply: 'the splats to start from: the COLMAP points3D, or a checkpoint saved by serve.py',
   'Optimizer (Adam / MC / SA)': 'how the splats are updated at each step (DESIGN §5.4)',
-  opt_method: 'Adam: plain gradient descent. Monte-Carlo: Adam plus Langevin noise on transparent splats, ' +
-              'and dead splats teleported to high-error places. Simulated annealing: Metropolis jumps of the positions',
-  mc_noise: 'Monte-Carlo: strength of the position noise, along each splat\'s axes, faded by its opacity',
+  opt_method: 'Adam: plain gradient descent. Monte-Carlo (3DGS-MCMC): Adam plus L1 terms on opacity and scale, Langevin noise on ' +
+              'the nearly transparent splats, dead splats moved onto live ones (no opacity reset). Simulated annealing: jumps of the centers at each rebalance, kept or undone (Metropolis) on the error they made over the window',
+  mc_noise: 'Monte-Carlo (3DGS-MCMC): noise on the centers of nearly transparent splats (opacity < 0.005), x lr_pos x their covariance',
+  mc_opacity_reg: 'Monte-Carlo: weight of the mean opacity in the loss (splats that do not earn their opacity die, and move)',
+  mc_scale_reg: 'Monte-Carlo: weight of the mean scale in the loss',
+  mc_relocate: 'Monte-Carlo: the dead splats move onto live ones drawn by opacity (3DGS-MCMC) or by their error',
+  mc_relocate_mode: 'Monte-Carlo: a live splat drawn takes the dead one as a copy in place (copy, 3DGS-MCMC) or splits into two halves within its shape (shape, brush)',
   sa_temp: 'Simulated annealing: starting temperature (larger: more jumps accepted)',
   sa_cooling: 'Simulated annealing: the temperature is multiplied by this every 50 steps',
-  sa_reheat: 'Simulated annealing: back to the starting temperature every 2 K steps (at least 100)',
+  sa_reheat: 'Simulated annealing: back to the starting temperature every 10 K steps (at least 1000)',
+  sa_share: 'Simulated annealing: the share of the visible splats given a new jump at each rebalance',
+  sa_size: 'Simulated annealing: the jumps\' size, in the splat\'s own scales, times the temperature',
   Visualization: 'how the splats are drawn, and the overlays',
   visu_mode: 'gaussian: the real render. cone, ellipsis, small dot, axis: shapes to inspect the splats',
   color_mode: 'learned colors, or a diagnostic: octree leaf, error mass R (WLBG), effective view count Neff, depth',
@@ -51,11 +62,19 @@ export const TIPS = {
                 'e.g. a wall rendered as two layers; blue: not enough opacity to tell). ' +
                 'The 2D modes show the camera being trained, or the camera # of the Camera folder when paused',
   split_x: 'Split mode: where the wipe between the photo (left) and the render (right) is',
+  mesh_view: 'the mesh (Save mesh, or a dropped .glb) in the 3D view. mesh + splats: the splats behind its surface hidden, ' +
+             'those in front kept (floaters show); mesh only; wireframe + splats: the splats behind its surface hidden, its visible edges over the rest, no fill',
+  mesh_shaded: 'the mesh in gray, lit from the camera (shows its shape), instead of its colors',
+  mesh_res: 'Save mesh: grid voxels along the scene\'s longest side (finer: more detail, more noise, slower)',
+  mesh_simplify: 'Save mesh: the largest shape error allowed when simplifying, in voxels (0: not simplified)',
+  mesh_texture: 'Save mesh: a texture of this size (texels per side) baked from the photos where the splats\' depth sees the surface; ' +
+                'off: only the vertex colors (from the splat renders)',
   haze: 'draws every splat this much larger (view only, training is not changed)',
   show_octree: 'wireframes of the octree leaves, colored by state',
   show_loose: 'the loose boxes of the leaves, (1 + 2β) times their nominal size',
   show_cameras: 'the training cameras as frustums (validation ones in another color, the active one highlighted)',
-  show_path: 'a line through the camera centers, in capture order',
+  show_path: 'a line through the camera centers, in the camera path order',
+  path_order: 'the camera path (path line, demo flight): capture order, or the shortest path through every camera (photo sets taken back and forth); names and training unchanged',
   show_splits: 'the error axes along which the last rebalance split splats',
   frustum_images: 'the training photos drawn inside the frustums: none, the active camera\'s, or all',
   frustum_scale: 'size of the drawn frustums',
@@ -78,18 +97,43 @@ export const TIPS = {
   floater_depth: 'which splats count as too near a camera (closer than 0.65 x this depth). observed: the depth of the ' +
                  'points the camera sees (the default, best at 30k steps on 4 of 5 test scenes). view: of all points ' +
                  'in its view, also those only other cameras saw (better early in training on gare-st-lazare)',
+  floater_spare: 'a splat this near an SfM point (x the scene radius) is never too near a camera, whichever camera saw ' +
+                 'the point (0: off). Without it, cameras walking past an object they did not see carve it',
   enable_split: 'split splats with much unexplained error along the main axis of that error, or clone small ones',
   enable_merge: 'merge overlapping splats of nearly the same color',
   max_splats: 'growth stops at this many splats',
+  cap_lease: 'E7: how far over max splats the count may go while training; the consolidation brings it back (needs a planned length)',
+  train_steps: 'E7: the planned length of the training (0: open-ended, no lease); the consolidation ends there',
+  polish: 'E7: the last part of the planned length without Monte-Carlo\'s noise and L1 terms (plain Adam steps)',
+  consolidate_frac: 'E7: the last part of the planned length: the count falls back to max splats (the splats seen least go), then trains there',
   max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats)',
-  depth_dist: 'weight of the depth distortion loss: it pulls the splats that make a pixel together in depth ' +
-              '(one surface, not a fog or two sheets; the Depth spread view shows what is left). 0: off (the default: ' +
-              'from the first step it costs 0.15-0.7 dB of validation PSNR at 30k steps on the test scenes)',
+  drop_rate: 'DropGaussian: the share of splats left out of each training render, the others more opaque by ' +
+             '1 / (1 - rate) (0: off; 0.25 helps on sparse photo sets, DESIGN.md E3)',
+  split_min_views: 'growth splits or clones only the splats seen from at least this many views (N_eff = W^2 / S): ' +
+                   'detail fitted to a single photo does not multiply (0: any)',
+  split_min_err: 'E9: growth splits or clones only the splats whose mean error under their footprint (L1, 0..1) is above this: ' +
+                 'growth stops once the fit is good (0: any)',
+  grow_rate: 'E9: at most this share of new splats at each rebalance, the highest error first (0: no limit)',
+  split_in_plane: 'E9: split and clone offsets keep off the splat\'s thinnest axis (on its plane, not off the surface)',
+  grow_by: 'E9: what growth splits by: \'error\' (the error mass under the splat above the mean, §5.1) or \'grad\' ' +
+           '(its mean unsigned positional gradient per view above grow_grad, as brush)',
+  grow_grad: 'E9: grow_by \'grad\'\'s threshold',
+  split_mode: 'E9: how a splat splits: \'error\' (two children along its error moments, or a clone at the error centroid) or ' +
+              '\'shape\' (two halves drawn within its own shape, scales / sqrt 2, opacity 1 - sqrt(1 - o), as brush)',
+  mesh_snap: 'mesh in the loop (experiment, DESIGN.md E5): every N steps the training views\' rendered depth is fused into a surface, ' +
+             'and the splats near it move this share of the way onto it (0: off)',
+  mesh_snap_every: 'mesh in the loop: how often, in steps',
+  mesh_snap_views: 'mesh in the loop: only where the surface was seen by at least this many training views',
+  ssim: 'weight of the D-SSIM loss, (1 - w) L1 + w (1 - SSIM) / 2 as in 3DGS (0.2 there). 0: off, ' +
+        '0.8 L1 + 0.2 L2 (the default)',
   max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles)',
   opacity_reset: 'every N steps, all opacities are lowered to 0.01 so useless splats fade out and get pruned (0: never). ' +
                  'Validation right at a reset reads low',
   stipple_seed: 'experiment E4: new splats seeded where the residual is large, by stippling the error image',
   stipple_count: 'E4: how many seeds at each rebalance',
+  region_log: 'E7: log the error of fixed cells of the scene at each rebalance (trainer.regionLog)',
+  region_res: 'E7: the cells per axis of that log and of the repair',
+  region_repair: 'E7: the regions whose error is high and falls slower than the scene\'s split more easily and get more of the relocated splats (0: off)',
   Evaluation: 'PSNR / SSIM on held-out cameras, never trained on',
   val_every: 'evaluate the held-out views every N steps (0: never)',
   val: 'evaluate the held-out views now',
@@ -115,16 +159,17 @@ const URL_ALIASES = {
   autosnap_every: 'autosnap',
   max_splats: 'max_splats',  // parsed (and clamped) by parse_arg below
 };
-// Other URL params read by the app: &video=URL (SfM panel), &nosg, &sfm_* (src/ui/sfm_panel.js)
-const isOtherUrlParam = k => k === 'video' || k === 'nosg' || k.startsWith('sfm_');
+// Other URL params read by the app: &video=URL, &photos=URL,URL (SfM panel), &nosg, &sfm_* (src/ui/sfm_panel.js)
+const isOtherUrlParam = k => k === 'video' || k === 'photos' || k === 'nosg' || k.startsWith('sfm_');
 
 // Params saved in / restored from a .gosnap snapshot (optimizer + growth settings)
 export const SNAPSHOT_PARAMS = [
-  'opt_method', 'mc_noise', 'sa_temp', 'sa_cooling', 'sa_reheat',
+  'opt_method', 'mc_noise', 'mc_opacity_reg', 'mc_scale_reg', 'mc_relocate', 'mc_relocate_mode', 'sa_temp', 'sa_cooling', 'sa_reheat', 'sa_share', 'sa_size',
   'max_leaf_size', 'beta', 'rebalance_every', 'rebalance_every_cap',
-  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth',
-  'max_splats', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count',
-  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'depth_dist',
+  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth', 'floater_spare',
+  'max_splats', 'cap_lease', 'train_steps', 'consolidate_frac', 'polish', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count', 'region_repair', 'region_res',
+  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'ssim',
+  'drop_rate', 'split_min_views', 'split_min_err', 'grow_rate', 'split_in_plane', 'grow_by', 'grow_grad', 'split_mode', 'mesh_snap', 'mesh_snap_every', 'mesh_snap_views',
   'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset',
 ];
 
@@ -133,8 +178,14 @@ export const SNAPSHOT_PARAMS = [
 export const PROJECT_PARAMS = [
   ...SNAPSHOT_PARAMS, 'downsample', 'aniso_init', 'val_every', 'val_split', 'stop_after', 'autosnap_every',
   'split_x', 'visu_mode', 'color_mode', 'compare_mode', 'haze',
-  'show_octree', 'show_loose', 'show_cameras', 'show_path', 'show_splits', 'frustum_images', 'frustum_scale',
+  'show_octree', 'show_loose', 'show_cameras', 'show_path', 'path_order', 'show_splits', 'frustum_images', 'frustum_scale',
+  'mesh_view', 'mesh_shaded', 'mesh_res', 'mesh_simplify', 'mesh_texture',
 ];
+
+// The URL names of param `key` ([alias, name]), or [] for those app.js _syncUrl writes after a load
+// (dataset_url, resume_ply)
+export const URL_FLAGS = ['train'];  // the boolean params read by presence (parse_arg_bool)
+export const urlNamesOf = (key) => (key === 'dataset_url' || key === 'resume_ply') ? [] : [URL_ALIASES[key], key].filter(Boolean);
 
 // The params of a new app: defaults, the aliased URL params already parsed (parse_arg*)
 export function defaultParams() {
@@ -146,7 +197,7 @@ export function defaultParams() {
     downsample:      parse_arg('ds', 4, 1, 8),
 
     // Optimizer: 'adam' | 'monte_carlo' (SGLD/MCMC) | 'sim_anneal'
-    opt_method:      parse_arg_str('opt', 'adam'),
+    opt_method:      parse_arg_str('opt', 'monte_carlo'),  // E6: the best on average; opt=adam for plain Adam
     // learning rates, MC / SA, shape limits, opacity reset (trainer.js)
     ...TRAIN_DEFAULTS,
 
@@ -171,10 +222,16 @@ export function defaultParams() {
     show_octree:     true,
     show_loose:      false,
     show_cameras:    true,
-    show_path:       false,  // COLMAP camera path (centers in capture order)
+    show_path:       false,  // COLMAP camera path (centers in path_order)
+    path_order:      'capture',  // the camera path: 'capture' (name order) | 'shortest' (path.js, DESIGN-sfm §13.3 P7)
     show_splits:     true,
     frustum_images:  'off',
     frustum_scale:   1.0,
+    mesh_view:       0,      // MESH_VIEWS
+    mesh_shaded:     false,
+    mesh_res:        384,    // Save mesh: grid voxels along the longest side ...
+    mesh_simplify:   1,      // ... and the simplification's error limit, in voxels
+    mesh_texture:    2048,   // ... and its texture's size (MESH_TEXTURES; 0: vertex colors)
 
     // Octree & WLBG growth
     max_leaf_size:   256,
@@ -187,11 +244,19 @@ export function defaultParams() {
     enable_merge:    true,
     remove_floaters: true,
     floater_depth:   'observed',  // near-camera carve depth: 'observed' | 'view' (octree.js nearCameraCone)
+    floater_spare:   0.01,        // x sceneRadius: splats this near an SfM point are not carved (0: off; DESIGN.md §5)
     max_splats:      parse_arg('max_splats', 300000, 1000, 2000000),
+    cap_lease:       0,      // E7: the count may go this fraction over max_splats until the consolidation (needs train_steps)
+    train_steps:     0,      // E7: the planned length of the training (0: open-ended, no lease)
+    consolidate_frac: 0.2,   // E7: the last fraction of train_steps, back to max_splats (trainer.js splatBudget)
+    polish:          false,  // E7: Monte-Carlo's noise and L1 terms off over that last fraction (plain Adam steps)
     prune_opacity:   0.008,
     hysteresis:      0.35,
-    stipple_seed:    parse_arg_bool('stipple'), // E4: seed new splats from residual stippling
+    stipple_seed:    !['0', 'false', 'off'].includes(parse_arg_str('stipple', '1')), // E4: seed new splats from residual stippling (on by default, E6; stipple=0: off; a bare 'stipple': on)
     stipple_count:   2000,
+    region_log:      false,  // E7: per-rebalance error of fixed cells of the scene, in trainer.regionLog (regions.js)
+    region_res:      8,      // E7: cells per axis
+    region_repair:   0,      // E7: > 0: the stuck cells' splits need R > Tu / (1 + this), Monte-Carlo relocates there (1 + this) as often
 
     // Evaluation: held-out (validation camera) PSNR every N training steps (0 = off)
     val_every:       parse_arg('val', 500, 0, 100000),

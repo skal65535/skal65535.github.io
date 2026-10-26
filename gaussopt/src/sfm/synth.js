@@ -10,7 +10,7 @@
 "use strict";
 
 import { makeRng, cross, normalize } from '../math.js';
-import { makeCamera, defaultCamera, project, inFieldOfView, poseFromCenter, meanFocal } from './camera.js';
+import { makeCamera, defaultCamera, project, inFieldOfView, poseFromCenter, meanFocal, withFocal } from './camera.js';
 
 export function gaussian(rng) {
   const u1 = Math.max(1e-12, rng()), u2 = rng();
@@ -34,6 +34,9 @@ const DEFAULTS = {
   outlierFrac: 0,       // fraction of each pair's matches replaced by random keypoint pairs
   cut: null,            // 0..1: no sequential pair crosses that frame (only revisits link both sides)
   fps: 30, keyframeEvery: 6,  // timestamps: keyframe k at k * keyframeEvery / fps seconds
+  // several lenses (DESIGN-sfm §13 P8): params of each, frame k's lens cameraOf(k), and the focal
+  // priors the input cameras start from (else COLMAP's default focal); null: one camera, `params`
+  cameras: null, cameraOf: null, priorFocals: null,
 };
 
 function makePoints(o, rng) {
@@ -111,12 +114,15 @@ function makePath(o) {
 export function makeSyntheticScene(options = {}) {
   const o = { ...DEFAULTS, ...options };
   const rng = makeRng(o.seed);
-  const camera = makeCamera(o.model, o.width, o.height, o.params);
+  const lenses = (o.cameras ?? [o.params]).map(p => makeCamera(o.model, o.width, o.height, p));
+  const lensOf = (k) => (o.cameras && o.cameraOf ? o.cameraOf(k) : 0);
+  const camera = lenses[0];
   const points = makePoints(o, rng);
   const strength = points.map(() => rng());  // detector response: the same points win in every frame
   const poses = makePath(o);
 
   const images = poses.map((pose, k) => {
+    const camera = lenses[lensOf(k)];
     const visible = [];
     for (let p = 0; p < points.length; p++) {
       if (!inFieldOfView(camera, pose, points[p])) continue;
@@ -162,15 +168,17 @@ export function makeSyntheticScene(options = {}) {
   }
 
   const truthImages = images.map(({ name, R, t, pointIds }) => ({ name, R, t, pointIds }));
+  const prior = (k) => (o.priorFocals ? withFocal(defaultCamera(o.model, o.width, o.height), o.priorFocals[k]) : defaultCamera(o.model, o.width, o.height));
   return {
     options: o,
     input: {
-      camera: defaultCamera(o.model, o.width, o.height),
-      images: images.map(({ name, keypoints }) => ({ name, keypoints })),
+      camera: prior(0),
+      ...(o.cameras ? { cameras: lenses.map((_, k) => prior(k)) } : {}),
+      images: images.map(({ name, keypoints }, k) => ({ name, keypoints, ...(o.cameras ? { camera: lensOf(k) } : {}) })),
       pairs,
     },
     truth: {
-      camera, images: truthImages, points,
+      camera, ...(o.cameras ? { cameras: lenses } : {}), images: truthImages, points,
       model: { images: truthImages, focal: meanFocal(camera), numPoints: points.length },
     },
   };

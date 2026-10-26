@@ -38,7 +38,7 @@ Deno.test('metrics: a one-pixel shift of fine detail costs PSNR, not 1/4-resolut
   assert(rgbPsnrDown(s0, s1, W, H, BPR, 4) > 90, 'blocks of 4 average the stripes out');
 });
 
-Deno.test('splitValidation: every8 by index or name hash; block is the middle tenth in name order', () => {
+Deno.test('splitValidation: every8 by index or name hash; block is the middle tenth in name order; none', () => {
   const images = Array.from({ length: 40 }, (_, i) => ({ name: `f_${String(1000 - 7 * i).padStart(6, '0')}.jpg` }));
   splitValidation(images);
   assert(images.filter(im => im.isValidation).length === 5 && images[4].isValidation && images[12].isValidation);
@@ -48,4 +48,7 @@ Deno.test('splitValidation: every8 by index or name hash; block is the middle te
   assert(held.length === 4 && held.join() === sorted.slice(18, 22).join(), `block: ${held}`);
   splitValidation(images.slice(0, 7), 'block');
   assert(!images.slice(0, 7).some(im => im.isValidation), 'fewer than 8 views: none held out');
+  splitValidation(images, 'every8');
+  splitValidation(images, 'none');
+  assert(!images.some(im => im.isValidation), "'none' (photo sets): every view trains");
 });

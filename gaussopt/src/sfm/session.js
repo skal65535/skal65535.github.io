@@ -5,7 +5,8 @@
 //   drop       remove keyframes, re-adjust around them
 //   retry      re-match the range (wider window, looser ratio), re-register it into the map
 //   redo       cut the range into a new segment, re-initialize and map it, merge it back (Sim(3))
-//   insert     add keyframes (densify: the worker extracts them from the video), register them
+//   insert     add keyframes (densify: the worker extracts them from the video; photos added to a
+//              set), register them (photo sets: then regrow the smaller segments into the largest)
 //   forceLoop  match two keyframes, add a 'user-loop' pair, re-run loop closure and refinement
 //   rejectLoops drop loop pairs and replay loop closure + refinement from the sequential map
 //   setFocal   set (or re-estimate) the focal, optionally fixed, and re-run the reconstruction
@@ -29,10 +30,11 @@ export const key = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 export const withNames = (pairs, images) => pairs.map(p => ({ ...p, a: images[p.i].name, b: images[p.j].name }));
 
 export class SfmSession {
-  // input: { camera, images: [{ name, keypoints, time? }] (time order), pairs: [{ i, j, type, matches }] }
+  // input: { camera, cameras? (one per lens), images: [{ name, keypoints, time?, camera? (index) }] (time order), pairs: [{ i, j, type, matches }] }
   // mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); loops: S3 on / off
   constructor(input, { pairSource = null, mapping = {}, loops = true, window = 10, seed = 1, log = () => {}, progress = () => {} } = {}) {
     this.camera = input.camera;
+    this.cameras = input.cameras ?? null;
     this.images = input.images;
     this.pairs = withNames(input.pairs, input.images);
     Object.assign(this, { pairSource, mapping, loopsOn: loops, window, seed, log, progress });
@@ -54,7 +56,7 @@ export class SfmSession {
       .map(p => (p.i < p.j ? p : { ...p, i: p.j, j: p.i, a: p.b, b: p.a, matches: swapMatches(p.matches) }));
   }
 
-  _input() { return { camera: this.camera, images: this.images, pairs: this._indexed() }; }
+  _input() { return { camera: this.camera, ...(this.cameras ? { cameras: this.cameras } : {}), images: this.images, pairs: this._indexed() }; }
   _options() { return { ...this.mapping, loops: this.loopsOn, seed: this.seed, log: this.log, progress: this.progress }; }
 
   _loopsByName(stats) { return withNames(stats?.loops ?? [], this.images); }
@@ -80,11 +82,11 @@ export class SfmSession {
 
   // checkLoops: relocalize the loop edges on the map (quality.js; a second or so, for what the panel shows)
   quality({ checkLoops = false } = {}) {
-    const camera = this.mapper.camera.params.join();
+    const camera = this.mapper.cameras.map(c => c.params.join()).join('|');
     if (camera !== this.twoViewCamera) { this.twoView.clear(); this.twoViewCamera = camera; }
     const ix = this._index();
     const loops = this.loops.map(l => ({ ...l, i: ix.get(l.a), j: ix.get(l.b) })).filter(l => l.i !== undefined && l.j !== undefined);
-    return keyframeQuality(this.mapper, { loops, checkLoops, times: this.images.map((im, k) => im.time ?? k), cache: this.twoView, viewPsnr: this.viewPsnr });
+    return keyframeQuality(this.mapper, { loops, checkLoops, cache: this.twoView, viewPsnr: this.viewPsnr });
   }
 
   // Saved state (project.js): keyframe list (without keypoints: the features hold them), pairs,
@@ -92,7 +94,7 @@ export class SfmSession {
   toState() {
     const pairs = this._indexed(), { json: mapper, ...mapperArrays } = this.mapper.toState();
     return {
-      json: { images: this.images.map(im => ({ name: im.name, time: im.time })), loops: this.loops, rejected: [...this.rejected],
+      json: { images: this.images.map(im => ({ name: im.name, time: im.time, ...(im.camera !== undefined ? { camera: im.camera } : {}) })), loops: this.loops, rejected: [...this.rejected],
               mapping: this.mapping, loopsOn: this.loopsOn, window: this.window, seed: this.seed,
               pairTypes: pairs.map(p => p.type), mapper },
       arrays: {
@@ -113,7 +115,7 @@ export class SfmSession {
       pairs.push({ i: arrays.pairIJ[2 * p], j: arrays.pairIJ[2 * p + 1], type: json.pairTypes[p], matches: arrays.pairMatches.slice(o, o + n) });
       o += n;
     }
-    const s = new SfmSession({ camera: json.mapper.camera, images, pairs },
+    const s = new SfmSession({ camera: json.mapper.camera, ...(json.mapper.cameras?.length > 1 ? { cameras: json.mapper.cameras } : {}), images, pairs },
                              { pairSource, mapping: json.mapping, loops: json.loopsOn, window: json.window, seed: json.seed, log, progress });
     s.mapper = new SequentialMapper(s._input(), { ...json.mapping, log, progress, pairTypes: [...new Set(json.pairTypes), 'seq'] });
     s.mapper.setState({ json: json.mapper, ...arrays });
@@ -282,40 +284,35 @@ export class SfmSession {
   // Retry of every stretch of amber / red keyframes a re-match can mend (not rotation-only frames,
   // whose poses are right, nor separate maps, which need redo), each kept only when the scores
   // improve (fewer red, or as many and more green) and undone otherwise. One undo reverts it all.
-  repair({ passes = 1 } = {}) {
-    return this._action('repair', { passes }, async () => {
+  repair() {
+    return this._action('repair', {}, async () => {
       const ops = this.ops.length, frames = new Set(), mendable = (f) => f.score !== 'green' && !/rotation only|separate map/.test(f.reason);
       let counts = this.quality().counts, tried = 0, kept = 0;
-      for (let pass = 0; pass < passes; pass++) {
-        const runs = [];
-        let run = null;
-        for (const f of this.quality().frames) {
-          if (!mendable(f)) run = null;
-          else (run ?? (runs.push(run = []), run)).push(f.name);
-        }
-        let keptNow = 0;
-        for (const [k, names] of runs.entries()) {
-          this.progress('repair', k, runs.length);
-          tried++;
-          const what = `${names[0]}${names.length > 1 ? ` +${names.length - 1}` : ''}`;
-          let r;
-          try {
-            r = await this.retry(names);
-          } catch (e) {
-            this.log(`repair: ${what}: ${e.message}`);
-            continue;
-          }
-          const c = r.quality.counts, better = c.red < counts.red || (c.red === counts.red && c.green > counts.green);
-          this.log(`repair: ${what}: ${JSON.stringify(counts)} -> ${JSON.stringify(c)}, ${better ? 'kept' : 'undone'}`);
-          if (!better) { this.undo(); continue; }
-          counts = c;
-          keptNow++;
-          for (const n of names) frames.add(n);
-        }
-        this.progress('repair', runs.length, runs.length);
-        kept += keptNow;
-        if (!keptNow) break;  // the next pass would try the same stretches on the same map
+      const runs = [];
+      let run = null;
+      for (const f of this.quality().frames) {
+        if (!mendable(f)) run = null;
+        else (run ?? (runs.push(run = []), run)).push(f.name);
       }
+      for (const [k, names] of runs.entries()) {
+        this.progress('repair', k, runs.length);
+        tried++;
+        const what = `${names[0]}${names.length > 1 ? ` +${names.length - 1}` : ''}`;
+        let r;
+        try {
+          r = await this.retry(names);
+        } catch (e) {
+          this.log(`repair: ${what}: ${e.message}`);
+          continue;
+        }
+        const c = r.quality.counts, better = c.red < counts.red || (c.red === counts.red && c.green > counts.green);
+        this.log(`repair: ${what}: ${JSON.stringify(counts)} -> ${JSON.stringify(c)}, ${better ? 'kept' : 'undone'}`);
+        if (!better) { this.undo(); continue; }
+        counts = c;
+        kept++;
+        for (const n of names) frames.add(n);
+      }
+      this.progress('repair', runs.length, runs.length);
       this.ops.length = ops;  // the kept retries are one action: undo goes back to before them all
       return { frames: [...frames], tried, kept };
     });
@@ -360,7 +357,14 @@ export class SfmSession {
       this.mapper.addPairs(this._indexed(found));
       const seg = this._segmentAround(added);
       if (seg < 0) throw new Error('insert: the new keyframes match no registered keyframe');
-      const registered = this.mapper.grow(seg, new Set(added));
+      let registered = this.mapper.grow(seg, new Set(added));
+      // photo sets (regrowSegments on): a photo added between two pieces lets the smaller join
+      if (this.mapper.o.regrowSegments) {
+        const before = this.mapper.poses.filter(Boolean).length;
+        this.mapper.regrowSegments();
+        registered = added.filter(k => this.mapper.poses[k]).length;
+        this.log(`insert: ${this.mapper.poses.filter(Boolean).length - before} more keyframes after regrowing the segments`);
+      }
       this._adjust(added);
       return { frames: images.map(im => im.name), registered, pairs: found.length };
     });

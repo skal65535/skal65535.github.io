@@ -244,12 +244,13 @@ export function poseFromEssential(E, rays1, rays2) {
 }
 
 // Relative pose of frame 2 from matched pixels x1 <-> x2: RANSAC essential matrix on the
-// undistorted normalized rays (8-point F there, threshold in pixels / f), cheirality. Returns
+// undistorted normalized rays (8-point F there, threshold in pixels / f), cheirality; camera2: frame
+// 2's camera when it is another (lenses of a photo set, DESIGN-sfm §13 P8). Returns
 // { F (RANSAC result, normalized coordinates), idx (inlier indices), rays1, rays2 (inliers,
 // normalized), R, t, front, numFront } or null.
-export function relativePose(x1, x2, camera, { rng, threshold = 2, minInliers = 8 }) {
-  const r1 = x1.map(p => normalizedFromImage(camera, ...p)), r2 = x2.map(p => normalizedFromImage(camera, ...p));
-  const F = ransacFundamental(r1, r2, { rng, threshold: threshold / meanFocal(camera) });
+export function relativePose(x1, x2, camera, { rng, threshold = 2, minInliers = 8, camera2 = camera }) {
+  const r1 = x1.map(p => normalizedFromImage(camera, ...p)), r2 = x2.map(p => normalizedFromImage(camera2, ...p));
+  const F = ransacFundamental(r1, r2, { rng, threshold: threshold / Math.sqrt(meanFocal(camera) * meanFocal(camera2)) });
   if (!F || F.numInliers < minInliers) return null;
   const idx = [...F.inliers.keys()].filter(k => F.inliers[k]);
   const rays1 = idx.map(k => r1[k]), rays2 = idx.map(k => r2[k]);
@@ -260,14 +261,14 @@ export function relativePose(x1, x2, camera, { rng, threshold = 2, minInliers = 
 // it is not trustworthy: F is degenerate when a homography explains the matches (planar ground
 // seen from a drone, rotation only), and then two RANSAC runs disagree. At most maxMatches
 // (evenly sampled) decide it. Arbiter of the model's and COLMAP's poses (quality.js, reference.js).
-export function twoViewPose(x1, x2, camera, { rng, maxHomographyRatio = 0.7, maxSpreadDeg = 0.3, maxMatches = 600 }) {
+export function twoViewPose(x1, x2, camera, { rng, maxHomographyRatio = 0.7, maxSpreadDeg = 0.3, maxMatches = 600, camera2 = camera }) {
   const stride = Math.ceil(x1.length / maxMatches);
   if (stride > 1) { x1 = x1.filter((_, m) => m % stride === 0); x2 = x2.filter((_, m) => m % stride === 0); }
-  const rel = relativePose(x1, x2, camera, { rng, threshold: 1, minInliers: 50 });
+  const rel = relativePose(x1, x2, camera, { rng, threshold: 1, minInliers: 50, camera2 });
   if (!rel) return null;
   const H = ransacHomography(x1, x2, { rng, threshold: 2, maxIterations: 300 });  // a gate, not an estimate
   if (H && H.numInliers > maxHomographyRatio * rel.F.numInliers) return null;
-  const again = relativePose(x1, x2, camera, { rng, threshold: 1, minInliers: 50 });
+  const again = relativePose(x1, x2, camera, { rng, threshold: 1, minInliers: 50, camera2 });
   if (!again || deg(rotationAngle(rel.R, again.R)) > maxSpreadDeg) return null;
   return { R: rel.R, t: rel.t };
 }

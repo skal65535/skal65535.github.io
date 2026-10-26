@@ -9,6 +9,7 @@ import { mkGui } from '../../../common/controls.js';
 import { DirStore, ServerStore, MemoryStore } from '../project/store.js';
 import { Project } from '../project/project.js';
 import { zipBlob } from '../project/zip.js';
+import { downloadBlob } from './download.js';
 import { loadColmapFromMemory } from '../colmap.js';
 
 const IDB = 'gaussopt', IDB_STORE = 'handles', RECENT = 'recent-project';
@@ -147,7 +148,7 @@ export class ProjectPanel {
     if (!await project.read('gs/sparse/cameras.bin')) return;
     const sparse = {};
     for (const f of ['cameras.bin', 'images.bin', 'points3D.bin']) sparse[f] = await (await project.read(`gs/sparse/${f}`))?.arrayBuffer();
-    const colmap = loadColmapFromMemory(sparse, [], { valSplit: app.params.val_split });
+    const colmap = loadColmapFromMemory(sparse, [], { valSplit: m.source?.photos ? 'none' : app.params.val_split });  // sfm_panel valSplit
     for (const im of colmap.images) {  // a folder's files are cheap to open; serve.py's are fetched by the trainer
       if (project.store.urlOf) im.imageUrl = project.store.urlOf(`gs/images/${im.name}`);
       else im.fileBlob = await project.read(`gs/images/${im.name}`);
@@ -175,11 +176,7 @@ export class ProjectPanel {
       if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
       await project.update();
       const zip = await zipBlob([...store.files]);
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(zip);
-      a.download = `${store.name}.zip`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      downloadBlob(zip, `${store.name}.zip`);
       app.log(`Downloaded ${store.name}.zip (${store.files.size} files, ${(zip.size / 1e6).toFixed(0)} MB)`, 'ok');
     } catch (e) {
       app.showError(`Project .zip: ${e.message}`);

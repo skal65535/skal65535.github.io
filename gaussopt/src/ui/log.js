@@ -4,7 +4,7 @@
 "use strict";
 
 const MAX_LINES = 500;
-export const LOG_FILTERS = { all: 'all', app: 'app', 'video → cameras': 'sfm', training: 'train', '⚠ problems': 'warn' };
+const LOG_FILTERS = { all: 'all', app: 'app', 'video → cameras': 'sfm', training: 'train', '⚠ problems': 'warn' };
 
 export class LogPanel {
   // body: the scrolling element of the lines; filter: a <select> (optional)

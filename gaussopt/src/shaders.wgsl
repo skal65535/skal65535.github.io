@@ -9,13 +9,19 @@
 //                         [qw, qx, qy, qz], [f_dc_r, f_dc_g, f_dc_b, flags]
 // Moments (12 f32): W, S, R, R1.xyz, R2.(xx, yy, zz, xy, xz, yz)
 // Grads   (12 f32): dL/drgb.xyz, dL/dlogit_op, dL/du0, dL/dv0,
-//                   dL/dconic.(a, b, c), w_view, w_err_view, dL/dz_cam
+//                   dL/dconic.(a, b, c), w_view, w_err_view, (unused)
 
 // === _math ===
 const SH_C0 : f32 = 0.28209479177387814;
 
 fn sigmoid(x: f32) -> f32 {
   return 1.0 / (1.0 + exp(-clamp(x, -15.0, 15.0)));
+}
+
+fn pcg_hash(v_in: u32) -> u32 {
+  let state = v_in * 747796405u + 2891336453u;
+  let word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
 }
 
 // q = (w, x, y, z), normalized here. Returns column-major R.
@@ -57,10 +63,24 @@ struct TrainUniforms {
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
-  loss       : vec4f, // x = depth distortion weight (tile_backward), yzw unused
+  loss       : vec4f, // x = D-SSIM weight (ssim_*, tile_backward), y = DropGaussian rate (project_splats),
+                      // z = its opacity factor 1 / (1 - y) (tile_forward / backward; 0 = 1), w unused
+  reg        : vec4f, // monte_carlo's L1 terms, already over the splat count: x = on opacity, y = on scale (per axis); zw unused
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
+
+// The opacity a splat renders with in training renders: DropGaussian's compensation of the dropped
+fn train_opacity_factor() -> f32 { return select(1.0, tu.loss.z, tu.loss.z > 0.0); }
+
+// === _ssim ===
+// SSIM as rgbSsim (src/metrics.js): 11x11 Gaussian window (sigma 1.5, these weights per axis),
+// truncated at the borders, C1 = 0.01^2, C2 = 0.03^2
+const SSIM_R  : i32 = 5;
+const SSIM_C1 : f32 = 0.0001;
+const SSIM_C2 : f32 = 0.0009;
+const SSIM_G = array<f32, 11>(0.00102838008, 0.00759875814, 0.0360007721, 0.109360690, 0.213005538, 0.266011725,
+                              0.213005538, 0.109360690, 0.0360007721, 0.00759875814, 0.00102838008);
 
 // === _raster ===
 const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
@@ -280,6 +300,69 @@ fn fs(in: WireOut) -> @location(0) vec4f {
   return vec4f(in.color.rgb * in.color.a, in.color.a);
 }
 
+// === mesh_render ===
+// The mesh of DESIGN.md §9 E5 (src/mesh.js, .glb) in the free view: indexed triangles or their edges
+// (vertex buffers: 0 position, 1 color, 2 uv). Its depth is linear in view z, written per fragment exactly as
+// the splats write theirs (splats_render), so the depth test between the two is fair even on large
+// simplified faces. fs_depth: depth only (the pre-pass that hides the splats behind the surface);
+// fs_color: vertex colors; fs_tex: its texture; fs_shaded: gray, lit by the camera (shows the shape);
+// fs_line: wireframe, pulled slightly towards the camera so it wins against its own faces.
+// Bindings: 0 WireUniforms; fs_tex: 1 mesh_tex, 2 mesh_samp.
+
+// #include _wire
+
+struct MeshOut {
+  @builtin(position) pos   : vec4f,
+  @location(0)       vpos  : vec3f,
+  @location(1)       color : vec4f,
+  @location(2)       uv    : vec2f,
+};
+
+@group(0) @binding(1) var mesh_tex  : texture_2d<f32>;
+@group(0) @binding(2) var mesh_samp : sampler;
+
+struct MeshFrag {
+  @location(0)          color : vec4f,
+  @builtin(frag_depth)  depth : f32,
+};
+
+@vertex
+fn vs(@location(0) p: vec3f, @location(1) c: vec4f, @location(2) uv: vec2f) -> MeshOut {
+  let v = (wu.view * vec4f(p, 1.0)).xyz;
+  // clip coordinates of the pinhole projection with w = view z: faces crossing the near plane are
+  // clipped there (the depth written is fs's, not this z)
+  let W = wu.screen.x; let H = wu.screen.y; let n = wu.screen.z; let f = wu.screen.w;
+  let x = 2.0 * (wu.intrinsics.x * v.x + wu.intrinsics.z * v.z) / W - v.z;
+  let y = v.z - 2.0 * (wu.intrinsics.y * v.y + wu.intrinsics.w * v.z) / H;
+  var out : MeshOut;
+  out.pos   = vec4f(x, y, f * (v.z - n) / (f - n), v.z);
+  out.vpos  = v;
+  out.color = c;
+  out.uv    = uv;
+  return out;
+}
+
+fn mesh_depth(z: f32) -> f32 { return clamp((z - wu.screen.z) / (wu.screen.w - wu.screen.z), 0.0, 0.9999); }
+
+@fragment
+fn fs_depth(in: MeshOut) -> @builtin(frag_depth) f32 { return mesh_depth(in.vpos.z); }
+
+@fragment
+fn fs_color(in: MeshOut) -> MeshFrag { return MeshFrag(vec4f(in.color.rgb, 1.0), mesh_depth(in.vpos.z)); }
+
+@fragment
+fn fs_tex(in: MeshOut) -> MeshFrag { return MeshFrag(vec4f(textureSample(mesh_tex, mesh_samp, in.uv).rgb, 1.0), mesh_depth(in.vpos.z)); }
+
+@fragment
+fn fs_shaded(in: MeshOut) -> MeshFrag {
+  let nrm = normalize(cross(dpdx(in.vpos), dpdy(in.vpos)));
+  let g = 0.15 + 0.8 * abs(dot(nrm, normalize(in.vpos)));
+  return MeshFrag(vec4f(g, g, g, 1.0), mesh_depth(in.vpos.z));
+}
+
+@fragment
+fn fs_line(in: MeshOut) -> MeshFrag { return MeshFrag(vec4f(0.04, 0.35, 0.4, 0.4), mesh_depth(in.vpos.z) * 0.998); }
+
 // === frustum_image ===
 // Textured image planes inside the COLMAP camera frustums (one instance per camera).
 // Bindings: 0 WireUniforms, 1 quad_verts (4 corners per camera, .w = alpha),
@@ -465,6 +548,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let p1  = splats[idx * 4u + 1u];
   let p2  = splats[idx * 4u + 2u];
 
+  // DropGaussian: a training render skips each splat with probability tu.loss.y
+  if (tu.loss.y > 0.0) {
+    let h = pcg_hash(idx ^ pcg_hash(u32(tu.opt_params.z * 16777216.0)));
+    if (f32(h & 0x00ffffffu) / 16777216.0 < tu.loss.y) { write_culled(k, idx); return; }
+  }
+
   let vpos = tu.view * vec4f(p0.xyz, 1.0);
   if (vpos.z <= 0.1) { write_culled(k, idx); return; }
 
@@ -636,11 +725,13 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 // slots (tile_list[start .. start + count), front-to-back) in shared-memory batches;
 // stops at T < 1e-4.
 // Writes color to out_tex and pix_state = [T_final, z_med, bitcast<f32>(last_k), spread],
-// z_med = depth where T crosses 0.5, last_k = 1 + last contributing sorted slot,
-// spread = (z_q3 - z_q1) / z_med, z_q1 and z_q3 = depths where T crosses 0.75 and 0.25: how
+// z_med = depth where T crosses 0.5: where the pixel's ray crosses the plane of that splat when it is flat
+// (its thinnest scale at most half the middle one; the thinnest axis as the normal, within 3 of its largest
+// scales of its center), else its center depth, as 2DGS / RaDe-GS read depth: a large tilted splat's center depth is off by up to its size
+// along the ray (DESIGN.md §9 E5), last_k = 1 + last contributing sorted slot,
+// spread = (z_q3 - z_q1) / z_med, z_q1 and z_q3 = depths (the same way) where T crosses 0.75 and 0.25: how
 // far apart along the ray the middle half of the blending weight is (a facade made of two
-// sheets = high); 0 when T stays above 0.25. A second plane, pix_state[W H + pixel] =
-// [sum of w ln z (w = T alpha), 0, 0, 0], is for the depth distortion loss in tile_backward.
+// sheets = high); 0 when T stays above 0.25.
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
 //           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
 
@@ -658,6 +749,8 @@ var<workgroup> wg_u0v0zr : array<vec4f, BATCH>;
 var<workgroup> wg_conic  : array<vec4f, BATCH>;
 var<workgroup> wg_rgba   : array<vec4f, BATCH>;
 var<workgroup> wg_k      : array<u32, BATCH>;
+var<workgroup> wg_plane  : array<vec4f, BATCH>;  // the splat's plane, view space: normal, normal . center
+var<workgroup> wg_reach  : array<f32, BATCH>;    // 3 x its largest scale
 var<workgroup> wg_hits   : atomic<u32>;
 
 // #include _math
@@ -672,6 +765,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   let in_bounds = gid.x < W && gid.y < H;
   let px = vec2f(gid.xy) + 0.5;
   let tile_c = vec2f(wgid.xy * 16u) + 8.0;
+  let ray = vec3f((px.x - tu.intrinsics.z) / tu.intrinsics.x, (px.y - tu.intrinsics.w) / tu.intrinsics.y, 1.0);  // view space, z = 1
 
   var C = vec3f(0.0);
   var T = 1.0;
@@ -680,7 +774,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var done = !in_bounds;
   var z_q1 = 0.0;
   var z_q3 = 0.0;
-  var wlnz = 0.0;
 
   let range = tile_ranges[wgid.y * ((W + 15u) / 16u) + wgid.x];
   let num_batches = (range.y + BATCH - 1u) / BATCH;
@@ -700,9 +793,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           let pr1 = proj_splats[k * 2u + 1u];
           let idx = bitcast<u32>(pr1.w);
           let p0  = splats[idx * 4u + 0u];
+          let p1  = splats[idx * 4u + 1u];
           let p3  = splats[idx * 4u + 3u];
+          let ax  = quat_to_mat3(splats[idx * 4u + 2u]);
+          let thin = select(select(2u, 1u, p1.y <= p1.z), 0u, p1.x <= p1.y && p1.x <= p1.z);
+          let n = normalize((tu.view * vec4f(ax[thin], 0.0)).xyz);
+          wg_plane[lid] = vec4f(n, dot(n, (tu.view * vec4f(p0.xyz, 1.0)).xyz));
+          // flat (the thinnest scale at most half the middle one): a plane; else none (reach 0: the center depth)
+          let mid = p1.x + p1.y + p1.z - min(p1.x, min(p1.y, p1.z)) - max(p1.x, max(p1.y, p1.z));
+          wg_reach[lid] = select(0.0, 3.0 * exp(max(p1.x, max(p1.y, p1.z))), p1[thin] + 0.693 <= mid);
           wg_conic[lid] = pr1;
-          wg_rgba[lid]  = vec4f(clamp(vec3f(0.5) + SH_C0 * p3.xyz, vec3f(0.0), vec3f(1.0)), sigmoid(p0.w));
+          wg_rgba[lid]  = vec4f(clamp(vec3f(0.5) + SH_C0 * p3.xyz, vec3f(0.0), vec3f(1.0)),
+                                min(1.0, sigmoid(p0.w) * train_opacity_factor()));
           atomicAdd(&wg_hits, 1u);
           e = pr0;
         }
@@ -728,10 +830,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         if (alpha < 1.0 / 255.0) { continue; }
 
         let next_T = T * (1.0 - alpha);
-        if (T >= 0.75 && next_T < 0.75) { z_q1 = u0v0zr.z; }
-        if (T >= 0.5 && next_T < 0.5) { z_med = u0v0zr.z; }
-        if (T >= 0.25 && next_T < 0.25) { z_q3 = u0v0zr.z; }
-        wlnz += (T * alpha) * log(max(1e-6, u0v0zr.z));
+        if (T >= 0.25 && next_T < 0.75) {  // a quartile's depth: on the splat's plane (flat ones), else its center
+          let pl = wg_plane[i];
+          let nd = dot(pl.xyz, ray);
+          let zp = select(u0v0zr.z, pl.w / nd, abs(nd) > 1e-3);
+          let z = select(u0v0zr.z, zp, abs(zp - u0v0zr.z) < wg_reach[i]);
+          if (T >= 0.75 && next_T < 0.75) { z_q1 = z; }
+          if (T >= 0.5 && next_T < 0.5) { z_med = z; }
+          if (next_T < 0.25) { z_q3 = z; }
+        }
         C += (T * alpha) * rgba.rgb;
         T = next_T;
         last_k = wg_k[i] + 1u;
@@ -745,8 +852,95 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     textureStore(out_tex, vec2i(gid.xy), vec4f(C, 1.0));
     let spread = select(0.0, max(0.0, z_q3 - z_q1) / max(1e-6, z_med), T < 0.25);
     pix_state[gid.y * W + gid.x] = vec4f(T, z_med, bitcast<f32>(last_k), spread);
-    pix_state[W * H + gid.y * W + gid.x] = vec4f(wlnz, 0.0, 0.0, 0.0);
   }
+}
+
+// === ssim_coef ===
+// D-SSIM loss (tu.loss.x > 0), first half. Per pixel q and channel, with x = gt, y = hat and
+// the window moments mu_x, mu_y, E[xx], E[yy], E[xy] (see _ssim):
+//   S = A1 A2 / (B1 B2),  A1 = 2 mu_x mu_y + C1,  A2 = 2 cov_xy + C2,
+//                         B1 = mu_x^2 + mu_y^2 + C1,  B2 = var_x + var_y + C2;
+// writes the partials of S(q) w.r.t. mu_y, E[yy], E[xy] (the variances taken from them):
+//   c = 2 A1 / (B1 B2),  b = -S / B2,  a = 2 mu_x A2 / (B1 B2) - 2 mu_y S / B1 - mu_x c - 2 mu_y b;
+// ssim_grad sums them back: dS(q)/dy(p) = g(p - q) (a(q) + 2 y(p) b(q) + x(p) c(q)).
+// Bindings: 0 TrainUniforms, 1 gt_tex, 2 hat_tex, 3 coef (3 vec4f per pixel: a, b, c).
+
+// #include _train
+// #include _ssim
+@group(0) @binding(1) var                      gt_tex  : texture_2d<f32>;
+@group(0) @binding(2) var                      hat_tex : texture_2d<f32>;
+@group(0) @binding(3) var<storage, read_write> coef    : array<vec4f>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let W = i32(tu.dims.x);
+  let H = i32(tu.dims.y);
+  let q = vec2i(gid.xy);
+  if (q.x >= W || q.y >= H) { return; }
+  var G = SSIM_G;
+  var mx = vec3f(0.0); var my = vec3f(0.0);
+  var exx = vec3f(0.0); var eyy = vec3f(0.0); var exy = vec3f(0.0);
+  for (var dy = -SSIM_R; dy <= SSIM_R; dy++) {
+    let py = q.y + dy;
+    if (py < 0 || py >= H) { continue; }
+    for (var dx = -SSIM_R; dx <= SSIM_R; dx++) {
+      let px = q.x + dx;
+      if (px < 0 || px >= W) { continue; }
+      let g = G[dy + SSIM_R] * G[dx + SSIM_R];
+      let x = textureLoad(gt_tex,  vec2i(px, py), 0).rgb;
+      let y = textureLoad(hat_tex, vec2i(px, py), 0).rgb;
+      mx += g * x; my += g * y;
+      exx += g * x * x; eyy += g * y * y; exy += g * x * y;
+    }
+  }
+  let A1 = 2.0 * mx * my + SSIM_C1;
+  let A2 = 2.0 * (exy - mx * my) + SSIM_C2;
+  let B1 = mx * mx + my * my + SSIM_C1;
+  let B2 = (exx - mx * mx) + (eyy - my * my) + SSIM_C2;
+  let D = 1.0 / (B1 * B2);
+  let S = A1 * A2 * D;
+  let c = 2.0 * A1 * D;
+  let b = -S / B2;
+  let a = 2.0 * mx * A2 * D - 2.0 * my * S / B1 - mx * c - 2.0 * my * b;
+  let o = (u32(q.y) * u32(W) + u32(q.x)) * 3u;
+  coef[o] = vec4f(a, 0.0);
+  coef[o + 1u] = vec4f(b, 0.0);
+  coef[o + 2u] = vec4f(c, 0.0);
+}
+
+// === ssim_grad ===
+// D-SSIM loss, second half: per pixel p and channel, sum_q dS(q)/dy(p) over the window around p
+// (see ssim_coef), into ssim_grad_tex for tile_backward.
+// Bindings: 0 TrainUniforms, 1 gt_tex, 2 hat_tex, 3 coef, 4 ssim_grad_tex.
+
+// #include _train
+// #include _ssim
+@group(0) @binding(1) var                      gt_tex        : texture_2d<f32>;
+@group(0) @binding(2) var                      hat_tex       : texture_2d<f32>;
+@group(0) @binding(3) var<storage, read>       coef          : array<vec4f>;
+@group(0) @binding(4) var                      ssim_grad_tex : texture_storage_2d<rgba32float, write>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let W = i32(tu.dims.x);
+  let H = i32(tu.dims.y);
+  let p = vec2i(gid.xy);
+  if (p.x >= W || p.y >= H) { return; }
+  var G = SSIM_G;
+  let x = textureLoad(gt_tex,  p, 0).rgb;
+  let y = textureLoad(hat_tex, p, 0).rgb;
+  var sum = vec3f(0.0);
+  for (var dy = -SSIM_R; dy <= SSIM_R; dy++) {
+    let qy = p.y + dy;
+    if (qy < 0 || qy >= H) { continue; }
+    for (var dx = -SSIM_R; dx <= SSIM_R; dx++) {
+      let qx = p.x + dx;
+      if (qx < 0 || qx >= W) { continue; }
+      let o = (u32(qy) * u32(W) + u32(qx)) * 3u;
+      sum += G[dy + SSIM_R] * G[dx + SSIM_R] * (coef[o].rgb + 2.0 * y * coef[o + 1u].rgb + x * coef[o + 2u].rgb);
+    }
+  }
+  textureStore(ssim_grad_tex, p, vec4f(sum, 0.0));
 }
 
 // === tile_backward ===
@@ -757,18 +951,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 // over the subgroup first (when the device has 'subgroups'; lines tagged @sg / @nosg
 // are selected by loadShaders()), then in workgroup memory: one global CAS per slot
 // per batch per tile.
-// Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count;
+// Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count; with a D-SSIM weight
+// l = tu.loss.x > 0, (1 - l) * smooth-L1 + l * (1 - SSIM) / 2 instead (as 3DGS), the SSIM
+// gradient sum_q dS(q)/dy(p) read from ssim_grad_tex (ssim_coef, ssim_grad);
 // loss_acc[0..1] = 64-bit sum (lo, hi) of the per-pixel MSE in 16.16 fixed point.
-// Depth distortion (Mip-NeRF 360), weight tu.loss.x, per pixel and normalized the same way:
-//   L_d = sum_ij w_i w_j |m_i - m_j|, w = T alpha, m = ln z_cam (scale-free),
-// the list taken as sorted by depth. Back to front, with the sums behind i (sw = sum w,
-// sm = sum w m, sg = sum w g) and the totals (1 - T_final, pix_state's 2nd plane = sum w m):
-//   g_i = dL_d/dw_i = 2 (m_i a_i - b_i + sm - m_i sw), a_i, b_i = the sums in front of i,
-//   dL_d/dm_i = 2 w_i (a_i - sw),  dL_d/dalpha_i = T_i g_i - sg / (1 - alpha_i);
-// the first goes into dL/dlogit_op and the 2D grads through alpha, as the color's does, and
-// the second into grads_2d slot 11 (dL/dz_cam, chained to the position by adam_step).
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
-//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list.
+//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list,
+//           11 ssim_grad_tex.
 
 // #include _train
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
@@ -781,6 +970,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 @group(0) @binding(8) var<storage, read_write> loss_acc    : array<atomic<u32>, 4>;
 @group(0) @binding(9) var<storage, read>       tile_ranges : array<vec2u>;
 @group(0) @binding(10) var<storage, read>      tile_list   : array<u32>;
+@group(0) @binding(11) var                     ssim_grad_tex : texture_2d<f32>;
 
 const BATCH : u32 = 32u;
 const SLOTS : u32 = BATCH * 12u;
@@ -869,12 +1059,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var T : f32 = 1.0;
   var last_k = 0u;
   var accum_rec = vec3f(0.0); // color behind the current splat, unattenuated by T
-  let lam = tu.loss.x / f32(W * H);  // depth distortion (see header)
-  var w_tot = 0.0;
-  var wm_tot = 0.0;
-  var sw = 0.0;
-  var sm = 0.0;
-  var sg = 0.0;
 
   if (in_bounds) {
     let gt   = textureLoad(gt_tex,  vec2i(gid.xy), 0).rgb;
@@ -882,13 +1066,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
     let diff = hat - gt;
     atomicAdd(&wg_mse, u32(dot(diff, diff) / 3.0 * 65536.0 + 0.5));
     let sign_d = clamp(diff * 25.0, vec3f(-1.0), vec3f(1.0));
-    dL_dC  = (0.8 * sign_d + 0.4 * diff) * (1.0 / f32(W * H));
+    let lam_ssim = tu.loss.x;
+    if (lam_ssim > 0.0) {
+      let gs = textureLoad(ssim_grad_tex, vec2i(gid.xy), 0).rgb;
+      dL_dC = ((1.0 - lam_ssim) * sign_d - 0.5 * lam_ssim * gs) * (1.0 / f32(W * H));
+    } else {
+      dL_dC = (0.8 * sign_d + 0.4 * diff) * (1.0 / f32(W * H));
+    }
     err_l1 = (abs(diff.x) + abs(diff.y) + abs(diff.z)) / 3.0;
 
     let st = pix_state[gid.y * W + gid.x];
     T = st.x;
-    w_tot = 1.0 - st.x;
-    wm_tot = pix_state[W * H + gid.y * W + gid.x].x;
     last_k = bitcast<u32>(st.z);
     atomicMax(&wg_max_last_k, last_k);
   }
@@ -927,7 +1115,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           let rgb_raw = vec3f(0.5) + SH_C0 * p3.xyz;
           let rgb = clamp(rgb_raw, vec3f(0.0), vec3f(1.0));
           wg_conic[lid] = pr1;
-          wg_rgba[lid]  = vec4f(rgb, sigmoid(p0.w));
+          wg_rgba[lid]  = vec4f(rgb, min(1.0, sigmoid(p0.w) * train_opacity_factor()));
           wg_cmask[lid] = vec4f(select(vec3f(0.0), vec3f(1.0), rgb == rgb_raw), 0.0);
           atomicAdd(&wg_hits, 1u);
           e = pr0;
@@ -964,33 +1152,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           let w_err  = weight * err_l1;
 
           let dL_drgb   = dL_dC * weight * SH_C0 * wg_cmask[i].xyz; // w.r.t. f_dc, zero where clamped
-          var dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
-          if (lam > 0.0) {
-            let z = max(1e-6, u0v0zr.z);
-            let mi = log(z);
-            let a = w_tot - weight - sw;           // weight in front of i
-            let b = wm_tot - weight * mi - sm;
-            let gi = 2.0 * (mi * a - b + sm - mi * sw);
-            dL_dalpha += lam * (T * gi - sg / max(1e-4, 1.0 - alpha));
-            g[11] = lam * 2.0 * weight * (a - sw) / z;
-            sw += weight;
-            sm += weight * mi;
-            sg += weight * gi;
-          }
+          let dL_dalpha = T * dot(dL_dC, rgba.rgb - accum_rec);
           accum_rec = alpha * rgba.rgb + (1.0 - alpha) * accum_rec;
 
           let dL_dpower = -dL_dalpha * alpha;
           g[0] = dL_drgb.x;
           g[1] = dL_drgb.y;
           g[2] = dL_drgb.z;
-          g[3] = dL_dalpha * alpha * (1.0 - rgba.w);                // dL/dlogit_opacity
+          g[3] = dL_dalpha * alpha * (1.0 - rgba.w / train_opacity_factor());  // dL/dlogit_opacity
           g[4] = -dL_dpower * (conic.x * dx + conic.y * dy);        // dL/du0
           g[5] = -dL_dpower * (conic.y * dx + conic.z * dy);        // dL/dv0
           g[6] = 0.5 * dL_dpower * dx * dx;                         // dL/dconic.a
           g[7] =       dL_dpower * dx * dy;                         // dL/dconic.b (full, b appears twice)
           g[8] = 0.5 * dL_dpower * dy * dy;                         // dL/dconic.c
           g[9] = weight;                                            // w_view
-          g[10] = w_err;                                            // w_err_view (SA energy)
+          g[10] = w_err;                                            // w_err_view (unused)
+          g[11] = abs(g[4]) + abs(g[5]);                            // |dL/d(u0, v0)| per pixel, summed unsigned (growth, E9)
 
           // WLBG moments; delta = world-space pixel offset from the center at its depth.
           let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
@@ -1047,11 +1224,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 //   2. chains the 2D grads to 3D (position incl. through the EWA Jacobian,
 //      log-scale, quaternion), Adam step (sparse: splats with no grad are
 //      skipped), clamps and shape limits;
-//   3. opt_method 1 (MC/SGLD): covariance-shaped position noise ~ (1 - alpha)^2;
-//      opt_method 2 (SA): Metropolis accept/reject of position jumps against
-//      the per-view mean error. SA state lives in the spare Adam .w slots:
-//      m[1].w, m[3].w, v[3].w = last jump xyz, v[1].w = energy baseline.
-// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments.
+//   3. opt_method 1 (MC/SGLD, 3DGS-MCMC): L1 terms on opacity and scale, noise on the centers of
+//      nearly transparent splats.
+// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments, 6 grow_acc.
 
 // #include _train
 @group(0) @binding(1) var<storage, read_write> splats   : array<vec4f>;
@@ -1059,14 +1234,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 @group(0) @binding(3) var<storage, read_write> adam_m   : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> adam_v   : array<vec4f>;
 @group(0) @binding(5) var<storage, read_write> moments  : array<u32>;
+@group(0) @binding(6) var<storage, read_write> grow_acc : array<vec2f>;  // (sum of slot 11, views) since the rebalance
 
 // #include _math
-
-fn pcg_hash(v_in: u32) -> u32 {
-  let state = v_in * 747796405u + 2891336453u;
-  let word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-  return (word >> 22u) ^ word;
-}
 
 fn rand01(seed: u32) -> f32 {
   return clamp(f32(pcg_hash(seed) & 0x00ffffffu) / 16777216.0, 1e-6, 0.999999);
@@ -1120,16 +1290,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_db   = load_grad(gbase + 7u);
   let dL_dc   = load_grad(gbase + 8u);
   let w_view  = load_grad(gbase + 9u);
-  let w_err_v = load_grad(gbase + 10u);
-  let dL_dz   = load_grad(gbase + 11u);  // depth distortion
+  let pos_abs = load_grad(gbase + 11u);
   for (var c = 0u; c < 12u; c++) { grads_2d[gbase + c] = 0u; }
+  if (w_view > 1e-6) { grow_acc[idx] += vec2f(pos_abs, 1.0); }
 
   // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S).
   if (w_view > 1e-6) {
     moments[gbase + 1u] = bitcast<u32>(bitcast<f32>(moments[gbase + 1u]) + w_view * w_view);
   }
 
-  let grad_norm = abs(dL_drgb.x) + abs(dL_drgb.y) + abs(dL_drgb.z) + abs(dL_dop) + abs(dL_du0) + abs(dL_dv0) + abs(dL_dz);
+  let grad_norm = abs(dL_drgb.x) + abs(dL_drgb.y) + abs(dL_drgb.z) + abs(dL_dop) + abs(dL_du0) + abs(dL_dv0);
   if (grad_norm < 1e-10) { return; }
 
   let b  = idx * 4u;
@@ -1152,7 +1322,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_dvpos = vec3f(
     dL_du0 * fx * inv_z,
     dL_dv0 * fy * inv_z,
-    -(dL_du0 * fx * vpos.x + dL_dv0 * fy * vpos.y) * inv_z2 + dL_dz
+    -(dL_du0 * fx * vpos.x + dL_dv0 * fy * vpos.y) * inv_z2
   );
 
   // Recompute the forward covariance (must match project_splats).
@@ -1218,14 +1388,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var m2 = adam_m[b + 2u]; var v2 = adam_v[b + 2u];
   var m3 = adam_m[b + 3u]; var v3 = adam_v[b + 3u];
 
+  // 3DGS-MCMC's lambda_o mean|o| + lambda_s mean|s| (tu.reg: 0 but with monte_carlo)
+  let alpha0 = sigmoid(p0.w);
+  let dL_dop_r = dL_dop + tu.reg.x * alpha0 * (1.0 - alpha0);
+  let dL_dlog_s_r = dL_dlog_s + tu.reg.y * s;
+
   // Position + logit opacity.
-  p0 = adam4(p0, vec4f(dL_dpos, dL_dop), &m0, &v0, vec4f(vec3f(tu.lrs.x), tu.limits.w), bc);
+  p0 = adam4(p0, vec4f(dL_dpos, dL_dop_r), &m0, &v0, vec4f(vec3f(tu.lrs.x), tu.limits.w), bc);
   p0.w = clamp(p0.w, -8.0, 8.0);
 
   // Log-scale, then shape limits: cap each axis by the angular size in this
   // view and by an absolute world size, and the largest axis by the median
   // one times max anisotropy (flat discs stay legal, needles don't).
-  p1 = vec4f(clamp(adam3(p1.xyz, dL_dlog_s, &m1, &v1, tu.lrs.y, bc), vec3f(-9.5), vec3f(2.0)), p1.w);
+  p1 = vec4f(clamp(adam3(p1.xyz, dL_dlog_s_r, &m1, &v1, tu.lrs.y, bc), vec3f(-9.5), vec3f(2.0)), p1.w);
   let log_cap = log(max(1e-8, min(tu.limits.x * vpos.z, tu.limits.y)));
   let ls_med = max(min(p1.x, p1.y), min(max(p1.x, p1.y), p1.z));
   let ls_max = min(log_cap, ls_med + tu.limits.z);
@@ -1234,34 +1409,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   p2 = normalize(adam4(p2, dL_dq, &m2, &v2, vec4f(tu.lrs.z), bc));
   p3 = vec4f(adam3(p3.xyz, dL_drgb, &m3, &v3, tu.lrs.w, bc), p3.w);
 
-  // Stochastic extensions. m1/v1/m3/v3 .w still hold the SA state read above.
-  let opt_mode = u32(tu.opt_params.x + 0.5);
-  var energy = v1.w;
-  var jump = vec3f(m1.w, m3.w, v3.w);
-  if (opt_mode == 1u) {
-    let noise_amp = tu.opt_params.y * (1.0 - sigmoid(p0.w)) * (1.0 - sigmoid(p0.w));
-    p0 = vec4f(p0.xyz + noise_amp * (M * rand_normal3(idx, step_u)), p0.w);
-  } else if (opt_mode == 2u && w_view > 1e-4) {
-    let e_cur = w_err_v / w_view;
-    let temp  = max(1e-5, tu.opt_params.y);
-    let dE    = e_cur - energy;
-    let u_acc = rand01(idx * 3571u + step_u * 6151u);
-    if (energy > 0.0 && dE > 0.0 && u_acc > exp(-max(0.0, dE) / temp)) {
-      // Reject: undo the last jump, try a fresh one.
-      p0 = vec4f(p0.xyz - jump, p0.w);
-      jump = (temp * 0.25) * (M * rand_normal3(idx + 17u, step_u));
-    } else {
-      // Accept: track the energy baseline and keep exploring.
-      energy = select(e_cur, 0.7 * energy + 0.3 * e_cur, energy > 0.0);
-      jump = (temp * 0.15 * max(0.05, e_cur)) * (M * rand_normal3(idx, step_u));
-    }
-    p0 = vec4f(p0.xyz + jump, p0.w);
+  // Monte-Carlo (simulated annealing: its jumps are made at the rebalances, trainer.js _anneal)
+  if (u32(tu.opt_params.x + 0.5) == 1u) {
+    // SGLD (3DGS-MCMC eq. 9): lambda_noise lr_pos sigmoid(-k (alpha - t)) Sigma xi, k = 100, t = 0.005:
+    // the nearly transparent splats wander, the others are left to the gradient
+    let gate = 1.0 / (1.0 + exp(100.0 * (sigmoid(p0.w) - 0.005)));
+    p0 = vec4f(p0.xyz + (tu.opt_params.y * tu.lrs.x * gate) * (Sigma * rand_normal3(idx, step_u)), p0.w);
   }
 
-  adam_m[b + 0u] = m0;                        adam_v[b + 0u] = v0;
-  adam_m[b + 1u] = vec4f(m1.xyz, jump.x);     adam_v[b + 1u] = vec4f(v1.xyz, energy);
-  adam_m[b + 2u] = m2;                        adam_v[b + 2u] = v2;
-  adam_m[b + 3u] = vec4f(m3.xyz, jump.y);     adam_v[b + 3u] = vec4f(v3.xyz, jump.z);
+  adam_m[b + 0u] = m0; adam_v[b + 0u] = v0;
+  adam_m[b + 1u] = m1; adam_v[b + 1u] = v1;
+  adam_m[b + 2u] = m2; adam_v[b + 2u] = v2;
+  adam_m[b + 3u] = m3; adam_v[b + 3u] = v3;
 
   splats[b + 0u] = p0;
   splats[b + 1u] = p1;

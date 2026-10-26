@@ -56,3 +56,34 @@ Deno.test('the distorted model (pinhole: false) keeps the SfM camera and the det
   }
   assert(n > 1000 && err / n < 1.5, `${n} observations, mean reprojection ${(err / n).toFixed(3)} px`);
 });
+
+// A camera per lens (DESIGN-sfm §13 P8): two PINHOLE cameras, each image on its lens's, and the
+// undistorted keypoints reproject through their own image's camera
+Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproject through it', () => {
+  const scene = makeSyntheticScene({ numFrames: 24, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500, turns: 0.6, overlap: 6,
+    cameras: [[1100, 1100, 960, 540, -0.08, 0.01, 0, 0], [700, 700, 960, 540, -0.03, 0.004, 0, 0]],
+    cameraOf: (k) => (k % 3 === 2 ? 1 : 0), priorFocals: [1070, 680] });
+  const { mapper } = reconstruct(scene.input, { sweeps: 1, refine: ['f', 'k1', 'k2'] });
+  const ds = datasetFromMapper(mapper);
+  const files = writeColmapModel(ds);
+  const cameras = parseCamerasBin(files['cameras.bin']);
+  const images = parseImagesBin(files['images.bin'], cameras);
+  const points = parsePoints3DBin(files['points3D.bin']);
+  assert(cameras.size === 2 && [...cameras.values()].every(c => c.model === 'PINHOLE'), 'two PINHOLE cameras');
+  const lens = new Map(scene.input.images.map(im => [im.name, im.camera + 1]));
+  assert(images.every(im => im.cameraId === lens.get(im.name)), 'each image on its lens\'s camera');
+  // (no focal check: from this scene's self-calibration, 9% high, both focals end ~5% high; the
+  // mapper tests check the focals, photo_runs/NOTES.md)
+  let n = 0, err = 0;
+  for (const im of images) {
+    const cam = im.camera;
+    for (let o = 0; o < im.obs2D.length; o += 3) {
+      const i = points.pointIndexById.get(im.obs2D[o + 2]);
+      const X = [0, 1, 2].map(k => points.positions[3 * i + k]);
+      const q = [0, 1, 2].map(r => im.R[3 * r] * X[0] + im.R[3 * r + 1] * X[1] + im.R[3 * r + 2] * X[2] + im.t[r]);
+      err += Math.hypot(cam.fx * q[0] / q[2] + cam.cx - im.obs2D[o], cam.fy * q[1] / q[2] + cam.cy - im.obs2D[o + 1]);
+      n++;
+    }
+  }
+  assert(n > 1000 && err / n < 1.5, `${n} observations, mean pinhole reprojection ${(err / n).toFixed(3)} px`);
+});

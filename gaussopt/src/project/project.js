@@ -12,7 +12,7 @@
 // each change, so an interrupted write leaves the previous one.
 "use strict";
 
-export const MANIFEST = 'project.json';
+const MANIFEST = 'project.json';
 const FORMAT = 'gaussopt-project/1';
 
 export class Project {

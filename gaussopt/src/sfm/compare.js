@@ -10,6 +10,7 @@ import { sub } from '../math.js';
 import { mul3, transpose3, mulVec3, rotationAngle, projectToSO3 } from './linalg.js';
 import { poseCenter } from './camera.js';
 import { apply as applySim3 } from './sim3.js';
+import { mean } from './align.js';
 import { median, quantile, deg, angleBetween, relativeRotation } from './util.js';
 
 // DESIGN-sfm §8.3. `registered` is the fraction of the reference's images (so "COLMAP - 1%" is
@@ -65,7 +66,6 @@ export function compareModels(est, ref) {
   const M = new Array(9).fill(0);
   common.forEach(im => { const A = mul3(transpose3(im.R), byName.get(im.name).R); for (let k = 0; k < 9; k++) M[k] += A[k]; });
   const A = projectToSO3(M);
-  const mean = (P) => [0, 1, 2].map(k => P.reduce((s, p) => s + p[k], 0) / P.length);
   const ms = mean(src), md = mean(dst);
   let num = 0, den = 0;
   for (let i = 0; i < src.length; i++) {

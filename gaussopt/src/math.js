@@ -45,6 +45,7 @@ export const dot   = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 export const sub   = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 export const madd  = (a, b, s) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];  // a + b * s
+export const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 export const normalize = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 
 // Rotate v around unit axis k by angle a (Rodrigues)
@@ -167,6 +168,20 @@ export function viewFromQuat(q, c) {
   return viewFromAxes(R.slice(0, 3), R.slice(3, 6), R.slice(6, 9), c);
 }
 
+// The view `v` turned about its forward axis by the quarter turns that bring its down axis closest to
+// -up: a photo rotated by 90° to the set's orientation (photos.js) shown upright. { view, turns }: with
+// odd turns, the image's width and height (fx, fy) swap.
+export function uprightView(v, up) {
+  const a = -(v[0] * up[0] + v[4] * up[1] + v[8] * up[2]), b = -(v[1] * up[0] + v[5] * up[1] + v[9] * up[2]);
+  const turns = ((Math.round(Math.atan2(a, b) / (0.5 * Math.PI)) % 4) + 4) % 4;
+  const c = [1, 0, -1, 0][turns], s = [0, 1, 0, -1][turns], w = new Float32Array(v);
+  for (let j = 0; j < 16; j += 4) {  // right' = c right - s down, down' = c down + s right
+    w[j] = c * v[j] - s * v[j + 1];
+    w[j + 1] = c * v[j + 1] + s * v[j];
+  }
+  return { view: w, turns };
+}
+
 // World point -> camera space [x, y, z] with a 4x4 view matrix
 export function viewTransform(v, p) {
   return [0, 1, 2].map(k => v[k] * p[0] + v[4 + k] * p[1] + v[8 + k] * p[2] + v[12 + k]);
@@ -190,13 +205,57 @@ export function orbitBasis(up = [0, -1, 0]) {
   return { U, e1, e2: cross(U, e1) };
 }
 
-// World up = -(mean camera +Y axis): COLMAP cameras are OpenCV (+Y down in image),
-// and people mostly hold cameras upright, so the average "down" axis is world-down.
+// World up from the cameras (OpenCV: +X right, +Y down in the image). People keep the horizon level
+// but tilt the camera up and down, so the mean "down" axis leans with the mean pitch (5-12° on the
+// photo sets): up is instead the direction most perpendicular to the photos' horizontal axes. A
+// photo's horizontal axis is its X, or its Y when it was rotated by 90° to the set's orientation
+// (photos.js; its down is then -X): the one closer to horizontal. The up that levels the most photos,
+// among the ups perpendicular to two photos' horizontal axes, is refit on those (smallest eigenvector of
+// the sum of h h^T). With every horizontal axis about parallel (photos facing one way), only the roll is fixed:
+// -(mean +Y) made perpendicular to them.
+const LEVEL_SIN = Math.sin(10 * Math.PI / 180), UP_SEEDS = 32;
 export function estimateWorldUp(images, fallback = [0, -1, 0]) {
-  let s = [0, 0, 0];
-  for (const im of images || []) s = sub(s, [im.R[3], im.R[4], im.R[5]]);
-  const l = Math.hypot(s[0], s[1], s[2]);
-  return (images?.length > 0 && l > 1e-3 * images.length) ? normalize(s) : [...fallback];
+  const cams = (images || []).filter(im => im?.R).map(im => ({ x: [im.R[0], im.R[1], im.R[2]], y: [im.R[3], im.R[4], im.R[5]] }));
+  if (!cams.length) return [...fallback];
+  const meanDown = cams.reduce((s, c) => madd(s, c.y, 1), [0, 0, 0]);
+  if (cams.length < 3) return Math.hypot(...meanDown) > 1e-3 ? normalize(scale(meanDown, -1)) : [...fallback];
+  // per camera: its horizontal axis h and its down axis under up u
+  const axes = (c, u) => Math.abs(dot(c.x, u)) <= Math.abs(dot(c.y, u)) ? { h: c.x, down: c.y } : { h: c.y, down: scale(c.x, -1) };
+  // level under u: the horizontal axis within 10° of horizontal, the down axis within 60° of down (a
+  // photo shot steeply down has its X about level both ways round: only its down axis tells)
+  const level = (u) => cams.filter(c => { const a = axes(c, u); return Math.abs(dot(a.h, u)) < LEVEL_SIN && dot(a.down, u) < -0.5; });
+  // candidates: -(mean +Y), and the up perpendicular to two photos' horizontal axes (each X or Y, either
+  // sign); the one that levels the most photos
+  let best = null;
+  const tryUp = (u) => {
+    if (Math.hypot(...u) < 0.2) return;  // two about parallel axes
+    u = normalize(u);
+    for (const w of [u, scale(u, -1)]) {
+      const n = level(w).length;
+      if (!best || n > best.n) best = { u: w, n };
+    }
+  };
+  tryUp(scale(meanDown, -1));
+  const step = cams.length / Math.min(cams.length, UP_SEEDS), seeds = [];  // evenly spaced (video: hundreds of keyframes)
+  for (let k = 0; k < Math.min(cams.length, UP_SEEDS); k++) seeds.push(cams[Math.floor(k * step)]);
+  for (let i = 0; i < seeds.length; i++) for (let j = i + 1; j < seeds.length; j++) {
+    for (const a of [seeds[i].x, seeds[i].y]) for (const b of [seeds[j].x, seeds[j].y]) tryUp(cross(a, b));
+  }
+  let up = best.u;
+  for (let it = 0; it < 3; it++) {
+    const hs = (level(up).length >= 3 ? level(up) : cams).map(c => axes(c, up).h);
+    const M = [0, 0, 0, 0, 0, 0];
+    for (const h of hs) { M[0] += h[0] * h[0]; M[1] += h[0] * h[1]; M[2] += h[0] * h[2]; M[3] += h[1] * h[1]; M[4] += h[1] * h[2]; M[5] += h[2] * h[2]; }
+    const { vals, vecs } = symEigen3(...M), o = [0, 1, 2].sort((a, b) => vals[a] - vals[b]);
+    const v = (k) => [vecs[o[k]], vecs[3 + o[k]], vecs[6 + o[k]]];
+    if (vals[o[1]] < 0.05 * vals[o[2]]) {  // the horizontal axes about parallel: level the roll only
+      const h = v(2), s = scale(meanDown, -1);
+      const p = madd(s, h, -dot(s, h));
+      return Math.hypot(...p) > 1e-6 ? normalize(p) : [...fallback];
+    }
+    up = dot(v(0), up) < 0 ? scale(v(0), -1) : v(0);
+  }
+  return up;
 }
 
 // Inverse of the orbit position: camera center -> { radius, theta, phi } (degrees) around target

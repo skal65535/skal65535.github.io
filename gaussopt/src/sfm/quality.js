@@ -7,16 +7,15 @@
 //     (essential matrix) against the model's, rotation and baseline direction
 //   - scale breaks: a baseline / depth step far above the segment's typical one
 //   - after training: the view's validation PSNR against the others'
-// Path smoothness (a pose against the time interpolation of its neighbours) is reported but not
-// scored: drone footage keyframed by optical flow stops, starts and yaws in place (DESIGN-sfm R5).
+// Path smoothness is not scored: drone footage keyframed by optical flow stops, starts and yaws in
+// place (DESIGN-sfm R5).
 // Loop edges come with their residual after the pose graph (loop.js stats.loops); on request they are
 // checked on the current map: one frame relocalized on the other's points (see relocalize).
 "use strict";
 
-import { makeRng } from '../math.js';
-import { sub } from '../math.js';
+import { makeRng, sub } from '../math.js';
 import { poseCenter } from './camera.js';
-import { mul3, mulVec3, rotationAngle, expSO3, logSO3 } from './linalg.js';
+import { mulVec3, rotationAngle } from './linalg.js';
 import { twoViewPose, depthIn, ransacPnP } from './geometry.js';
 import { median, deg, angleBetween, relativeRotation, hashString } from './util.js';
 
@@ -46,7 +45,7 @@ function pairPose(mapper, prev, k, rng, { maxHomographyRatio, maxSpreadDeg }) {
   const e = mapper.adj[prev].find(e => e.other === k);
   if (!e || e.a.length < 100) return null;
   const [x1, x2] = mapper.pairPixels(prev, e);
-  return twoViewPose(x1, x2, mapper.camera, { rng, maxHomographyRatio, maxSpreadDeg });
+  return twoViewPose(x1, x2, mapper.cam(prev), { rng, maxHomographyRatio, maxSpreadDeg, camera2: mapper.cam(k) });
 }
 
 // A loop edge (i, j) on the current map: j relocalized (PnP) on the 3D points of i's keypoints that
@@ -62,7 +61,7 @@ function relocalize(mapper, i, j, rng) {
     rays.push(mapper.ray(j, e.b[m])); pixels.push(mapper.pixel(j, e.b[m])); points.push(mapper.points[p].X);
   }
   if (points.length < 30) return null;
-  const r = ransacPnP(rays, pixels, points, mapper.camera, { rng, threshold: 4 });
+  const r = ransacPnP(rays, pixels, points, mapper.cam(j), { rng, threshold: 4 });
   if (!r || r.numInliers < 30) return null;
   const Q = mapper.poses[j], depth = median(points.filter((_, k) => r.inliers[k]).map(X => depthIn(Q, X)));
   return { rotDeg: deg(rotationAngle(r.model.R, Q.R)), offset: norm(sub(poseCenter(r.model), poseCenter(Q))) / depth };
@@ -76,45 +75,40 @@ function twoViewAgreement(mapper, prev, k, rel) {
 }
 
 // mapper: SequentialMapper. loops: loop.js stats.loops; checkLoops: relocalize each one, both ways
-// (the worse kept as loop.reloc, which then decides `suspect`). main: the exported segment (default the
-// largest). times: keyframe timestamps (default: the indices). viewPsnr: optional Map(name ->
-// validation PSNR) from the trainer. seed: of the two-view RANSAC, per pair (a cached result does
-// not depend on what was computed before it). cache: a Map kept by the caller across updates,
-// for the two-view poses (keyed by keyframe names).
-// Returns { frames: [{ index, name, registered, segment, support, trackLength, reprojPx, depth,
-//           parallaxDeg, twoView, breakRatio, pathDev, rotDev, psnr, score, reason }], loops, counts, main }
-export function keyframeQuality(mapper, { loops = [], checkLoops = false, main = null, times = null, viewPsnr = null, seed = 1, cache = new Map(), ...options } = {}) {
-  const o = { ...DEFAULTS, ...options };
+// (the worse kept as loop.reloc, which then decides `suspect`). viewPsnr: optional Map(name ->
+// validation PSNR) from the trainer. cache: a Map kept by the caller across updates, for the
+// two-view poses (keyed by keyframe names; the RANSAC is seeded per pair, so a cached result does
+// not depend on what was computed before it).
+// Returns { frames: [{ index, name, registered, segment, support, reprojPx, depth, parallaxDeg,
+//           twoView, breakRatio, psnr, score, reason }], loops, counts, main (the exported segment: the largest) }
+export function keyframeQuality(mapper, { loops = [], checkLoops = false, viewPsnr = null, cache = new Map() } = {}) {
+  const o = DEFAULTS, seed = 1;
   const n = mapper.n;
-  const sizes = new Map();
-  for (let k = 0; k < n; k++) if (mapper.poses[k]) sizes.set(mapper.segment[k], (sizes.get(mapper.segment[k]) ?? 0) + 1);
-  main ??= [...sizes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1;
+  const main = mapper.largestSegment();
 
   const frames = Array.from({ length: n }, (_, k) => ({
     index: k, name: mapper.images[k].name, registered: !!mapper.poses[k], segment: mapper.segment[k],
-    support: 0, trackLength: 0, reprojPx: NaN, depth: NaN, parallaxDeg: NaN, twoView: null, breakRatio: NaN,
-    pathDev: NaN, rotDev: NaN, psnr: viewPsnr?.get(mapper.images[k].name) ?? NaN,
+    support: 0, reprojPx: NaN, depth: NaN, parallaxDeg: NaN, twoView: null, breakRatio: NaN,
+    psnr: viewPsnr?.get(mapper.images[k].name) ?? NaN,
   }));
   const centers = mapper.poses.map(p => p && poseCenter(p));
   for (const f of frames) {
     if (!f.registered) continue;
-    let err = 0, len = 0;
+    let err = 0;
     const kp = mapper.kpPoint[f.index], depths = [];
     for (let a = 0; a < kp.length; a++) {
       const P = kp[a] >= 0 ? mapper.points[kp[a]] : null;
       if (!P) continue;
-      f.support++; len += P.obs.size;
+      f.support++;
       err += mapper.reprojErr(f.index, a, P.X);
       if (depths.length < 1000) depths.push(depthIn(mapper.poses[f.index], P.X));
     }
-    f.trackLength = f.support ? len / f.support : 0;
     f.reprojPx = f.support ? err / f.support : NaN;
     f.depth = depths.length ? median(depths) : NaN;
   }
 
   // per segment, in time order
-  const time = (k) => times ? times[k] : k;
-  for (const seg of sizes.keys()) {
+  for (const seg of new Set(frames.filter(f => f.registered).map(f => f.segment))) {
     const ks = frames.filter(f => f.registered && f.segment === seg).map(f => f.index);
     for (let m = 1; m < ks.length; m++) {
       const k = ks[m], prev = ks[m - 1], angles = [];
@@ -128,14 +122,6 @@ export function keyframeQuality(mapper, { loops = [], checkLoops = false, main =
       if (!cache.has(key)) cache.set(key, pairPose(mapper, prev, k, makeRng(seed + hashString(key)), o));
       if (cache.get(key)) frames[k].twoView = twoViewAgreement(mapper, prev, k, cache.get(key));
       frames[k].breakRatio = norm(sub(centers[k], centers[prev])) / frames[k].depth;
-    }
-    const steps = ks.slice(1).map((k, m) => norm(sub(centers[k], centers[ks[m]])));
-    const typical = median(steps) || 1;
-    for (let m = 1; m + 1 < ks.length; m++) {
-      const [a, k, c] = [ks[m - 1], ks[m], ks[m + 1]], w = (time(k) - time(a)) / (time(c) - time(a));
-      frames[k].pathDev = norm(sub(centers[k], centers[a].map((x, d) => x + w * (centers[c][d] - x)))) / typical;
-      const Ra = mapper.poses[a].R, rel = logSO3(relativeRotation(Ra, mapper.poses[c].R));
-      frames[k].rotDev = deg(rotationAngle(mapper.poses[k].R, mul3(expSO3(rel.map(x => w * x)), Ra)));
     }
   }
 

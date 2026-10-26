@@ -6,7 +6,7 @@ import { sigmoid, logit, quatToMat3, makeViewMatrix, projectPinhole } from './ma
 import { CAMERA_MODELS, intrinsics, distortionParams, poseCenter } from './sfm/camera.js';
 import { hashString } from './sfm/util.js';
 
-export const SH_C0 = 0.28209479177387814;
+const SH_C0 = 0.28209479177387814;
 export const SPLAT_FLOATS = 16; // 64 bytes/splat:
 // [0..3]:   x, y, z, logit_opacity
 // [4..7]:   log_sx, log_sy, log_sz, leaf_id
@@ -127,7 +127,7 @@ const VIEW_DEPTH_POINTS = 50000;  // points sampled for zView (cost: cameras x t
 // all the points in its view (zView: also the ones other cameras saw, e.g. the pavement a walking
 // camera passes over), for the near-camera floater carve (DESIGN §5.2) + mean COLMAP reprojection
 // error (sanity check).
-export function computeCameraDepthStats(images, points3D) {
+function computeCameraDepthStats(images, points3D) {
   const { positions, pointIndexById } = points3D;
   let totalReprojErr = 0, totalObs = 0;
   const uv = [0, 0];
@@ -159,7 +159,7 @@ export function computeCameraDepthStats(images, points3D) {
       img.zView = inView[Math.floor(inView.length * 0.05)];
     }
   }
-  return { meanReprojError: totalObs > 0 ? totalReprojErr / totalObs : 0, totalObs };
+  return { meanReprojError: totalObs > 0 ? totalReprojErr / totalObs : 0 };
 }
 
 // ── .ply / .splat checkpoints ────────────────────────────────────────────────
@@ -371,10 +371,11 @@ export function exportSplatBuffer(params, count) {
 // in 8, by index, or by a hash of the name (byHash); 'block': a contiguous tenth of the path in name
 // (capture) order, around its middle. Those are views off the training path, where floaters that
 // hide from the neighbouring training views show (every8 views sit between two trained ones).
+// 'none': every view trains (photo sets, DESIGN-sfm §13.3 P6: a quarter of 12 photos is too many to lose).
 export function splitValidation(images, mode = 'every8', { byHash = false } = {}) {
   for (const im of images) im.isValidation = false;
   const n = images.length;
-  if (n < 8) return;
+  if (n < 8 || mode === 'none') return;
   if (mode === 'block') {
     const order = images.map((im, i) => i).sort((a, b) => images[a].name.localeCompare(images[b].name));
     const len = Math.round(n / 10), lo = (n - len) >> 1;
@@ -449,14 +450,15 @@ export function loadColmapFromMemory(sparse, images, { valSplit } = {}) {
 }
 
 export async function loadColmapFromFiles(fileList, { onProgress, valSplit } = {}) {
-  const byRel = new Map();  // path relative to the dropped root, and bare file name
+  const byRel = new Map(), byName = new Map();  // path relative to the dropped root, bare file name
   for (const f of fileList) {
     byRel.set((f.webkitRelativePath || f.name).replace(/^[^/]+\//, ''), f);
-    byRel.set(f.name, f);
+    byName.set(f.name, f);
   }
+  const find = (key) => byRel.get(key) || byName.get(key);
   onProgress?.('Parsing dropped COLMAP files...');
   const ds = buildDataset(await Promise.all(SPARSE_FILES.map((rel) => {
-    const f = byRel.get(rel) || byRel.get(`gs/${rel}`);
+    const f = find(rel) || find(`gs/${rel}`);
     if (!f) {
       if (rel === OPTIONAL_FILE) return null;
       throw new Error(`Missing ${rel} in dropped files`);
@@ -464,12 +466,12 @@ export async function loadColmapFromFiles(fileList, { onProgress, valSplit } = {
     return f.arrayBuffer();
   })), valSplit);
   for (const im of ds.images) {
-    const f = byRel.get(`images/${im.name}`) || byRel.get(im.name);
+    const f = find(`images/${im.name}`) || find(im.name);
     if (f) im.fileBlob = f;
   }
   const availablePlys = [];
   for (const [name, file] of byRel) {
-    if (name.endsWith('.ply') || name.endsWith('.splat')) availablePlys.push({ name, file });
+    if ((name.endsWith('.ply') && !name.endsWith('.mesh.ply')) || name.endsWith('.splat')) availablePlys.push({ name, file });  // .mesh.ply: mesh.js's, not splats
   }
   return { baseUrl: null, ...ds, availablePlys };
 }
