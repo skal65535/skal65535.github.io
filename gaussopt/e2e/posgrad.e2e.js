@@ -65,7 +65,7 @@ await run(async (page) => {
         device.queue.writeBuffer(tr.adamMBuf, 0, new Float32Array(16));
         device.queue.writeBuffer(tr.adamVBuf, 0, new Float32Array(16));
         const enc = device.createCommandEncoder();
-        tr._pass(enc, tr.pipeAdam, [U, tr.splatsBuf, tr.grads2dBuf, tr.adamMBuf, tr.adamVBuf, tr.momentsBuf, tr.growAccBuf], 1);
+        tr._pass(enc, tr.pipeAdam, [U, tr.splatsBuf, tr.grads2dBuf, tr.adamMBuf, tr.adamVBuf, tr.momentsBuf], 1);
         device.queue.submit([enc.finish()]);
         const [m] = await tr._readback('m', [{ buf: tr.adamMBuf, bytes: 64 }]);
         const analytic = { pos: [0, 1, 2].map(i => 10 * m[i]), scale: [4, 5, 6].map(i => 10 * m[i]) };

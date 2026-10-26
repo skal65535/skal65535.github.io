@@ -14,7 +14,7 @@ import {
 } from './render.js';
 import { readGlb, writeGlb } from './glb.js';
 import { encodeJpeg, decodeImage } from './mesh_image.js';
-import { clamp, dot, sub, madd, logit, buildOrbitViewMatrix, estimateWorldUp, orbitAnglesFromCenter, fitIntrinsics } from './math.js';
+import { clamp, dot, sub, madd, logit, buildOrbitViewMatrix, estimateWorldUp, orbitAnglesFromCenter, fitIntrinsics, fitRect, IDENTITY4, upFromTransform, levelTransform, parseTransform } from './math.js';
 import { GaussOptTrainer } from './trainer.js';
 import {
   VISU_MODES, COLOR_MODES, COMPARE_MODES, FRUSTUM_IMAGES, MESH_VIEWS, MESH_TEXTURES, OPT_METHODS, TIPS, DATASETS, NOT_A_URL, POINTS3D,
@@ -92,7 +92,6 @@ export class GaussOptApp {
     this.statusEl   = document.getElementById('status-line');
     this.errorEl    = document.getElementById('error-line');
     this.logPanel   = new LogPanel(document.getElementById('log-body'), document.getElementById('log-filter'));
-    this.trainBtn   = document.getElementById('BtnTrain');
 
     this.params = defaultParams();
     this.urlKeys = applyUrlParams(this.params);
@@ -117,7 +116,8 @@ export class GaussOptApp {
     this.frames      = null;  // keyframe contact sheet (src/ui/frames.js)
     this.project     = null;  // the project folder (src/project/project.js), null: none
     this.projectPanel = null; // its controls (src/ui/project_panel.js)
-    this.guis        = [];    // control groups (project, train, view), see _setupGui()
+    this.guis        = [];    // control groups (project, train, view, mesh), see _setupGui()
+    this.meshState   = null;  // the last Make mesh: { running, step, faces?, texture?, mb?, error? } (ui/phases.js)
     this.datasetFolder = null;
     this.servedDatasets = null;  // mounts listed by serve.py's datasets.json (null: no server)
     this.plySelectFolder = null;
@@ -128,7 +128,9 @@ export class GaussOptApp {
     this.lastStepOut = null;
     this.expSummary  = '';    // last 'ok' / 'error' log line, shown on the side canvas
     this.mouse       = { down: false, x: 0, y: 0, sx: 0, sy: 0 };
-    this.worldUp     = [0, -1, 0]; // orbit up axis, estimated from the COLMAP cameras
+    this.worldUp     = [0, -1, 0]; // orbit up axis: the cameras' up (upEstimate) through sceneTransform
+    this.upEstimate  = [0, -1, 0]; // the up estimated from the cameras (estimateWorldUp)
+    this.sceneTransform = [...IDENTITY4];  // the scene's global transform, leveled by Level (project.json `transform`)
     this.pickedCam   = -1;    // camera shown in #frustum-thumb (-1 = none)
     this.flyAnim     = null;  // active spline fly-to animation
     this.orbitAnim   = null;  // Space re-center animation, see _recenterOrbit()
@@ -188,7 +190,12 @@ export class GaussOptApp {
     const gui = mkGui(document.getElementById('gui-container'), { draggable: false, tips: TIPS });
     const proj = mkGui(document.getElementById('project-gui'), { draggable: false, tips: TIPS });
     const view = mkGui(this.shell.viewHost, { draggable: false, tips: TIPS });
-    this.guis = [proj, gui, view];
+    // Export step: Make mesh's settings (the mesh's display stays in Visualization)
+    const meshF = mkGui(document.getElementById('export-mesh'), { draggable: false, tips: TIPS }).addFolder('Mesh');
+    meshF.add(P, 'mesh_res', 64, 512, 32).name('grid');
+    meshF.add(P, 'mesh_simplify', 0, 4, 0.25).name('simplify (voxels)');
+    meshF.add(P, 'mesh_texture', MESH_TEXTURES).name('texture');
+    this.guis = [proj, gui, view, meshF];
     // a param given in the URL follows its control (the SfM panel's as sfm_<name>): the URL keeps
     // reloading the page as shown
     onAnyChange((obj, key, value) => {
@@ -204,74 +211,115 @@ export class GaussOptApp {
     this.datasetFolder = proj.addFolder('Example datasets');
     this._rebuildDatasetSelector();
 
-    this.plySelectFolder = gui.addFolder('Checkpoint / Resume');
+    // Train step: what a run sets first (start, method, length, size), then the chosen method's own
+    // settings (the other methods' folders hidden: _showMethodFolders), then the growth machinery
+    this.plySelectFolder = gui.addFolder('Start from');
     this._rebuildPlySelector([]);
 
-    const optF = gui.addFolder('Optimizer (Adam / MC / SA)');
-    optF.add(P, 'opt_method', OPT_METHODS).name('method');
-    optF.add(P, 'mc_noise', 0, 2e6, 1e4).name('MC Langevin λ');
-    optF.add(P, 'mc_opacity_reg', 0, 0.1, 0.001).name('MC opacity L1');
-    optF.add(P, 'mc_scale_reg', 0, 0.1, 0.001).name('MC scale L1');
-    optF.add(P, 'mc_relocate', ['opacity', 'error']).name('MC relocate by');
-    optF.add(P, 'mc_relocate_mode', ['copy', 'shape']).name('MC relocate as');
-    optF.add(P, 'sa_temp', 0.01, 1.0, 0.01).name('SA temp T₀');
-    optF.add(P, 'sa_cooling', 0.80, 0.999, 0.005).name('SA cooling γ');
-    optF.add(P, 'sa_reheat').name('SA re-heat @ K');
-    optF.add(P, 'sa_share', 0, 1, 0.05).name('SA jump share');
-    optF.add(P, 'sa_size', 0, 5, 0.1).name('SA jump size');
-    optF.add(P, 'ssim', 0, 1, 0.05).name('D-SSIM weight');
-    optF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
-    optF.add(P, 'split_min_views', 0, 5, 1).name('split: min views');
-    optF.add(P, 'split_min_err', 0, 0.2, 0.005).name('E9: split min error');
-    optF.add(P, 'grow_rate', 0, 0.2, 0.01).name('E9: growth rate');
-    optF.add(P, 'split_in_plane').name('E9: split in plane');
-    optF.add(P, 'grow_by', ['error', 'grad']).name('E9: grow by');
-    optF.add(P, 'grow_grad', 0, 0.002, 0.00001).name('E9: grow grad threshold');
-    optF.add(P, 'split_mode', ['error', 'shape']).name('E9: split mode');
-    optF.add(P, 'mesh_snap', 0, 1, 0.05).name('E5: mesh snap');
-    optF.add(P, 'mesh_snap_every', 100, 5000, 100).name('E5: snap every');
-    optF.add(P, 'mesh_snap_views', 1, 10, 1).name('E5: snap min views');
+    const runF = gui.addFolder('Training');
+    runF.add(P, 'opt_method', OPT_METHODS).name('method').onChange(() => this._showMethodFolders());
+    runF.add(P, 'train_steps', 0, 100000, 1000).name('planned steps');
+    runF.add(P, 'max_splats', 10000, 2000000, 10000).name('max splats');
+    runF.add(P, 'ssim', 0, 1, 0.05).name('D-SSIM weight');
+    runF.add(P, 'val_every', [0, 250, 500, 1000, 2500]).name('val PSNR every');
+    runF.add({ val: () => { this.valRequest = true; } }, 'val').name('Evaluate val now');
+    this.snapCtrls = [runF.add(P, 'autosnap_every', [0, 250, 500, 1000, 2500, 5000]).name('auto-snapshot every')];
 
-    const visF = view.addFolder('Visualization');
-    visF.add(P, 'visu_mode', VISU_MODES).name('splat shape');
-    visF.add(P, 'color_mode', COLOR_MODES).name('color mode');
-    visF.add(P, 'compare_mode', COMPARE_MODES).name('view mode');
-    visF.add(P, 'split_x', 0.0, 1.0, 0.01).name('split wipe X');
-    visF.add(P, 'haze', 0.2, 3.0, 0.05).name('scale multiplier');
-    visF.add(P, 'show_octree').name('3D octree boxes').onChange(wire);
-    visF.add(P, 'show_loose').name('show loose (1+2β)L').onChange(wire);
-    visF.add(P, 'show_cameras').name('COLMAP frustums').onChange(wire);
-    visF.add(P, 'show_path').name('camera path').onChange(wire);
-    visF.add(P, 'show_splits').name('WLBG split axes').onChange(wire);
-    visF.add(P, 'frustum_images', FRUSTUM_IMAGES).name('frustum images');
-    visF.add(P, 'frustum_scale', 0.2, 4.0, 0.05).name('frustum size').onChange(wire);
-    visF.add(P, 'mesh_view', MESH_VIEWS).name('mesh');
-    visF.add(P, 'mesh_shaded').name('mesh shaded');
-    visF.add(P, 'mesh_res', 64, 512, 32).name('mesh grid');
-    visF.add(P, 'mesh_simplify', 0, 4, 0.25).name('mesh simplify (voxels)');
-    visF.add(P, 'mesh_texture', MESH_TEXTURES).name('mesh texture');
+    const mcF = gui.addFolder('Monte-Carlo');
+    mcF.add(P, 'mc_noise', 0, 2e6, 1e4).name('Langevin λ');
+    mcF.add(P, 'mc_opacity_reg', 0, 0.1, 0.001).name('opacity L1');
+    mcF.add(P, 'mc_scale_reg', 0, 0.1, 0.001).name('scale L1');
+    mcF.add(P, 'mc_relocate', ['opacity', 'error']).name('relocate by');
+    mcF.add(P, 'mc_relocate_mode', ['copy', 'shape']).name('relocate as');
+    const saF = gui.addFolder('Simulated annealing');
+    saF.add(P, 'sa_temp', 0.01, 1.0, 0.01).name('temperature T₀');
+    saF.add(P, 'sa_cooling', 0.80, 0.999, 0.005).name('cooling γ');
+    saF.add(P, 'sa_reheat').name('re-heat every 10 K');
+    saF.add(P, 'sa_share', 0, 1, 0.05).name('jump share');
+    saF.add(P, 'sa_size', 0, 5, 0.1).name('jump size');
+    this.methodFolders = { monte_carlo: mcF, sim_anneal: saF };
+    this._showMethodFolders();
 
-    const camF = view.addFolder('Camera', { collapsed: true });
-    camF.add(P, 'snap_to_colmap').name('snap to COLMAP cam').listen().onChange(v => {
+    // The view popover: what the view shows and from where, then how the splats are drawn, the
+    // overlays, the mesh, and the free camera's settings (collapsed)
+    const showF = view.addFolder('View');
+    showF.add(P, 'compare_mode', COMPARE_MODES).name('show').onChange(() => this._showViewRows());
+    this.splitCtrl = showF.add(P, 'split_x', 0.0, 1.0, 0.01).name('split wipe');
+    showF.add(P, 'camera_mode', ['orbit', 'drone', 'demo']).name('free camera (F, G)').listen()
+      .onChange(v => this._setCameraMode(v));
+    showF.add(P, 'snap_to_colmap').name('look through camera #').listen().onChange(v => {
       if (!v) this._syncOrbitToLastView();
       this.flyAnim = null;
       wire();
     });
-    this.camSlider = camF.add(P, 'cam_idx', 0, 15, 1).name('COLMAP cam #').listen().onChange(() => {
+    this.camSlider = showF.add(P, 'cam_idx', 0, 15, 1).name('camera #').listen().onChange(() => {
       P.snap_to_colmap = true;
       this.flyAnim = null;
       if (this.pickedCam >= 0) this.openThumbnail(P.cam_idx);
       wire();
     });
-    camF.add(P, 'path_order', ['capture', 'shortest']).name('camera path order').onChange(() => { this._applyPathOrder(); wire(); });
-    camF.add(P, 'camera_mode', ['orbit', 'drone', 'demo']).name('free camera (F, G)').listen()
-      .onChange(v => this._setCameraMode(v));
-    camF.add(P, 'demo_speed', 0.01, 0.3, 0.01).name('demo speed (R/s)');
-    camF.add(P, 'demo_wander', 0, 2, 0.05).name('demo wander');
-    camF.add(P, 'fov', 20, 120, 1).name('free-view FoV');
-    camF.add(P, 'radius', 0.2, 30, 0.1).name('orbit radius');
 
-    const octF = gui.addFolder('Octree & WLBG Growth', { collapsed: true });
+    // Level: the picture turned about the view direction (the world up the orbit, drone, demo and
+    // the mesh's .glb use); orbit to another side and turn again to level the other way
+    const levelF = view.addFolder('Level');
+    levelF.add({ tilt_ccw: () => this.tiltView(-1) }, 'tilt_ccw').name('↺ 1°');
+    levelF.add({ tilt_cw: () => this.tiltView(1) }, 'tilt_cw').name('↻ 1°');
+    levelF.add({ tilt_ccw_fine: () => this.tiltView(-0.2) }, 'tilt_ccw_fine').name('↺ 0.2°');
+    levelF.add({ tilt_cw_fine: () => this.tiltView(0.2) }, 'tilt_cw_fine').name('↻ 0.2°');
+    levelF.add({ level_reset: () => this.resetLevel() }, 'level_reset').name('reset to the cameras\' up');
+    levelF._host.parentElement.classList.add('btn-grid');
+
+    const splatF = view.addFolder('Splats');
+    splatF.add(P, 'visu_mode', VISU_MODES).name('shape');
+    splatF.add(P, 'color_mode', COLOR_MODES).name('colors');
+    splatF.add(P, 'haze', 0.2, 3.0, 0.05).name('scale multiplier');
+
+    const overF = view.addFolder('Overlays');
+    overF.add(P, 'show_cameras').name('camera frustums').onChange(wire);
+    overF.add(P, 'frustum_images', FRUSTUM_IMAGES).name('frustum photos');
+    overF.add(P, 'frustum_scale', 0.2, 4.0, 0.05).name('frustum size').onChange(wire);
+    overF.add(P, 'show_path').name('camera path').onChange(wire);
+    overF.add(P, 'path_order', ['capture', 'shortest']).name('path order').onChange(() => { this._applyPathOrder(); wire(); });
+    overF.add(P, 'show_octree').name('octree boxes').onChange(wire);
+    overF.add(P, 'show_loose').name('loose boxes (1+2β)L').onChange(wire);
+    overF.add(P, 'show_splits').name('WLBG split axes').onChange(wire);
+
+    const meshViewF = view.addFolder('Mesh');
+    meshViewF.add(P, 'mesh_view', MESH_VIEWS).name('show');
+    meshViewF.add(P, 'mesh_shaded').name('shaded');
+
+    const freeF = view.addFolder('Free camera', { collapsed: true });
+    freeF.add(P, 'fov', 20, 120, 1).name('FoV');
+    freeF.add(P, 'radius', 0.2, 30, 0.1).name('orbit radius');
+    freeF.add(P, 'demo_speed', 0.01, 0.3, 0.01).name('demo speed (R/s)');
+    freeF.add(P, 'demo_wander', 0, 2, 0.05).name('demo wander');
+    this._showViewRows();
+
+    const growF = gui.addFolder('Growth & pruning', { collapsed: true });
+    growF.add(P, 'enable_rebalance').name('WLBG grow / prune');
+    growF.add(P, 'enable_split').name('error-cov split');
+    growF.add(P, 'split_mode', ['error', 'shape']).name('split mode');
+    growF.add(P, 'split_min_views', 0, 5, 1).name('split: min views');
+    growF.add(P, 'enable_merge').name('overlap merge');
+    growF.add(P, 'stipple_seed').name('stipple seeding');
+    growF.add(P, 'stipple_count', [500, 1000, 2000, 5000, 10000]).name('stipple seeds / K');
+    growF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
+    growF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
+    growF.add(P, 'max_splat_angle', 0.005, 0.2, 0.005).name('max splat angle');
+    growF.add(P, 'max_anisotropy', 2, 50, 1).name('max anisotropy');
+
+    const floatF = gui.addFolder('Floaters', { collapsed: true });
+    floatF.add(P, 'remove_floaters').name('octree floater kill');
+    floatF.add(P, 'floater_depth', ['observed', 'view']).name('near-camera carve depth');
+    floatF.add(P, 'floater_spare', 0, 0.05, 0.001).name('spare near SfM points');
+
+    const schedF = gui.addFolder('Schedule (E7)', { collapsed: true });
+    schedF.add(P, 'cap_lease', 0, 1, 0.05).name('cap lease');
+    schedF.add(P, 'consolidate_frac', 0.05, 0.5, 0.05).name('consolidation');
+    schedF.add(P, 'region_repair', [0, 0.5, 1, 2]).name('stuck-region repair');
+    schedF.add(P, 'polish').name('polish (Adam) at the end');
+
+    const octF = gui.addFolder('Octree', { collapsed: true });
     octF.add(P, 'max_leaf_size', [64, 128, 256]).name('leaf N_max').onChange(v => {
       if (!this.octree || !this.trainer) return;
       this.octree.maxLeafSize = v;
@@ -287,30 +335,16 @@ export class GaussOptApp {
     });
     octF.add(P, 'rebalance_every', 20, 500, 10).name('rebalance K');
     octF.add(P, 'rebalance_every_cap', 0, 2000, 50).name('rebalance K at the cap');
-    octF.add(P, 'enable_rebalance').name('WLBG grow/prune');
-    octF.add(P, 'remove_floaters').name('octree floater kill');
-    octF.add(P, 'floater_depth', ['observed', 'view']).name('near-camera carve depth');
-    octF.add(P, 'floater_spare', 0, 0.05, 0.001).name('spare near SfM points');
-    octF.add(P, 'enable_split').name('error-cov split');
-    octF.add(P, 'enable_merge').name('overlap merge');
-    octF.add(P, 'max_splats', 10000, 2000000, 10000).name('max splats');
-    octF.add(P, 'train_steps', 0, 100000, 1000).name('E7: planned steps');
-    octF.add(P, 'cap_lease', 0, 1, 0.05).name('E7: cap lease');
-    octF.add(P, 'consolidate_frac', 0.05, 0.5, 0.05).name('E7: consolidation');
-    octF.add(P, 'region_repair', [0, 0.5, 1, 2]).name('E7: stuck-region repair');
-    octF.add(P, 'polish').name('E7: polish (Adam) at the end');
-    octF.add(P, 'max_splat_angle', 0.005, 0.2, 0.005).name('max splat angle');
-    octF.add(P, 'max_anisotropy', 2, 50, 1).name('max anisotropy');
-    octF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
-    octF.add(P, 'stipple_seed').name('E4: stipple seeding');
-    octF.add(P, 'stipple_count', [500, 1000, 2000, 5000, 10000]).name('stipple seeds / K');
+  }
 
-    const evalF = gui.addFolder('Evaluation', { collapsed: true });
-    evalF.add(P, 'val_every', [0, 250, 500, 1000, 2500]).name('val PSNR every');
-    evalF.add({ val: () => { this.valRequest = true; } }, 'val').name('evaluate val now');
+  // The split wipe's position only in the split mode
+  _showViewRows() {
+    if (this.splitCtrl?._row_el) this.splitCtrl._row_el.hidden = this.params.compare_mode !== 1;
+  }
 
-    const snapF = gui.addFolder('Snapshots (Export: save one now)', { collapsed: true });
-    this.snapCtrls = [snapF.add(P, 'autosnap_every', [0, 250, 500, 1000, 2500, 5000]).name('auto-snap every')];
+  // Only the chosen optimizer's own folder (Monte-Carlo, Simulated annealing) is shown
+  _showMethodFolders() {
+    for (const [m, f] of Object.entries(this.methodFolders ?? {})) f._host.parentElement.hidden = this.params.opt_method !== m;
   }
 
   // Example datasets that can load here, plus what is loaded when it is none of them
@@ -404,16 +438,18 @@ export class GaussOptApp {
     if (!this.project) return;
     clearTimeout(this.settingsTimer);
     this.settingsTimer = setTimeout(() => {
-      const s = this.settings(), text = JSON.stringify(s);
+      const s = this.settings(), transform = [...this.sceneTransform], text = JSON.stringify([s, transform]);
       if (text === this.savedSettings) return;
       this.savedSettings = text;
-      this.project?.update({ settings: s }).catch(e => this.log(`project.json: ${e.message}`, 'warn'));
+      this.project?.update({ settings: s, transform }).catch(e => this.log(`project.json: ${e.message}`, 'warn'));
     }, SETTINGS_DELAY_MS);
   }
 
   // Push externally-changed params (e.g. restored from a snapshot) back into the GUI
   _refreshGui() {
     for (const g of this.guis) g.updateDisplay();
+    this._showMethodFolders();
+    this._showViewRows();
   }
 
   _setTraining(on) {
@@ -423,12 +459,20 @@ export class GaussOptApp {
     }
     if (on && !this.params.training && this.trainer) this.trainStartStep = this.trainer.stepCount;
     this.params.training = on;
-    this.trainBtn.textContent = on ? '⏸ Pause' : '▶ Train';
+    this.shell?.refresh();  // the Train step's buttons
+  }
+
+  // One training step, then pause (Train's "Step ×1")
+  async stepOnce() {
+    if (!this.trainer || !this.gtAvailable) return;
+    this._setTraining(false);
+    this.lastStepOut = await this.trainer.step(this.params.snap_to_colmap ? this.params.cam_idx : null);
+    this._refreshWireframes();
   }
 
   _rebuildPlySelector(plyList) {
     this.plySelectFolder.clear();
-    const opts = { '[init from points3D.bin]': POINTS3D };
+    const opts = { '[new splats from the SfM points]': POINTS3D };
     for (const name of plyList.map(plyName)) opts[name] = name;
     this.plySelectFolder.add(this.params, 'resume_ply', opts).name('checkpoint')
       .onChange(v => this.resumeFromSelectedPly(v));
@@ -465,8 +509,10 @@ export class GaussOptApp {
       this.mouse.x = e.clientX;
       this.mouse.y = e.clientY;
       if (this.params.compare_mode === 1) {
-        const rect = cv.getBoundingClientRect();
-        this.params.split_x = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+        // through the photo's box (render.js renderCompare letterboxes it in the canvas)
+        const rect = cv.getBoundingClientRect(), cam = this.colmap?.images?.[this.params.cam_idx]?.camera;
+        const box = cam ? fitRect(cam.width, cam.height, rect.width, rect.height) : { x: 0, w: rect.width };
+        this.params.split_x = clamp((e.clientX - rect.left - box.x) / box.w, 0, 1);
       } else if (this.params.camera_mode === 'drone' || this.params.camera_mode === 'demo') {
         // stick = drag offset from the press point, full deflection at 120 px
         this._takeStick();
@@ -494,7 +540,7 @@ export class GaussOptApp {
     }, { passive: false });
 
     // Keys: H = help, Escape = close the help and the view popover, F = orbit / drone, G = orbit /
-    // demo, drone flight keys (in demo they take over), orbit Space / arrows; ignored while typing in the GUI
+    // demo, [ / ] = level (tiltView), drone flight keys (in demo they take over), orbit Space / arrows; ignored while typing in the GUI
     const droneKeys = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'e', 'q']);
     const keyName = e => e.key.toLowerCase();
     const help = $('help-overlay');
@@ -516,6 +562,7 @@ export class GaussOptApp {
         this._setCameraMode(this.params.camera_mode === 'demo' ? 'orbit' : 'demo');
         return;
       }
+      if (key === '[' || key === ']') { this.tiltView(key === ']' ? 1 : -1); return; }
       if (this.params.camera_mode !== 'drone' && this.params.camera_mode !== 'demo') {
         if (key === ' ') { e.preventDefault(); this._recenterOrbit(); }
         if (key.startsWith('arrow')) {  // pan, see _panOrbit()
@@ -537,15 +584,8 @@ export class GaussOptApp {
     $('thumb-close').addEventListener('click', () => this.closeThumbnail());
     $('thumb-fly').addEventListener('click', () => { if (this.pickedCam >= 0) this.flyToCamera(this.pickedCam); });
 
-    this.trainBtn.addEventListener('click', () => this._setTraining(!this.params.training));
-    $('BtnStep').addEventListener('click', async () => {
-      if (!this.trainer || !this.gtAvailable) return;
-      this.lastStepOut = await this.trainer.step(this.params.snap_to_colmap ? this.params.cam_idx : null);
-      this._refreshWireframes();
-    });
     $('BtnExportPly').addEventListener('click', () => this.savePlyCheckpoint());
     $('BtnExportOctree').addEventListener('click', () => this.saveOctreeJson());
-    $('BtnExportMesh').addEventListener('click', () => this.saveMesh());
     $('BtnSnapshot').addEventListener('click', () => this.requestSnapshot());
     $('log-clear').addEventListener('click', () => this.logPanel.clear());
 
@@ -679,6 +719,33 @@ export class GaussOptApp {
     this.params.phi    = clamp(orb.phi, -89, 89);
     this.params.theta  = orb.theta;
     this.params.fov    = clamp(2 * Math.atan((0.5 * this.canvas.height) / fyPx) * 180 / Math.PI, 20, 120);
+  }
+
+  // Level ([ / ] keys, the view popover's buttons): the picture turned by `deg` (> 0: clockwise) about
+  // the view direction, by turning the world up; the orbit camera takes the pose on screen
+  // Each turn goes into the scene's transform (math.js levelTransform), saved in project.json
+  tiltView(deg) {
+    if (!this.lastView || !this.octree) return;
+    const f = [this.lastView.view[2], this.lastView.view[6], this.lastView.view[10]];
+    this.setSceneTransform(levelTransform(this.sceneTransform, f, deg));
+  }
+
+  // Level: back to the up estimated from the cameras (the identity transform), at the pose on screen
+  resetLevel() { this.setSceneTransform(IDENTITY4); }
+
+  // The scene's global transform (math.js parseTransform: the identity unless 16 numbers): the views'
+  // up from it, the orbit camera at the pose on screen; save: into project.json (with the settings)
+  setSceneTransform(T, { save = true } = {}) {
+    this.sceneTransform = parseTransform(T);
+    this.worldUp = upFromTransform(this.sceneTransform, this.upEstimate);
+    if (this.lastView && this.octree) {
+      const { view, center, fy } = this.lastView;
+      if (this.params.camera_mode !== 'orbit') this._setCameraMode('orbit');
+      this._leaveColmapView();
+      this.orbitAnim = null;
+      this._syncOrbitToPose(center, [view[2], view[6], view[10]], fy);
+    }
+    if (save) this._settingsChanged();
   }
 
   // Pinhole intrinsics of the free (orbit / drone) camera, from params.fov (vertical)
@@ -842,6 +909,7 @@ export class GaussOptApp {
     const gen = ++this.loadGen;
     try {
       this.clearError();
+      this.setSceneTransform(IDENTITY4, { save: false });  // another scene
       this._setTraining(false);
       if (url === '[synth]') {
         const splats = createSyntheticScene();
@@ -850,7 +918,7 @@ export class GaussOptApp {
         }
         return;
       }
-      this._onProgress(`Loading COLMAP dataset from ${url}...`);
+      this._onProgress(`Loading the dataset from ${url}...`);
       const colmap = await loadColmapFromUrl(url, { onProgress: this._onProgress, valSplit: this.params.val_split });
       if (this._stale(gen)) return;
       if (plyRel && plyRel !== POINTS3D) {
@@ -902,6 +970,7 @@ export class GaussOptApp {
     const gen = ++this.loadGen;
     try {
       this.clearError();
+      this.setSceneTransform(IDENTITY4, { save: false });  // another scene
       const colmap = await loadColmapFromFiles(fileList, { onProgress: this._onProgress, valSplit: this.params.val_split });
       if (!this._stale(gen)) await this._initFromPoints3D(colmap, gen);
     } catch (e) {
@@ -964,7 +1033,7 @@ export class GaussOptApp {
       return true;
     }
     const rep = colmap.stats.meanReprojError.toFixed(2);
-    this.log(`${label}COLMAP verified: ${colmap.images.length} cams, ${splats.count} pts, mean reproj err = ${rep} px`, 'ok');
+    this.log(`${label}Dataset verified: ${colmap.images.length} cams, ${splats.count} pts, mean reproj err = ${rep} px`, 'ok');
     return true;
   }
 
@@ -1029,13 +1098,13 @@ export class GaussOptApp {
 
   // Local file: .json (standalone octree for the current splats), .gosnap, .ply or .splat.
   // plyRel: its name in the checkpoint selector (dropped folders), null for a picked / dropped file.
-  // A mesh file (Save mesh's .glb, or a .mesh.ply) shown in the 3D view; not a load (no loadGen)
+  // A mesh file (Make mesh's .glb, or a .mesh.ply) shown in the 3D view; not a load (no loadGen)
   async loadMeshFile(file) {
     try {
       const buf = await file.arrayBuffer(), mesh = /\.glb$/i.test(file.name) ? readGlb(buf) : meshFromPly(buf);
       if (mesh.texture) mesh.image = await decodeImage(mesh.texture);
       this.showMesh(mesh);
-      this.log(`Mesh ${file.name}: ${mesh.positions.length / 3} vertices, ${mesh.faces.length / 3} faces (Visualization > mesh)`, 'ok');
+      this.log(`Mesh ${file.name}: ${mesh.positions.length / 3} vertices, ${mesh.faces.length / 3} faces (⚙ view > Mesh)`, 'ok');
     } catch (e) {
       this.showError(`Failed to load mesh "${file.name}": ${e.message}`);
     }
@@ -1110,8 +1179,9 @@ export class GaussOptApp {
     this.plyFromFile = fromFile;
     this._refreshGui();
     this._loggedStats = octree.lastStats;  // don't report the initial stats as a rebalance
-    this.worldUp = estimateWorldUp(images);
-    if (images.length > 0) this.log(`World up (from ${images.length} cams): [${this.worldUp.map(v => v.toFixed(3)).join(', ')}]`);
+    this.upEstimate = estimateWorldUp(images);
+    this.worldUp = upFromTransform(this.sceneTransform, this.upEstimate);  // the same scene keeps its leveling
+    if (images.length > 0) this.log(`World up (from ${images.length} cams): [${this.upEstimate.map(v => v.toFixed(3)).join(', ')}]`);
     this.params.target = [...octree.sceneCenter];
     this.params.radius = octree.sceneRadius * 1.4;
     this.lastView  = null;
@@ -1273,6 +1343,7 @@ export class GaussOptApp {
       params:      Object.fromEntries(SNAPSHOT_PARAMS.map(k => [k, this.params[k]])),
       state:       counters,
       octree:      octJson,
+      transform:   [...this.sceneTransform],  // the scene's leveling (setSceneTransform)
     }, { ...blobs, leaf_idx: leafIdx });
     return { buf, counters, name: `gaussopt_snap_${kind === 'auto' ? 'latest' : pad5(counters.stepCount)}${SNAPSHOT_EXT}` };
   }
@@ -1349,6 +1420,7 @@ export class GaussOptApp {
     if (imgs.length > 0) octree.updateCameraAndNeighborStats(imgs);
     const splats = { count, params: snap.blobs.params, octreeData: null };
     if (!await this._initOctreeAndTrainer(splats, colmap, gen, { ...opts, octree, snapshot: snap })) return;
+    if (h.transform) this.setSceneTransform(h.transform);  // its leveling (an older snapshot has none: the current one stays)
     this.log(`Resumed snapshot ${name} @ step ${this.trainer.stepCount} (${count} splats, ${octree.leaves.length} leaves, saved ${h.savedAt})`, 'ok');
   }
 
@@ -1365,8 +1437,19 @@ export class GaussOptApp {
   // then simplified in a worker, textured from the photos (mesh_texture; training pauses again) and
   // written as .glb; shown in the 3D view (mesh_view) and saved
   async saveMesh() {
-    if (!this.trainer || this.trainer.count === 0) return;
-    const P = this.params, wasTraining = P.training, step = this.trainer.stepCount;
+    if (!this.trainer || this.trainer.count === 0 || this.meshState?.running) return;
+    const step = this.trainer.stepCount;
+    this.meshState = { running: true, step };  // the Export step (ui/phases.js)
+    try {
+      this.meshState = { running: false, step, ...await this._makeMesh(step) };
+    } catch (e) {
+      this.meshState = { running: false, step, error: e.message };
+      this.log(`Mesh failed: ${e.message}`, 'warn');
+    }
+  }
+
+  async _makeMesh(step) {
+    const P = this.params, wasTraining = P.training;
     this._setTraining(false);
     let fused;
     try {
@@ -1374,7 +1457,7 @@ export class GaussOptApp {
       fused = await meshFromTrainer(this.trainer, { res: P.mesh_res });
     } catch (e) {
       this.log(`Mesh failed: ${e.message}`, 'warn');
-      return;
+      return { error: e.message };
     } finally {
       if (wasTraining) this._setTraining(true);
     }
@@ -1388,10 +1471,10 @@ export class GaussOptApp {
       w.onerror = (e) => { w.terminate(); resolve({ error: e.message }); };
       w.postMessage({ mesh, maxError: P.mesh_simplify * info.voxel, up: this.worldUp, glb: !size });
     });
-    if (out.error) { this.log(`Mesh simplification failed: ${out.error}`, 'warn'); return; }
+    if (out.error) { this.log(`Mesh simplification failed: ${out.error}`, 'warn'); return { error: out.error }; }
     this.log(`Mesh simplified to ${out.mesh.faces.length / 3} faces (error <= ${P.mesh_simplify} voxel) in ${(out.info.ms / 1000).toFixed(1)} s` +
              (size ? `; texturing (${size} x ${size}) from the photos...` : `, ${(out.glb.length / 1e6).toFixed(1)} MB`), 'ok');
-    let shown = out.mesh, glb = out.glb;
+    let shown = out.mesh, glb = out.glb, texture = 0;
     if (size) {
       const was = P.training;
       this._setTraining(false);
@@ -1400,6 +1483,7 @@ export class GaussOptApp {
         const jpeg = await encodeJpeg(t.image, size);
         glb = writeGlb(t.mesh, { up: this.worldUp, texture: { bytes: jpeg, mimeType: 'image/jpeg' } });
         shown = { ...t.mesh, image: { data: t.image, width: size, height: size } };
+        texture = size;
         this.log(`Mesh textured: ${t.info.charts} charts, ${(100 * t.info.used).toFixed(0)}% of the texels used, ${(100 * t.info.seen).toFixed(0)}% of them seen ` +
                  `by a photo, in ${(t.info.ms / 1000).toFixed(1)} s; ${(glb.length / 1e6).toFixed(1)} MB (JPEG ${(jpeg.length / 1e6).toFixed(1)} MB)`, 'ok');
       } catch (e) {
@@ -1411,6 +1495,7 @@ export class GaussOptApp {
     }
     this.showMesh(shown);
     await this._saveOrDownload(glb, `gaussopt_${pad5(step)}.mesh.glb`, 'model/gltf-binary', path => `Saved mesh to: ${path}`);
+    return { faces: shown.faces.length / 3, texture, mb: glb.length / 1e6 };
   }
 
   // A mesh ({ positions, faces, colors, uvs?, image? }, render.js setMesh) into the 3D view, turned on if it was off
@@ -1431,19 +1516,15 @@ export class GaussOptApp {
     const st = this._loggedStats = this.octree.lastStats;
     const tr = this.trainer;
     const extra = (st.seeded ? `, +${st.seeded} stipple` : '') + (st.teleported ? `, ${st.teleported} relocated (MC)` : '') + (st.trimmed ? `, ${st.trimmed} trimmed to the budget` : '') +
-                  (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '') +
-                  (tr.lastSnapInfo?.step === tr.stepCount ? `, ${tr.lastSnapInfo.moved} snapped to the mesh (mean ${(tr.lastSnapInfo.meanShift / tr.lastSnapInfo.voxel).toFixed(2)} voxel)` : '');
+                  (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '');
     this.log(`Rebalance @ step ${tr.stepCount}: +${st.split} split, +${st.cloned} clone, ` +
              `-${st.pruned} prune, -${st.floaters} floaters${st.floaterRules ? ` (near ${st.floaterRules[0]}, few views ${st.floaterRules[1]}, empty ${st.floaterRules[2]})` : ''}, -${st.merged} merge${extra} -> ${tr.count} splats, ` +
              `${this.octree.leaves.length} leaves` + (tr.lastRebalanceMs ? ` in ${tr.lastRebalanceMs.total.toFixed(0)} ms` : ''), 'info', 'train');
     const si = tr.lastSeedInfo;
     if (si) {
       this.log(`E4 stipple seeds from cam #${si.viewIdx}: ${si.count} sites, ${st.seeded ?? 0} added (depth: ${si.covered} rendered, ` +
-               `${si.fromPoints} COLMAP pts, ${si.fromMedian} median) in ${si.ms.toFixed(0)} ms`, 'info', 'train');
+               `${si.fromPoints} SfM pts, ${si.fromMedian} median) in ${si.ms.toFixed(0)} ms`, 'info', 'train');
     }
-    const gi = tr.lastGrowInfo;
-    if (gi?.step === tr.stepCount) this.log(`E9 grow by grad: score p50 ${gi.p50.toExponential(2)} p90 ${gi.p90.toExponential(2)} ` +
-                                            `p99 ${gi.p99.toExponential(2)}, ${gi.over} over ${this.params.grow_grad}`, 'info', 'train');
     const rp = tr.lastRepairInfo;
     if (rp && this.params.region_repair > 0) this.log(`E7 repair: ${rp.cells} stuck cells, ${rp.splats} splats`, 'info', 'train');
     const sa = tr.lastAnnealInfo;

@@ -258,6 +258,28 @@ export function estimateWorldUp(images, fallback = [0, -1, 0]) {
   return up;
 }
 
+// The world up turned about the view direction `forward` so the picture turns by `deg` (> 0:
+// clockwise on screen): the orbit camera rebuilt with it at the same center and forward is the one
+// on screen rolled by `deg` (the view popover's Level, app.js tiltView)
+export const tiltUp = (up, forward, deg) => normalize(rotate(up, normalize(forward), -deg * Math.PI / 180));
+
+// The scene's global transform (project.json `transform`): a 4x4 row-major matrix from the scene's
+// world to the leveled one, identity by default; a rotation R only for now (Level). The views' up is
+// R^T applied to the cameras' estimated up, so the identity keeps the estimate.
+export const IDENTITY4 = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+export const upFromTransform = (T, up0) => normalize([0, 1, 2].map(j => T[j] * up0[0] + T[4 + j] * up0[1] + T[8 + j] * up0[2]));
+// T after a Level turn of `deg` about `forward` (tiltUp): R' = R rot(forward, deg), so that
+// upFromTransform(R', up0) = tiltUp(upFromTransform(R, up0), forward, deg)
+export function levelTransform(T, forward, deg) {
+  const k = normalize(forward), a = deg * Math.PI / 180;
+  const cols = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(e => rotate(e, k, a));  // rot's columns
+  const out = [...T];
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) out[4 * i + j] = T[4 * i] * cols[j][0] + T[4 * i + 1] * cols[j][1] + T[4 * i + 2] * cols[j][2];
+  return out;
+}
+// A transform read from JSON: 16 finite numbers, or the identity
+export const parseTransform = (T) => Array.isArray(T) && T.length === 16 && T.every(Number.isFinite) ? [...T] : [...IDENTITY4];
+
 // Inverse of the orbit position: camera center -> { radius, theta, phi } (degrees) around target
 export function orbitAnglesFromCenter(target, center, up = [0, -1, 0]) {
   const { U, e1, e2 } = orbitBasis(up);
@@ -284,6 +306,13 @@ export function buildOrbitViewMatrix(target, radius, thetaDeg, phiDeg, up = [0, 
   const d = cross(f, r);                // down    (+Y, OpenCV)
 
   return { view: viewFromAxes(r, d, f, c), center: c };
+}
+
+// The largest w x h box of the image's aspect inside a W x H canvas, centered: { x, y, w, h } in
+// canvas pixels (the 2D compare modes draw the photo there, app.js maps the split wipe through it)
+export function fitRect(width, height, W, H) {
+  const s = Math.min(W / width, H / height), w = Math.round(width * s), h = Math.round(height * s);
+  return { x: Math.floor(0.5 * (W - w)), y: Math.floor(0.5 * (H - h)), w, h };
 }
 
 // COLMAP intrinsics mapped onto a W x H canvas with one uniform scale (no anisotropic

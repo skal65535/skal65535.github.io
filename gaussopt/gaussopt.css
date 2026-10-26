@@ -4,7 +4,7 @@
 
 #main-area.app {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(0, 1fr) 360px;
   grid-template-rows: auto auto minmax(0, 1fr) 200px;
   grid-template-areas: "header header" "stepper stepper" "view inspector" "dock inspector";
   gap: 8px;
@@ -26,35 +26,44 @@
 }
 
 /* ── phase stepper ──────────────────────────────────────────────── */
-#go-stepper { grid-area: stepper; display: flex; align-items: center; gap: 2px; overflow-x: auto; }
+/* one box per phase, numbered, its state on the icon and its result under the name (shell.js) */
+#go-stepper { grid-area: stepper; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 #go-stepper .step {
-  display: flex; align-items: center; gap: 6px; padding: 4px 10px; flex: none;
-  border: 1px solid var(--panel-border); border-radius: 14px; background: var(--panel-bg);
+  flex: 1 1 110px; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px;
+  align-items: center; text-align: left; padding: 4px 10px 4px 6px;
+  border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel-bg);
   color: var(--ink); font: 13px var(--font-ui); cursor: pointer;
 }
 #go-stepper .step:hover { background: var(--btn-bg-hover); }
-#go-stepper .step.current { border-color: var(--card-border-hi); box-shadow: 0 0 0 2px var(--card-border-hi) inset; font-weight: 600; }
-#go-stepper .step .step-icon { width: 1.1em; text-align: center; }
-#go-stepper .step .step-sum { font: 11px var(--font-mono); color: var(--ink-dim); }
-#go-stepper .step.done    .step-icon { color: #15803d; }
-#go-stepper .step.running .step-icon { color: #b45309; animation: go-pulse 1s ease-in-out infinite; }
-#go-stepper .step.stale   .step-icon { color: #b45309; }
-#go-stepper .step.skipped { opacity: 0.6; }
-#go-stepper .step.todo    .step-icon { color: var(--ink-dim); }
-#go-stepper .sep { width: 14px; height: 1px; background: var(--panel-border); flex: none; }
+#go-stepper .step .step-icon {
+  grid-row: 1 / 3; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font: 600 12px var(--font-ui); color: var(--ink-dim); background: var(--card-bg); border: 1px solid var(--panel-border);
+}
+#go-stepper .step .step-label { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#go-stepper .step .step-sum {
+  font: 11px var(--font-mono); color: var(--ink-dim); min-height: 1.3em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#go-stepper .step.done    .step-icon { color: #fff; background: #15803d; border-color: #15803d; }
+#go-stepper .step.running .step-icon { color: #fff; background: #b45309; border-color: #b45309; animation: go-pulse 1s ease-in-out infinite; }
+#go-stepper .step.stale   .step-icon { color: #000; background: #fbbf24; border-color: #b45309; }
+#go-stepper .step.skipped { opacity: 0.55; }
+#go-stepper .step.skipped .step-icon { border-style: dashed; }
+#go-stepper .step.current { background: var(--accent); border-color: var(--accent); color: #fff; }
+#go-stepper .step.current .step-sum { color: rgba(255, 255, 255, 0.8); }
+#go-stepper .step.current.todo .step-icon { color: #fff; background: transparent; border-color: #fff; }
 @keyframes go-pulse { 50% { opacity: 0.35; } }
 
 /* ── 3D view ────────────────────────────────────────────────────── */
 #go-view { grid-area: view; display: flex; align-items: center; justify-content: center; min-height: 0; min-width: 0; }
-/* the wrap fills the view, so the overlays (status, toolbar, contact sheet) keep the view's width
-   whatever the canvas's shape: a portrait canvas is centred, with dark bars beside it */
+/* the wrap and the canvas fill the view (shell.js _fitCanvas): no bars in 3D; the 2D compare
+   modes letterbox the photo inside the canvas (render.js renderCompare) */
 #go-view .canvas-wrap {
   position: relative; margin: 0; width: 100%; height: 100%;
   display: flex; align-items: center; justify-content: center;
   background: #0d0e13; border-radius: 10px; overflow: hidden;
 }
-/* the canvas has the dataset's aspect (shell.js shapeCanvas); shell.js sets its CSS size to fit #go-view */
-#go-view #main-canvas { display: block; margin: 0; }
+#go-view #main-canvas { display: block; margin: 0; border: 0; border-radius: 0; box-shadow: none; background: #0d0e13; }
 
 #info {
   position: absolute; left: 10px; top: 10px; max-width: calc(100% - 220px);
@@ -133,26 +142,74 @@
   grid-area: inspector; display: flex; flex-direction: column; min-height: 0;
   background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 8px;
 }
-#phase-head { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--panel-border); }
+#phase-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--panel-border); }
 #phase-title { font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 13px; }
 #phase-summary { font: 11px var(--font-mono); color: var(--ink-dim); margin-left: auto; text-align: right; }
-#phase-body { flex: 1; overflow-y: auto; padding: 6px 8px; }
+#phase-body { flex: 1; overflow-y: auto; padding: 4px 12px 8px; }
 #phase-body > section { display: none; }
 #phase-body > section.shown { display: block; }
-#phase-body .hint { font-size: 12px; color: var(--ink-dim); margin: 4px 2px 8px; }
-#phase-body .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+#phase-body .hint { font-size: 12px; color: var(--ink-dim); margin: 6px 0 8px; }
+#phase-body .actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; margin: 4px 0 10px; }
+#phase-body .actions .wide { grid-column: 1 / -1; }
 #go-inspector .button, #phase-foot button {
   height: 30px; min-width: 0; padding: 0 10px; font-size: 13px; border-width: 1px;
+  display: flex; align-items: center; justify-content: center; box-sizing: border-box; white-space: nowrap;
 }
 #go-inspector .button:disabled, #phase-foot button:disabled { opacity: 0.45; cursor: not-allowed; }
-#phase-body .gui-host .skal-gui { position: static; width: 100%; max-width: 100%; box-shadow: none; }
-#phase-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--panel-border); }
+#phase-foot { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--panel-border); }
 #phase-foot:empty { display: none; }
-#phase-foot button { flex: 1 1 auto; cursor: pointer; border-radius: var(--radius-btn); border-style: solid;
+#phase-foot button { flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; cursor: pointer; border-radius: var(--radius-btn); border-style: solid;
                      border-color: var(--btn-border); background: var(--btn-bg); color: var(--btn-fg); }
-#phase-foot button.primary { background: var(--accent); color: #fff; font-weight: 600; }
+#phase-foot button.primary { flex-grow: 1.4; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 #phase-foot button:not(:disabled):hover { filter: brightness(1.08); }
 .skal-row.skal-readonly .skal-btn { opacity: 0.45; pointer-events: none; }
+
+/* The controls (common/controls.js) in the inspector and the view popover: flat sections with a
+   title bar instead of boxes in boxes, one line per control (label left, control right) */
+.gui-host .skal-gui, #view-popover .skal-gui { position: static; width: 100%; max-width: 100%; }
+.gui-host .skal-gui { background: none; border: none; border-radius: 0; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; overflow: visible; }
+.gui-host .skal-gui-body { padding: 0; gap: 0; }
+#view-popover .skal-gui-body { padding: 4px 10px 8px; gap: 0; }
+.group-title,
+.gui-host .skal-folder-title, #view-popover .skal-folder-title {
+  display: flex; justify-content: space-between; align-items: center;
+  font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-dim);
+}
+.group-title { padding: 8px 0 2px; border-top: 1px solid var(--panel-border); margin-top: 4px; }
+.gui-host .skal-folder, #view-popover .skal-folder { border-left: none; padding: 8px 0; gap: 7px; border-top: 1px solid var(--panel-border); }
+.gui-host .skal-folder-body, #view-popover .skal-folder-body { gap: 7px; }
+.gui-host .skal-folder:hover > .skal-folder-title, #view-popover .skal-folder:hover > .skal-folder-title { color: var(--ink); }
+#view-popover .skal-folder:first-child { border-top: none; }
+/* a folder in a folder (Project folder > On serve.py): indented, no rule */
+.gui-host .skal-folder .skal-folder { border-top: none; padding: 2px 0 0 10px; border-left: 2px solid var(--panel-border); }
+.gui-host .skal-folder .skal-folder > .skal-folder-title { text-transform: none; letter-spacing: 0; font-size: 12px; }
+
+.gui-host .skal-row-select, .gui-host .skal-row-text:not(.skal-readonly),
+#view-popover .skal-row-select, #view-popover .skal-row-text { flex-direction: row; align-items: center; gap: 8px; }
+.gui-host .skal-row-select > .skal-row-label, .gui-host .skal-row-text:not(.skal-readonly) > .skal-row-label,
+#view-popover .skal-row-select > .skal-row-label, #view-popover .skal-row-text > .skal-row-label { flex: 0 0 42%; }
+.gui-host .skal-row-select select, .gui-host .skal-row-text input,
+#view-popover .skal-row-select select, #view-popover .skal-row-text input { flex: 1; min-width: 0; padding: 2px 4px; font-size: 12px; }
+.gui-host .skal-row-slider, #view-popover .skal-row-slider {
+  display: grid; grid-template-columns: 42% minmax(0, 1fr) 4.5em; column-gap: 8px; align-items: center;
+}
+.gui-host .skal-row-slider .skal-row-header, #view-popover .skal-row-slider .skal-row-header { display: contents; }
+.gui-host .skal-row-slider .skal-row-label, #view-popover .skal-row-slider .skal-row-label { grid-column: 1; grid-row: 1; }
+.gui-host .skal-row-slider input[type=range], #view-popover .skal-row-slider input[type=range] { grid-column: 2; grid-row: 1; }
+.gui-host .skal-row-slider .skal-readout, #view-popover .skal-row-slider .skal-readout { grid-column: 3; grid-row: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.gui-host .skal-row-label, #view-popover .skal-row-label { font-size: 12px; }
+/* read-only values (status, source): the label over a one-line value */
+.gui-host .skal-row-text.skal-readonly { gap: 1px; }
+.gui-host .skal-row-text.skal-readonly input { text-overflow: ellipsis; }
+.gui-host .skal-row-button button.skal-btn, #view-popover .skal-row-button button.skal-btn {
+  padding: 4px 8px; border-width: 1px; font-size: 12px; border-radius: var(--radius-btn);
+}
+/* `hidden` folders and rows (a photo set's filter, the other optimizers' folders): main.css sets their display */
+.skal-folder[hidden], .skal-row[hidden] { display: none !important; }
+/* a folder of actions (Cameras > Repair), two per row */
+:is(.gui-host, #view-popover) .skal-folder.btn-grid > .skal-folder-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+:is(.gui-host, #view-popover) .skal-folder.btn-grid > .skal-folder-body > .skal-row:not(.skal-row-button) { grid-column: 1 / -1; }
+:is(.gui-host, #view-popover) .skal-folder.btn-grid > .skal-folder-body > .skal-row-button:last-child:nth-child(odd) { grid-column: 1 / -1; }  /* an odd last button spans the row */
 
 /* ── dock: timeline, charts, log ────────────────────────────────── */
 #go-dock { grid-area: dock; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -173,7 +230,7 @@
 /* charts and strip keep their aspect ratio inside the pane */
 .dock-pane canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; border-radius: 4px; }
 #sfm-strip { background: #1b1d26; cursor: crosshair; }
-#strip-hint { position: absolute; left: 10px; bottom: 6px; color: #889; font-size: 11px; }
+#strip-hint { color: #889; font-size: 11px; }
 .dock-pane[data-tab="timeline"].shown { flex-direction: column; gap: 4px; }
 .dock-pane[data-tab="timeline"] canvas { min-height: 0; }
 .strip-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: center; color: #99a; font-size: 11px; }

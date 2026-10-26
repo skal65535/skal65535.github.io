@@ -51,6 +51,7 @@
           <tr><td>← / →</td><td>pan left / right</td></tr>
           <tr><td>↑ / ↓</td><td>pan up / down</td></tr>
           <tr><td>Space</td><td>re-center on the scene</td></tr>
+          <tr><td>[ / ]</td><td>level: turn the picture 1° (⚙ view &gt; Level)</td></tr>
           <tr><th colspan="2">Drone camera (F to toggle)</th></tr>
           <tr><td>drag</td><td>stick: pitch / roll, release to self-level</td></tr>
           <tr><td>↑ / ↓</td><td>fly forward / backward</td></tr>
@@ -90,8 +91,15 @@
     <div id="phase-head"><span id="phase-title"></span><span id="phase-summary"></span></div>
     <div id="phase-body">
       <section data-phase="project">
-        <p class="hint">Start from a <b>video</b> or a set of <b>photos</b> (JPEG), or open a COLMAP <b>gs/</b> folder
+        <p class="hint">Start from a <b>video</b> or a set of <b>photos</b> (JPEG), or open a <b>gs/</b> folder
           (sparse/ + images/) or a checkpoint. Files can also be dropped on the page.</p>
+        <div class="actions">
+          <button class="button wide" id="BtnVideo" title="video file or photos -> keyframes -> cameras, in the browser">Open video or photos…</button>
+          <label class="button" for="FolderElmt" title="a gs/ folder (sparse/ + images/): cameras, points and photos from an SfM">Open gs/ folder…</label>
+          <label class="button" for="PlyElmt" title=".ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
+        </div>
+        <div class="gui-host" id="project-gui"></div>
+        <div class="gui-host" id="project-folder"></div>
         <details class="shoot-guide">
           <summary>How to shoot a photo set</summary>
           <ul>
@@ -105,31 +113,21 @@
             <li><b>Something to match:</b> avoid photos of only a plain wall, a window or the sky.</li>
           </ul>
         </details>
-        <div class="actions">
-          <button class="button" id="BtnVideo" title="video file or photos -> keyframes -> cameras, in the browser (no COLMAP)">Open video or photos…</button>
-          <label class="button" for="FolderElmt" title="COLMAP gs/ folder: sparse/ + images/">Open gs/ folder…</label>
-          <label class="button" for="PlyElmt" title=".ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
-        </div>
-        <div class="gui-host" id="project-folder"></div>
-        <div class="gui-host" id="project-gui"></div>
       </section>
       <section data-phase="video"><p class="hint">Open a video or photos (Project, or drop them on the page).</p></section>
       <section data-phase="keyframes"><p class="hint">Open a video first.</p></section>
       <section data-phase="cameras"><p class="hint">Open a video first.</p></section>
       <section data-phase="train">
-        <div class="actions">
-          <button class="button" id="BtnTrain" title="start / pause training (the step count and splats are kept)">▶ Train</button>
-          <button class="button" id="BtnStep" title="one training step, then pause">Step ×1</button>
-        </div>
         <div class="gui-host" id="gui-container"></div>
       </section>
       <section data-phase="export">
+        <div class="group-title">Splats</div>
         <div class="actions">
           <button class="button" id="BtnExportPly" title="the splats as a standard 3DGS .ply, with the octree appended (other viewers ignore it)">Save .ply (+ octree)</button>
           <button class="button" id="BtnExportOctree" title="the octree of the current splats as a .octree.json sidecar">Save .octree</button>
-          <button class="button" id="BtnExportMesh" title="a triangle mesh (.glb) from the rendered depth of every camera, simplified, textured from the photos (Visualization > mesh texture; off: vertex colors); also shown in the 3D view (Visualization > mesh; DESIGN §9 E5)">Save mesh</button>
           <button class="button" id="BtnSnapshot" title="full training state (splats + Adam + moments + octree), resumable">Save snapshot</button>
         </div>
+        <div class="gui-host" id="export-mesh"></div>
         <div class="gui-host" id="export-sfm"></div>
       </section>
     </div>

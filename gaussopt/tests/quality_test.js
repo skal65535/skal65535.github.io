@@ -9,9 +9,20 @@ import { expSO3, mul3 } from '../src/sfm/linalg.js';
 import { assert, SLOW, DUMP, HAS_REF, loadInput, assessColmap, ORBIT } from './util.js';
 import { tablePairSource } from './session_util.js';
 
+// The synthetic orbit mapped once, each test given it clean (mapper.snapshot / restore)
+let base = null;
+function cleanMap() {
+  if (!base) {
+    const { mapper, stats } = reconstruct(makeSyntheticScene(ORBIT).input, {});
+    base = { mapper, stats, keep: mapper.snapshot() };
+  }
+  base.mapper.restore(base.keep);
+  base.keep = base.mapper.snapshot();
+  return base;
+}
+
 Deno.test('quality: a clean map is green; a damaged pose is red, with its reason', () => {
-  const scene = makeSyntheticScene(ORBIT);
-  const { mapper, stats } = reconstruct(scene.input, {});
+  const { mapper, stats } = cleanMap();
   const q = keyframeQuality(mapper, { loops: stats.loops.loops });
   assert(q.counts.green === 50 && q.loops.length > 0 && !q.loops.some(l => l.suspect), `clean: ${JSON.stringify(q.counts)}`);
   const k = 20, p = mapper.poses[k];
@@ -26,8 +37,7 @@ Deno.test('quality: a clean map is green; a damaged pose is red, with its reason
 });
 
 Deno.test('quality: loops checked on the map are not suspect; a loop frame moved off the map is', () => {
-  const scene = makeSyntheticScene(ORBIT);
-  const { mapper, stats } = reconstruct(scene.input, {});
+  const { mapper, stats } = cleanMap();
   const loops = stats.loops.loops, q = keyframeQuality(mapper, { loops, checkLoops: true });
   const checked = q.loops.filter(l => l.reloc);
   assert(checked.length >= 0.8 * loops.length && !q.loops.some(l => l.suspect),

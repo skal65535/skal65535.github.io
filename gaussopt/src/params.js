@@ -17,10 +17,10 @@ export const COLOR_MODES = {
 };
 
 export const COMPARE_MODES = {
-  '3D Free / Snap View': 0,
-  'Split (GT | Render)': 1,
-  'Residual |GT - Hat|': 2,
-  'Depth spread': 3,
+  '3D scene': 0,
+  'split: photo | render': 1,
+  'residual |photo - render|': 2,
+  'depth spread': 3,
 };
 
 export const FRUSTUM_IMAGES = { 'Off': 'off', 'Active Cam Only': 'active', 'All Cameras': 'all' };
@@ -37,11 +37,13 @@ export const OPT_METHODS = {
 
 // Tooltips of the trainer, view and project controls (mkGui tips: by key, or by folder name)
 export const TIPS = {
-  'Example datasets': 'COLMAP datasets this page can load: the /datasets/ ones when serve.py mounts them',
-  dataset_url: 'loads a COLMAP dataset (cameras, points, photos) and starts new splats from its points',
-  'Checkpoint / Resume': 'start from the COLMAP points, or resume from a saved .ply / snapshot of this dataset',
-  resume_ply: 'the splats to start from: the COLMAP points3D, or a checkpoint saved by serve.py',
-  'Optimizer (Adam / MC / SA)': 'how the splats are updated at each step (DESIGN §5.4)',
+  'Example datasets': 'datasets (gs/ folders: cameras, points, photos) this page can load: the /datasets/ ones when serve.py mounts them',
+  dataset_url: 'loads a dataset (a gs/ folder: cameras, points, photos) and starts new splats from its points',
+  'Start from': 'new splats from the SfM points, or resume from a saved .ply / snapshot of this dataset',
+  resume_ply: 'the splats to start from: new ones from the SfM points (points3D), or a checkpoint saved by serve.py',
+  Training: 'the optimizer (DESIGN §5.4), the length and size of the run, the loss, validation and snapshots',
+  'Monte-Carlo': 'the settings of the Monte-Carlo optimizer (3DGS-MCMC), shown when it is the method',
+  'Simulated annealing': 'the settings of the simulated annealing optimizer, shown when it is the method',
   opt_method: 'Adam: plain gradient descent. Monte-Carlo (3DGS-MCMC): Adam plus L1 terms on opacity and scale, Langevin noise on ' +
               'the nearly transparent splats, dead splats moved onto live ones (no opacity reset). Simulated annealing: jumps of the centers at each rebalance, kept or undone (Metropolis) on the error they made over the window',
   mc_noise: 'Monte-Carlo (3DGS-MCMC): noise on the centers of nearly transparent splats (opacity < 0.005), x lr_pos x their covariance',
@@ -54,20 +56,24 @@ export const TIPS = {
   sa_reheat: 'Simulated annealing: back to the starting temperature every 10 K steps (at least 1000)',
   sa_share: 'Simulated annealing: the share of the visible splats given a new jump at each rebalance',
   sa_size: 'Simulated annealing: the jumps\' size, in the splat\'s own scales, times the temperature',
-  Visualization: 'how the splats are drawn, and the overlays',
+  View: 'what the view shows (the 3D scene, or the photo against the render) and from where',
+  Splats: 'how the splats are drawn (the view only, training is not changed)',
+  Overlays: 'cameras, camera path, octree and split axes drawn over the splats',
+  Mesh: 'Export: the settings of Make mesh. ⚙ view: how the mesh (Make mesh, or a dropped .glb) is shown',
+  'Free camera': 'the orbit, drone and demo cameras (F, G; H lists the keys)',
   visu_mode: 'gaussian: the real render. cone, ellipsis, small dot, axis: shapes to inspect the splats',
   color_mode: 'learned colors, or a diagnostic: octree leaf, error mass R (WLBG), effective view count Neff, depth',
   compare_mode: '3D view (free or snapped to a camera), a split wipe photo | render, the residual |photo - render|, or ' +
                 'the depth spread: how far apart in depth the middle half of each pixel\'s opacity is (red at 7% of the depth, white at 20%: ' +
                 'e.g. a wall rendered as two layers; blue: not enough opacity to tell). ' +
-                'The 2D modes show the camera being trained, or the camera # of the Camera folder when paused',
+                'The 2D modes show the camera being trained, or camera # (below) when paused',
   split_x: 'Split mode: where the wipe between the photo (left) and the render (right) is',
-  mesh_view: 'the mesh (Save mesh, or a dropped .glb) in the 3D view. mesh + splats: the splats behind its surface hidden, ' +
+  mesh_view: 'the mesh (Make mesh, or a dropped .glb) in the 3D view. mesh + splats: the splats behind its surface hidden, ' +
              'those in front kept (floaters show); mesh only; wireframe + splats: the splats behind its surface hidden, its visible edges over the rest, no fill',
   mesh_shaded: 'the mesh in gray, lit from the camera (shows its shape), instead of its colors',
-  mesh_res: 'Save mesh: grid voxels along the scene\'s longest side (finer: more detail, more noise, slower)',
-  mesh_simplify: 'Save mesh: the largest shape error allowed when simplifying, in voxels (0: not simplified)',
-  mesh_texture: 'Save mesh: a texture of this size (texels per side) baked from the photos where the splats\' depth sees the surface; ' +
+  mesh_res: 'Make mesh: grid voxels along the scene\'s longest side (finer: more detail, more noise, slower)',
+  mesh_simplify: 'Make mesh: the largest shape error allowed when simplifying, in voxels (0: not simplified)',
+  mesh_texture: 'Make mesh: a texture of this size (texels per side) baked from the photos where the splats\' depth sees the surface; ' +
                 'off: only the vertex colors (from the splat renders)',
   haze: 'draws every splat this much larger (view only, training is not changed)',
   show_octree: 'wireframes of the octree leaves, colored by state',
@@ -76,9 +82,14 @@ export const TIPS = {
   show_path: 'a line through the camera centers, in the camera path order',
   path_order: 'the camera path (path line, demo flight): capture order, or the shortest path through every camera (photo sets taken back and forth); names and training unchanged',
   show_splits: 'the error axes along which the last rebalance split splats',
+  Level: 'turn the picture about the view direction until the scene stands upright ([ / ] keys); orbit to another side and turn again. The orbit, drone and demo cameras and the mesh\'s .glb use this up (estimated from the cameras, turned by the scene\'s transform: saved in the project\'s project.json)',
+  tilt_ccw: 'turn the picture 1° counter-clockwise ([)',
+  tilt_cw: 'turn the picture 1° clockwise (])',
+  tilt_ccw_fine: 'turn the picture 0.2° counter-clockwise',
+  tilt_cw_fine: 'turn the picture 0.2° clockwise',
+  level_reset: 'back to the up estimated from the cameras (the identity transform)',
   frustum_images: 'the training photos drawn inside the frustums: none, the active camera\'s, or all',
   frustum_scale: 'size of the drawn frustums',
-  Camera: 'the view: free (orbit, drone, demo flight) or snapped to a training camera',
   snap_to_colmap: 'look through the training camera chosen below',
   cam_idx: 'the training camera to look through, or to fly from',
   camera_mode: 'orbit: drag to turn around the target. drone: arrows fly and turn, drag pitches and rolls, E / Q climb (key F). ' +
@@ -87,7 +98,10 @@ export const TIPS = {
   demo_wander: 'demo flight: how far it wanders off the path, in units of the cameras\' near depth',
   fov: 'vertical field of view of the free camera, in degrees',
   radius: 'orbit camera: distance to the target',
-  'Octree & WLBG Growth': 'every K steps: grow, prune and move splats, remove floaters, rebuild the octree (DESIGN §5)',
+  'Growth & pruning': 'at each rebalance (every K steps, Octree): grow, prune and move splats; the splat shape limits (DESIGN §5)',
+  Floaters: 'at each rebalance: remove the splats that float in front of the cameras',
+  'Schedule (E7)': 'experiment E7: over max splats while training, back to it at the end of the planned steps',
+  Octree: 'the loose octree the splats are sorted in, rebuilt at each rebalance (every K steps)',
   max_leaf_size: 'most splats an octree leaf holds (one GPU workgroup); the octree is rebuilt',
   beta: 'looseness of the octree boxes: a splat stays in its leaf while it fits in (1 + 2β) times the box',
   rebalance_every: 'K: steps between two rebalances (growth, pruning, floater removal, octree rebuild)',
@@ -111,19 +125,8 @@ export const TIPS = {
              '1 / (1 - rate) (0: off; 0.25 helps on sparse photo sets, DESIGN.md E3)',
   split_min_views: 'growth splits or clones only the splats seen from at least this many views (N_eff = W^2 / S): ' +
                    'detail fitted to a single photo does not multiply (0: any)',
-  split_min_err: 'E9: growth splits or clones only the splats whose mean error under their footprint (L1, 0..1) is above this: ' +
-                 'growth stops once the fit is good (0: any)',
-  grow_rate: 'E9: at most this share of new splats at each rebalance, the highest error first (0: no limit)',
-  split_in_plane: 'E9: split and clone offsets keep off the splat\'s thinnest axis (on its plane, not off the surface)',
-  grow_by: 'E9: what growth splits by: \'error\' (the error mass under the splat above the mean, §5.1) or \'grad\' ' +
-           '(its mean unsigned positional gradient per view above grow_grad, as brush)',
-  grow_grad: 'E9: grow_by \'grad\'\'s threshold',
   split_mode: 'E9: how a splat splits: \'error\' (two children along its error moments, or a clone at the error centroid) or ' +
               '\'shape\' (two halves drawn within its own shape, scales / sqrt 2, opacity 1 - sqrt(1 - o), as brush)',
-  mesh_snap: 'mesh in the loop (experiment, DESIGN.md E5): every N steps the training views\' rendered depth is fused into a surface, ' +
-             'and the splats near it move this share of the way onto it (0: off)',
-  mesh_snap_every: 'mesh in the loop: how often, in steps',
-  mesh_snap_views: 'mesh in the loop: only where the surface was seen by at least this many training views',
   ssim: 'weight of the D-SSIM loss, (1 - w) L1 + w (1 - SSIM) / 2 as in 3DGS (0.2 there). 0: off, ' +
         '0.8 L1 + 0.2 L2 (the default)',
   max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles)',
@@ -134,11 +137,9 @@ export const TIPS = {
   region_log: 'E7: log the error of fixed cells of the scene at each rebalance (trainer.regionLog)',
   region_res: 'E7: the cells per axis of that log and of the repair',
   region_repair: 'E7: the regions whose error is high and falls slower than the scene\'s split more easily and get more of the relocated splats (0: off)',
-  Evaluation: 'PSNR / SSIM on held-out cameras, never trained on',
-  val_every: 'evaluate the held-out views every N steps (0: never)',
+  val_every: 'PSNR / SSIM on the held-out cameras (never trained on) every N steps (0: never)',
   val: 'evaluate the held-out views now',
-  'Snapshots (Export: save one now)': 'the full training state, to resume later',
-  autosnap_every: 'save a snapshot every N steps (0: never); each one replaces the last',
+  autosnap_every: 'save a snapshot (the full training state, to resume later) every N steps (0: never); each one replaces the last. Export: save one now',
 };
 
 // Example datasets: the /datasets/* ones are listed only when serve.py mounts them
@@ -169,7 +170,7 @@ export const SNAPSHOT_PARAMS = [
   'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth', 'floater_spare',
   'max_splats', 'cap_lease', 'train_steps', 'consolidate_frac', 'polish', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count', 'region_repair', 'region_res',
   'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'ssim',
-  'drop_rate', 'split_min_views', 'split_min_err', 'grow_rate', 'split_in_plane', 'grow_by', 'grow_grad', 'split_mode', 'mesh_snap', 'mesh_snap_every', 'mesh_snap_views',
+  'drop_rate', 'split_min_views', 'split_mode',
   'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset',
 ];
 
@@ -224,12 +225,12 @@ export function defaultParams() {
     show_cameras:    true,
     show_path:       false,  // COLMAP camera path (centers in path_order)
     path_order:      'capture',  // the camera path: 'capture' (name order) | 'shortest' (path.js, DESIGN-sfm §13.3 P7)
-    show_splits:     true,
+    show_splits:     false,
     frustum_images:  'off',
     frustum_scale:   1.0,
     mesh_view:       0,      // MESH_VIEWS
     mesh_shaded:     false,
-    mesh_res:        384,    // Save mesh: grid voxels along the longest side ...
+    mesh_res:        384,    // Make mesh: grid voxels along the longest side ...
     mesh_simplify:   1,      // ... and the simplification's error limit, in voxels
     mesh_texture:    2048,   // ... and its texture's size (MESH_TEXTURES; 0: vertex colors)
 

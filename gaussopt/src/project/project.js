@@ -1,7 +1,8 @@
 // project.js — A project folder: its store (store.js) and its manifest, project.json. The layout
 // mirrors video2splat.py's OUT/ so the folder works with COLMAP and with serve.py:
 //   project.json       format, name, dates, source video, one entry per phase (options, counts),
-//                      the page's settings (app.js settings())
+//                      the page's settings (app.js settings()), the scene's global transform
+//                      (transform: 4x4 row-major, the world to the leveled one; math.js levelTransform)
 //   images/            the keyframes, distorted, as the SfM saw them (written by the worker)
 //   sharpness.csv      every sampled frame: sharpness, motion, keyframe status
 //   sparse/0/          the distorted model of images/ (cameras.bin with the SfM camera, e.g. OPENCV)
@@ -43,11 +44,12 @@ export class Project {
   read(path) { return this.store.read(path); }
   list(dir) { return this.store.list(dir); }
 
-  // Merges `patch` ({ source?, phases?: { name: {...} }, settings? }) into the manifest and writes it
-  update({ source, phases = {}, settings } = {}) {
+  // Merges `patch` ({ source?, phases?: { name: {...} }, settings?, transform? }) into the manifest and writes it
+  update({ source, phases = {}, settings, transform } = {}) {
     const m = this.manifest;
     if (source !== undefined) m.source = source;
     if (settings !== undefined) m.settings = settings;
+    if (transform !== undefined) m.transform = transform;
     for (const [k, v] of Object.entries(phases)) m.phases[k] = { ...m.phases[k], ...v, at: new Date().toISOString() };
     m.updated = new Date().toISOString();
     const text = JSON.stringify(m, null, 1);

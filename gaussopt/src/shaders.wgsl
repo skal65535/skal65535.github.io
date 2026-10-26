@@ -1144,7 +1144,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
                      power <= 4.5 && alpha >= 1.0 / 255.0;
         if (!hit) { continue; }                                      // @nosg
 
-        var g = array<f32, 12>();  // grads_2d slots 0..11
+        var g = array<f32, 12>();  // grads_2d slots 0..11 (10, 11 unused: 0)
         var m = array<f32, 12>();  // moments slots 0..11 (1 = S, done in adam_step)
         if (hit) {
           T = T / max(1e-4, 1.0 - alpha); // T_i
@@ -1167,7 +1167,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           g[8] = 0.5 * dL_dpower * dy * dy;                         // dL/dconic.c
           g[9] = weight;                                            // w_view
           g[10] = w_err;                                            // w_err_view (unused)
-          g[11] = abs(g[4]) + abs(g[5]);                            // |dL/d(u0, v0)| per pixel, summed unsigned (growth, E9)
 
           // WLBG moments; delta = world-space pixel offset from the center at its depth.
           let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
@@ -1226,7 +1225,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 //      skipped), clamps and shape limits;
 //   3. opt_method 1 (MC/SGLD, 3DGS-MCMC): L1 terms on opacity and scale, noise on the centers of
 //      nearly transparent splats.
-// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments, 6 grow_acc.
+// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments.
 
 // #include _train
 @group(0) @binding(1) var<storage, read_write> splats   : array<vec4f>;
@@ -1234,7 +1233,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 @group(0) @binding(3) var<storage, read_write> adam_m   : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> adam_v   : array<vec4f>;
 @group(0) @binding(5) var<storage, read_write> moments  : array<u32>;
-@group(0) @binding(6) var<storage, read_write> grow_acc : array<vec2f>;  // (sum of slot 11, views) since the rebalance
 
 // #include _math
 
@@ -1290,9 +1288,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_db   = load_grad(gbase + 7u);
   let dL_dc   = load_grad(gbase + 8u);
   let w_view  = load_grad(gbase + 9u);
-  let pos_abs = load_grad(gbase + 11u);
   for (var c = 0u; c < 12u; c++) { grads_2d[gbase + c] = 0u; }
-  if (w_view > 1e-6) { grow_acc[idx] += vec2f(pos_abs, 1.0); }
 
   // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S).
   if (w_view > 1e-6) {

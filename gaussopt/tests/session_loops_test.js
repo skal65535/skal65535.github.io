@@ -1,10 +1,11 @@
-// Repair actions on loops and the focal (session.js, DESIGN-sfm §6.3): force / reject loop, set focal.
+// Repair actions on loops and the focal (session.js, DESIGN-sfm §6.3): force loop, set focal (reject loop:
+// session_replay_test.js).
 import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { SfmSession } from '../src/sfm/session.js';
 import { assert, ORBIT } from './util.js';
-import { key, tablePairSource, accuracy, session } from './session_util.js';
+import { tablePairSource, accuracy, session } from './session_util.js';
 
-Deno.test('session: force loop joins two segments that loop detection missed; reject loop removes a loop', async () => {
+Deno.test('session: force loop joins two segments that loop detection missed', async () => {
   // a cut, and only the sequential pairs: two segments
   const scene = makeSyntheticScene({ ...ORBIT, cut: 0.4 });
   const input = { ...scene.input, pairs: scene.input.pairs.filter(p => p.type === 'seq') };
@@ -17,13 +18,6 @@ Deno.test('session: force loop joins two segments that loop detection missed; re
   assert(new Set(s.model().images.map(im => im.segment)).size === 1, 'one segment after the forced loop');
   const acc = accuracy(s, scene);
   assert(acc.fails.length === 0, `after force loop: ${acc.tag}: ${acc.fails.join(', ')}`);
-
-  // a full scene: reject its strongest loop
-  const { scene: full, s: t } = await session();
-  const loop = [...t.loops].sort((a, b) => b.inliers - a.inliers)[0];
-  await t.rejectLoop(loop.a, loop.b);
-  assert(!t.loops.some(l => key(l.a, l.b) === key(loop.a, loop.b)) && t.rejected.has(key(loop.a, loop.b)), 'loop gone');
-  assert(accuracy(t, full).fails.length === 0, `after reject loop: ${accuracy(t, full).tag}`);
 });
 
 Deno.test('session: set focal (fixed) then re-estimate it', async () => {

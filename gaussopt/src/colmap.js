@@ -2,7 +2,7 @@
 //             and 3DGS .ply / .splat checkpoint import & export (.ply may embed the Loose Octree).
 "use strict";
 
-import { sigmoid, logit, quatToMat3, makeViewMatrix, projectPinhole } from './math.js';
+import { logit, quatToMat3, makeViewMatrix, projectPinhole } from './math.js';
 import { CAMERA_MODELS, intrinsics, distortionParams, poseCenter } from './sfm/camera.js';
 import { hashString } from './sfm/util.js';
 
@@ -345,26 +345,6 @@ export function exportPlyBuffer(params, count, octree = null) {
   return out;
 }
 
-export function exportSplatBuffer(params, count) {
-  const out = new ArrayBuffer(count * SPLAT_BYTES);
-  const f32 = new Float32Array(out);
-  const u8  = new Uint8Array(out);
-  for (let i = 0; i < count; i++) {
-    const b = i * SPLAT_FLOATS, fo = i * 8, uo = i * SPLAT_BYTES;
-    for (let k = 0; k < 3; k++) {
-      f32[fo + k]     = params[b + k];
-      f32[fo + 3 + k] = Math.exp(params[b + 4 + k]);
-      u8[uo + 24 + k] = Math.round(sh0ToRgb01(params[b + 12 + k]) * 255);
-    }
-    u8[uo + 27] = Math.round(sigmoid(params[b + 3]) * 255);
-    const qn = Math.hypot(params[b + 8], params[b + 9], params[b + 10], params[b + 11]) || 1;
-    for (let k = 0; k < 4; k++) {
-      u8[uo + 28 + k] = Math.min(255, Math.max(0, Math.round((params[b + 8 + k] / qn + 1) * 128)));
-    }
-  }
-  return out;
-}
-
 // ── Dataset loaders (HTTP base URL or dropped folder) ────────────────────────
 
 // Held-out validation views (never trained on), when there are >= 8 views. mode 'every8': one view
@@ -420,7 +400,7 @@ function fallbackPoints3D(images, perCam = 200) {
 
 export async function loadColmapFromUrl(baseUrl, { onProgress, valSplit } = {}) {
   const base = baseUrl.replace(/\/$/, '');
-  onProgress?.('Fetching COLMAP sparse model...');
+  onProgress?.('Fetching the sparse model...');
   let info = { plys: [] };
   try {
     const r = await fetch(`${base}/info.json`);
@@ -456,7 +436,7 @@ export async function loadColmapFromFiles(fileList, { onProgress, valSplit } = {
     byName.set(f.name, f);
   }
   const find = (key) => byRel.get(key) || byName.get(key);
-  onProgress?.('Parsing dropped COLMAP files...');
+  onProgress?.('Parsing the dropped files...');
   const ds = buildDataset(await Promise.all(SPARSE_FILES.map((rel) => {
     const f = find(rel) || find(`gs/${rel}`);
     if (!f) {

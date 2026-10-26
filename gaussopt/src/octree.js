@@ -611,11 +611,6 @@ export class LooseOctree {
       splitMinViews  = 0,           // > 0: no split / clone of a splat seen from fewer views (N_eff / visitsPerView)
       visitsPerView  = 1,           // steps per training view since the moments were zeroed: N_eff = W^2 / S counts
                                     // view visits (S grows each step), so a photo set's one view counts K / n times
-      splitMinErr    = 0,           // > 0: no split / clone of a splat whose mean error under its footprint, R / W, is below (E9)
-      growRate       = 0,           // > 0: at most this share of `count` new splats, the highest R first (E9)
-      splitInPlane   = false,       // split / clone offsets off the splat's thinnest axis (E9)
-      growScore      = null,        // Float32Array(count): splits / clones go by this score > growThreshold instead of
-      growThreshold  = 0,           // R > Tu (E9's grow_by 'grad': the mean positional gradient per view, as brush)
       splitMode      = 'error',     // 'error': along the error moments (splitSplat); 'shape': within the splat (splitByShape)
       enableSplit    = true,
       enableMerge    = true,
@@ -632,7 +627,6 @@ export class LooseOctree {
                                 // (monte_carlo: its noise has no bound, trainer.js sceneBox)
     } = opts;
     const err = errorStats(moments, count, hysteresis);
-    const growCut = growRate > 0 ? growthCut(moments, count, growScore ?? err.Tu, growThreshold, splitMinErr, Math.ceil(growRate * count)) : 0;
     // stipple seeds come before splits: the room they need is kept free (at the cap, the room the prunes free)
     const nSeeds = seedSplats ? seedSplats.length / SPLAT_FLOATS : 0;
     const out = new KeptSplats(params, count);
@@ -668,9 +662,8 @@ export class LooseOctree {
       }
       // C. Split when R > Tu (sim_anneal: also Tl < R <= Tu, with Boltzmann probability).
       const Tu = repairMask?.[i] ? err.Tu / (1 + repairBoost) : err.Tu;
-      const G = growScore ? growScore[i] : R;
-      let shouldSplit = growScore ? G > growThreshold : (R > Tu && err.Tu > 1e-4);
-      if (!growScore && !shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
+      let shouldSplit = R > Tu && err.Tu > 1e-4;
+      if (!shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
         const boltzmann = Math.exp(-(err.Tu - R) / Math.max(1e-6, saTemp * err.avgR));
         if (Math.random() < boltzmann * 0.35) shouldSplit = true;
       }
@@ -678,18 +671,10 @@ export class LooseOctree {
         shouldSplit = false;
         stats.splitTooFewViews = (stats.splitTooFewViews ?? 0) + 1;
       }
-      if (shouldSplit && splitMinErr > 0 && !(W > 1e-8 && R / W > splitMinErr)) {
-        shouldSplit = false;
-        stats.splitLowError = (stats.splitLowError ?? 0) + 1;
-      }
-      if (shouldSplit && G < growCut) {
-        shouldSplit = false;
-        stats.splitOverRate = (stats.splitOverRate ?? 0) + 1;
-      }
       // budget: splats kept so far + the ones still to visit + this one's extra child + the seeds, or the
       // dead ones relocated (monte_carlo) when there are more of them
       if (enableSplit && shouldSplit && out.n + (count - i) + 1 + Math.max(nSeeds, dead) <= maxSplats) {
-        const how = splitMode === 'shape' ? splitByShape(out, i) : splitSplat(out, i, moments, maxS, this.sceneRadius, splitInPlane);
+        const how = splitMode === 'shape' ? splitByShape(out, i) : splitSplat(out, i, moments, maxS, this.sceneRadius);
         if (how) { stats[how]++; continue; }
       }
       out.add(i, i);
@@ -710,18 +695,6 @@ export class LooseOctree {
 }
 
 // ── reconcileAndGrow() phases ────────────────────────────────────────────────
-
-// growRate's cut: the score of the `room`-th largest among the splats that pass the split's gates (R > Tu, or with
-// a growScore array its score > threshold; R / W > minErr); 0 when fewer pass (no cut)
-function growthCut(moments, count, TuOrScore, threshold, minErr, room) {
-  const rs = [], score = typeof TuOrScore === 'number' ? null : TuOrScore;
-  for (let i = 0; i < count; i++) {
-    const W = moments[i * MOMENT_FLOATS], R = moments[i * MOMENT_FLOATS + 2], G = score ? score[i] : R;
-    if ((score ? G > threshold : R > TuOrScore) && !(minErr > 0 && !(W > 1e-8 && R / W > minErr))) rs.push(G);
-  }
-  if (rs.length <= room) return 0;
-  return Float64Array.from(rs).sort().reverse()[room - 1];
-}
 
 // Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds Tu / Tl
 function errorStats(moments, count, hysteresis) {
@@ -918,19 +891,9 @@ function isFloater(params, b, alpha, leaf, W, S, R, nearCamera) {
   return 0;
 }
 
-// The offset o without its component along splat p's thinnest axis (E9's splitInPlane): the error
-// offsets are taken in each view's image plane, which a surface seen at a grazing angle is far from
-function inSplatPlane(p, o) {
-  const Rm = quatToMat3([p[8], p[9], p[10], p[11]]);  // row-major; axis k = column k
-  const k = p[4] <= p[5] && p[4] <= p[6] ? 0 : p[5] <= p[6] ? 1 : 2;
-  const d = Rm[k] * o[0] + Rm[3 + k] * o[1] + Rm[6 + k] * o[2];
-  return [o[0] - d * Rm[k], o[1] - d * Rm[3 + k], o[2] - d * Rm[6 + k]];
-}
-
 // Split splat i along its error covariance: a large one into two children, a small one keeps
 // itself and clones at the error centroid. Returns 'split' | 'cloned', or null (nothing pushed).
-// inPlane: the offsets keep off the splat's thinnest axis (inSplatPlane)
-function splitSplat(out, i, moments, maxS, sceneRadius, inPlane = false) {
+function splitSplat(out, i, moments, maxS, sceneRadius) {
   const b = i * SPLAT_FLOATS, m = i * MOMENT_FLOATS, params = out.params;
   const x = params[b], y = params[b + 1], z = params[b + 2], R = moments[m + 2];
   // error centroid offset d and covariance E (regularized diagonal)
@@ -963,16 +926,7 @@ function splitSplat(out, i, moments, maxS, sceneRadius, inPlane = false) {
     // large: two children +-0.65 errStd along v (kept within 0.65 sigma on each splat
     // axis, so v's component off a flat splat's plane doesn't lift them off it), scales / 1.55
     const p = params.subarray(b, b + SPLAT_FLOATS);
-    let o = [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65];
-    if (inPlane) {
-      const q = inSplatPlane(p, o);
-      // v (nearly) along the thinnest axis: the children apart along the longest axis instead
-      if (Math.hypot(...q) < 0.25 * errStd * 0.65) {
-        const Rm = quatToMat3([p[8], p[9], p[10], p[11]]), k = p[4] >= p[5] && p[4] >= p[6] ? 0 : p[5] >= p[6] ? 1 : 2;
-        o = [Rm[k] * errStd * 0.65, Rm[3 + k] * errStd * 0.65, Rm[6 + k] * errStd * 0.65];
-      } else o = q;
-    }
-    const [sx, sy, sz] = clampToSplat(p, o, 0.65);
+    const [sx, sy, sz] = clampToSplat(p, [vx * errStd * 0.65, vy * errStd * 0.65, vz * errStd * 0.65], 0.65);
     const logShrink = Math.log(1 / 1.55);
     for (const sign of [-1, 1]) {
       const c = out.row(out.add(i, -1));
@@ -986,7 +940,7 @@ function splitSplat(out, i, moments, maxS, sceneRadius, inPlane = false) {
     // small: keep the parent, clone at the error centroid (within 1 sigma on each axis)
     out.add(i, i);
     const child = out.row(out.add(i, -1));
-    const [ox, oy, oz] = clampToSplat(child, inPlane ? inSplatPlane(child, [dx, dy, dz]) : [dx, dy, dz], 1.0);
+    const [ox, oy, oz] = clampToSplat(child, [dx, dy, dz], 1.0);
     child[0] = x + ox; child[1] = y + oy; child[2] = z + oz;
     return 'cloned';
   }

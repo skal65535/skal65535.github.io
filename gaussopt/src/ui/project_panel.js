@@ -133,13 +133,13 @@ export class ProjectPanel {
     if (app.sfm?.videoName) await project.update({ source: app.sfm.sourceInfo(), ...app.sfm.keyframesRecord() });
     if (app.sfm) await app.sfm.flush();
     if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
-    await project.update({ settings: app.settings() });
+    await project.update({ settings: app.settings(), transform: [...app.sceneTransform] });
   }
 
   // An existing project: the SfM session for repairs (when the page has none), then its gs/
   // dataset into the trainer, from its latest snapshot when there is one
   async resume(project) {
-    const app = this.app, m = project.manifest;
+    const app = this.app, m = project.manifest, transform = m.transform;  // read first: the writes below update m
     app.applySettings(m.settings);  // first: e.g. val_split and downsample apply to the load
     if (!app.sfm?.quality && await project.read('cache/features.gosfm')) {
       await app.openVideoPanel(null);
@@ -158,6 +158,7 @@ export class ProjectPanel {
     const snap = latest ? await project.read(latest) : null;
     await app.loadProjectModel(colmap, snap && await snap.arrayBuffer(), latest);
     app.applySettings(m.settings);  // over the snapshot's own (the settings may have changed since)
+    app.setSceneTransform(transform);  // its leveling (the identity when it has none)
     if (app.sfm && m.phases.cameras) app.sfm.markSent(m.phases.cameras.version);
   }
 
@@ -174,7 +175,7 @@ export class ProjectPanel {
       const files = app.sfm ? await app.sfm.flush() : [];
       for (const [path, blob] of files ?? []) await store.write(path, blob);
       if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
-      await project.update();
+      await project.update({ settings: app.settings(), transform: [...app.sceneTransform] });
       const zip = await zipBlob([...store.files]);
       downloadBlob(zip, `${store.name}.zip`);
       app.log(`Downloaded ${store.name}.zip (${store.files.size} files, ${(zip.size / 1e6).toFixed(0)} MB)`, 'ok');

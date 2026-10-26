@@ -146,15 +146,6 @@ Deno.test('mapper, synthetic two lenses: a camera per lens', () => {
   assert(err.every(e => Math.abs(e) < 0.01), `${tag}: focal errors ${err.map(e => (100 * e).toFixed(2))}%`);
 });
 
-Deno.test('mapper, synthetic two lenses as one camera: fails (what a camera per lens fixes)', () => {
-  const scene = twoLenses();
-  const { cameras, ...one } = scene.input;
-  const mapper = new SequentialMapper({ ...one, images: one.images.map(({ camera, ...im }) => im) }, { refine: ['f', 'k1', 'k2'] });
-  const m = compareModels(mapper.run(), scene.truth.model);
-  const fails = checkThresholds(m, 'truth');
-  assert(m.numCommon < 30 || fails.length > 0, `one camera should not fit two lenses: ${m.numCommon} registered, ${fails.length} threshold failures`);
-});
-
 // regrowSegments with no segment at all (no pair initializes: out_scene2, out_scene3 with every lens)
 // ends with nothing registered instead of throwing
 Deno.test('mapper: regrowSegments with no segment registers nothing, does not throw', () => {

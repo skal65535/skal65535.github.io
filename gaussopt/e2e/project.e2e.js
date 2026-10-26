@@ -1,6 +1,7 @@
 // project.e2e.js — Project folders end to end (DESIGN.md §3.6): a clip through the SfM to 300
 // training steps, then a new project on serve.py, filled with what the page has; the files on
-// disk; a reload without the video that reopens it (session, gs/ dataset, snapshot) and repairs;
+// disk; a reload without the video that reopens it (session, gs/ dataset, snapshot, settings, the
+// scene's transform after Level turns, also in a snapshot) and repairs;
 // the same project into a folder handle (the browser's private storage gives the same
 // FileSystemDirectoryHandle a picked folder does), and (Chrome) its .zip download.
 //   cd e2e && node project.e2e.js   (env: see harness.js; BROWSER=safari: the same in Safari, no .zip)
@@ -59,21 +60,28 @@ await run(async (page) => {
     if (Number(registered) !== before.cams) fail(`colmap model_analyzer on sparse/0: ${(analyzed.stdout + analyzed.stderr).split('\n').slice(-3).join(' ')}`);
   }
 
-  // settings: a click on a control goes into project.json (after a pause), and comes back on reopening
-  await page.evaluate(() => {
+  // settings: a click on a control goes into project.json (after a pause), and comes back on reopening;
+  // so does the scene's transform, after three Level turns ([ / ])
+  const identity = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')).transform;
+  if (JSON.stringify(identity) !== '[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]') fail(`a new project's transform: ${JSON.stringify(identity)}`);
+  const leveled = await page.evaluate(async () => {
     const click = (guis, key) => guis.flatMap(g => g.controllersRecursive()).find(c => c.property === key)._cb_el.click();
     click(window.app.guis, 'remove_floaters');
     click(window.app.sfm.guis, 'loops');
+    for (let k = 0; k < 3; k++) window.dispatchEvent(new KeyboardEvent('keydown', { key: ']' }));
+    return { T: window.app.sceneTransform, up: window.app.worldUp, est: window.app.upEstimate };
   });
+  const turned = Math.acos(leveled.up.reduce((s, v, k) => s + v * leveled.est[k], 0)) * 180 / Math.PI;
+  if (!(turned > 1 && turned <= 3.001)) fail(`3 Level turns: the up ${turned.toFixed(2)}° from the cameras' up`);
   const saved = await (async () => {
     for (let t = 0; t < 50; t++) {
-      const st = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')).settings;
-      if (st?.app?.remove_floaters === false && st?.sfm?.loops === false) return true;
+      const m = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')), st = m.settings;
+      if (st?.app?.remove_floaters === false && st?.sfm?.loops === false && JSON.stringify(m.transform) === JSON.stringify(leveled.T)) return true;
       await new Promise(r => setTimeout(r, 200));
     }
     return false;
   })();
-  if (!saved) fail(`project.json settings: ${JSON.stringify(JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')).settings)}`);
+  if (!saved) { const m = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8')); fail(`project.json settings: ${JSON.stringify(m.settings)}, transform ${JSON.stringify(m.transform)}`); }
 
   // a reload without the video reopens the project: session (repairs), gs/ dataset, snapshot, settings
   await page.goto(appUrl(`?dataset=[synth]`));
@@ -84,9 +92,24 @@ await run(async (page) => {
                                              keyframes: window.app.sfm.quality.frames.length }));
   console.log(`reopened: step ${after.step}, ${after.cams} cameras, ${after.keyframes} keyframes`);
   if (JSON.stringify(after) !== JSON.stringify(before)) fail(`reopened ${JSON.stringify(after)}, expected ${JSON.stringify(before)}`);
-  const restored = await page.evaluate(() => ({ floaters: window.app.params.remove_floaters, loops: window.app.sfm.o.loops }));
-  console.log(`reopened settings: ${JSON.stringify(restored)}`);
+  const restored = await page.evaluate(() => ({ floaters: window.app.params.remove_floaters, loops: window.app.sfm.o.loops, T: window.app.sceneTransform, up: window.app.worldUp }));
+  console.log(`reopened settings: ${JSON.stringify({ floaters: restored.floaters, loops: restored.loops })}, leveled ${turned.toFixed(2)}°`);
   if (restored.floaters !== false || restored.loops !== false) fail(`settings not restored: ${JSON.stringify(restored)}`);
+  if (JSON.stringify(restored.T) !== JSON.stringify(leveled.T) || Math.hypot(...restored.up.map((v, k) => v - leveled.up[k])) > 1e-6) {
+    fail(`transform not restored: ${JSON.stringify(restored.T)} up ${restored.up}, saved ${JSON.stringify(leveled.T)} up ${leveled.up}`);
+  }
+  // the leveling in the snapshot too: one taken now, the level reset, the snapshot restored
+  const snapT = await page.evaluate(async () => {
+    const app = window.app, { buf } = await app._encodeSnapshot('manual');
+    const { decodeSnapshot } = await import('./src/snapshot.js');
+    const header = decodeSnapshot(buf).header.transform;
+    app.resetLevel();
+    const reset = [...app.sceneTransform];
+    await app.restoreSnapshot(buf, 'e2e.gosnap', app.colmap, ++app.loadGen);
+    return { header, reset, restored: app.sceneTransform };
+  });
+  if (JSON.stringify(snapT.header) !== JSON.stringify(leveled.T) || JSON.stringify(snapT.reset) === JSON.stringify(leveled.T) ||
+      JSON.stringify(snapT.restored) !== JSON.stringify(leveled.T)) fail(`snapshot transform: ${JSON.stringify(snapT)}, saved ${JSON.stringify(leveled.T)}`);
   await page.evaluate(() => { const s = window.app.sfm; s._select(s.quality.frames.slice(5, 10).map(f => f.name)); s.act('retry', [s.selected]); });
   await wait(() => !window.app.sfm.busy && /retry done|error/.test(window.app.sfm.state.status));
   const repair = await page.evaluate(() => window.app.sfm.state.status);

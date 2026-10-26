@@ -11,7 +11,6 @@ import { annealStep, remapAnnealState } from './anneal.js';
 import { residualDensity, stippleSites, buildViewDepthGrid, makeSeedSplats } from './stipple.js';
 import { makeRegionGrid, regionStats, RegionTracker } from './regions.js';
 import { rgbPsnr, rgbPsnrDown, rgbSsim } from './metrics.js';
-import { fuseTrainer, snapToSurface } from './mesh.js';
 
 const UNIFORM_BYTES = 176;     // TrainUniforms (shaders.wgsl): 44 x f32
 const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry plot
@@ -44,15 +43,7 @@ export const TRAIN_DEFAULTS = {
   ssim:            0,      // D-SSIM loss weight (0 = off: 0.8 L1 + 0.2 L2), see tile_backward
   drop_rate:       0,      // DropGaussian: share of splats skipped in each training render (0 = off)
   split_min_views: 0,      // growth splits only splats seen from at least this many views (N_eff; 0 = any)
-  split_min_err:   0,      // ... and whose mean error under their footprint, R / W, is above this (0 = any; DESIGN.md E9)
-  grow_rate:       0,      // at most this share of new splats per rebalance, the highest error first (0 = no limit; E9)
-  split_in_plane:  false,  // split / clone offsets keep off the splat's thinnest axis (E9)
-  grow_by:         'error', // what growth splits by: 'error' (R > Tu, §5.1) or 'grad' (mean |positional gradient| per view > grow_grad, as brush; E9)
-  grow_grad:       3e-5,    // grow_by 'grad''s threshold (scores at 1k steps on the dodecahedron: p50 ~1e-6, p90 ~1.5e-5, p99 ~1e-4)
   split_mode:      'shape', // how a splat splits: 'shape' (within its own shape, as brush; DESIGN.md E9) or 'error' (along its error moments, §5.1)
-  mesh_snap:       0,      // mesh in the loop (DESIGN.md §9 E5): move splats this share of the way onto the fused surface (0 = off) ...
-  mesh_snap_every: 1000,   // ... at the first rebalance every this many steps ...
-  mesh_snap_views: 3,      // ... where every corner of the grid cell was seen by at least this many training views
   opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)
   // Shape limits (applied every Adam step): huge splats & needles are almost always wrong
   max_splat_angle: 0.03,   // max axis scale / depth, in the training view
@@ -281,7 +272,7 @@ export class GaussOptTrainer {
 
   _allocateSplatBuffers(capacity) {
     this.capacity = capacity;
-    for (const k of ['splatsBuf', 'momentsBuf', 'grads2dBuf', 'growAccBuf', 'adamMBuf', 'adamVBuf',
+    for (const k of ['splatsBuf', 'momentsBuf', 'grads2dBuf', 'adamMBuf', 'adamVBuf',
                      'sortedIdxBuf', 'viewIdxBuf', 'projSplatsBuf', 'projTilesBuf']) {
       this[k]?.destroy?.();
     }
@@ -291,7 +282,6 @@ export class GaussOptTrainer {
     this.splatsBuf     = this._buffer('splats',   splatBytes,  BUF_RW());
     this.momentsBuf    = this._buffer('moments',  momentBytes, BUF_RW());
     this.grads2dBuf    = this._buffer('grads_2d', momentBytes, BUF_RW());
-    this.growAccBuf    = this._buffer('grow_acc', capacity * 8, BUF_RW());  // adam_step's (|positional grad|, views)
     this.adamMBuf      = this._buffer('adam_m',   splatBytes,  BUF_RW());
     this.adamVBuf      = this._buffer('adam_v',   splatBytes,  BUF_RW());
     this.sortedIdxBuf  = this._buffer('sorted_idx',      capacity * 4, IDX);
@@ -314,7 +304,6 @@ export class GaussOptTrainer {
     const zeroMoments = new Uint32Array(this.count * MOMENT_FLOATS);
     q.writeBuffer(this.momentsBuf, 0, zeroMoments);
     q.writeBuffer(this.grads2dBuf, 0, zeroMoments);
-    q.writeBuffer(this.growAccBuf, 0, new Uint32Array(this.count * 2));
     if (adam) {
       q.writeBuffer(this.adamMBuf, 0, adam.adamM, 0, splatFloats);
       q.writeBuffer(this.adamVBuf, 0, adam.adamV, 0, splatFloats);
@@ -432,7 +421,7 @@ export class GaussOptTrainer {
                                           this.ssimGradTex.createView()],
                  this.tilesX, this.tilesY);
       // per-splat 2D->3D chain rule + Adam / MC / SA update
-      this._pass(enc, this.pipeAdam, [U, this.splatsBuf, this.grads2dBuf, this.adamMBuf, this.adamVBuf, this.momentsBuf, this.growAccBuf],
+      this._pass(enc, this.pipeAdam, [U, this.splatsBuf, this.grads2dBuf, this.adamMBuf, this.adamVBuf, this.momentsBuf],
                  Math.ceil(this.count / 64));
     }
     extra?.(enc);
@@ -852,23 +841,13 @@ export class GaussOptTrainer {
     await this._drainLossRead();  // keep history in step order
     const P = this.params;
     const splatBytes = this.count * SPLAT_FLOATS * 4;
-    const byGrad = P.grow_by === 'grad';
-    const [loss, params, moments, adamM0, adamV0, growAcc] = await this._readback('rebalance_read', [
+    const [loss, params, moments, adamM0, adamV0] = await this._readback('rebalance_read', [
       { buf: this.lossBuf,    bytes: 16 },
       { buf: this.splatsBuf,  bytes: splatBytes },
       { buf: this.momentsBuf, bytes: this.count * MOMENT_FLOATS * 4 },
       { buf: this.adamMBuf,   bytes: splatBytes },
       { buf: this.adamVBuf,   bytes: splatBytes },
-      ...(byGrad ? [{ buf: this.growAccBuf, bytes: this.count * 8 }] : []),
     ]);
-    // grow_by 'grad' (E9, as brush): a splat's score, its summed |positional gradient| per view it was seen from
-    let growScore = null;
-    if (byGrad) {
-      growScore = new Float32Array(this.count);
-      for (let i = 0; i < this.count; i++) growScore[i] = growAcc[2 * i + 1] > 0 ? growAcc[2 * i] / growAcc[2 * i + 1] : 0;
-      const seen = growScore.filter(g => g > 0).sort(), q = (f) => seen.length ? seen[Math.floor(f * (seen.length - 1))] : 0;
-      this.lastGrowInfo = { step: this.stepCount, p50: q(0.5), p90: q(0.9), p99: q(0.99), over: seen.filter(g => g > P.grow_grad).length };
-    }
     this._recordLoss(lossFixed(new Uint32Array(loss.buffer, loss.byteOffset, 2)), this.stepCount, this.count, this.currentTemp);
     this.cpuParams.set(params);
     this.sortGen++;
@@ -888,17 +867,7 @@ export class GaussOptTrainer {
       (this.regionLog ??= []).push({ step: this.stepCount, count: this.count, cells: regionStats(this.regionGrid, this.cpuParams, this.count, moments) });
     }
 
-    // mesh in the loop: the training views' rendered depth fused (the splats as they are on the GPU,
-    // = cpuParams), then the centers moved onto that surface before the octree sees them
     let src, hatUsed = false;
-    const snapEvery = Math.max(1, P.mesh_snap_every);
-    if (P.mesh_snap > 0 && Math.floor(this.stepCount / snapEvery) > Math.floor(this.lastRebalanceStep / snapEvery)) {
-      const grid = await fuseTrainer(this, this.trainViews);
-      this.lastSnapInfo = { step: this.stepCount, voxel: grid.voxel,
-                            ...snapToSurface(this.cpuParams, this.count, grid, { amount: P.mesh_snap, minViews: P.mesh_snap_views }) };
-      hatUsed = true;
-      lap('snap');
-    }
 
     // simulated annealing: last window's jumps kept or undone, new ones (anneal.js)
     if (P.opt_method === 'sim_anneal') {
@@ -947,11 +916,6 @@ export class GaussOptTrainer {
                           ? { positions: this.points3D.positions, count: this.points3D.count, radius: P.floater_spare * this.octree.sceneRadius }
                           : null,
         splitMinViews:  P.split_min_views,
-        splitMinErr:    P.split_min_err,
-        growRate:       P.grow_rate,
-        splitInPlane:   P.split_in_plane,
-        growScore,
-        growThreshold:  P.grow_grad,
         splitMode:      P.split_mode,
         visitsPerView:  Math.max(1, (this.stepCount - this.lastRebalanceStep) / Math.max(1, this.trainViews.length)),
         enableSplit:    P.enable_split,

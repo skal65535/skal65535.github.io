@@ -1,5 +1,5 @@
 // mesh.js: TSDF fusion + surface nets on exact depth maps of a sphere, seen from cameras all around it.
-import { depthBounds, Tsdf, snapToSurface, colorVertices, finishColors, meshToPly, meshFromPly } from '../src/mesh.js';
+import { depthBounds, Tsdf, colorVertices, finishColors, meshToPly, meshFromPly } from '../src/mesh.js';
 import { assert } from './util.js';
 
 const RADIUS = 1, W = 128, H = 128, F = 120;
@@ -132,30 +132,4 @@ Deno.test('mesh: vertex colors from the views that see them; .ply layout', () =>
   const back = meshFromPly(ply.buffer);
   assert(back.positions.every((x, i) => x === m.positions[i]) && back.faces.every((x, i) => x === m.faces[i]) &&
          back.colors.every((x, i) => x === m.colors[i]), 'meshFromPly(meshToPly(m)) differs from m');
-});
-
-Deno.test('mesh: snapToSurface moves centers near the fused sphere onto it, leaves far ones alone', () => {
-  const { grid } = mesh(views());
-  // 200 splat centers (16 floats each) in random directions: 100 at radius 1 +- 1.5 voxels, 100 at 1.5
-  let seed = 7;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const n = 200, P = new Float32Array(16 * n), r0 = [];
-  for (let i = 0; i < n; i++) {
-    const z = 2 * rnd() - 1, a = 2 * Math.PI * rnd(), s = Math.sqrt(1 - z * z);
-    const r = i < 100 ? RADIUS + (rnd() * 3 - 1.5) * grid.voxel : 1.5;
-    P.set([r * s * Math.cos(a), r * s * Math.sin(a), r * z], 16 * i);
-    r0.push(r);
-  }
-  const radius = (i) => Math.hypot(P[16 * i], P[16 * i + 1], P[16 * i + 2]);
-  const before = Array.from({ length: 100 }, (_, i) => radius(i));
-  const st = snapToSurface(P, n, grid, { amount: 1, minViews: 3 });
-  // 87 move: some cells inside the sphere have a corner seen by fewer than 3 views
-  const moved = before.map((r, i) => i).filter(i => Math.abs(radius(i) - before[i]) > 1e-7);
-  assert(st.moved === moved.length && st.moved >= 80, `${st.moved} moved`);
-  const mean = (f) => moved.reduce((a, i) => a + f(i), 0) / moved.length;
-  const e0 = mean(i => Math.abs(before[i] - RADIUS)), e1 = mean(i => Math.abs(radius(i) - RADIUS));
-  // measured: 0.032 -> 0.011 mean, at most 0.56 voxel off (2.8 without the 1-voxel cap)
-  const worst = Math.max(...moved.map(i => Math.abs(radius(i) - RADIUS))) / grid.voxel;
-  assert(e1 < 0.4 * e0 && worst < 0.7, `mean |r - 1| of the moved ${e0.toFixed(4)} -> ${e1.toFixed(4)}, worst ${worst.toFixed(2)} voxel`);
-  for (let i = 100; i < n; i++) assert(Math.abs(radius(i) - r0[i]) < 1e-6, `far splat ${i} moved`);
 });

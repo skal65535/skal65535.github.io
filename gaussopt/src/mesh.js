@@ -163,23 +163,6 @@ export class Tsdf {
   }
 }
 
-// Moves the splat centers in `params` (SPLAT_FLOATS per splat) `amount` of the way to the fused
-// surface along its normal, where the grid is confident: within the truncation band (|tsdf| < 1)
-// and every corner of the cell updated by at least `minViews` views. A move is at most `cap` voxels:
-// the grid's distance is off by a voxel or more at some points (7 of 87 on the test sphere, after a full move). DESIGN.md §9 E5, mesh in the
-// loop. Returns { moved, meanShift } (meanShift in world units).
-export function snapToSurface(params, count, grid, { amount = 0.5, minViews = 3, cap = 1, floats = 16 } = {}) {
-  let moved = 0, shift = 0;
-  for (let i = 0; i < count; i++) {
-    const b = i * floats, s = grid.sample([params[b], params[b + 1], params[b + 2]]);
-    if (!s || s.views < minViews || !(Math.abs(s.tsdf) < 1)) continue;
-    const m = Math.max(-cap * grid.voxel, Math.min(cap * grid.voxel, amount * s.dist));
-    for (let k = 0; k < 3; k++) params[b + k] -= m * s.normal[k];
-    moved++; shift += Math.abs(m);
-  }
-  return { moved, meanShift: moved ? shift / moved : 0 };
-}
-
 // Vertex colors: the mean of the views' pixels where a vertex is within `tol` of the view's depth
 // (seen, not occluded). acc: Float64Array 4V (r, g, b, count), filled one view at a time.
 export function colorVertices(mesh, view, tol, acc) {
@@ -263,7 +246,7 @@ export function meshFromPly(buffer) {
   const end = head.indexOf('end_header\n'), nf = Number(head.match(/element face (\d+)/)?.[1] ?? 0);
   if (end < 0 || !nf) return null;
   if (!head.includes('format binary_little_endian') || !head.includes('property uchar blue\nelement face') ||
-      !head.includes('property list uchar int vertex_indices')) throw new Error('mesh .ply: only the layout of Save mesh is read');
+      !head.includes('property list uchar int vertex_indices')) throw new Error('mesh .ply: only the layout of Make mesh is read');
   const nv = Number(head.match(/element vertex (\d+)/)[1]), o = end + 11, dv = new DataView(buffer);
   const positions = new Float32Array(3 * nv), colors = new Uint8Array(3 * nv), faces = new Uint32Array(3 * nf);
   for (let i = 0; i < nv; i++) for (let k = 0; k < 3; k++) { positions[3 * i + k] = dv.getFloat32(o + 15 * i + 4 * k, true); colors[3 * i + k] = u8[o + 15 * i + 12 + k]; }

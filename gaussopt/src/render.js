@@ -5,7 +5,7 @@
 //   - Side-canvas rolling PSNR & Octree/WLBG/MC/SA telemetry plot
 "use strict";
 
-import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics } from './math.js';
+import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics, fitRect } from './math.js';
 import { bindGroup } from './gpu.js';
 import { mipLevels } from './mesh_image.js';
 
@@ -414,6 +414,9 @@ export class GaussOptRenderer {
         loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 },
       }],
     });
+    // the photo keeps its aspect: in the largest box of it in the canvas, black around
+    const target = this.context.canvas, box = fitRect(gtTex.width, gtTex.height, target.width, target.height);
+    pass.setViewport(box.x, box.y, box.w, box.h, 0, 1);
     pass.setPipeline(this.pipeBlit);
     pass.setBindGroup(0, this._bindGroup(this.pipeBlit, this.blitUniformBuf, gtTex.createView(), hatTex.createView(), this.sampler, pixState));
     pass.draw(4);

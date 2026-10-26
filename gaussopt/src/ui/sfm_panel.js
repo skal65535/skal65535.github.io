@@ -16,6 +16,7 @@ import { rotationAngle } from '../sfm/linalg.js';
 import { SESSION_DEFAULTS } from '../sfm/defaults.js';
 import { DirStore } from '../project/store.js';
 import { downloadBlob } from './download.js';
+import { IDENTITY4 } from '../math.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
 const STAGES = { analyze: 'analyzing frames', features: 'keyframes + SIFT', match: 'matching', register: 'mapping: registered',
@@ -43,19 +44,19 @@ const TIPS = {
                                         'or click one), then an action. Each action can be undone',
   selection: 'the keyframes the actions apply to, and the worst problem among them',
   'Next problem →': 'select the next stretch of amber / red keyframes (with one good keyframe either side)',
-  'Repair all (retry each, keep what helps)': 'Retry on every amber / red stretch (not rotation-only frames, not separate ' +
+  'Repair all': 'Retry on every amber / red stretch (not rotation-only frames, not separate ' +
     'maps), each kept only when the scores improve, undone otherwise. No selection needed; one undo reverts it all',
-  'Retry (re-match, re-register)': 'match the selection again with a wider window and a looser ratio test, then register ' +
+  Retry: 'match the selection again with a wider window and a looser ratio test, then register ' +
                                    'it again in the map. For few points, weak links',
-  'Densify (more keyframes)': 'add keyframes from the video between the selected ones, then register them. For fast ' +
+  Densify: 'more keyframes: add keyframes from the video between the selected ones, then register them. For fast ' +
                               'motion or blur gaps (needs the video)',
-  'Drop keyframes': 'remove the selected keyframes (blurry, moving objects, flares) and re-adjust around them',
-  'Refine (window BA)': 'bundle adjustment over the selection and the keyframes that see the same points. For jitter',
-  'Redo (re-map, merge back)': 'map the selection again as a new piece and merge it back. For a broken stretch',
-  'Force loop (first ↔ last)': 'the first and last selected keyframes see the same place: match them and close a loop. For missed loops',
-  'Reject loops of the selection': 'drop the loop edges that touch the selection (Timeline arcs), then re-run loop closure. ' +
+  Drop: 'remove the selected keyframes (blurry, moving objects, flares) and re-adjust around them',
+  Refine: 'window BA: bundle adjustment over the selection and the keyframes that see the same points. For jitter',
+  Redo: 'map the selection again as a new piece and merge it back. For a broken stretch',
+  'Force loop': 'the first and last selected keyframes see the same place: match them and close a loop. For missed loops',
+  'Reject loops': 'drop the loop edges that touch the selection (Timeline arcs), then re-run loop closure. ' +
                                    'For false loops (repeated façades), or a suspect loop (red arc) that pulls the map apart',
-  'Set focal (field below)': 'set the focal (Camera & mapping: focal, fix it) and run the reconstruction again',
+  'Set focal': 'set the focal (Camera & mapping: focal, fix it) and run the reconstruction again',
   '↶ Undo': 'revert the last action',
   'Features & matching (S1–S2)': 'SIFT features and which keyframe pairs are matched',
   maxFeatures: 'most SIFT features per keyframe',
@@ -67,7 +68,7 @@ const TIPS = {
   hfovDeg: 'horizontal field of view of the camera, if known (0: estimated); sets the starting focal',
   sweeps: 'refinement passes of bundle adjustment over the whole path after mapping',
   'Cameras (video)': 'export the cameras found from the video',
-  exp: 'write a COLMAP folder (sparse/0 + undistorted images) for other trainers',
+  exp: 'write a gs/ folder (sparse/0 in COLMAP\'s format + undistorted images) for other trainers',
   save: 'the whole SfM session as one .gosfm file, to reopen and repair later',
 };
 
@@ -180,19 +181,20 @@ export class SfmPanel {
     this.addPhotosBtn = cams.add({ add: () => this._pickPhotosToAdd() }, 'add').name('Add photos… (where the advice says)');
     // DESIGN-sfm §6.3
     const fix = cams.addFolder('Repair (selection on the timeline)');
+    fix._host.parentElement.classList.add('btn-grid');  // the actions two per row
     fix.add(s, 'selection').name('selected').listen().disable();
     const act = (label, fn) => fix.add({ [label]: fn }, label).name(label);
     this.repairBtns = [
       act('Next problem →', () => this.selectNextProblem()),
-      act('Repair all (retry each, keep what helps)', () => this.act('repair', [])),
-      act('Retry (re-match, re-register)', () => this.act('retry', [this.selected])),
-      act('Densify (more keyframes)', () => this.act('densify', [this.selected])),
-      act('Drop keyframes', () => this.act('drop', [this.selected])),
-      act('Refine (window BA)', () => this.act('refine', [this.selected, { intrinsics: false }])),
-      act('Redo (re-map, merge back)', () => this.act('redo', [this.selected])),
-      act('Force loop (first ↔ last)', () => this.act('forceLoop', [this.selected[0], this.selected.at(-1)])),
-      act('Reject loops of the selection', () => this.act('rejectLoops', [this._loopsOfSelection()])),
-      act('Set focal (field below)', () => this.act('setFocal', [this._focal(), { fix: this.o.fixFocal }])),
+      act('Repair all', () => this.act('repair', [])),
+      act('Retry', () => this.act('retry', [this.selected])),
+      act('Densify', () => this.act('densify', [this.selected])),
+      act('Drop', () => this.act('drop', [this.selected])),
+      act('Refine', () => this.act('refine', [this.selected, { intrinsics: false }])),
+      act('Redo', () => this.act('redo', [this.selected])),
+      act('Force loop', () => this.act('forceLoop', [this.selected[0], this.selected.at(-1)])),
+      act('Reject loops', () => this.act('rejectLoops', [this._loopsOfSelection()])),
+      act('Set focal', () => this.act('setFocal', [this._focal(), { fix: this.o.fixFocal }])),
       act('↶ Undo', () => this.undo()),
     ];
     const fm = cams.addFolder('Features & matching (S1–S2)', { collapsed: true });
@@ -207,7 +209,7 @@ export class SfmPanel {
     cam.add(o, 'autoRepair').name('repair all when found');
 
     const exp = mkGui(document.getElementById('export-sfm'), { draggable: false, tips: TIPS }).addFolder('Cameras (video)');
-    this.exportBtn = exp.add({ exp: () => this.exportFolder() }, 'exp').name('Export COLMAP gs/ folder…');
+    this.exportBtn = exp.add({ exp: () => this.exportFolder() }, 'exp').name('Export gs/ folder…');
     this.saveBtn = exp.add({ save: () => this.saveProject() }, 'save').name('Save session (.gosfm)');
     this._enable();
 
@@ -351,6 +353,7 @@ export class SfmPanel {
 
   // A new source (video, project, photo set): nothing of the previous one is shown
   _opening(name, status) {
+    this.app.setSceneTransform(IDENTITY4, { save: false });  // another scene: not leveled (a project's own comes last, project_panel.js)
     this.videoName = name;
     this.result = this.quality = this.frameAnalysis = this.duration = this.keyframeCount = null;
     this.selected = [];

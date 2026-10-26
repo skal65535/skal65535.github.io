@@ -43,7 +43,7 @@ export class SfmSession {
     this.twoView = new Map();    // quality.js cache: two-view poses by keyframe names, for the current camera and pairs
     this.viewPsnr = null;        // Map(name -> validation PSNR), from the trainer
     this.rejected = new Set();   // loop pairs the user rejected (keys)
-    this.afterSequential = null; // replay point for rejectLoop
+    this.afterSequential = null; // replay point for rejectLoops
   }
 
   // ── state ────────────────────────────────────────────────────────────────────
@@ -391,8 +391,6 @@ export class SfmSession {
 
   // Replays S3 + S4 from the sequential map without the pair (local repairs since are lost: the
   // log says so); after drops / inserts, the whole reconstruction is re-run instead
-  rejectLoop(a, b) { return this.rejectLoops([[a, b]]); }
-
   rejectLoops(pairs) {
     return this._action('rejectLoops', { pairs }, async () => {
       const keys = new Set(pairs.map(([a, b]) => key(a, b)));

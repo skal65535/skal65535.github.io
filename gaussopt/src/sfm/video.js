@@ -15,7 +15,7 @@ export async function openVideo(file) {
   if (!await supported()) delete config.hardwareAcceleration;  // e.g. VP9 without a hardware decoder: software
   if (!await supported()) {
     throw new Error(`cannot decode ${info.codec} here (HEVC needs a hardware decoder); transcode to H.264, ` +
-                    `e.g. ffmpeg -i in.mov -c:v libx264 -crf 16 out.mp4, or use the COLMAP path`);
+                    `e.g. ffmpeg -i in.mov -c:v libx264 -crf 16 out.mp4, or extract its frames and open them as photos`);
   }
   const swap = info.rotation === 90 || info.rotation === 270;
   const fps = info.samples.length / info.duration;

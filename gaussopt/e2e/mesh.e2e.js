@@ -1,10 +1,11 @@
-// mesh.e2e.js — "Save mesh" and the mesh view (DESIGN.md §9 E5) in the page: the synthetic room
-// (photo_runs/tools/synth_room.py) served as a dataset, 300 training steps, then the button: the mesh
+// mesh.e2e.js — "Make mesh" and the mesh view (DESIGN.md §9 E5) in the page: the synthetic room
+// (photo_runs/tools/synth_room.py) served as a dataset, 600 training steps, then the Train step's
+// "Make mesh →": the page moves to the Export step (its mesh settings there, done with the mesh's summary once saved), the mesh
 // (src/mesh.js on the trainer's forward renders, simplified in mesh_worker.js, textured from the photos
 // by mesh_texture.js) reaches the save path as a .glb with a JPEG texture, whose vertices are nearly all
 // inside the room (once turned back from glTF's +Y up to the app's world up), and is drawn in the 3D view
 // from the first camera: 'mesh only' textured covers most of it, in color, closer to that camera's
-// photo than with its vertex colors (the splat renders after 300 steps are blurry); shaded, all gray; 'mesh +
+// photo than with its vertex colors (the splat renders after 600 steps are blurry); shaded, all gray; 'mesh +
 // splats' shows some of the mesh (the splats behind its surface hidden; drawn unhidden and opaque, they
 // would cover nearly all of it); 'wireframe + splats' hides them too (a quad in front of the camera as
 // the mesh: its diagonal alone drawn, no fill, no splat); without the mesh, the splats are colored.
@@ -22,18 +23,33 @@ const geo = JSON.parse(readFileSync(join(ROOM, 'scene_sdf.json'), 'utf8'));
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
   await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
-  await page.evaluate(() => { window.app.params.stop_after = 300; window.app._setTraining(true); });
-  await page.waitForFunction(() => window.app.trainer.stepCount >= 300 && !window.app.params.training, null, { timeout: 300000 });
+  // 600 steps: at 300, with lr_opacity 0.01 (d576675), the splats under the floor have not faded yet and 60-122 of
+  // ~51k vertices are 0.18-0.24 below it (0-6 at 0.05); at 600, 3-9 of ~65k
+  await page.evaluate(() => { window.app.params.stop_after = 600; window.app._setTraining(true); });
+  await page.waitForFunction(() => window.app.trainer.stepCount >= 600 && !window.app.params.training, null, { timeout: 300000 });
   const r = await page.evaluate(async () => {
     const app = window.app;
     const saved = new Promise(res => { app._saveOrDownload = async (bytes, name) => res({ bytes: Array.from(bytes), name }); });
     const show = app.showMesh;
     app.showMesh = function (m) { window.__shown = m; return show.call(this, m); };
-    document.getElementById('BtnExportMesh').click();
+    app.shell.show('train');
+    app.shell.refresh();
+    const make = [...document.querySelectorAll('#phase-foot button')].find(b => b.textContent === 'Make mesh →');
+    if (!make || make.disabled) return { noButton: [...document.querySelectorAll('#phase-foot button')].map(b => b.textContent) };
+    make.click();
+    const phase = app.shell.current, settings = [...document.querySelectorAll('#export-mesh .skal-folder-title')].map(t => t.textContent);
     const got = await Promise.race([saved, new Promise(res => setTimeout(() => res(null), 120000))]);
-    return got && { ...got, up: app.worldUp, view: app.params.mesh_view, log: app.logText().split('\n').filter(l => /Mesh/.test(l)) };
+    for (let t = 0; t < 50 && !app.meshState?.faces; t++) await new Promise(res => setTimeout(res, 100));  // saveMesh returns after the save
+    app.shell.refresh();
+    const step = document.querySelector('.step[data-phase="export"]');
+    return got && { ...got, up: app.worldUp, view: app.params.mesh_view, log: app.logText().split('\n').filter(l => /Mesh/.test(l)), phase, settings,
+                    exportStep: { cls: step.className, sum: step.querySelector('.step-sum').textContent } };
   });
-  if (!r) throw new Error('nothing saved 120 s after Save mesh');
+  if (r?.noButton) fail(`no enabled "Make mesh →" in the Train step: ${JSON.stringify(r.noButton)}`);
+  if (!r) throw new Error('nothing saved 120 s after Make mesh');
+  if (r.phase !== 'export') fail(`Make mesh → shows the ${r.phase} step, not export`);
+  if (!r.settings.includes('Mesh')) fail(`no Mesh settings in the Export step: ${JSON.stringify(r.settings)}`);
+  if (!(/\bdone\b/.test(r.exportStep.cls) && /^\d+k faces · \d+² · [\d.]+ MB$/.test(r.exportStep.sum))) fail(`Export step after the mesh: ${JSON.stringify(r.exportStep)}`);
   if (!/^gaussopt_\d{5}\.mesh\.glb$/.test(r.name)) fail(`saved as ${r.name}`);
   const mesh = readGlb(Uint8Array.from(r.bytes).buffer, { gltfFrame: true }), nv = mesh.positions.length / 3, nf = mesh.faces.length / 3;
   if (!(nv > 1000 && nf > 1000)) fail(`${nv} vertices, ${nf} faces`);
@@ -54,7 +70,7 @@ await run(async (page) => {
   const tex = readGlb(Uint8Array.from(r.bytes).buffer);
   if (!(tex.texture?.mimeType === 'image/jpeg' && tex.texture.bytes[0] === 0xff && tex.texture.bytes[1] === 0xd8)) fail('no JPEG texture in the .glb');
   if (!(tex.uvs?.length === 2 * nv && tex.uvs.every(u => u >= 0 && u <= 1))) fail('uvs missing or outside [0, 1]');
-  if (r.view !== 1) fail(`mesh_view ${r.view} after Save mesh (1: mesh + splats)`);
+  if (r.view !== 1) fail(`mesh_view ${r.view} after Make mesh (1: mesh + splats)`);
 
   // the view in 'mesh only' from the first camera: the share of canvas pixels drawn (alpha > 0), read in
   // the task that drew them (a WebGPU canvas is not readable once presented)
@@ -122,10 +138,10 @@ await run(async (page) => {
   if (!(withMesh.drawn > 0.3 && withMesh.gray > 0.99)) fail(`mesh only, shaded: ${(100 * withMesh.drawn).toFixed(1)}% of the canvas drawn, ${(100 * withMesh.gray).toFixed(1)}% of it gray`);
   if (!(textured.drawn > 0.3 && textured.gray < 0.5)) fail(`mesh only, textured: ${(100 * textured.drawn).toFixed(1)}% of the canvas drawn, ${(100 * textured.gray).toFixed(1)}% of it gray`);
   // measured: +1.5 to +2.8 dB (3 runs) with the centers' depth, +0.9 to +1.5 (6 runs) with the plane depth (the mesh
-  // closer to the surface: the vertex colors better too); 13 dB below with the uvs read upside down
+  // closer to the surface: the vertex colors better too), +2.3 to +3.3 (3 runs) at 600 steps; 13 dB below with the uvs read upside down
   if (!(textured.psnr > colored.psnr + 0.5)) fail(`textured not closer to the photo than vertex colors: ${textured.psnr.toFixed(2)} vs ${colored.psnr.toFixed(2)} dB`);
   // measured 9.3-9.7% with the centers' depth, 3.8-3.9% with the plane depth (tile_forward: the mesh on the splats'
-  // own surface, fewer of them behind it); 0.7% with the splats drawn unhidden (most are on or just in front of it)
+  // own surface, fewer of them behind it), 6.6-6.7% at 600 steps; 0.7% with the splats drawn unhidden (most are on or just in front of it)
   if (!(over.gray > 0.02)) fail(`mesh + splats, shaded: ${(100 * over.gray).toFixed(1)}% gray (the mesh)`);
   if (!(wall.drawn < 0.02)) fail(`wireframe + splats behind a quad: ${(100 * wall.drawn).toFixed(1)}% of the canvas drawn (splats not hidden, or the quad filled)`);
   if (!(without.gray < 0.5)) fail(`mesh removed (the splats): ${(100 * without.gray).toFixed(1)}% gray`);
