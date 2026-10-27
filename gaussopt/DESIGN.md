@@ -554,3 +554,20 @@ skal65535.github.io/gaussopt/
 * **4. View-dependent color** (independent; scoped after 1-2): brush trains SH 3, we train SH 0, and the dodecahedron's floor is glossy. 45 more floats per splat (16 now): GPU memory, the PLY, the gallery's viewer; worth it only if 1-3 leave a gap SH could explain.
 * **5. The time cost of `lr_opacity` 0.01** (independent): its 10k-step gallery runs take 145-191 s against 101-157 s at 0.05. The splats blended per pixel at both rates; if near-transparent splats explain it, a stricter `prune_opacity` or a cull at blend time.
 * **Measures:** the dodecahedron (5k and 10k steps: held-out PSNR, `floor_slab.mjs`, the gallery's viewer by eye), jardin5 and gare (held-out PSNR, depth at the SfM points, `photo_runs/tools/e9_real.sh`), brush's PLYs on the same frames with the caps off.
+
+### E11 — Brush's defaults where they win (2026-10-27)
+* **Sweep** (`photo_runs/tools/e11_sweep.sh`, `logs/e11.txt`; 10k steps, 300k splats, ds 2, one change at a time from the E10 defaults): held-out PSNR on jardin5 / gare / jardin7 / the dodecahedron, training views on cuisine (no held-out photos):
+
+  | | jardin5 | gare | jardin7 | dodeca | cuisine |
+  |---|---|---|---|---|---|
+  | E10 defaults | 18.74 | 15.57 | 25.37 | 22.37 | 29.79 |
+  | shape limits off | 19.15 | 15.78 | 25.92 | 22.40 | 31.38 |
+  | + color clamped only below 0 (brush) | 19.19 | 15.84 | 25.84 | 22.38 | 31.72 |
+  | + D-SSIM 0.2, `lr_scale` 0.01 | 19.16 | 15.50 | 25.54 | 22.53 | 31.47 |
+  | + brush's `lr_mean`: 2e-5 → 1e-6 over the run | 19.12 | 15.81 | 25.76 | 22.53 | 30.91 |
+
+  Depth at the SfM points (median rel. error / within 5%), limits off → + brush's `lr_mean`: jardin5 2.1% / 76% → 1.5% / 81%, gare 21.9% / 29% → 19.4% / 35%, jardin7 18.5% / 51% → 15.4% / 55%; the dodecahedron's opaque splats off the floor plane, p90 11.2% → 8.8% (6.3% with the limits on).
+* **Taken:** the shape limits off (`max_splat_angle`, `max_splat_scale`, `max_anisotropy` 0: none; on, they shrank the long thin splats of grass and branches) and brush's position rate (`lr_pos` 2e-5 decaying to 1e-6 over `train_steps`, or 10k steps open-ended; brush v0.3.0 `config.rs`, `train.rs`: over `total_steps`, x its bounds' median side where ours is x the scene radius). **Not taken:** the clamp below 0 only (within noise held out), D-SSIM (loses on gare and jardin7).
+* **Gallery's `-latest` scenes** retrained with them (`logs/gallery_latest.txt` `e11_new`, against `opacity`): jardin5 18.73 → 19.14 dB held out, gare 15.55 → 15.83, jardin7 25.38 → 25.49 (25.76 in the sweep: one run each, so about 0.3 dB of noise there); training views cuisine 29.39 → 30.92, salon 27.95 → 29.37, minerals 25.45 → 26.75.
+* **jardin5 at 1M splats, 30k steps** (brush's run of the gallery's jardin5-brush-1m: 20.01 dB held out at SH 0, depth 1.1% / 86%): the limits off alone 20.51 dB, 1.7% / 79%; with brush's `lr_mean` too (`train_steps=30000`) 20.57 dB, 1.4% / 82%, 1038 s.
+* **Still open:** the depth gap to brush (1.4% against 1.1%), the dodecahedron's floor (p90 8.8% against 6.3% with the limits on), and SH 3 (E10 step 4). Brush's gradient growth was tried in E9 (`grow_by=grad`, -0.9 dB on jardin5) and is not retried here.

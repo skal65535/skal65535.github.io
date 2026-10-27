@@ -305,8 +305,8 @@ export class GaussOptApp {
     growF.add(P, 'stipple_count', [500, 1000, 2000, 5000, 10000]).name('stipple seeds / K');
     growF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
     growF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
-    growF.add(P, 'max_splat_angle', 0.005, 0.2, 0.005).name('max splat angle');
-    growF.add(P, 'max_anisotropy', 2, 50, 1).name('max anisotropy');
+    growF.add(P, 'max_splat_angle', 0, 0.2, 0.005).name('max splat angle (0: none)');
+    growF.add(P, 'max_anisotropy', 0, 50, 1).name('max anisotropy (0: none)');
 
     const floatF = gui.addFolder('Floaters', { collapsed: true });
     floatF.add(P, 'remove_floaters').name('octree floater kill');

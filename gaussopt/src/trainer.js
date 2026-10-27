@@ -33,9 +33,10 @@ export const TRAIN_DEFAULTS = {
   sa_size:         1,      // a jump's standard deviation, in the splat's own scales, times T
   sa_reheat:       false,  // back to sa_temp every 10 K steps (at least 1000)
   // Learning rates
-  lr_pos:          0.00005,  // x the scene radius (3DGS: 1.6e-4; 5e-5 with split_mode shape: better PSNR and depth on jardin5 / 7, DESIGN.md E9)
-  lr_pos_final:    0.01,   // lr_pos decays exponentially to lr_pos * lr_pos_final ...
-  lr_decay_steps:  30000,  // ... over this many steps
+  lr_pos:          0.00002,  // x the scene radius, decaying to 1e-6 x it as brush's lr_mean (x its bounds' median side there;
+                             // 3DGS: 1.6e-4; 5e-5 before DESIGN.md E11, whose sweep has this level on held-out PSNR, the depth better)
+  lr_pos_final:    0.05,   // lr_pos decays exponentially to lr_pos * lr_pos_final ...
+  lr_decay_steps:  10000,  // ... over the planned length (train_steps) or, open-ended, this many steps
   lr_scale:        0.005,
   lr_quat:         0.002,
   lr_color:        0.0025,
@@ -45,11 +46,25 @@ export const TRAIN_DEFAULTS = {
   split_min_views: 0,      // growth splits only splats seen from at least this many views (N_eff; 0 = any)
   split_mode:      'shape', // how a splat splits: 'shape' (within its own shape, as brush; DESIGN.md E9) or 'error' (along its error moments, §5.1)
   opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)
-  // Shape limits (applied every Adam step): huge splats & needles are almost always wrong
-  max_splat_angle: 0.03,   // max axis scale / depth, in the training view
-  max_splat_scale: 0.1,    // max axis scale, as a fraction of the scene radius
-  max_anisotropy:  10,     // max ratio of the largest axis to the median one
+  // Shape limits (applied every Adam step; 0: none). Off by default, as brush: on, they shrank the long thin
+  // splats of grass and branches (DESIGN.md E11: +0.4 / +0.6 dB held out on jardin5 / 7, +1.6 on cuisine's training views)
+  max_splat_angle: 0,      // max axis scale / depth, in the training view (0.03 before E11)
+  max_splat_scale: 0,      // max axis scale, as a fraction of the scene radius (0.1)
+  max_anisotropy:  0,      // max ratio of the largest axis to the median one (10)
 };
+
+// lr_pos's factor at `step`: down exponentially to lr_pos_final over the planned length (train_steps), or
+// lr_decay_steps when open-ended, then flat
+export const posLrDecay = (P, step) =>
+  Math.pow(P.lr_pos_final, Math.min(1, step / Math.max(1, P.train_steps > 0 ? P.train_steps : P.lr_decay_steps)));
+
+// The shape limits as TrainUniforms.limits.xyz: max scale / depth, max world scale, log(max anisotropy); 0 is none
+const NO_LIMIT = 1e6;
+export const shapeLimits = (P, R) => [
+  P.max_splat_angle > 0 ? P.max_splat_angle : NO_LIMIT,
+  (P.max_splat_scale > 0 ? P.max_splat_scale : NO_LIMIT) * R,
+  Math.log(P.max_anisotropy > 0 ? Math.max(1, P.max_anisotropy) : NO_LIMIT),
+];
 
 // Whether step `step` rebalances, the last rebalance at step `last`: rebalance_every steps
 // after it, rebalance_every_cap once `count` is at the splat cap (0: rebalance_every), and at
@@ -624,14 +639,12 @@ export class GaussOptTrainer {
     this.currentTemp = P.sa_temp * Math.pow(P.sa_cooling, cycleSteps / 50.0);
     // 50-step lr warmup (matters when resuming), exponential lr_pos decay to lr_pos * lr_pos_final
     const warmup = Math.min(1.0, this.stepCount / 50.0);
-    const decayT = Math.min(1, this.stepCount / Math.max(1, P.lr_decay_steps));
-    const posDecay = Math.pow(P.lr_pos_final, decayT);
+    const posDecay = posLrDecay(P, this.stepCount);
     const mcTerms = optMethod === 1 && !(P.polish && endPhase(P, this.stepCount));
     this._writeUniforms(img, k, [
       P.lr_pos * R * warmup * posDecay, P.lr_scale * warmup, P.lr_quat * warmup, P.lr_color,  // lrs
       optMethod, mcTerms ? P.mc_noise : 0, Math.random(), this.adamStepCount,  // opt_params
-      P.max_splat_angle, P.max_splat_scale * R,                                                 // limits
-      Math.log(Math.max(1, P.max_anisotropy)), P.lr_opacity,
+      ...shapeLimits(P, R), P.lr_opacity,                                                       // limits
       P.ssim, P.drop_rate, P.drop_rate > 0 ? 1 / (1 - P.drop_rate) : 0, 0,                     // loss
       ...(mcTerms ? [P.mc_opacity_reg / this.count, P.mc_scale_reg / (3 * this.count)] : [0, 0]), 0, 0,  // reg
     ]);

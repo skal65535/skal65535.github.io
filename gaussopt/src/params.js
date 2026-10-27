@@ -120,7 +120,7 @@ export const TIPS = {
   train_steps: 'E7: the planned length of the training (0: open-ended, no lease); the consolidation ends there',
   polish: 'E7: the last part of the planned length without Monte-Carlo\'s noise and L1 terms (plain Adam steps)',
   consolidate_frac: 'E7: the last part of the planned length: the count falls back to max splats (the splats seen least go), then trains there',
-  max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats)',
+  max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats; 0: none, the default)',
   drop_rate: 'DropGaussian: the share of splats left out of each training render, the others more opaque by ' +
              '1 / (1 - rate) (0: off; 0.25 helps on sparse photo sets, DESIGN.md E3)',
   split_min_views: 'growth splits or clones only the splats seen from at least this many views (N_eff = W^2 / S): ' +
@@ -129,7 +129,7 @@ export const TIPS = {
               '\'shape\' (two halves drawn within its own shape, scales / sqrt 2, opacity 1 - sqrt(1 - o), as brush)',
   ssim: 'weight of the D-SSIM loss, (1 - w) L1 + w (1 - SSIM) / 2 as in 3DGS (0.2 there). 0: off, ' +
         '0.8 L1 + 0.2 L2 (the default)',
-  max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles)',
+  max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles; 0: none, the default)',
   opacity_reset: 'every N steps, all opacities are lowered to 0.01 so useless splats fade out and get pruned (0: never). ' +
                  'Validation right at a reset reads low',
   stipple_seed: 'experiment E4: new splats seeded where the residual is large, by stippling the error image',
