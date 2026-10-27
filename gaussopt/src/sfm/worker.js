@@ -32,7 +32,7 @@ import { SfmSession } from './session.js';
 import { packProject, unpackProject, mergeProjects, projectPart } from './project.js';
 import { SESSION_DEFAULTS, PHOTO_MAPPING } from './defaults.js';
 import { readExif, jpegSize } from './exif.js';
-import { planPhotos, planMore, focalFromExif, hfovDeg } from './photos.js';
+import { planPhotos, planMore, focalFromExif } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
 import { defaultCamera, withFocal } from './camera.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
@@ -421,12 +421,12 @@ function photoCameras(features) {
 // The mapper options from the run's: a video's, and the start of a photo set's
 const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}) });
 
-// The mapper options of a photo set: PHOTO_MAPPING, and the EXIF focal as the fallback field of
-// view when F does not observe the focal (P2; not as the start: it is 3-4% low on the Pixel 10)
+// The mapper options of a photo set: PHOTO_MAPPING, and the EXIF focal as the fallback when F does
+// not observe the focal (P2; not as the start: it is 3-4% low on the Pixel 10)
 function photoMapping(o, features) {
   const g = photos.plan.cameras[0];
   const f = focalFromExif(g?.focal35, features.width, features.height);
-  return { ...PHOTO_MAPPING, ...baseMapping(o), ...(f ? { fallbackHfovDeg: hfovDeg(f, features.width) } : {}) };
+  return { ...PHOTO_MAPPING, ...baseMapping(o), ...(f ? { fallbackFocal: f } : {}) };
 }
 
 // ── persistence (DESIGN-sfm §4): OPFS per video, and .gosfm projects ────────────

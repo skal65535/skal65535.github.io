@@ -26,7 +26,8 @@ const DEFAULTS = {
   hfovDeg: null,           // horizontal field of view instead of `focal` (DESIGN-sfm §5.3: hfov=)
   minFocalSharpness: 1.3,  // below: the focal is unobservable from F, use the fallback field of view
   weakFocalSharpness: 3,   // below: weakly constrained, warn
-  fallbackHfovDeg: 76,     // typical drone camera (DJI: f = 0.64 w); override with hfovDeg / focal
+  fallbackHfovDeg: 76,     // typical drone camera (DJI: f = 0.64 w), across the long side: a portrait video's height
+  fallbackFocal: null,     // pixels, instead of fallbackHfovDeg (a photo set's EXIF focal); override both with hfovDeg / focal
   maxFocalGap: 8,          // focal calibration: widest frame gap tried per frame
   maxFocalPairs: 200,      // and number of frames sampled
   refineIntrinsicsUntil: 50,
@@ -106,9 +107,13 @@ export class SequentialMapper {
         const weak = est.sharpness < this.o.weakFocalSharpness ? ' (weakly constrained: refined by BA)' : '';
         this.o.log(`focal: ${f.toFixed(1)} px from ${Fs.length} pairs, sharpness ${est.sharpness.toFixed(2)}${weak} (prior ${meanFocal(this.camera).toFixed(1)})`);
       } else {
-        f = fromHfov(this.o.fallbackHfovDeg); source = 'fallback';
+        // a camera's field of view is across its sensor's long side, however the frame is held (desk.mov, 1080 x 1920:
+        // 76 deg across the width started the map at 691 px, AliceVision fits 1743 px)
+        const long = Math.max(this.camera.width, this.camera.height);
+        f = this.o.fallbackFocal ?? (long / 2) / Math.tan(this.o.fallbackHfovDeg * Math.PI / 360); source = 'fallback';
+        const from = this.o.fallbackFocal ? 'the prior' : `${this.o.fallbackHfovDeg} deg across the long side`;
         this.o.log(`focal: not observable from ${Fs.length} pairs (sharpness ${est ? est.sharpness.toFixed(2) : '-'}, ` +
-                   `e.g. translation without rotation): using ${this.o.fallbackHfovDeg} deg HFOV = ${f.toFixed(1)} px; set hfov= or focal= if known`);
+                   `e.g. translation without rotation): using ${from} = ${f.toFixed(1)} px; set hfov= or focal= if known`);
       }
     }
     this.stats.focalSource = source;
@@ -507,12 +512,26 @@ export class SequentialMapper {
         for (let start = (sw % 2) * half; start < reg.length; start += W) {
           const core = reg.slice(start, start + W);
           if (!core.length) continue;
-          this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], refineIntrinsics: refineIntrinsics && sw < sweeps, iterations: 10,
-                                  minCameraFrames: this.o.minCameraFramesSweeps });
+          this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], iterations: 10 });
           this.o.progress('refine', ++done, total);
         }
       }
+      if (refineIntrinsics && sw < sweeps) this.fitIntrinsics({ minCameraFrames: this.o.minCameraFramesSweeps });
     }
+  }
+
+  // The intrinsics fitted to the whole map at once: a window BA (localBA) whose free frames are up to
+  // maxFrames per camera of the largest segment, evenly spaced in time, with the intrinsics; the other
+  // frames observe as fixed (the sweep after it moves them to the new intrinsics). Refined window by
+  // window instead, the lens was whatever the last windows made of it: desk.mov, k1 = 0.02 over frames
+  // 0-34 and 0.28 over 36-66 (after the whip pans), in each sweep, 0.29 exported.
+  fitIntrinsics({ minCameraFrames = this.o.minCameraFrames, maxFrames = 60, iterations = 10 } = {}) {
+    const seg = this.largestSegment();
+    const byCam = this.cameras.map(() => []);
+    for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === seg) byCam[this.camOf[k]].push(k);
+    const frames = byCam.flatMap(ks => ks.length <= maxFrames ? ks : Array.from({ length: maxFrames }, (_, i) => ks[Math.round(i * (ks.length - 1) / (maxFrames - 1))]));
+    if (!frames.length) return null;
+    return this.localBA(frames[0], { frames, refineIntrinsics: true, iterations, minCameraFrames });
   }
 
   // The frames outside `core`, more than minGap from its first frame, sharing the most points with

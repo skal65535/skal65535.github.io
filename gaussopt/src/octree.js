@@ -110,6 +110,13 @@ function radixSortByPositiveKey(keys, ids, n, tmpKeys, tmpIds, out) {
 // 3-sigma world extent of splat b (largest axis, log-scale clamped as in the shaders)
 const splatExtent = (params, b) => 3 * Math.exp(Math.min(3, Math.max(params[b + 4], params[b + 5], params[b + 6])));
 
+// Per-splat 3-sigma extents (splatExtent) for the viewer's sort (sortIndexFrontToBack), -1 for a splat
+// whose opacity is under the cull's (CULL_MIN_LOGIT)
+export function splatExtents(params, count, out = new Float32Array(count)) {
+  for (let i = 0; i < count; i++) out[i] = params[i * SPLAT_FLOATS + 3] < CULL_MIN_LOGIT ? -1 : splatExtent(params, i * SPLAT_FLOATS);
+  return out;
+}
+
 // Culling: near plane, frustum widening (node and splat tests must agree, so that the octree
 // path keeps what the exhaustive one does) and the opacity logit below which a splat is skipped
 const CULL_ZNEAR = 0.05, CULL_FRUSTUM = 1.25, CULL_MIN_LOGIT = -5.5;
@@ -524,44 +531,62 @@ export class LooseOctree {
     return { numVisible: n };
   }
 
-  // Viewer sort (index-only octree, `splats/index.html`): visible leaves front-to-back, each
-  // insertion-sorted by depth; no per-splat xy cull. Returns the number written to outIdx.
-  sortIndexFrontToBack(positions, stride, camCenter, view, fx, fy, outIdx, zSign = -1.0) {
+  // node.maxExtent from per-splat extents (splatExtents) in the viewer's index order (leafIndices, or
+  // the leaf slices): a tree read from a .ply has none, and its leaf cull then dropped the large
+  // splats of an off-screen leaf that reach into the frame
+  setExtents(extents) {
+    const indexMap = this.leafIndices;
+    const visit = (node) => {
+      let m = 0;
+      if (node.isLeaf) {
+        for (let k = node.start, end = node.start + node.count; k < end; k++) m = Math.max(m, extents[indexMap ? indexMap[k] : k]);
+      } else {
+        for (const c of node.children) if (c) m = Math.max(m, visit(c));
+      }
+      return (node.maxExtent = m);
+    };
+    if (this.root) visit(this.root);
+  }
+
+  // Viewer sort (index-only octree, the gallery): the splats of the visible leaves sorted exactly by
+  // view z (radix, as sortOctreeFrontToBack: E1; ties in leaf order). With `extents` (splatExtents;
+  // < 0: never drawn), splats outside the frame are culled as cullSplats does. Returns the count in outIdx.
+  sortIndexFrontToBack(positions, stride, camCenter, view, fx, fy, outIdx, zSign = -1.0, extents = null) {
     const visibleLeaves = this.traverseFrontToBack(camCenter, view, fx, fy, zSign);
     const vx = view[2] * zSign, vy = view[6] * zSign, vz = view[10] * zSign, vw = view[14] * zSign;
-    let maxN = this.maxLeafSize;
-    for (const leaf of visibleLeaves) maxN = Math.max(maxN, leaf.count);
-    if (!this._leafIds || this._leafIds.length < maxN) {
-      this._leafIds    = new Uint32Array(maxN);
-      this._leafDepths = new Float32Array(maxN);
+    const xx = view[0], xy = view[4], xz = view[8], xw = view[12], yx = view[1], yy = view[5], yz = view[9], yw = view[13];
+    const cullXY = extents && fx > 0 && fy > 0;
+    let total = 0;
+    for (const leaf of visibleLeaves) total += leaf.count;
+    if (!this._viewKeys || this._viewKeys.length < total) {
+      const cap = Math.max(1024, Math.ceil(total * 1.5));
+      this._viewKeys    = new Float32Array(cap);
+      this._viewIds     = new Uint32Array(cap);
+      this._viewTmpKeys = new Uint32Array(cap);
+      this._viewTmpIds  = new Uint32Array(cap);
     }
-    const ids = this._leafIds, depths = this._leafDepths, indexMap = this.leafIndices;
-    let writePos = 0;
+    const keys = this._viewKeys, ids = this._viewIds, indexMap = this.leafIndices;
+    let n = 0;
     for (const leaf of visibleLeaves) {
-      // a leaf over maxLeafSize (maxDepth reached: a few far splats can make the root huge) gets a sort in
-      // O(k log k), the insertion sort being O(k^2) (the gallery's jardin7-latest, a leaf of 82k: 39 ms a frame, 6 after)
-      const big = leaf.count > this.maxLeafSize;
-      let valid = 0;
       for (let k = leaf.start, end = leaf.start + leaf.count; k < end; k++) {
         const idx = indexMap ? indexMap[k] : k;
-        const b = idx * stride;
-        const zv = vx * positions[b] + vy * positions[b + 1] + vz * positions[b + 2] + vw;
-        if (zv <= 0.05) continue;
-        // stable insertion sort of the f32 depth into ids/depths[0..valid]
-        const z = Math.fround(zv);
-        let j = valid++;
-        if (!big) for (; j > 0 && depths[j - 1] > z; j--) { ids[j] = ids[j - 1]; depths[j] = depths[j - 1]; }
-        ids[j] = idx;
-        depths[j] = z;
-      }
-      if (big) {  // stable too: ties in file order
-        const order = Uint32Array.from({ length: valid }, (_, k) => k).sort((a, b) => depths[a] - depths[b] || a - b);
-        for (let k = 0; k < valid; k++) outIdx[writePos++] = ids[order[k]];
-      } else {
-        for (let k = 0; k < valid; k++) outIdx[writePos++] = ids[k];
+        const b = idx * stride, X = positions[b], Y = positions[b + 1], Z = positions[b + 2];
+        const zv = vx * X + vy * Y + vz * Z + vw;
+        if (zv <= CULL_ZNEAR) continue;
+        if (extents) {
+          const e = extents[idx];
+          if (e < 0) continue;
+          if (cullXY) {
+            const zf = zv * CULL_FRUSTUM;
+            if (Math.abs(xx * X + xy * Y + xz * Z + xw) * fx > zf + e * fx || Math.abs(yx * X + yy * Y + yz * Z + yw) * fy > zf + e * fy) continue;
+          }
+        }
+        keys[n] = zv;
+        ids[n++] = idx;
       }
     }
-    return writePos;
+    radixSortByPositiveKey(new Uint32Array(keys.buffer, 0, n), ids, n, this._viewTmpKeys, this._viewTmpIds, outIdx);
+    return n;
   }
 
   // Reference for tests/ply_octree_test.js (E1): exhaustive cull (same test as sortOctreeFrontToBack) + exact z-sort

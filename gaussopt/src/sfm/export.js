@@ -7,7 +7,7 @@
 "use strict";
 
 import { mat3ToQuat } from '../math.js';
-import { CAMERA_MODELS, intrinsics, normalizedFromImage, project, poseCenter } from './camera.js';
+import { CAMERA_MODELS, intrinsics, imageFromNormalized, normalizedFromImage, project, poseCenter } from './camera.js';
 import { triangulationAngle } from './geometry.js';
 
 // mapper: SequentialMapper after reconstruct(); segment: id to export (default: the largest).
@@ -20,10 +20,7 @@ import { triangulationAngle } from './geometry.js';
 export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, minObs = 3, minAngleDeg = 1.5, pinhole = true } = {}) {
   const seg = segment ?? mapper.largestSegment();
   const sfmCams = mapper.cameras ?? [mapper.camera], camOf = (k) => mapper.camOf?.[k] ?? 0;
-  const cameras = sfmCams.map(cam => {
-    const [fx, fy, cx, cy] = intrinsics(cam);
-    return pinhole ? { model: 'PINHOLE', width: cam.width, height: cam.height, params: [fx, fy, cx, cy] } : { ...cam, params: [...cam.params] };
-  });
+  const cameras = sfmCams.map(cam => pinhole ? pinholeOf(cam) : { ...cam, params: [...cam.params] });
 
   const frames = [];
   for (let k = 0; k < mapper.n; k++) if (mapper.poses[k] && mapper.segment[k] === seg) frames.push(k);
@@ -48,7 +45,7 @@ export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, min
       const im = images[imageId.get(img) - 1];
       track.push([im.id, im.points2D.length]);
       if (!pinhole) { im.points2D.push([u, v, id]); continue; }
-      const cam = sfmCams[camOf(img)], [fx, fy, cx, cy] = intrinsics(cam);
+      const cam = sfmCams[camOf(img)], [fx, fy, cx, cy] = intrinsics(cameras[camOf(img)]);
       const [x, y] = normalizedFromImage(cam, u, v);
       im.points2D.push([fx * x + cx, fy * y + cy, id]);
     }
@@ -56,6 +53,29 @@ export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, min
   });
   const distortedCameras = sfmCams.map(c => ({ ...c, params: [...c.params] }));
   return { segment: seg, camera: cameras[0], distorted: distortedCameras[0], cameras, distortedCameras, images, points };
+}
+
+// The PINHOLE camera the keyframes are undistorted to: the same size and center, the focal scaled up
+// (the frame cropped) just enough that every pixel of it comes from inside the distorted frame, as
+// COLMAP's undistorter with blank_pixels = 0. A barrel lens (k1 < 0) keeps its focal. desk.mov
+// (k1 = 0.29, the same focal) left 12% of each keyframe black, which the trainer fitted as dark
+// splats along the frame borders.
+export function pinholeOf(cam) {
+  const [fx, fy, cx, cy] = intrinsics(cam), { width: w, height: h } = cam, n = 64, border = [];
+  for (let k = 0; k <= n; k++) {
+    const a = k / n;
+    border.push([a * w, 0], [a * w, h], [0, a * h], [w, a * h]);
+  }
+  const inside = (s) => border.every(([u, v]) => {
+    const [du, dv] = imageFromNormalized(cam, (u - cx) / (fx * s), (v - cy) / (fy * s));
+    return du >= -0.5 && du <= w + 0.5 && dv >= -0.5 && dv <= h + 0.5;
+  });
+  let lo = 1, hi = 1;
+  if (!inside(1)) {
+    while (!inside(hi) && hi < 4) { lo = hi; hi *= 1.25; }  // 4: past it, the lens model is not to be trusted
+    for (let it = 0; it < 40; it++) { const m = (lo + hi) / 2; if (inside(m)) hi = m; else lo = m; }
+  }
+  return { model: 'PINHOLE', width: w, height: h, params: [fx * hi, fy * hi, cx, cy] };
 }
 
 // Some two of the camera centers see X at least minAngle apart

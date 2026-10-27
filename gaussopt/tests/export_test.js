@@ -1,14 +1,15 @@
 // export.js round trip through Gauss-Opt's own COLMAP parsers (colmap.js)
 import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { reconstruct } from '../src/sfm/reconstruct.js';
-import { datasetFromMapper, writeColmapModel } from '../src/sfm/export.js';
+import { datasetFromMapper, writeColmapModel, pinholeOf } from '../src/sfm/export.js';
 import { parseCamerasBin, parseImagesBin, parsePoints3DBin } from '../src/colmap.js';
-import { project } from '../src/sfm/camera.js';
+import { project, makeCamera, imageFromNormalized } from '../src/sfm/camera.js';
 import { assert, assertClose } from './util.js';
 
-Deno.test('exported COLMAP model parses back with colmap.js and reprojects as PINHOLE', () => {
+// a barrel lens, and a pincushion one, whose PINHOLE camera is cropped (pinholeOf)
+for (const k1 of [-0.08, 0.15]) Deno.test(`exported COLMAP model parses back with colmap.js and reprojects as PINHOLE (k1 = ${k1})`, () => {
   const scene = makeSyntheticScene({ numFrames: 20, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500,
-                                     params: [1100, 1100, 960, 540, -0.08, 0.01, 0, 0] });
+                                     params: [1100, 1100, 960, 540, k1, 0.01, 0, 0] });
   const { mapper } = reconstruct(scene.input, { sweeps: 1 });
   const ds = datasetFromMapper(mapper);
   const files = writeColmapModel(ds);
@@ -86,4 +87,26 @@ Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproj
     }
   }
   assert(n > 1000 && err / n < 1.5, `${n} observations, mean pinhole reprojection ${(err / n).toFixed(3)} px`);
+});
+
+// The PINHOLE camera of a pincushion lens (desk.mov: k1 = 0.29, portrait) crops the frame just enough
+// that no pixel of it falls outside the distorted keyframe (no black border); a barrel lens keeps its focal
+Deno.test('pinholeOf: no pixel of the undistorted frame outside the distorted one, the least crop', () => {
+  const inside = (cam, pin) => {
+    const [fx, fy, cx, cy] = pin.params, { width: w, height: h } = cam;
+    let ok = true;
+    for (let k = 0; k <= 200; k++) for (const [u, v] of [[k * w / 200, 0], [k * w / 200, h], [0, k * h / 200], [w, k * h / 200]]) {
+      const [du, dv] = imageFromNormalized(cam, (u - cx) / fx, (v - cy) / fy);
+      ok &&= du >= -0.5 && du <= w + 0.5 && dv >= -0.5 && dv <= h + 0.5;
+    }
+    return ok;
+  };
+  const desk = makeCamera('OPENCV', 1080, 1920, [1706, 1706, 540, 960, 0.29, 0, 0, 0]);
+  const pin = pinholeOf(desk), s = pin.params[0] / 1706;
+  assert(inside(desk, pin), `desk: a border pixel outside the keyframe at scale ${s}`);
+  const looser = { ...pin, params: [pin.params[0] * 0.99, pin.params[1] * 0.99, 540, 960] };
+  assert(!inside(desk, looser) && s > 1 && s < 1.2, `desk: scale ${s} is not the least crop`);
+  assert(pin.params[2] === 540 && pin.params[3] === 960, 'center kept');
+  const barrel = makeCamera('OPENCV', 1920, 1080, [1100, 1100, 960, 540, -0.08, 0.01, 0, 0]);
+  assert(pinholeOf(barrel).params[0] === 1100, `barrel lens: focal ${pinholeOf(barrel).params[0]}`);
 });

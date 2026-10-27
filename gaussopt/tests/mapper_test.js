@@ -45,6 +45,16 @@ Deno.test('mapper, synthetic nadir pass: unobservable focal is detected and fall
   assert(m.numCommon === scene.truth.images.length, `${m.numCommon} registered`);
 });
 
+// The fallback field of view is across the long side: a portrait frame (a phone video held upright,
+// desk.mov) starts from the same focal as a landscape one, not 1.78x short of it
+Deno.test('mapper, synthetic nadir pass in portrait: the fallback HFOV is across the long side', () => {
+  const scene = makeSyntheticScene({ ...BASE, ...NADIR, width: 1080, height: 1920, params: [1230, 1230, 540, 960, 0, 0, 0, 0] });
+  const mapper = new SequentialMapper(scene.input);
+  const f = mapper.calibrateFocal(), expected = 960 / Math.tan(38 * Math.PI / 180);
+  assert(mapper.stats.focalSource === 'fallback', `focal source ${mapper.stats.focalSource}, sharpness ${mapper.stats.focalSharpness}`);
+  assert(Math.abs(f / expected - 1) < 1e-9, `fallback focal ${f.toFixed(1)} px, expected ${expected.toFixed(1)}`);
+});
+
 // Rotations stay looser over near-flat ground: small rotations and translations are nearly
 // interchangeable there (bas-relief ambiguity).
 Deno.test('mapper, synthetic nadir pass with the HFOV given', () => {
@@ -167,6 +177,19 @@ Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the
   const m = compareModels(mapper.model(), scene.truth.model);
   assert(!!mapper.poses[6] && m.numCommon === 12, `frame 6 ${mapper.poses[6] ? 'back' : 'still out'}, ${m.numCommon} registered`);
   assert(checkThresholds(m, 'truth').length === 0, checkThresholds(m, 'truth').join(', '));
+});
+
+// The final sweeps fit the lens to the whole sequence, not to its last windows (desk.mov: k1 = 0.02 over
+// the first half, 0.28 over the frames after the whip pans, 0.29 exported). A forward flight whose last 9
+// of 30 frames are seen through k1 = 0.1, mapped as one camera: the lens of the other 21 (k1 = 0) wins.
+// Refined window by window: k1 = 0.061.
+Deno.test('reconstruct, synthetic: the lens is fitted to the whole sequence, not its last windows', () => {
+  const scene = makeSyntheticScene({ ...BASE, path: 'line', pitchDeg: 45,
+    cameras: [[1230, 1230, 960, 540, 0, 0, 0, 0], [1230, 1230, 960, 540, 0.1, 0, 0, 0]], cameraOf: (k) => (k >= 21 ? 1 : 0) });
+  const { camera, images, pairs } = scene.input;
+  const { mapper } = reconstruct({ camera, images: images.map(({ camera, ...im }) => im), pairs }, { sweeps: 2 });
+  const k1 = mapper.camera.params[4];
+  assert(mapper.poses.every(Boolean) && Math.abs(k1) < 0.03, `${mapper.poses.filter(Boolean).length} registered, k1 ${k1.toFixed(4)}`);
 });
 
 // A lens with 3 photos, its prior ratio 7% off (the Pixel 10 ultrawide's EXIF, DESIGN-sfm §13 P8): kept

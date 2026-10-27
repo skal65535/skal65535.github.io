@@ -1,6 +1,6 @@
 // ply_octree_test.js — .ply checkpoint with an embedded Loose Octree: round trip of the tree and
 // the splats' leaf ids, and octree-culled vs exhaustive sorts keeping the same splats.
-import { LooseOctree, nearCameraCone } from '../src/octree.js';
+import { LooseOctree, nearCameraCone, splatExtents } from '../src/octree.js';
 import { SPLAT_FLOATS, exportPlyBuffer, parsePlyBuffer } from '../src/colmap.js';
 import { makeRng, projectPinhole } from '../src/math.js';
 import { expSO3, mul3 } from '../src/sfm/linalg.js';
@@ -58,6 +58,41 @@ Deno.test('octree cull keeps the splats the exhaustive cull keeps', () => {
     const nOct = tree.sortOctreeFrontToBack(p, C, view, fx, fy, b).numVisible;
     const ref = new Set(a.subarray(0, nRef)), oct = new Set(b.subarray(0, nOct));
     assert(nRef === nOct && [...ref].every(i => oct.has(i)), `camera ${c}: exhaustive ${nRef} visible, octree ${nOct}`);
+  }
+});
+
+Deno.test('viewer sort (the gallery: a .ply tree, its index): the splats of the exhaustive cull, in its exact depth order', () => {
+  const rng = makeRng(5), n = 20000, p = new Float32Array(n * SPLAT_FLOATS);
+  for (let i = 0; i < n; i++) {
+    const b = i * SPLAT_FLOATS;
+    for (let k = 0; k < 3; k++) p[b + k] = 8 * (rng() - 0.5);
+    p[b + 3] = (i % 50) ? 0 : -7;  // a few under the opacity cull
+    for (let k = 4; k < 7; k++) p[b + k] = (i % 64) ? -9 + 2 * rng() : -4 + 3.5 * rng();  // small, a few larger than their leaf
+    p[b + 8] = 1;
+  }
+  // as the gallery reads it: the tree from the .ply, the positions, the extents
+  const ply = parsePlyBuffer(exportPlyBuffer(p, n, new LooseOctree({ maxLeafSize: 4 }).build(p, n)));
+  const tree = LooseOctree.fromSerializedNodes(ply.octreeData.meta, ply.octreeData.nodes);
+  const pos = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) pos.set(ply.params.subarray(i * SPLAT_FLOATS, i * SPLAT_FLOATS + 3), 3 * i);
+  const extents = splatExtents(ply.params, n);
+  tree.setExtents(extents);
+  const a = new Uint32Array(n), b = new Uint32Array(n);
+  for (let c = 0; c < 16; c++) {  // cameras around the origin looking at it, some inside the cloud
+    const ang = c * 0.7, r = 1 + (c % 4) * 2.5, C = [r * Math.cos(ang), 0.3 * (c % 3), r * Math.sin(ang)];
+    const f = [-Math.cos(ang), 0, -Math.sin(ang)], d = [0, 1, 0], x = [d[1] * f[2] - d[2] * f[1], d[2] * f[0] - d[0] * f[2], d[0] * f[1] - d[1] * f[0]];
+    const dot = (u) => u[0] * C[0] + u[1] * C[1] + u[2] * C[2];
+    const view = new Float32Array([x[0], d[0], f[0], 0, x[1], d[1], f[1], 0, x[2], d[2], f[2], 0, -dot(x), -dot(d), -dot(f), 1]);
+    const gl = new Float32Array(view);  // the gallery's view (from_opencv): x and z negated, zSign -1
+    for (const k of [0, 4, 8, 12, 2, 6, 10, 14]) gl[k] = -gl[k];
+    const fx = 1 + (c % 3), fy = fx * 1.3;
+    const nRef = tree.sortGlobalExact(ply.params, n, view, fx, fy, a);
+    const nView = tree.sortIndexFrontToBack(pos, 3, C, gl, fx, fy, b, -1.0, extents);
+    // the same splats; depths (f32, as sorted) never decreasing: ties in leaf order, the reference's in index order
+    const ref = new Set(a.subarray(0, nRef)), z = (i) => Math.fround(view[2] * pos[3 * i] + view[6] * pos[3 * i + 1] + view[10] * pos[3 * i + 2] + view[14]);
+    let bad = 0;
+    for (let k = 1; k < nView; k++) if (z(b[k]) < z(b[k - 1])) bad++;
+    assert(nRef === nView && [...b.subarray(0, nView)].every(i => ref.has(i)) && bad === 0, `camera ${c}: exhaustive ${nRef} visible, viewer ${nView}, ${bad} out of order`);
   }
 });
 
