@@ -60,7 +60,7 @@ function ransacSim3(mapper, corr, { rng, threshold, iterations, minInliers }) {
 }
 
 // Move a whole segment by the Sim(3) G (old world -> new world)
-function transformSegment(mapper, seg, G) {
+export function transformSegment(mapper, seg, G) {
   const Ginv = inverse(G);
   const moved = new Set();
   for (let k = 0; k < mapper.n; k++) {
@@ -195,7 +195,7 @@ export function closeLoops(mapper, pairs, { rng, log = () => {}, mergeOnly = fal
   return stats;
 }
 
-function relabel(mapper, from, to) {
+export function relabel(mapper, from, to) {
   for (let k = 0; k < mapper.n; k++) if (mapper.segment[k] === from) mapper.segment[k] = to;
 }
 

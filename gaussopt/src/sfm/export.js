@@ -13,13 +13,16 @@ import { triangulationAngle } from './geometry.js';
 // mapper: SequentialMapper after reconstruct(); segment: id to export (default: the largest).
 // pinhole: false keeps the SfM camera (e.g. OPENCV) and the keypoints' pixels as detected, the
 // model of the distorted keyframes (a project's sparse/0, for COLMAP's own tools); the same points.
-// A camera per lens (DESIGN-sfm §13 P8): image k uses camera cameraId (1-based), in `cameras`.
+// A camera per lens (DESIGN-sfm §13 P8): image k uses camera cameraId (1-based), in `cameras`; a
+// camera whose frames joined another (mapper.js scanFocalOf) is left out.
 // Returns { camera, distorted (camera 1's, as below), cameras (PINHOLE, or the SfM cameras),
 //           distortedCameras (the SfM cameras), images: [{ id, name, cameraId, R, t, points2D: [x, y, pid] }],
 //           points: [{ id, X, rgb, error, track: [[imageId, point2DIdx]] }] }
 export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, minObs = 3, minAngleDeg = 1.5, pinhole = true } = {}) {
   const seg = segment ?? mapper.largestSegment();
-  const sfmCams = mapper.cameras ?? [mapper.camera], camOf = (k) => mapper.camOf?.[k] ?? 0;
+  const all = mapper.cameras ?? [mapper.camera], live = all.map((_, c) => (mapper.merged?.[c] ?? c) === c);
+  const sfmCams = all.filter((_, c) => live[c]), newIndex = live.map((_, c) => live.slice(0, c).filter(Boolean).length);
+  const camOf = (k) => newIndex[mapper.camOf?.[k] ?? 0];
   const cameras = sfmCams.map(cam => pinhole ? pinholeOf(cam) : { ...cam, params: [...cam.params] });
 
   const frames = [];

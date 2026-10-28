@@ -94,7 +94,8 @@ export class SfmSession {
   toState() {
     const pairs = this._indexed(), { json: mapper, ...mapperArrays } = this.mapper.toState();
     return {
-      json: { images: this.images.map(im => ({ name: im.name, time: im.time, ...(im.camera !== undefined ? { camera: im.camera } : {}) })), loops: this.loops, rejected: [...this.rejected],
+      json: { images: this.images.map(im => ({ name: im.name, time: im.time, ...(im.camera !== undefined ? { camera: im.camera } : {}),
+                                               ...(im.flowH ? { flowH: im.flowH, flowChain: im.flowChain } : {}) })), loops: this.loops, rejected: [...this.rejected],
               mapping: this.mapping, loopsOn: this.loopsOn, window: this.window, seed: this.seed,
               pairTypes: pairs.map(p => p.type), mapper },
       arrays: {

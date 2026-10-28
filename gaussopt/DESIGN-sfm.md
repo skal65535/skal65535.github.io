@@ -31,7 +31,7 @@ Gauss-Opt trains from a COLMAP `gs/` directory produced offline by [`video2splat
 * About half of the keyframes revisit earlier parts of the scene (drone orbits). **Loop closure is a core stage, not an option**, and windows must be built on **covisibility**, not just time.
 
 ### Scope & Assumptions
-* **Input:** one video file (`.mp4` / `.mov` / `.m4v`, non-fragmented), single camera, constant intrinsics (no zoom). Drone footage is the primary target.
+* **Input:** one video file (`.mp4` / `.mov` / `.m4v`, non-fragmented), single camera. Zooms and lens changes are detected and get a camera each (§5.1); between them the intrinsics are constant. Drone footage is the primary target.
 * **Photo sets** (~10 photos and more, one phone, mixed lenses, zooms and orientations) are planned in §13.
 * **Output:** the exact in-memory dataset `buildDataset()` returns in [`src/colmap.js`](src/colmap.js) (`cameras`, `images`, `points3D`), so the trainer, renderer and snapshot code are unchanged. Optionally written out as COLMAP `sparse/*.bin` + undistorted images.
 * **External COLMAP input stays first-class:** `?dataset=`, folder drop and `serve.py` keep working as today. The in-browser SfM is an alternative producer, and COLMAP is also its reference for validation (§8).
@@ -101,6 +101,8 @@ Each stage is restartable from its inputs, which is what makes interactive repai
 * Port of `video2splat.py --spacing`: sharpness (Laplacian variance, reject < 0.35 × median) and keep one frame every `spacing` × image diagonal of optical-flow path, computed in JS at low resolution by a pool of workers.
 * The path length is the **raw** median LK displacement (`frames.js`), as in the Python version; no homography is removed. A parallax-based path (flow after a fitted homography, so pure yaw in place adds no keyframes) was planned and is not implemented (R4).
 * Keyframes can be **inserted later** at any timestamp (§6.3): the video stays available, which COLMAP never had.
+* **Zooms** (`frames.js` `step`, `zoomEvents`): the same LK tracks give each step a similarity (scale, rotation, translation, 2-point RANSAC, 1.5 px at 640 px) and the fraction of the tracks it explains. A zoom or lens change scales every track alike; walking or flying forward scales near points more than far ones. A step is a zoom when its scale changes faster than `zoomRate` (0.9 per second, log scale) with a fit of at least 0.85; the steps either side faster than 2/3 of that (or lost) join it, over slower ones for up to 0.3 s, and an event of less than ×1.15 in all is dropped. No keyframe is taken during an event, and each stretch between events gets its own camera: the one with the most keyframes is camera 0, self-calibrated (§5.3); the others' focals are scanned when mapping (§5.3). The image scale across an event is only the prior of that scan, since walking during the event scales the image too. `sfm_zoomRate=0` turns detection off.
+  * Measured at 30 fps on 6 videos (every frame, decoded by ffmpeg at the page's 1000 px): desk.mov gives a zoom in ×1.84 at 13.70–13.87 s and a zoom out at 15.63–16.10 s (steps of 1.3–6.1 /s at fits 0.96–1.0 for the zoom in); walking (desk, corner2, dodecahedron) stays under 0.9 /s; jardin4 / jardin5, forward drone flights, reach 2.1 /s at fits under 0.9, but for one step of jardin4 (3%, under ×1.15). No event on jardin4, jardin5, jardin7, corner2, dodecahedron.
 
 ### 5.2 S1 — Features
 * SIFT in WGSL following the SiftGPU structure: Gaussian pyramid, DoG extrema with subpixel refinement, edge rejection, orientation histogram, 4×4×8 descriptor, RootSIFT normalisation, top-$K$ by response ($K$ = 4096 default).
@@ -121,6 +123,8 @@ Each stage is restartable from its inputs, which is what makes interactive repai
   4. `sfm_focal=` (pixels) or `sfm_hfovDeg=` (degrees) URL parameters override.
   Then $f$ and $k_1$ are refined jointly over the first ~50 keyframes, frozen, and freed again in S4.
 * **Critical motion** (measured, R1): translation without rotation, typically a nadir mapping pass, leaves the focal unobservable from $F$. The calibration reports a **sharpness** (cost at $f/1.25$ and $1.25f$ over the minimum): jardin5 ≈ 6, a synthetic orbit ≈ 16, a forward flight ≈ 2 (weak: BA corrects it), a nadir pass ≈ 1.05. Below 1.3 the mapper falls back to `sfm_hfovDeg=` / `sfm_focal=`, or to a 76° drone-typical HFOV across the long side of the frame, and says so (a portrait video is a landscape camera held upright: across its width, desk.mov, 1080 × 1920, started at 691 px where AliceVision fits 1743).
+* **Focal of a camera after a zoom** (`mapper.js` `scanFocalOf`, the mapper's `scanFocal`, set by the worker for a video with zooms): when the first frame of that camera is to be registered (with at least 60 2D-3D correspondences), PnP is run at focals from 1/8 to 8 times its prior (8 per octave, then 64 per octave around the best); the focal whose refined pose reprojects the most correspondences within 4 px wins. A camera already known that the frame fits nearly as well (97% of the inliers) at a focal within 10% takes this camera's frames: the lens and zoom it was at before (zoomed in, then back out). Its intrinsics are refined by BA from 5 registered frames, as a photo set's lenses (§13 P8). Until then, no pair of its frames starts a segment if another can. A camera merged away is not exported. Synthetic orbit (`tests/mapper_test.js`): f 1230, 2400 for frames 12–17, then 1230 again with a prior of 615: 2393 px from frame 15, the last camera joins camera 0 (1232 px scanned), all 30 frames in one segment, centres 0.014% RMS; without the scan the last camera stays at 717 px, 9.8% RMS.
+  * desk.mov (`desk_full264nb.mp4`, page defaults, 10k steps, `photo_runs/logs/train__desk_zoom264nb.log`): 61 keyframes (none during the zooms) in 3 cameras, all registered in one segment: 0–13.7 s at 1811 px, the zoom in at 3263 px (7 keyframes), and after the zoom out 961 px (28 keyframes, camera 0; self-calibration sharpness 1.32, weak): the stretch after the zoom out is not at the start's focal (ratio 1.89; the image scale across both events read 0.50), so the phone ended on another lens, presumably its ultrawide (unverified: ffprobe shows no lens tag in desk.mov). Held out (the same 8 frames as the one-camera run): 26.27 dB vs 18.98, every frame better (t0005201 13.4 → 28.3; t0023843, with the operator's finger, 17.7 → 18.9). The video cut by hand around the zoom (one camera for both remaining stretches): 22.83 dB on its own 7 held-out frames.
 * **Segments:** when no frame can be registered any more, a new segment starts with its own initial pair. On jardin5 this happens at a cut with **no sequential matches at all** (frames 48→49, joined only by loop pairs) and at two weak links; S3 merges segments.
 * **Tracking loss:** too few PnP inliers. Try the BoW index (§5.4) to relocalise against all keyframes; otherwise start a new segment from a new initialisation.
 
@@ -132,6 +136,28 @@ Each stage is restartable from its inputs, which is what makes interactive repai
 * **Verification:** full descriptor match → PnP RANSAC of the query against the candidate's points → Sim(3) from matched 3D points (Umeyama + RANSAC). The scale component corrects monocular drift.
 * **Correction:** Sim(3) pose graph over all keyframes, points moved with their reference keyframe, then **track fusion**: points triangulated independently on both sides of the loop that match the same keypoints are merged. Without fusion, BA cannot pull the two sides together.
 * Segments (§3) are merged by the same mechanism.
+
+#### 5.4.1 Join by optical flow across a turn in place (`flowjoin.js`)
+* **The case:** a camera turning without moving triangulates nothing new, so the map cannot follow it. The keyframes after the turn start a segment that shares no point with the one before, and loop closure cannot merge them. long-garden.mp4, a 38 s drone flight, does a yaw in place at 33.4–35.4 s. Its last 4.5 s became a separate map, left out of the export (207 of 273 keyframes exported).
+* **The flow:** the frame analysis (S0, `frames.js` `step`) already tracks corners between consecutive sampled frames. It also fits a homography to those tracks (RANSAC, 1 px). The worker chains them from the first frame into `flowH` per keyframe, in keyframe pixels, with a new `flowChain` after a lost step. A camera turning in place moves every track by $K R K^{-1}$. Between two keyframes of one chain, $K^{-1} H_b H_a^{-1} K$ (determinant 1) is a rotation when its singular values agree within `maxSpread` (0.05), and $R$ is its projection on SO(3).
+* **The join** (after loop closure, before the refinement sweeps), for a segment B that starts at most 3 s after segment A ends:
+  * **rotation:** B's first keyframe $b$ is A's last $a$ turned by the flow;
+  * **centre:** $b$ sits at $a$'s centre;
+  * **scale:** B's speed next to the gap (75th percentile of its step speeds within 3 s) matches A's. This is an assumption: no point is seen on both sides.
+  * B moves into A's world. The keyframes between $a$ and $b$ get $a$'s centre and their flow rotation.
+* **long-garden:** keyframes 211 → 234 turned 104.3° (spread 0.050), scale 0.701, and 22 keyframes between were placed. The result is one map with 255 keyframes exported.
+  * **Held out, the same 25 frames, 30k steps, 300k splats:**
+    * before the join: 21.59 dB;
+    * joined, training on all views: 21.11 dB;
+    * joined, training on the original 182 views only: 21.51 dB.
+    The main map's cameras are about as good as before. The cost comes from training the same budget over more views.
+  * **5 end frames held out:**
+    * joined, 35k steps: 20.6 dB;
+    * end segment alone, 45k splats (its share): 21.5 dB at its share of the steps.
+    The join is about right. Whether the remaining 0.9 dB is the speed-based scale or the end's share of splats is not settled.
+* **Open:**
+  * `maxSpread` sits at the one measured turn's value. 2 s windows of ordinary flight on long-garden span 0.024–0.89, so spread alone is a weak test of "in place".
+  * The keyframes placed by the flow have no points, so the quality check scores them red (weak support). The panel's repair (§6) then retries them, and keeps the retry when the red count drops even though some of them lose their pose (on long-garden the export lacks the keyframes between 33.63 and 34.07 s).
 
 ### 5.5 S4 — Global Refinement
 * Gliding-window BA sweeps over covisibility windows (D3/D4): window offsets alternate by $W/2$ so boundaries do not stay fixed; 2–3 sweeps or until the largest pose change is below a threshold.

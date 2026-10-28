@@ -36,6 +36,8 @@ const TIPS = {
   sampleFps: 'frames per second of the video looked at (sharpness and motion are measured on these)',
   spacing: 'a new keyframe once the image content moved this much, as a fraction of the image diagonal (smaller: more keyframes)',
   blurRel: 'a picked frame less sharp than this fraction of the picks\' median sharpness is dropped (0: keep all)',
+  zoomRate: 'a zoom (or a lens change): the image scaling faster than this (per second) all over the frame. No keyframe ' +
+            'during one, and a camera for each stretch between them, its focal found when mapping (0: no zoom detection)',
   maxDim: 'keyframes are scaled down to this long side (photos for training and SIFT)',
   model: 'which cameras the trainer has: the current model, or an older one (before repairs)',
   autoSend: 'start training with the cameras as soon as they are found',
@@ -167,6 +169,7 @@ export class SfmPanel {
     fr.add(o, 'sampleFps', 1, 60, 1).name('sample fps');
     fr.add(o, 'spacing', 0.01, 0.2, 0.005).name('spacing (× diagonal)');
     fr.add(o, 'blurRel', 0, 1, 0.05).name('blur reject (× median)');
+    fr.add(o, 'zoomRate', 0, 3, 0.1).name('zoom detection (/s)');
     fr.add(o, 'maxDim', [960, 1280, 1920, 3840]).name('max size (px)');
 
     const cams = host('cameras');
@@ -404,8 +407,8 @@ export class SfmPanel {
 
   // The Keyframes phase of the manifest (null before the keyframes exist)
   keyframesRecord() {
-    const { sampleFps, spacing, blurRel, maxDim, maxFeatures } = this.o;
-    return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, blurRel, maxDim, maxFeatures } } } } : null;
+    const { sampleFps, spacing, blurRel, zoomRate, maxDim, maxFeatures } = this.o;
+    return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, blurRel, zoomRate, maxDim, maxFeatures } } } } : null;
   }
 
   // The options the controls set, for project.json (app.js settings())
@@ -715,11 +718,11 @@ export class SfmPanel {
     const c = this.strip, ctx = c.getContext('2d');
     ctx.clearRect(0, 0, c.width, c.height);
     document.getElementById('strip-hint').hidden = !!this.frameAnalysis;
-    if (this.frameAnalysis) {  // sampled frames: sharpness, keyframe picks bright, blurry picks red
+    if (this.frameAnalysis) {  // sampled frames: sharpness, keyframe picks bright, blurry picks red, zooms violet
       const { sharpness, status, times } = this.frameAnalysis, max = sharpness.reduce((m, v) => Math.max(m, v), 0);
       sharpness.forEach((v, i) => {
         const x = this._x(times[i]), h = Math.max(1, 30 * v / max);
-        ctx.fillStyle = status[i] === 'kept' ? 'rgba(148, 163, 184, 0.9)' : status[i] === 'blurry' ? '#f87171' : 'rgba(148, 163, 184, 0.3)';
+        ctx.fillStyle = status[i] === 'kept' ? 'rgba(148, 163, 184, 0.9)' : status[i] === 'blurry' ? '#f87171' : status[i] === 'zoom' ? '#a78bfa' : 'rgba(148, 163, 184, 0.3)';
         ctx.fillRect(x, 32 - h, Math.max(1, c.width / sharpness.length), h);
       });
     }

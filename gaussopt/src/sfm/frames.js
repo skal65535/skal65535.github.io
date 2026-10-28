@@ -7,10 +7,14 @@
 "use strict";
 
 import { median } from './util.js';
+import { makeRng } from '../math.js';
+import { ransacHomography } from './geometry.js';
 
 // blurWindow: picks a pick's sharpness is compared with (it centred); blur is a dip among its
-// neighbours, while sharpness also follows the texture of the scene, which changes slowly
-export const FRAME_DEFAULTS = { spacing: 0.05, keepFps: 2, blurRel: 0.35, blurWindow: 11, sharpDim: 1000, flowDim: 640 };
+// neighbours, while sharpness also follows the texture of the scene, which changes slowly.
+// zoom*: zoomEvents (zoomRate 0: no zoom detection)
+export const FRAME_DEFAULTS = { spacing: 0.05, keepFps: 2, blurRel: 0.35, blurWindow: 11, sharpDim: 1000, flowDim: 640,
+                                zoomRate: 0.9, zoomFit: 0.85, zoomMin: 1.15, zoomGap: 0.3 };
 
 // Size of an image scaled to fit `maxDim` (never enlarged)
 export function fitSize(w, h, maxDim) {
@@ -235,25 +239,139 @@ export function analyzeFrame(gray, w, h, o = FRAME_DEFAULTS) {
 
 // Median displacement of corners tracked from a to b, as a fraction of the diagonal;
 // Infinity when tracking is lost (fewer than 20 corners or tracks)
-export function motion(pyrA, pyrB) {
+export function motion(pyrA, pyrB) { return step(pyrA, pyrB).motion; }
+
+// The step from a to b: { motion (as motion()), scale, fit, H }: the similarity (scale, rotation,
+// translation) RANSAC-fitted to the tracks, and the fraction of them it explains within 1.5 px.
+// A zoom scales every track alike (fit near 1); walking or flying forward scales near points more
+// than far ones. H: the homography of the tracks (a's pixels -> b's, 1 px RANSAC), which a camera
+// turning in place follows exactly (flowjoin.js). scale, fit and H are null when tracking is lost.
+export function step(pyrA, pyrB) {
+  const lost = { motion: Infinity, scale: null, fit: null, H: null };
   const pts = goodFeatures(pyrA[0]);
-  if (pts.length < 20) return Infinity;
-  const tracked = trackLK(pyrA, pyrB, pts);
-  const d = [];
-  tracked.forEach((q, k) => { if (q) d.push(Math.hypot(q[0] - pts[k][0], q[1] - pts[k][1])); });
-  if (d.length < 20) return Infinity;
-  return median(d) / Math.hypot(pyrA[0].w, pyrA[0].h);
+  if (pts.length < 20) return lost;
+  const tracked = trackLK(pyrA, pyrB, pts), P = [], Q = [], d = [];
+  tracked.forEach((q, k) => {
+    if (!q) return;
+    P.push(pts[k]); Q.push(q);
+    d.push(Math.hypot(q[0] - pts[k][0], q[1] - pts[k][1]));
+  });
+  if (d.length < 20) return lost;
+  const { scale, fit } = fitSimilarity(P, Q);
+  const h = ransacHomography(P, Q, { rng: makeRng(1), threshold: 1 });
+  return { motion: median(d) / Math.hypot(pyrA[0].w, pyrA[0].h), scale, fit, H: h ? Array.from(h.model) : null };
+}
+
+// Least-squares similarity q = [a -b; b a] p + t of point lists P -> Q
+function similarity(P, Q, idx) {
+  let mx = 0, my = 0, nx = 0, ny = 0;
+  for (const i of idx) { mx += P[i][0]; my += P[i][1]; nx += Q[i][0]; ny += Q[i][1]; }
+  const n = idx.length;
+  mx /= n; my /= n; nx /= n; ny /= n;
+  let sa = 0, sb = 0, sp = 0;
+  for (const i of idx) {
+    const px = P[i][0] - mx, py = P[i][1] - my, qx = Q[i][0] - nx, qy = Q[i][1] - ny;
+    sa += px * qx + py * qy; sb += px * qy - py * qx; sp += px * px + py * py;
+  }
+  if (!(sp > 0)) return null;
+  const a = sa / sp, b = sb / sp;
+  return { a, b, tx: nx - a * mx + b * my, ty: ny - b * mx - a * my };
+}
+
+// RANSAC (2-point samples, a fixed seed: the same frames give the same answer) then least squares
+// on the inliers: { scale, fit (inlier fraction) }
+function fitSimilarity(P, Q, { iterations = 200, threshold = 1.5 } = {}) {
+  const rng = makeRng(1), n = P.length, t2 = threshold * threshold;
+  const inliers = (m) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const ex = m.a * P[i][0] - m.b * P[i][1] + m.tx - Q[i][0], ey = m.b * P[i][0] + m.a * P[i][1] + m.ty - Q[i][1];
+      if (ex * ex + ey * ey <= t2) out.push(i);
+    }
+    return out;
+  };
+  let best = [];
+  for (let it = 0; it < iterations; it++) {
+    const i = Math.floor(rng() * n), j = Math.floor(rng() * n);
+    const m = i !== j && similarity(P, Q, [i, j]);
+    if (!m) continue;
+    const inl = inliers(m);
+    if (inl.length > best.length) best = inl;
+  }
+  const m = best.length >= 2 && similarity(P, Q, best);
+  if (!m) return { scale: null, fit: 0 };
+  return { scale: Math.hypot(m.a, m.b), fit: inliers(m).length / n };
+}
+
+// Zoom events of a video from its analysed steps (DESIGN-sfm §5.1): a lens change or a zoom in or
+// out changes the focal, so the frames during one are not keyframes and each stretch between them
+// gets its own camera (the mapper finds its focal, mapper.js scanFocal). A step is a zoom when its
+// scale changes faster than zoomRate (log-scale per second) with a similarity explaining at least
+// zoomFit of the tracks; the steps around it faster than 2/3 zoomRate (or lost) join its event,
+// events within zoomGap seconds merge, and an event whose scales multiply to less than zoomMin
+// (either way) is dropped. Measured on 6 videos at 30 fps (photo_runs/NOTES.md): desk.mov's zoom
+// in (x1.85 in 0.2 s) has steps of 1.3-6.1 /s at fits 0.96-1.0; walking (desk, corner2,
+// dodecahedron) stays under 0.9 /s, forward drone flights (jardin4, jardin5) reach 2.1 /s at fits
+// under 0.9, but for one step of jardin4 (3%, under zoomMin).
+// steps: [{ scale, fit }] (steps[i]: from sample i - 1 to i; steps[0] unused), times in seconds.
+// Returns { events: [{ from, to, zoom }] (samples from..to - 1 are inside: `to` is the first after),
+//           span: Int32Array (per sample: the stretch it is in, 0, 1, ..., or -1 inside an event),
+//           level: [per stretch: its scale relative to stretch 0, the product of the events' zooms] }
+export function zoomEvents(steps, times, options = {}) {
+  const o = { ...FRAME_DEFAULTS, ...options }, n = times.length;
+  const rate = (i) => {
+    const s = steps[i]?.scale, dt = times[i] - times[i - 1];
+    return s > 0 && dt > 0 ? Math.abs(Math.log(s)) / dt : null;
+  };
+  const events = [];
+  if (o.zoomRate > 0) {
+    for (let i = 1; i < n; i++) {
+      const r = rate(i);
+      if (!(r >= o.zoomRate && steps[i].fit >= o.zoomFit)) continue;
+      // steps a..b: out to the last step either way faster than 2/3 zoomRate (or lost), over slower
+      // ones up to zoomGap (desk.mov's zoom out spans a hole in its timestamps)
+      const near = (k) => { const q = rate(k); return q === null || q >= o.zoomRate * 2 / 3; };
+      const reach = (k, dir) => {
+        let last = k;
+        for (let j = k + dir; j >= 1 && j < n && Math.abs(times[j] - times[last]) <= o.zoomGap; j += dir) if (near(j)) last = j;
+        return last;
+      };
+      const a = reach(i, -1), b = reach(i, 1);
+      const last = events.at(-1);
+      if (last && times[a - 1] - times[last.b] <= o.zoomGap) last.b = Math.max(last.b, b);
+      else events.push({ a, b });
+      i = b;
+    }
+  }
+  const kept = [];
+  for (const { a, b } of events) {
+    let log = 0;
+    for (let k = a; k <= b; k++) if (steps[k]?.scale > 0) log += Math.log(steps[k].scale);
+    if (Math.abs(log) >= Math.log(o.zoomMin)) kept.push({ from: a, to: b, zoom: Math.exp(log) });
+  }
+  const span = new Int32Array(n), level = [1];
+  let s = 0, e = 0;
+  for (let i = 0; i < n; i++) {
+    while (e < kept.length && i >= kept[e].to) { level.push(level[s] * kept[e].zoom); s++; e++; }
+    span[i] = e < kept.length && i >= kept[e].from ? -1 : s;
+  }
+  return { events: kept, span, level };
 }
 
 // Keyframe choice from per-candidate sharpness and motion (motion[i]: from candidate i - 1 to i,
-// motion[0] unused). times: candidate timestamps in seconds (keepFps mode).
-// Returns { kept: [index], status: ['kept' | 'blurry' | 'window'], path (spacing units),
+// motion[0] unused). times: candidate timestamps in seconds (keepFps mode). span (zoomEvents,
+// optional): candidates at -1 are inside a zoom event, never picked.
+// Returns { kept: [index], status: ['kept' | 'blurry' | 'window' | 'zoom'], path (spacing units),
 // threshold (the median of the picks' blur thresholds), thresholds: Map(pick -> its threshold) }
-export function selectFrames({ sharpness: scores, motion: steps, times }, options = {}) {
+export function selectFrames({ sharpness: scores, motion: steps, times, span = null }, options = {}) {
   const o = { ...FRAME_DEFAULTS, ...options };
   const n = scores.length, bins = new Map();
   let path = null;
-  const add = (k, i) => { if (!bins.has(k)) bins.set(k, []); bins.get(k).push(i); };
+  const add = (k, i) => {
+    if (span && span[i] < 0) return;
+    if (!bins.has(k)) bins.set(k, []);
+    bins.get(k).push(i);
+  };
   if (o.spacing > 0) {
     // equal spacing along the camera path; the sharpest candidate of each segment's central
     // half is picked, so neighbouring picks stay 0.5-1.5 x spacing apart
@@ -274,7 +392,7 @@ export function selectFrames({ sharpness: scores, motion: steps, times }, option
     const lo = Math.max(0, Math.min(k - half, picks.length - 2 * half - 1));
     return o.blurRel * median(picks.slice(lo, lo + 2 * half + 1).map(i => scores[i]));
   });
-  const status = new Array(n).fill('window');
+  const status = Array.from({ length: n }, (_, i) => (span && span[i] < 0 ? 'zoom' : 'window'));
   const kept = [];
   picks.forEach((i, k) => {
     status[i] = scores[i] >= thresholds[k] ? 'kept' : 'blurry';

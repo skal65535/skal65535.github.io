@@ -42,6 +42,10 @@ const DEFAULTS = {
   relScaleTol: 0.1,        // relative, for that agreement
   relMaxTurnDeg: 10,       // and the most the pose refinement may turn the pair's rotation (cuisine: right ones 0.4-4.6, a wrong one 35.7)
   regrowSegments: false,   // after mapping: offer the frames of smaller segments to the largest (photo sets)
+  scanFocal: false,        // several cameras: those but camera 0 get their focal from their first frame to register (scanFocalOf: a video's zooms)
+  scanMinCorr: 60,         // 2D-3D correspondences that frame needs
+  mergeInliers: 0.97,      // a scanned camera joins a known one that its frame fits nearly as well (this fraction of the inliers)
+  mergeMaxRatio: 1.1,      // at a focal this close
   pnpThreshold: 4,         // px
   maxReproj: 4,            // px, triangulation and filtering
   minAngleDeg: 1.5,        // triangulation angle of new points
@@ -60,7 +64,9 @@ export class SequentialMapper {
     this.priors = this.cameras.map(c => meanFocal(c));  // the input focals: their ratios place the other cameras (calibrateFocal)
     this.images = input.images;
     this.n = input.images.length;
-    this.camOf = Int32Array.from(input.images, im => im.camera ?? 0);
+    this.merged = Int32Array.from(this.cameras, (_, k) => k);  // camera -> the camera it joined (scanFocalOf), itself by default
+    this.focalKnown = Uint8Array.from(this.cameras, (_, k) => (k === 0 || !this.o.scanFocal ? 1 : 0));
+    this.camOf = this.camerasOf(input.images);
     // adjacency: per image, [{ other, a (my keypoint indices), b (other's) }]
     this.adj = Array.from({ length: this.n }, () => []);
     this.addPairs(input.pairs.filter(p => this.o.pairTypes.includes(p.type)));
@@ -76,6 +82,7 @@ export class SequentialMapper {
   get camera() { return this.cameras[0]; }
   set camera(c) { this.cameras[0] = c; }
   cam(img) { return this.cameras[this.camOf[img]]; }
+  camerasOf(images) { return Int32Array.from(images, im => this.merged[im.camera ?? 0]); }
 
   pixel(img, kp) { const k = this.images[img].keypoints; return [k[2 * kp], k[2 * kp + 1]]; }
   ray(img, kp) { return normalizedFromImage(this.cam(img), ...this.pixel(img, kp)); }
@@ -127,9 +134,18 @@ export class SequentialMapper {
   // ── 2. initial pair ───────────────────────────────────────────────────────
   // First pair (both unregistered, both in `allowed` when given) with enough parallax, trying
   // looser angles when nothing qualifies. Starts a new segment.
+  // Frames of a camera whose focal is still unknown (scanFocal) start one only when no other pair can.
   initialize(allowed = null) {
-    for (const minAngle of [this.o.initMinAngleDeg, this.o.initMinAngleDeg / 2, this.o.minAngleDeg]) {
-      if (this.initializeWith(minAngle, allowed)) return true;
+    const withKnown = new Set();
+    let unknown = false;
+    for (let k = 0; k < this.n; k++) {
+      if (allowed && !allowed.has(k)) continue;
+      if (this.focalKnown[this.camOf[k]]) withKnown.add(k); else unknown = true;
+    }
+    for (const set of unknown ? [withKnown, allowed] : [allowed]) {
+      for (const minAngle of [this.o.initMinAngleDeg, this.o.initMinAngleDeg / 2, this.o.minAngleDeg]) {
+        if (this.initializeWith(minAngle, set)) return true;
+      }
     }
     return false;
   }
@@ -207,6 +223,7 @@ export class SequentialMapper {
   register(img, seg = this.nextSegmentId - 1) {
     const corr = [...this.correspondences(img, seg)];
     if (corr.length < this.o.minInliers) return false;
+    if (!this.focalKnown[this.camOf[img]] && !this.scanFocalOf(img, corr)) return false;
     const pixels = corr.map(([kp]) => this.pixel(img, kp));
     const rays = corr.map(([kp]) => this.ray(img, kp));
     const pts = corr.map(([, pid]) => this.points[pid].X);
@@ -225,6 +242,66 @@ export class SequentialMapper {
     return true;
   }
 
+  // The focal of img's camera, still unknown (scanFocal: a video's stretch after a zoom, worker.js),
+  // from img's 2D-3D correspondences corr: PnP at focals from 1/8 to 8 times the camera's prior (8
+  // per octave), then finer around the best (64 per octave); the focal whose refined pose reprojects
+  // the most correspondences within pnpThreshold wins (the least error among ties). A known camera
+  // that img fits nearly as well (mergeInliers) at a focal within mergeMaxRatio takes this one's
+  // frames instead: the same lens and zoom again (zoomed in, then back out).
+  // False when img has fewer than scanMinCorr correspondences or no focal gives minInliers; the
+  // camera's next scan then needs 1.5 times as many (a scan is 66 PnP RANSACs, each with a pose refinement).
+  scanFocalOf(img, corr) {
+    const c = this.camOf[img], base = this.cameras[c], t = this.o.pnpThreshold;
+    this.scanNeeds ??= new Map();
+    if (corr.length < Math.max(this.o.scanMinCorr, this.scanNeeds.get(c) ?? 0)) return false;
+    const pixels = corr.map(([kp]) => this.pixel(img, kp)), pts = corr.map(([, pid]) => this.points[pid].X);
+    const score = (cam) => {
+      const rays = pixels.map(([u, v]) => normalizedFromImage(cam, u, v));
+      const res = ransacPnP(rays, pixels, pts, cam, { rng: this.rng, threshold: t });
+      if (!res) return { n: 0, err: Infinity, cam };
+      const pose = this.refinePose(img, res.model, corr.filter((_, k) => res.inliers[k]), cam);
+      let n = 0, err = 0;
+      for (const [kp, pid] of corr) {
+        const e = this.reprojWith(pose, img, kp, this.points[pid].X, cam);
+        if (e <= t) { n++; err += e; }
+      }
+      return { n, err, cam };
+    };
+    const better = (a, b) => !b || a.n > b.n || (a.n === b.n && a.err < b.err);
+    let best = null;
+    const scan = (center, perOctave, steps) => {
+      for (let k = -steps; k <= steps; k++) {
+        const s = score(withFocal(base, center * 2 ** (k / perOctave)));
+        if (better(s, best)) best = s;
+      }
+    };
+    scan(meanFocal(base), 8, 24);
+    scan(meanFocal(best.cam), 64, 8);
+    if (best.n < this.o.minInliers) { this.scanNeeds.set(c, Math.ceil(1.5 * corr.length)); return false; }
+    const f = meanFocal(best.cam), scanned = { camera: c, frame: img, focal: f, inliers: best.n, of: corr.length };
+    let into = -1, intoScore = null;
+    for (let d = 0; d < this.cameras.length; d++) {
+      if (d === c || this.merged[d] !== d || !this.focalKnown[d]) continue;
+      const r = meanFocal(this.cameras[d]) / f;
+      if (Math.max(r, 1 / r) > this.o.mergeMaxRatio) continue;
+      const s = score(this.cameras[d]);
+      if (s.n >= this.o.mergeInliers * best.n && better(s, intoScore)) { into = d; intoScore = s; }
+    }
+    this.focalKnown[c] = 1;
+    const ratio = (x) => (x / meanFocal(this.camera)).toFixed(3);
+    if (into >= 0) {
+      for (let k = 0; k < this.merged.length; k++) if (this.merged[k] === c) this.merged[k] = into;
+      this.camOf = this.camerasOf(this.images);
+      this.o.log(`camera ${c}: focal ${f.toFixed(1)} px (x${ratio(f)}) from frame ${img}, ${best.n}/${corr.length} 2D-3D; ` +
+                 `camera ${into} (${meanFocal(this.cameras[into]).toFixed(1)} px) fits ${intoScore.n}: its frames join camera ${into}`);
+    } else {
+      this.cameras = this.cameras.map((x, k) => (k === c ? best.cam : x));
+      this.o.log(`camera ${c}: focal ${f.toFixed(1)} px (x${ratio(f)}, prior ${meanFocal(base).toFixed(1)}) from frame ${img}, ${best.n}/${corr.length} 2D-3D`);
+    }
+    (this.stats.focalScans ??= []).push({ ...scanned, into });
+    return true;
+  }
+
   // Registration from one registered neighbour: rotation and baseline direction from the pair's
   // essential matrix, the baseline length (one unknown) from the frame's few 2D-3D
   // correspondences by 1-point RANSAC. With nbr's pose (Rn, tn) and the pair's x_img = Rr x_nbr +
@@ -234,7 +311,7 @@ export class SequentialMapper {
     const { relMinMatches, relMinScaleInliers, pnpThreshold } = this.o;
     const tries = [];
     for (let k = 0; k < this.n; k++) {
-      if (this.poses[k] || (failed.get(k) ?? 0) > 1 || (candidates && !candidates.has(k))) continue;
+      if (this.poses[k] || (failed.get(k) ?? 0) > 1 || (candidates && !candidates.has(k)) || !this.focalKnown[this.camOf[k]]) continue;
       for (const e of this.adj[k]) {
         if (this.poses[e.other] && this.segment[e.other] === seg && e.a.length >= relMinMatches) tries.push([k, e]);
       }
@@ -293,9 +370,9 @@ export class SequentialMapper {
   }
 
   // Pose-only refinement of `pose` on the 2D-3D correspondences corr: [[kp, pid]] (points fixed)
-  refinePose(img, pose, corr) {
+  refinePose(img, pose, corr, camera = this.cam(img)) {
     const prob = {
-      camera: this.cam(img), poses: [pose], free: Uint8Array.of(1),
+      camera, poses: [pose], free: Uint8Array.of(1),
       points: Float64Array.from(corr.flatMap(([, pid]) => this.points[pid].X)),
       obsCam: new Int32Array(corr.length), obsPoint: Int32Array.from(corr.keys()),
       obsUV: Float64Array.from(corr.flatMap(([kp]) => this.pixel(img, kp))),
@@ -304,8 +381,8 @@ export class SequentialMapper {
     return prob.poses[0];
   }
 
-  reprojWith(pose, img, kp, X) {
-    const [u, v, z] = project(this.cam(img), pose, X), [pu, pv] = this.pixel(img, kp);
+  reprojWith(pose, img, kp, X, camera = this.cam(img)) {
+    const [u, v, z] = project(camera, pose, X), [pu, pv] = this.pixel(img, kp);
     return z > 0 ? Math.hypot(u - pu, v - pv) : Infinity;
   }
 
@@ -606,13 +683,14 @@ export class SequentialMapper {
     }
     this.images = images;
     this.n = n;
-    this.camOf = Int32Array.from(images, im => im.camera ?? 0);
+    this.camOf = this.camerasOf(images);
   }
 
   // Copy of the mutable state, for undo (features and pair matches are shared, never mutated)
   snapshot() {
     return {
       cameras: this.cameras.map(c => ({ ...c, params: [...c.params] })), camOf: this.camOf.slice(),
+      merged: this.merged.slice(), focalKnown: this.focalKnown.slice(),
       images: this.images, n: this.n, nextSegmentId: this.nextSegmentId,
       poses: this.poses.map(p => p && { R: [...p.R], t: [...p.t] }),
       segment: this.segment.slice(),
@@ -631,7 +709,8 @@ export class SequentialMapper {
     const live = this.points.filter(Boolean);
     const obs = live.flatMap(P => [...P.obs].flat());
     return {
-      json: { camera: this.camera, cameras: this.cameras, nextSegmentId: this.nextSegmentId, stats: this.stats, o: { ...this.o, log: undefined, progress: undefined } },
+      json: { camera: this.camera, cameras: this.cameras, nextSegmentId: this.nextSegmentId, stats: this.stats, o: { ...this.o, log: undefined, progress: undefined },
+              merged: Array.from(this.merged), focalKnown: Array.from(this.focalKnown) },
       poses: Float64Array.from(this.poses.flatMap(p => p ? [...p.R, ...p.t] : new Array(12).fill(NaN))),
       segment: this.segment.slice(),
       pointX: Float64Array.from(live.flatMap(P => P.X)),
@@ -643,6 +722,11 @@ export class SequentialMapper {
   // Inverse of toState(), on a mapper built from the same keyframes and pairs (all of them)
   setState({ json, poses, segment, pointX, pointObsCount, pointObs }) {
     Object.assign(this, { cameras: json.cameras ?? [json.camera], nextSegmentId: json.nextSegmentId ?? json.numSegments, stats: json.stats, o: { ...this.o, ...json.o, log: this.o.log, progress: this.o.progress } });
+    if (json.merged) {  // saved before scanFocal: every camera its own, every focal known
+      this.merged = Int32Array.from(json.merged);
+      this.focalKnown = Uint8Array.from(json.focalKnown);
+      this.camOf = this.camerasOf(this.images);
+    }
     this.poses = Array.from({ length: this.n }, (_, k) => Number.isNaN(poses[12 * k]) ? null
       : { R: Array.from(poses.subarray(12 * k, 12 * k + 9)), t: Array.from(poses.subarray(12 * k + 9, 12 * k + 12)) });
     this.segment = Int32Array.from(segment);

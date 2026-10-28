@@ -1,6 +1,6 @@
 // S0 (DESIGN-sfm §5.1): MP4 demuxing, and keyframe selection against video2splat.py `select`.
 import { demux } from '../src/sfm/mp4.js';
-import { resizeArea, sharpness, flowPyramid, goodFeatures, trackLK, motion, selectFrames, analyzeFrame } from '../src/sfm/frames.js';
+import { resizeArea, sharpness, flowPyramid, goodFeatures, trackLK, motion, step, zoomEvents, selectFrames, analyzeFrame } from '../src/sfm/frames.js';
 import { makeRng } from '../src/math.js';
 import { assert, assertClose, SLOW, env, exists } from './util.js';
 
@@ -22,15 +22,17 @@ async function denoFileReader(path) {
   };
 }
 
-// Smooth random texture, sampled at (x - dx, y - dy): a known subpixel translation
-function texture(w, h, dx = 0, dy = 0, seed = 3) {
+// Smooth random texture, sampled at (x - dx, y - dy): a known subpixel translation; zoom: scaled
+// by that about the image center first
+function texture(w, h, dx = 0, dy = 0, seed = 3, zoom = 1) {
   const r = makeRng(seed), blobs = Array.from({ length: 300 }, () => [r() * w, r() * h, 2 + 6 * r(), 200 * (r() - 0.5)]);
   const out = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let v = 128;
+      const sx = w / 2 + (x - dx - w / 2) / zoom, sy = h / 2 + (y - dy - h / 2) / zoom;
       for (const [cx, cy, s, a] of blobs) {
-        const d2 = (x - dx - cx) ** 2 + (y - dy - cy) ** 2;
+        const d2 = (sx - cx) ** 2 + (sy - cy) ** 2;
         if (d2 < 9 * s * s) v += a * Math.exp(-d2 / (2 * s * s));
       }
       out[y * w + x] = v;
@@ -68,6 +70,37 @@ Deno.test('pyramidal LK recovers a known translation (subpixel and 25 px)', () =
     assert(err[err.length >> 1] < 0.05, `(${dx}, ${dy}): median error ${err[err.length >> 1].toFixed(3)} px`);
     assertClose(motion(A, B), Math.hypot(dx, dy) / Math.hypot(w, h), 0.05 / Math.hypot(w, h) + 1e-4, 'motion');
   }
+});
+
+// A zoom scales every track alike: step() reads it from the similarity fitted to the tracks
+Deno.test('zoom step: a known zoom of the image (x1.1, with a translation)', () => {
+  const w = 320, h = 200, A = flowPyramid(texture(w, h), w, h);
+  const B = flowPyramid(texture(w, h, 3.2, -1.7, 3, 1.1), w, h);
+  const s = step(A, B), still = step(A, A);
+  assert(Math.abs(s.scale - 1.1) < 0.003 && s.fit > 0.9, `scale ${s.scale.toFixed(4)}, fit ${s.fit.toFixed(2)}`);
+  assert(Math.abs(still.scale - 1) < 1e-3 && still.fit > 0.99, `still: scale ${still.scale.toFixed(4)}, fit ${still.fit.toFixed(2)}`);
+});
+
+// zoomEvents (DESIGN-sfm §5.1): 4 s at 30 fps, walking (0.3% a frame); at 1 s a zoom in (x1.12 a frame for
+// 5 frames, all tracks fit), at 2.5 s a forward flight's expansion (4% a frame, half the tracks fit: depth)
+Deno.test('zoom events: a zoom in splits the video, walking and a forward flight do not', () => {
+  const n = 120, times = Array.from({ length: n }, (_, i) => i / 30);
+  const steps = times.map((_, i) => (i >= 30 && i < 35 ? { scale: 1.12, fit: 0.98 } : i >= 75 && i < 90 ? { scale: 1.04, fit: 0.5 }
+                                                         : { scale: 1.003, fit: 0.97 }));
+  const z = zoomEvents(steps, times);
+  assert(z.events.length === 1 && z.events[0].from === 30 && z.events[0].to === 34, JSON.stringify(z.events));
+  assertClose(z.events[0].zoom, 1.12 ** 5, 1e-9, 'zoom');
+  assert(z.span[29] === 0 && z.span[30] === -1 && z.span[33] === -1 && z.span[34] === 1 && z.span[n - 1] === 1, `spans ${Array.from(z.span).join('')}`);
+  assertClose(z.level[1], 1.12 ** 5, 1e-9, 'level');
+  assert(zoomEvents(steps, times, { zoomRate: 0 }).events.length === 0, 'zoomRate 0: off');
+  // a lost step (null) inside the zoom stays in its event; a zoom of 10% in all is not one (zoomMin)
+  steps[32] = null;
+  assert(zoomEvents(steps, times).events.length === 1, 'a lost step');
+  const small = times.map((_, i) => (i >= 30 && i < 32 ? { scale: 1.045, fit: 0.98 } : { scale: 1.003, fit: 0.97 }));
+  assert(zoomEvents(small, times).events.length === 0, 'under zoomMin');
+  // frame selection never picks a frame inside a zoom
+  const sel = selectFrames({ sharpness: times.map((_, i) => (i === 31 ? 1000 : 100)), motion: times.map(() => 0.05), times, span: z.span });
+  assert(!sel.kept.some(i => i >= 30 && i < 34) && sel.status[31] === 'zoom', `kept ${sel.kept.filter(i => i >= 28 && i < 36)}`);
 });
 
 Deno.test('frame selection: one sharpest pick per spacing, blurry picks dropped (video2splat rules)', () => {

@@ -23,7 +23,7 @@
 "use strict";
 
 import { openVideo, sampleFrames, decodeFrames, grayOf } from './video.js';
-import { fitSize, selectFrames } from './frames.js';
+import { fitSize, selectFrames, zoomEvents } from './frames.js';
 import { GpuSift, SIFT_DEFAULTS } from './sift.js';
 import { GpuMatcher } from './match.js';
 import { GpuUndistort, PointColors } from './undistort.js';
@@ -34,9 +34,10 @@ import { SESSION_DEFAULTS, PHOTO_MAPPING } from './defaults.js';
 import { readExif, jpegSize } from './exif.js';
 import { planPhotos, planMore, focalFromExif } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
-import { defaultCamera, withFocal } from './camera.js';
+import { defaultCamera, withFocal, meanFocal } from './camera.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
 import { xyOnly } from './frontend.js';
+import { mul3 } from './linalg.js';
 import { hashString } from './util.js';
 import { storeFrom } from '../project/store.js';
 
@@ -94,7 +95,7 @@ async function analyze(o) {
   const keys = ['sampleFps', 'sharpDim', 'flowDim'];
   if (same(cache.analysis?.options, o, keys)) return cache.analysis;
   const t = performance.now(), order = sampleFrames(video, o.sampleFps), [w, h] = fitSize(video.width, video.height, o.sharpDim);
-  const sharp = new Array(order.length), steps = new Array(order.length), times = new Array(order.length);
+  const sharp = new Array(order.length), steps = new Array(order.length), times = new Array(order.length), zoom = new Array(order.length).fill(null), flowH = new Array(order.length).fill(null);
   const workers = analysisPool(), options = { sharpDim: o.sharpDim, flowDim: o.flowDim };
   const position = new Map(order.map((k, i) => [k, i]));  // sample -> index in order
   let chunk = [], at = [], last = null, done = 0, failure = null;
@@ -103,7 +104,7 @@ async function analyze(o) {
     const wk = await free();
     wk.busy = new Promise((resolve) => {
       wk.onmessage = ({ data }) => {
-        data.sharpness.forEach((v, k) => { sharp[at[k]] = v; steps[at[k]] = data.motion[k]; });
+        data.sharpness.forEach((v, k) => { sharp[at[k]] = v; steps[at[k]] = data.motion[k]; zoom[at[k]] = data.zoom[k]; flowH[at[k]] = data.flowH[k]; });
         done += data.sharpness.length;
         progress('analyze', done, order.length);
         wk.busy = null;
@@ -133,12 +134,25 @@ async function analyze(o) {
   if (missing) throw new Error(`${missing} of ${order.length} sampled frames not decoded (duplicate timestamps in the video?)`);
   log(`frames: ${order.length} sampled at ${Math.min(o.sampleFps, video.fps).toFixed(1)} fps, ` +
       `analyzed in ${seconds(t)} (${workers.length} workers)`);
-  return cache.analysis = { options: { ...o }, order, sharp, steps, times };
+  return cache.analysis = { options: { ...o }, order, sharp, steps, times, zoom, flowH };
+}
+
+// The zoom events of the analysed frames (frames.js zoomEvents; none in an analysis saved without its zoom steps)
+function zoomOf(analysis, o) {
+  const steps = (analysis.zoom ?? []).map(z => z && { scale: z[0], fit: z[1] });
+  const z = zoomEvents(steps, analysis.times, o);
+  if (z.events.length) {
+    const t = (i) => analysis.times[i].toFixed(2);
+    log(`zoom: ${z.events.map(e => `x${e.zoom.toFixed(2)} at ${t(e.from)}-${t(e.to)} s`).join(', ')} (image scale, walking included): ` +
+        `no keyframe during them, a camera per stretch between them, its focal found when mapping`);
+  }
+  return z;
 }
 
 // S0b keyframe selection, shown on the panel's strip
 function selection(analysis, o) {
-  const sel = selectFrames({ sharpness: analysis.sharp, motion: analysis.steps, times: analysis.times }, o);
+  const zoom = cache.zoom = zoomOf(analysis, o);
+  const sel = selectFrames({ sharpness: analysis.sharp, motion: analysis.steps, times: analysis.times, span: zoom.span }, o);
   post({ type: 'selection', times: analysis.times, sharpness: analysis.sharp, status: sel.status, path: sel.path, threshold: sel.threshold });
   cache.selection = sel;
   save('sharpness.csv', sharpnessCsv(analysis, sel));
@@ -219,7 +233,7 @@ async function keyframes(o, analysis) {
   if (kept.length < 3) throw new Error(`only ${kept.length} keyframes: lower the spacing or the blur threshold`);
   if (same(cache.features?.options, o, FEATURE_KEYS) && cache.features.kept.join() === kept.join()) {
     // a fresh list: densify appends to the session's own (the JPEGs of added frames can stay)
-    return { ...cache.features, feats: cache.features.feats.slice(0, kept.length) };
+    return flowChains(zoomCameras({ ...cache.features, feats: cache.features.feats.slice(0, kept.length) }, sel.kept), sel.kept);
   }
   const [w, h] = fitSize(video.width, video.height, o.maxDim);
   const t = performance.now(), feats = [], jpegs = [];
@@ -233,7 +247,61 @@ async function keyframes(o, analysis) {
   // id: a saved model is restored only over the features it was built from
   cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h };
   saveFeatures(cache.features);
-  return cache.features;
+  return flowChains(zoomCameras(cache.features, sel.kept), sel.kept);
+}
+
+// The analysis's step homographies (frames.js step) chained from the first frame: per keyframe (picks: its
+// analysis index) flowH, the homography from the first frame of its chain to it in keyframe pixels, and
+// flowChain, the chain's id (a lost step starts a new one). Between two keyframes of one chain, the camera's
+// turn when it does not move (flowjoin.js). Nothing when the analysis has no homographies (saved before them).
+function flowChains(features, picks) {
+  const a = cache.analysis;
+  if (!a.flowH) return features;
+  const [sw, sh] = fitSize(video.width, video.height, a.options.sharpDim), [fw] = fitSize(sw, sh, a.options.flowDim);
+  const s = features.width / fw, S = [s, 0, 0, 0, s, 0, 0, 0, 1], Si = [1 / s, 0, 0, 0, 1 / s, 0, 0, 0, 1];
+  const abs = new Array(a.times.length), chain = new Int32Array(a.times.length);
+  let H = [1, 0, 0, 0, 1, 0, 0, 0, 1], id = 0;
+  for (let i = 0; i < a.times.length; i++) {
+    if (i > 0) {
+      const h = a.flowH[i];
+      if (h) {
+        H = mul3(h, H);
+        const n = Math.hypot(...H);
+        H = H.map(x => x / n);
+      } else { H = [1, 0, 0, 0, 1, 0, 0, 0, 1]; id++; }
+    }
+    abs[i] = H; chain[i] = id;
+  }
+  features.feats.forEach((f, k) => { f.flowH = mul3(mul3(S, abs[picks[k]]), Si); f.flowChain = chain[picks[k]]; });
+  return features;
+}
+
+// A camera per stretch between zooms (cache.zoom) that has keyframes: the one with the most is camera
+// 0 (its focal self-calibrated), the others' focals are scanned from the map (mapper.js scanFocalOf)
+// starting from their image scale relative to it. Sets each keyframe's `camera` (picks: their analysis
+// indices) and features.zoomLevels (per camera, that scale); none of it without a zoom.
+function zoomCameras(features, picks) {
+  const span = picks.map(i => cache.zoom.span[i]), count = new Map();
+  for (const s of span) count.set(s, (count.get(s) ?? 0) + 1);
+  if (count.size < 2) {
+    for (const f of features.feats) delete f.camera;
+    return { ...features, zoomLevels: null };
+  }
+  const first = [...count].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+  const order = [first, ...[...count.keys()].filter(s => s !== first).sort((a, b) => a - b)];
+  const camera = new Map(order.map((s, c) => [s, c]));
+  features.feats.forEach((f, k) => { f.camera = camera.get(span[k]); });
+  const levels = order.map(s => cache.zoom.level[s] / cache.zoom.level[first]);
+  log(`zoom: ${order.length} cameras, ${order.map((s, c) => `${c}: ${count.get(s)} keyframes from ${cache.analysis.times[picks[span.indexOf(s)]].toFixed(1)} s, x${levels[c].toFixed(2)}`).join('; ')}`);
+  return { ...features, zoomLevels: levels };
+}
+
+// The cameras of a video with zooms (zoomCameras): camera k's prior focal is its image scale relative
+// to camera 0, which the mapper self-calibrates; null without a zoom
+function zoomPriors(features) {
+  if (!features.zoomLevels) return null;
+  const base = defaultCamera('OPENCV', features.width, features.height);
+  return features.zoomLevels.map(r => withFocal(base, meanFocal(base) * r));
 }
 
 // ── photo sets (DESIGN-sfm §13): photos instead of a video's keyframes ─────────────────────
@@ -465,7 +533,7 @@ function featuresProject(f) {
   for (const j of f.jpegs) parts[`jpeg/${j.name}`] = j.blob;
   const source = video ? { name: video.file.name, duration: video.duration } : cache.source ?? null;
   // a photo set has no frame analysis (S0): its plan stands in for the source
-  const a = analysis ? (({ order, sharp, steps, times, options }) => ({ options, order, sharp, steps, times }))(analysis) : null;
+  const a = analysis ? (({ order, sharp, steps, times, zoom, flowH, options }) => ({ options, order, sharp, steps, times, zoom, flowH }))(analysis) : null;
   return packProject({ video: source, analysis: a, photos: photos ? { plan: photos.plan } : cache.photoPlan ?? null,
                        features: { options: f.options, id: f.id, kept: f.kept, width: f.width, height: f.height, frames: f.feats.map(x => ({ name: x.name, time: x.time })) } }, parts);
 }
@@ -637,7 +705,8 @@ async function run(options) {
   // stage stays: it merges segments too (cuisine without it, and without regrowSegments: 7 photos
   // in one segment, not 12)
   const window = photos ? Math.max(1, features.feats.length - 1) : o.window, loops = o.loops;
-  const cameras = photos ? photoCameras(features) : null;
+  const cameras = photos ? photoCameras(features) : zoomPriors(features);
+  if (!photos && cameras) mapping.scanFocal = true;
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
     { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}) });
   current = { session, features, o, version: 0 };  // version: bumped by every action and undo
@@ -672,6 +741,7 @@ async function densify(names) {
     const [a, b] = [times[k - 1], times[k]], q = (b - a) / 4;
     let best = -1;
     analysis.times.forEach((t, i) => {
+      if (cache.zoom?.span[i] < 0) return;  // during a zoom
       if (t > a + q && t < b - q && !taken.has(keyframeName(t)) && (best < 0 || analysis.sharp[i] > analysis.sharp[best])) best = i;
     });
     if (best >= 0) wanted.add(analysis.order[best]);
@@ -679,9 +749,11 @@ async function densify(names) {
   if (!wanted.size) throw new Error('densify: no sampled frame left between these keyframes (raise the sample fps)');
   const added = [];
   await extract(wanted, features.width, features.height, o, async (f, jpeg) => {
+    const camera = stretchCamera(f.name, session.images);
+    if (camera !== undefined) f.camera = camera;
     features.feats.push(f);
     features.jpegs.push(jpeg);
-    added.push({ name: f.name, time: f.time, keypoints: xyOnly(f.keypoints) });
+    added.push({ name: f.name, time: f.time, keypoints: xyOnly(f.keypoints), ...(camera !== undefined ? { camera } : {}) });
     await save(`images/${jpeg.name}`, jpeg.blob);
   });
   log(`densify: ${added.length} keyframes added between ${names.length} selected`);
@@ -689,6 +761,15 @@ async function densify(names) {
   const r = await session.insert(added);
   await saveFeatures(features);  // before the model that refers to them
   return r;
+}
+
+// The camera of the keyframes in the same stretch between zooms as the analysed frame `name`
+// (zoomCameras); undefined without zooms
+function stretchCamera(name, images) {
+  const z = cache.zoom;
+  if (!z?.events.length) return undefined;
+  const index = new Map(cache.analysis.times.map((t, k) => [keyframeName(t), k])), span = z.span[index.get(name)];
+  return images.find(im => im.camera !== undefined && z.span[index.get(im.name)] === span)?.camera;
 }
 
 async function action(op, args) {

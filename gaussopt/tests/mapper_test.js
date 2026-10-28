@@ -204,3 +204,29 @@ Deno.test('reconstruct, synthetic: a lens with 3 photos is fitted in the final s
   const reg = mapper.poses.filter(Boolean).length;
   assert(reg === 30 && Math.abs(err[0]) < 0.01 && Math.abs(err[1]) < 0.02, `${reg} registered, focal errors ${err.map(e => (100 * e).toFixed(2))}%`);
 });
+
+// A video's zooms (DESIGN-sfm §5.1, frames.js zoomEvents): an orbit filmed at f 1230, zoomed in to
+// 2400 for frames 12-17, then back out to 1230; the worker makes each stretch between zooms a camera
+// (here 0, 1, 2) whose prior is the image scale across the zooms, which walking also changes: here
+// 0.5 for the stretch back at the start's focal. scanFocal finds camera 1's focal from its first
+// frame, and camera 2 joins camera 0.
+function zoomedOrbit() {
+  const lens = [960, 540, 0.005, -0.002, 0, 0];
+  return makeSyntheticScene({ ...BASE, numFrames: 30, turns: 0.6, overlap: 6,
+    cameras: [[1230, 1230, ...lens], [2400, 2400, ...lens], [1230, 1230, ...lens]],
+    cameraOf: (k) => (k < 12 ? 0 : k < 18 ? 1 : 2), priorFocals: [1230, 1230 * 1.84, 1230 * 0.5] });
+}
+
+Deno.test('mapper, synthetic zooms: a scanned focal per zoom, a camera back at an earlier focal joins it', () => {
+  const scene = zoomedOrbit();
+  const mapper = new SequentialMapper(scene.input, { scanFocal: true });
+  const model = mapper.run(), m = compareModels(model, scene.truth.model);
+  const err = (k) => mapper.cameras[k].params[0] / scene.truth.cameras[k].params[0] - 1;
+  const tag = `${m.numCommon} registered, ${mapper.nextSegmentId} segments, cameras of frames ${[...new Set(mapper.camOf)]}, ` +
+              `focal errors ${[0, 1].map(k => (100 * err(k)).toFixed(2))}%, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
+  assert(m.numCommon === 30 && mapper.nextSegmentId === 1, tag);
+  assert(mapper.camOf.slice(18).every(c => c === 0) && mapper.camOf.slice(12, 18).every(c => c === 1), tag);
+  assert(Math.abs(err(0)) < 0.01 && Math.abs(err(1)) < 0.01, tag);
+  const fails = checkThresholds(m, 'truth');
+  assert(fails.length === 0, `${tag}: ${fails.join(', ')}`);
+});
