@@ -24,14 +24,13 @@ const DEFAULTS = {
   maxReprojPx: 2,
   minParallaxDeg: 0.05,                     // median triangulation angle to the previous keyframe
   // model vs two-view relative rotation: above max(floor, factor x the video's median disagreement)
-  // (two-view precision depends on the matches: 0.03 deg median on jardin5, 0.3 on small synthetic frames)
+  // (two-view precision depends on the matches: tenfold between a sharp video and small synthetic frames)
   twoViewRotDeg: { amber: 0.3, red: 1, amberFactor: 5, redFactor: 10 },
   twoViewDirDeg: { amber: 20, red: 45 },    // baseline direction, when the parallax exceeds 1 deg
   maxHomographyRatio: 0.7, maxSpreadDeg: 0.3,  // two-view pose trusted: H explains < 70% of F's inliers, 2 runs agree
   breakFactor: 10, minBreak: 0.3,           // scale break: baseline / depth > max(minBreak, factor x median)
   loopRotDeg: 2, loopLogScale: 0.05,        // loop residual after the pose graph: suspect above
-  // checked loop: suspect when a relocalized frame is this far from its pose (jardin4: at most 3 deg,
-  // 6% of the depth over 447 loops; gare-st-lazare, two passes of a square: 5% for half of its loops)
+  // checked loop: suspect when a relocalized frame is this far from its pose (deg, x the median depth)
   loopRelocDeg: 3, loopRelocOffset: 0.1,
   lowPsnrDb: 3,                             // after training: below the median view PSNR by this
 };

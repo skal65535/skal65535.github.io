@@ -206,8 +206,7 @@ export function orbitBasis(up = [0, -1, 0]) {
 }
 
 // World up from the cameras (OpenCV: +X right, +Y down in the image). People keep the horizon level
-// but tilt the camera up and down, so the mean "down" axis leans with the mean pitch (5-12° on the
-// photo sets): up is instead the direction most perpendicular to the photos' horizontal axes. A
+// but tilt the camera up and down, so the mean "down" axis leans with the mean pitch: up is instead the direction most perpendicular to the photos' horizontal axes. A
 // photo's horizontal axis is its X, or its Y when it was rotated by 90° to the set's orientation
 // (photos.js; its down is then -X): the one closer to horizontal. The up that levels the most photos,
 // among the ups perpendicular to two photos' horizontal axes, is refit on those (smallest eigenvector of

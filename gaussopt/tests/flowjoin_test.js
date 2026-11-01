@@ -77,7 +77,7 @@ Deno.test('flow rotation: a rotation homography gives its rotation, a homography
 });
 
 Deno.test('flow join: the keyframes it places are rotation only, not weak, and repair leaves them', async () => {
-  // the turn's middle frames matched to nothing (as long-garden.mp4's): the join places them, with no points
+  // the turn's middle frames matched to nothing: the join places them, with no points
   const scene = turnInPlace(), blind = (k) => k >= 23 && k <= 30;
   const input = { ...scene.input, pairs: scene.input.pairs.filter(p => !blind(p.i) && !blind(p.j)) };
   const s = new SfmSession(input, { pairSource: tablePairSource(input), loops: false });

@@ -1,7 +1,7 @@
 // decode.e2e.js — src/sfm/video.js decodeFrames falls back to the software decoder when the hardware one fails:
-// (1) a thermal camera's H.264 (DECODE_E2E_VIDEO, default ~/viewsec4.mp4) that Chrome's hardware decoder on macOS
+// (1) a thermal camera's H.264 (DECODE_E2E_VIDEO) that Chrome's hardware decoder on macOS
 // rejects at its 5th sample ('Decoding error.'): every sampled frame delivered once, the fallback recorded;
-// (2) a video that decodes (OVERLAY_E2E_VIDEO, default ~/test-parking.mov) with its hardware decoder made to fail
+// (2) a video that decodes (OVERLAY_E2E_VIDEO) with its hardware decoder made to fail
 // after 30 frames: the frames delivered before are not delivered again, none is missing.
 //   cd e2e && node decode.e2e.js
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';

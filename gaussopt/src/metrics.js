@@ -100,8 +100,8 @@ export function rgbPsnrDown(a, b, W, H, bpr, f = 4) {
 
 // SSIM as in the 3DGS code (utils/loss_utils.py): per channel, 11x11 Gaussian window (sigma 1.5),
 // zero padding at the borders, C1 = 0.01^2, C2 = 0.03^2 on [0, 1] values; mean over pixels and
-// channels. Separable blur of the five moment maps, about 100 ms for 960 x 540: the held-out views
-// take the GPU's (ssimMean), this is its reference (ssim.e2e.js).
+// channels. Separable blur of the five moment maps; too slow for the held-out views, which take the
+// GPU's (ssimMean): this is its reference (ssim.e2e.js).
 const SSIM_R = 5;
 const SSIM_W = (() => {
   const w = Array.from({ length: 2 * SSIM_R + 1 }, (_, k) => Math.exp(-((k - SSIM_R) ** 2) / (2 * 1.5 * 1.5)));

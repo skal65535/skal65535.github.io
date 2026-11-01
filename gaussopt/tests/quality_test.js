@@ -1,5 +1,5 @@
 // Keyframe quality signals (quality.js, DESIGN-sfm §6.1): green on a clean synthetic map, red where
-// a pose is damaged; (slow) on jardin5, few red frames, among them frame 176 whose pose disagrees
+// a pose is damaged; (slow) on the SFM_DUMP video, few red frames, among them frame 176 whose pose disagrees
 // with its own matches and with COLMAP, and a redo there that leaves every COLMAP piece passing.
 import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { reconstruct } from '../src/sfm/reconstruct.js';

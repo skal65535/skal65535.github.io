@@ -206,9 +206,9 @@ export const PROJECT_PARAMS = [
   'mesh_view', 'mesh_shaded', 'mesh_margin', 'mesh_kind', 'mesh_res', 'mesh_simplify', 'mesh_texture', 'dome', 'dome_fill', 'show_dome', 'dome_only',
 ];
 
+export const URL_FLAGS = ['train'];  // the boolean params read by presence (parse_arg_bool)
 // The URL names of param `key` ([alias, name]), or [] for those app.js _syncUrl writes after a load
 // (dataset_url, resume_ply)
-export const URL_FLAGS = ['train'];  // the boolean params read by presence (parse_arg_bool)
 export const urlNamesOf = (key) => (key === 'dataset_url' || key === 'resume_ply') ? [] : [URL_ALIASES[key], key].filter(Boolean);
 
 // The params of a new app: defaults, the aliased URL params already parsed (parse_arg*)

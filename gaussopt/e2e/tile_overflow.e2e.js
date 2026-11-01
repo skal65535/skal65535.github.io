@@ -1,8 +1,7 @@
 // tile_overflow.e2e.js — A forward render (trainer._renderViewForward: the compare view, the validation, the held-out
 // fit, the mesh's depth, train.mjs's checks) comes out whole when its (tile, splat) entries overflow the tile lists.
 // The lists follow the entry count read back after each render (_pollTileEntries): a render needing far more than the
-// last ones (a scene of a million splats just loaded: 2.4M entries against the first 1M) dropped the overflow, the tiles
-// filled last empty (its lower half black), and only the next render had room. A synthetic scene of 6000 sheets
+// last ones drops the overflow, the tiles filled last empty, unless it is rendered again. A synthetic scene of 6000 sheets
 // across the whole view (192 tiles: 1.15M entries) on a new trainer (lists of 2^20): its first render against a second.
 //   cd e2e && node tile_overflow.e2e.js   (env: see harness.js)
 import { APP, PORT, fail, urlOf, run } from './harness.js';

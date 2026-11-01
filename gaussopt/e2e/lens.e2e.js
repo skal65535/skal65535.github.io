@@ -2,9 +2,9 @@
 // steps, its splats frozen, each training view's ground truth its own render (as pose.e2e.js); the lens then pushed off
 // (its focal 1% longer, its principal point by (+2, -2) px, a residual distortion k1 0.03: shaders.wgsl distort_jac)
 // and learned back (lens_lr 1e-3, the last third 2e-4; the poses not refined): the principal point comes back within a
-// fifth of its push, the focal and k1 within a twentieth (k1 learned with the focal as log f, they traded and stopped
-// at 0.065% and 0.0030: poses.js updateLens's a).
-//   cd e2e && PORT=8791 node lens.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+// fifth of its push, the focal and k1 within a twentieth (k1 is learned with the focal through log f, the two trade:
+// poses.js updateLens's a).
+//   cd e2e && PORT=8791 node lens.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

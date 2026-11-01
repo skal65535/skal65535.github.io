@@ -119,10 +119,9 @@ Deno.test('photos: capture order, labels, rotation, a camera per lens and zoom, 
   assert(full.photos.length === 0 && /more than 9 photos/.test(full.skipped[0]?.reason), JSON.stringify(full));
 });
 
-// Real photo sets (SLOW=1, the data of DESIGN-sfm §13.2 under SFM_PHOTOS, default ~/gskal/brush):
-// cuisine and minerals as the page maps them (PHOTO_MAPPING, every pair, the loop stage), against COLMAP's model.
-// Two inputs that failed before: the browser's gray at 4096 features (7 photos in one segment
-// without regrowSegments) and ImageMagick's at 6000 (a photo 40 deg off without relMaxTurnDeg).
+// Real photo sets (SLOW=1, the data of DESIGN-sfm §13.2 under SFM_PHOTOS): each set as the page maps it
+// (PHOTO_MAPPING, every pair, the loop stage), against COLMAP's model. Inputs: the browser's gray at 4096
+// features (needs regrowSegments) and ImageMagick's at 6000 (needs relMaxTurnDeg).
 const PHOTOS = env('SFM_PHOTOS') ?? `${env('HOME')}/gskal/brush`;
 async function photoFeatures(dir, maxFeatures) {
   const names = [...Deno.readDirSync(dir)].map(e => e.name).filter(n => n.endsWith('.pgm')).sort();
@@ -137,11 +136,8 @@ async function photoFeatures(dir, maxFeatures) {
 }
 const mapPhotos = ({ feats, size, matcher }, seed, mapping = {}) =>
   reconstructFromFeatures(feats, size[0], size[1], matcher, { window: feats.length - 1, loops: true, seed, mapping: { ...PHOTO_MAPPING, ...mapping } });
-// The mapping depends on the seed (RANSAC's draws in matching and mapping): cuisine sometimes starts from
-// a pair that sets the focal ~9% high (8 photos in one segment), minerals splits 34 + 4. Each case runs
-// SEEDS and passes on 2 of 3; the counts are those most seeds reach (photo_runs/NOTES.md: 12 seeds on
-// cuisine, 4 on minerals, before and after the verification pool). minerals (40 photos, a room then
-// close-ups of a bookshelf): COLMAP registers 39.
+// The mapping depends on the seed (RANSAC's draws in matching and mapping): each case runs SEEDS and
+// passes on 2 of 3; minCommon is the count most seeds reach.
 const SEEDS = [1, 2, 3];
 // A known failure is left out with its reason, until fixed.
 const CASES = [['cuisine', 'pgm_browser', 4096, 11, 'known failure: its first photo (a near-planar wall) registers 20-29 deg off on most seeds, ' +

@@ -1,5 +1,5 @@
 // controls.e2e.js — common/controls.js listen(): a row that is out of the page for a while (not yet attached, or
-// moved) shows obj[key] again once back (its polling stopped for good at the first frame it was out: a status line
+// moved) shows obj[key] again once back (its polling not stopped for good at the first frame it is out: a status line
 // frozen at its last value); a row removed by clear() stops polling.
 //   cd e2e && node controls.e2e.js
 import { fail, appUrl, run } from './harness.js';

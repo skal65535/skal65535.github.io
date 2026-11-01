@@ -316,7 +316,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
 
 // The splats' depth for the overlays drawn after them (no color): the fragments of an opacity of 0.1 or more, each at
 // its splat centre's depth (the wireframes behind them are drawn faint, wireframe_render). A surface is often many
-// splats of 0.2-0.5 (the synthetic room at 600 steps: 0.5 let most boxes behind its walls through)
+// splats of 0.2-0.5, hence the low threshold
 @fragment
 fn fs_depth(in: VOut) {
   if (in.color.a * exp(-0.5 * dot(in.uv, in.uv)) < 0.1) { discard; }
@@ -1064,7 +1064,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // error moments into moments (S is done in adam_step): nv values per hit, 10 grads (slot 9,
 // the weight, is also moments' W), R, then the 9 directional moments (moments 3..11) with DIR_MOMS:
 // only split_mode 'error' reads them (octree.js splitSplat), the trainer's other pipeline leaves
-// them out (their code alone, skipped, cost 17.2 against 14.4 ms a step at 300k splats). Contributions are summed over the subgroup first (when the device
+// them out (their code alone, even skipped, slows a step noticeably). Contributions are summed over the subgroup first (when the device
 // has 'subgroups'; lines tagged @sg / @nosg are selected by loadShaders()), then in
 // workgroup memory: one global CAS per slot per batch per tile.
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count; with a D-SSIM weight
@@ -1115,7 +1115,7 @@ var<workgroup> wg_env        : array<atomic<u32>, 4>;  // the tile's background 
 var<workgroup> wg_expo       : array<atomic<u32>, 6>;  // the tile's exposure gradient: log g rgb, b rgb
 const EXPO_AT : u32 = 24u * ENV_N * ENV_N;  // its words in loss_acc after the background's (add_global_env's index)
 // Only pixels with T_final over this teach the background: below it, it learned the splats' residual (a pixel the splats
-// render too red pushed it to green), colors no photo has where the views barely saw it (canyon3, below the scene)
+// render too red pushed it to green), colors no photo has where the views barely saw it
 const ENV_MIN_T : f32 = 0.5;
 
 // #include _math
@@ -1369,7 +1369,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           }
         }
         let gbase = i * nv;
-        // constant loop bounds (a bound of nv made the pass twice as slow at 300k splats)
+        // constant loop bounds (a bound of nv makes the pass much slower)
         if (subgroupAny(hit)) {                                   // @sg
           for (var c = 0u; c < 11u; c++) { v[c] = subgroupAdd(v[c]); }  // @sg
           // one lane per slot, not a CAS loop per slot on lane 0      // @sg
@@ -1411,8 +1411,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 // The background's update (env.js, tile_backward's gradient in loss_acc after its first vec4): one thread a texel, Adam
 // on rgb (b1 0.9, b2 0.999, the grads clipped to [-1, 1] as adam_step's) at lr tu.reg.z x wbar / (wbar + ENV_W0), kept in
 // [0, 1]; wbar (env_m.w): the running mean of the texel's T_final sum a step. Adam's step does not shrink with the gradient,
-// so a texel seen only through nearly opaque splats walked to saturated colors no training view showed (canyon3: rainbow
-// blotches below the scene seen from off the path); scaled by how much it is seen, it stays black. The gradient is read
+// so a texel seen only through nearly opaque splats would walk to saturated colors no training view showed; scaled by
+// how much it is seen, it stays black. The gradient is read
 // and cleared; the trainer then copies env to the texture the tile passes read.
 // Bindings: 0 TrainUniforms, 1 env, 2 loss_acc, 3 env_m, 4 env_v.
 

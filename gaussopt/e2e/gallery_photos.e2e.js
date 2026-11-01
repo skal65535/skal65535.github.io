@@ -1,7 +1,7 @@
 // gallery_photos.e2e.js — The gallery's 'photos in frustums' (gallery/index.html): a toggle, off by default, whose
 // click draws the photos of the nearest cameras in their frustums (the canvas changes) and whose second click takes
 // them away (the canvas as before); photos=N in the URL starts it on. On a scene with photos.glb (GALLERY_SCENE, default
-// canyon3; gallery/scenes: the scenes' folder), served statically as the gallery is (serve.py does not serve the scenes' link).
+// SCENE below; gallery/scenes: the scenes' folder), served statically as the gallery is (serve.py does not serve the scenes' link).
 // The photos read by their byte ranges (scene_glb.js openPhotosGlb; photos.glb served with Range here, from the file, as
 // the gallery's server does; python's http.server ignores Range): the header, then one range per photo drawn, far less
 // than the file; after a reload none of them asked again (Cache Storage). Without Range (the whole file): drawn too.

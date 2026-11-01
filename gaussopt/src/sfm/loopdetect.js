@@ -4,7 +4,7 @@
 //     (k-means, nearest-centroid assignment on the GPU matcher), a TF-IDF word histogram per frame,
 //     and the most similar frames outside the sequential window; no pre-trained vocabulary to ship
 //   - by geometry, after sequential mapping: frames far apart in time that should see the same
-//     points from a similar direction and distance (R3: twice the appearance recall on jardin6)
+//     points from a similar direction and distance (R3)
 "use strict";
 
 import { dot, sub } from '../math.js';

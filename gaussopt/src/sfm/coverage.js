@@ -1,14 +1,14 @@
 // coverage.js — What to shoot next, after a photo set is mapped (DESIGN-sfm §13.3 P4, P6), DOM-free:
 // the photos that did not join the main segment and their strongest link, the steps along the
 // capture order where two photos are too far apart to match well, and how many photos see each
-// point. SHOOTING holds the guide's numbers, measured on cuisine and salon (DESIGN-sfm §13.2).
+// point. SHOOTING holds the guide's numbers, measured on real photo sets (DESIGN-sfm §13.2).
 "use strict";
 
 import { poseCenter } from './camera.js';
 
 // Two photos match well (>= minLinkMatches F inliers) when the view turns <= maxTurnDeg between them
-// and the camera moves <= maxStep of the scene depth: on cuisine and salon (COLMAP's poses), 27 of the
-// 32 pairs within both had >= 50 inliers, and 7 of the 126 pairs turning more than 60 deg
+// and the camera moves <= maxStep of the scene depth (most pairs within both do, few turning more than
+// 60 deg)
 const SHOOTING = { maxTurnDeg: 30, maxStep: 0.5, minLinkMatches: 50 };
 const START_MATCHES = 100;  // matches of the initial pair (mapper.js initializeWith)
 

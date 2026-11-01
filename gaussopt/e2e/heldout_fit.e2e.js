@@ -2,9 +2,9 @@
 // (trainer.evaluateHeldOutFitted, DESIGN.md E19's held-out protocol): the synthetic room trained 1000 steps, its
 // held-out photo replaced by its render (its pose then exact), then its camera pushed off by 0.5 degree and 1% of the
 // scene's radius: the plain PSNR falls, the fitted one comes back within 1 dB of the exact pose's (capped at 50 dB: the
-// same image is 99.9, 8-bit rounding keeps a fit under it); the splats, their
-// Adam state and moments the same bit for bit after it, the view's pose put back.
-//   cd e2e && PORT=8791 node heldout_fit.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+// same image is 99.9, 8-bit rounding keeps a fit under it); the splats, their Adam state and moments the same bit
+// for bit after it, the view's pose put back.
+//   cd e2e && PORT=8791 node heldout_fit.e2e.js   (env: MESH_E2E_ROOM, default ROOM below; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

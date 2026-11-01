@@ -28,7 +28,7 @@ export const hasGPU = !!globalThis.navigator?.gpu && !!(await navigator.gpu.requ
 // Slow tests (real videos, large datasets) run with SLOW=1 (deno task test:slow)
 export const SLOW = env('SLOW') === '1';
 
-// The jardin5 COLMAP dump (tools/colmap_dump.py) and model used by the slow tests (SFM_REF_MODEL
+// The COLMAP dump (tools/colmap_dump.py) and model used by the slow tests (SFM_REF_MODEL
 // overrides the model: a sparse/0 directory or a gs/ dataset)
 export const DUMP = env('SFM_DUMP');
 export const REF_MODEL = env('SFM_REF_MODEL') ?? `${env('HOME')}/gskal/brush/jardin5/out/sparse_sift/0`;

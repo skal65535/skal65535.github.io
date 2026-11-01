@@ -1,7 +1,7 @@
 // photos_lenses.e2e.js — A photo set mixing lenses, zoom and orientations (DESIGN-sfm §13.3 P8): a
 // camera model per lens and zoom, portraits rotated; then the label filter "only the ultrawide
 // photos", mapped again from the cached features; then the filter undone.
-//   node photos_lenses.e2e.js   (env: SFM_E2E_PHOTOS = a folder of JPEGs, default ~/gskal/brush/out_scene1/images;
+//   node photos_lenses.e2e.js   (env: SFM_E2E_PHOTOS = a folder of JPEGs;
 //                                SFM_E2E_MIN_ALL (default 13, COLMAP's count with a camera per lens and zoom),
 //                                SFM_E2E_LENS, SFM_E2E_MIN_LENS (default the ultrawide, 7), CHROME, PORT, BROWSER)
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';

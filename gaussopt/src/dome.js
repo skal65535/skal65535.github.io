@@ -6,7 +6,7 @@
 // size (a dark trunk or roof edge agreeing across views is not sky). The dome is worth it when the far texels take
 // a share of the photos' pixels; the directions no camera saw (the zenith) are filled from the far texels by a rough
 // diffusion (push-pull), the ones seen but not far are black (fill 'unseen': the splats' own, as without a dome; 'all'
-// filled too lost 0.33 dB held out on canyon3, 0.08 so); fill 'seen': every seen direction its own color (what the
+// fills them too); fill 'seen': every seen direction its own color (what the
 // views saw there, far or not: the near content as billboards at infinity), only the unseen ones diffused from them.
 // fillDome fills a built dome again (another fill) without the photos. photo_runs/tools/dome.py is the same offline.
 // DOM-free (tests/dome_test.js).

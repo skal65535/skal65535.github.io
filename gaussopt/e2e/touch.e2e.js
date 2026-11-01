@@ -1,10 +1,9 @@
 // touch.e2e.js — The app on a phone (Chrome's emulation: 390 x 844 CSS px, 2x, touch; real touch events through the
 // DevTools protocol) on the synthetic room (MESH_E2E_ROOM, as mesh.e2e.js). A finger dragged 80 px up the view turns
 // the camera 80 px worth of the vertical field of view down (drone.js look: the scene follows the finger) and does not
-// scroll the page (common/main.css: the canvas's touch-action none; without it the page scrolled 101 px and the drag
-// was cut short); two fingers spread move
-// it forward along its view. The status is one line along the view's bottom (wrapped over its top it took 5 lines),
-// and the charts are drawn at the screen's pixels (squeezed from 960 px their text was 4 px tall).
+// scroll the page (common/main.css: the canvas's touch-action none; without it the page scrolls and the drag is cut
+// short); two fingers spread move it forward along its view. The status is one line along the view's bottom, and the
+// charts are drawn at the screen's pixels.
 //   cd e2e && node touch.e2e.js
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';

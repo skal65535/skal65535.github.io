@@ -1,7 +1,5 @@
-// common/webgpu.js — shared WebGPU plumbing.
-//
-// ES module. Exports the small set of helpers each demo currently rewrites
-// (device init + canvas configure, buffer / texture / bind-group creation).
+// common/webgpu.js — shared WebGPU plumbing: device init + canvas configure,
+// buffer / texture / bind-group creation.
 
 // features: optional device features, requested only when the adapter has them.
 export async function initGPU(canvas, { alphaMode = 'premultiplied', features = [] } = {}) {

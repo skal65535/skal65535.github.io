@@ -10,7 +10,7 @@
 // would cover nearly all of it); 'wireframe + splats' hides them too (a quad in front of the camera as
 // the mesh: its diagonal alone drawn, no fill, no splat); without the mesh, the splats are colored.
 // The save itself is captured (it would write into the dataset's splats_gaussopt/).
-//   cd e2e && node mesh.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+//   cd e2e && node mesh.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's directory; see harness.js)
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { APP, fail, appUrl, run } from './harness.js';
@@ -23,8 +23,7 @@ const geo = JSON.parse(readFileSync(join(ROOM, 'scene_sdf.json'), 'utf8'));
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
   await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
-  // 600 steps: at 300, with lr_opacity 0.01 (d576675), the splats under the floor have not faded yet and 60-122 of
-  // ~51k vertices are 0.18-0.24 below it (0-6 at 0.05); at 600, 3-9 of ~65k
+  // 600 steps: by then the splats under the floor have faded (at 300, too many vertices below it)
   await page.evaluate(() => { window.app.params.stop_after = 600; window.app._setTraining(true); });
   await page.waitForFunction(() => window.app.trainer.stepCount >= 600 && !window.app.params.training, null, { timeout: 300000 });
   const r = await page.evaluate(async () => {
@@ -142,13 +141,11 @@ await run(async (page) => {
   const without = await drawn();
   if (!(withMesh.drawn > 0.3 && withMesh.gray > 0.99)) fail(`mesh only, shaded: ${(100 * withMesh.drawn).toFixed(1)}% of the canvas drawn, ${(100 * withMesh.gray).toFixed(1)}% of it gray`);
   if (!(textured.drawn > 0.3 && textured.gray < 0.5)) fail(`mesh only, textured: ${(100 * textured.drawn).toFixed(1)}% of the canvas drawn, ${(100 * textured.gray).toFixed(1)}% of it gray`);
-  // measured: +1.5 to +2.8 dB (3 runs) with the centers' depth, +0.9 to +1.5 (6 runs) with the plane depth (the mesh
-  // closer to the surface: the vertex colors better too), +2.3 to +3.3 (3 runs) at 600 steps; 13 dB below with the uvs read upside down
+  // failing with the uvs read upside down
   if (!(textured.psnr > colored.psnr + 0.5)) fail(`textured not closer to the photo than vertex colors: ${textured.psnr.toFixed(2)} vs ${colored.psnr.toFixed(2)} dB`);
-  // measured 9.3-9.7% with the centers' depth, 3.8-3.9% with the plane depth (tile_forward: the mesh on the splats'
-  // own surface, fewer of them behind it), 6.6-6.7% at 600 steps; 0.7% with the splats drawn unhidden (most are on or just in front of it)
+  // failing with the splats drawn unhidden (most are on or just in front of the mesh)
   if (!(over.gray > 0.02)) fail(`mesh + splats, shaded: ${(100 * over.gray).toFixed(1)}% gray (the mesh)`);
-  // measured 0.68-0.71 of it (4 runs); 1 with the pre-pass at the mesh's own depth
+  // failing with the pre-pass at the mesh's own depth
   if (!(overMargin.gray < 0.85 * over.gray)) fail(`mesh + splats, margin 2 voxels: ${(100 * overMargin.gray).toFixed(1)}% gray against ${(100 * over.gray).toFixed(1)}% at 0`);
   if (!(wall.drawn < 0.02)) fail(`wireframe + splats behind a quad: ${(100 * wall.drawn).toFixed(1)}% of the canvas drawn (splats not hidden, or the quad filled)`);
   if (!(without.gray < 0.5)) fail(`mesh removed (the splats): ${(100 * without.gray).toFixed(1)}% gray`);

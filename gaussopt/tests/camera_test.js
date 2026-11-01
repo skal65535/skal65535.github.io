@@ -3,7 +3,7 @@ import { makeCamera, defaultCamera, distort, undistort, imageFromNormalized, nor
 import { assertClose, rng, randomRotation } from './util.js';
 
 const CAMERAS = [
-  makeCamera('OPENCV', 1920, 1080, [1230, 1231, 960, 540, 0.005, -0.002, 0.001, 0.0002]),  // jardin5
+  makeCamera('OPENCV', 1920, 1080, [1230, 1231, 960, 540, 0.005, -0.002, 0.001, 0.0002]),  // near-pinhole lens
   makeCamera('OPENCV', 1920, 1080, [900, 900, 960, 540, -0.25, 0.08, 0.001, -0.0005]),     // wide lens
   makeCamera('SIMPLE_RADIAL', 1920, 1080, [1200, 960, 540, -0.1]),
   makeCamera('RADIAL', 1920, 1080, [1200, 960, 540, -0.1, 0.02]),
@@ -41,7 +41,7 @@ Deno.test("defaultCamera uses COLMAP's 1.2 max(w, h) focal", () => {
 Deno.test('inFieldOfView rejects points whose distorted projection folds back into the frame', () => {
   const cam = CAMERAS[0];
   const pose = poseFromCenter([1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 0, 0]);
-  const X = [4.8, 0, 1];  // 78 deg off-axis, the frame's edge is at 38 deg: jardin5's polynomial maps it to u ~ 1293
+  const X = [4.8, 0, 1];  // 78 deg off-axis, the frame's edge is at 38 deg: the polynomial maps it to u ~ 1293
   const [u, v] = project(cam, pose, X);
   assertClose([u > 0 && u < 1920 && v > 0 && v < 1080 ? 1 : 0], [1], 0, 'polynomial folds it inside the frame');
   assertClose([inFieldOfView(cam, pose, X) ? 1 : 0, inFieldOfView(cam, pose, [0.5, 0.2, 1]) ? 1 : 0], [0, 1], 0, 'FOV test');

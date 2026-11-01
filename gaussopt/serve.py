@@ -3,10 +3,9 @@
 
 Serves `skal65535.github.io/` on http://localhost:<port>/ and mounts:
   - `/dataset/` -> the user-specified COLMAP `gs/` directory
-  - `/datasets/jardin1_gs/`, `/datasets/jardin3_gs/`, `/datasets/jardin3-2_gs/` -> built-in test datasets
-    (those present on this machine)
+  - `/datasets/<name>/` -> the built-in test datasets (DEFAULT_DATASETS, those present on this machine)
   - `GET /dataset/info.json` -> lists available .ply/.splat checkpoints for resuming
-  - `POST /save?name=splat_05000.ply&dataset=/datasets/jardin1_gs` -> writes exported .ply/.splat/logs to `<dataset>/splats_gaussopt/`
+  - `POST /save?name=splat_05000.ply&dataset=/datasets/<name>` -> writes exported .ply/.splat/logs to `<dataset>/splats_gaussopt/`
   - project folders under `--projects DIR` (src/project/project.js for the layout):
     `GET /projects.json` lists them; `GET /project/<name>/<path>` reads a file (`?optional`: 204
     instead of 404 when it is missing, `<dir>/?list`: its entries); `PUT` writes one (directories created, written to a temporary file then renamed);
@@ -15,7 +14,7 @@ Writes (POST, PUT, DELETE) are refused unless the request comes from this server
 (Origin) and names it as localhost (Host): another site open in the browser cannot write here.
 
 Usage:
-  ./serve.py [PATH_TO_GS_DIR] [--port 8000] [--ply splats/jardin1_05000.ply] [--projects DIR] [--open] [--debug]
+  ./serve.py [PATH_TO_GS_DIR] [--port 8000] [--ply splats/NAME.ply] [--projects DIR] [--open] [--debug]
 """
 
 import argparse

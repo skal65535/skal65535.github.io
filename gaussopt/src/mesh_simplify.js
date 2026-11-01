@@ -4,10 +4,9 @@
 // and the midpoint), then the cheapest collapses below `maxError`, each vertex at most once per pass,
 // skipping those that would flip a face, turn one away from the original surface there (its normal
 // against the merged area-weighted normal of the original faces, below `minFacing`: on the TSDF's
-// bumpy surfaces the per-pass turns otherwise add up to folds, 42% of the area on the corner photos
-// mesh, 18% with it, 6% before simplifying) or pinch the surface (the link condition: edges shared by
-// more than two faces, ends with other common neighbours, the two opposite vertices joined). Open borders get extra planes along them, so holes keep their
-// outline. Colors follow the kept vertex (averaged at a midpoint).
+// bumpy surfaces the per-pass turns otherwise add up to folds) or pinch the surface (the link condition:
+// edges shared by more than two faces, ends with other common neighbours, the two opposite vertices
+// joined). Open borders get extra planes along them, so holes keep their outline. Colors follow the kept vertex (averaged at a midpoint).
 "use strict";
 
 // mesh: { positions: Float32Array 3V, faces: Uint32Array 3F, colors?: Uint8Array 3V }
@@ -17,8 +16,8 @@ export function simplify(mesh, { target = 0, maxError = Infinity, maxPasses = 40
   const nv = mesh.positions.length / 3;
   const P = Float64Array.from(mesh.positions), C = mesh.colors ? Float64Array.from(mesh.colors) : null;
   let F = Uint32Array.from(mesh.faces);
-  const Q = new Float64Array(10 * nv);
-  const N = new Float64Array(3 * nv);  // per vertex: the area-weighted normal of the original faces around it (merged by collapses)  // per vertex: a2 ab ac ad b2 bc bd c2 cd d2 of sum (n.x + d)^2
+  const Q = new Float64Array(10 * nv);  // per vertex: a2 ab ac ad b2 bc bd c2 cd d2 of sum (n.x + d)^2
+  const N = new Float64Array(3 * nv);  // per vertex: the area-weighted normal of the original faces around it (merged by collapses)
   const addPlane = (v, n0, n1, n2, d, w) => {
     const q = 10 * v;
     Q[q] += w * n0 * n0; Q[q + 1] += w * n0 * n1; Q[q + 2] += w * n0 * n2; Q[q + 3] += w * n0 * d;

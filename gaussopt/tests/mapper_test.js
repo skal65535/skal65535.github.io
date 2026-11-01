@@ -1,6 +1,6 @@
-// Sequential mapper (DESIGN-sfm M1): synthetic scenes against exact ground truth, and (slow) the
-// jardin5 COLMAP database against COLMAP's model, after excluding that model's own defects
-// (scale breaks, misregistered frames): never match COLMAP where it is wrong.
+// Sequential mapper (DESIGN-sfm M1): synthetic scenes against exact ground truth, and (slow) a
+// video's COLMAP database (SFM_DUMP) against COLMAP's model, after excluding that model's own
+// defects (scale breaks, misregistered frames): never match COLMAP where it is wrong.
 import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { SequentialMapper } from '../src/sfm/mapper.js';
 import { reconstruct } from '../src/sfm/reconstruct.js';
@@ -45,8 +45,8 @@ Deno.test('mapper, synthetic nadir pass: unobservable focal is detected and fall
   assert(m.numCommon === scene.truth.images.length, `${m.numCommon} registered`);
 });
 
-// The fallback field of view is across the long side: a portrait frame (a phone video held upright,
-// desk.mov) starts from the same focal as a landscape one, not 1.78x short of it
+// The fallback field of view is across the long side: a portrait frame (a phone video held upright)
+// starts from the same focal as a landscape one, not 1.78x short of it
 Deno.test('mapper, synthetic nadir pass in portrait: the fallback HFOV is across the long side', () => {
   const scene = makeSyntheticScene({ ...BASE, ...NADIR, width: 1080, height: 1920, params: [1230, 1230, 540, 960, 0, 0, 0, 0] });
   const mapper = new SequentialMapper(scene.input);
@@ -135,7 +135,7 @@ Deno.test({ name: 'mapper, jardin5 (SFM_DUMP): every consistent COLMAP piece wit
 } });
 
 // Two lenses (DESIGN-sfm §13 P8): an orbit where one photo in three is taken with a wide lens
-// (f 700, more distortion), each camera model starting from a focal 3% low (EXIF on the Pixel 10,
+// (f 700, more distortion), each camera model starting from a focal 3% low (as a phone's EXIF,
 // §13.2). With a camera per lens every frame registers in one segment, within the truth thresholds,
 // each focal within 1%; the same photos as one camera do not.
 function twoLenses() {
@@ -156,8 +156,7 @@ Deno.test('mapper, synthetic two lenses: a camera per lens', () => {
   assert(err.every(e => Math.abs(e) < 0.01), `${tag}: focal errors ${err.map(e => (100 * e).toFixed(2))}%`);
 });
 
-// regrowSegments with no segment at all (no pair initializes: out_scene2, out_scene3 with every lens)
-// ends with nothing registered instead of throwing
+// regrowSegments with no segment at all (no pair initializes) ends with nothing registered instead of throwing
 Deno.test('mapper: regrowSegments with no segment registers nothing, does not throw', () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 6 });
   const mapper = new SequentialMapper({ ...scene.input, pairs: [] }, { regrowSegments: true });
@@ -165,8 +164,8 @@ Deno.test('mapper: regrowSegments with no segment registers nothing, does not th
   assert(model.images.length === 0 && mapper.nextSegmentId === 0, `${model.images.length} registered`);
 });
 
-// After the regrow, the largest segment retries the frames still unregistered (outside-mixed: a
-// frame registered by a regrow that was undone was lost): one segment and a frame taken out of it
+// After the regrow, the largest segment retries the frames still unregistered (a frame registered
+// by a regrow that was undone is not lost): one segment and a frame taken out of it
 Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the largest segment', () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 12, turns: 0.5, overlap: 11 });
   const mapper = new SequentialMapper(scene.input, { relativeRegistration: true });
@@ -179,10 +178,9 @@ Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the
   assert(checkThresholds(m, 'truth').length === 0, checkThresholds(m, 'truth').join(', '));
 });
 
-// The final sweeps fit the lens to the whole sequence, not to its last windows (desk.mov: k1 = 0.02 over
-// the first half, 0.28 over the frames after the whip pans, 0.29 exported). A forward flight whose last 9
-// of 30 frames are seen through k1 = 0.1, mapped as one camera: the lens of the other 21 (k1 = 0) wins.
-// Refined window by window: k1 = 0.061.
+// The final sweeps fit the lens to the whole sequence, not to its last windows. A forward flight whose
+// last 9 of 30 frames are seen through k1 = 0.1, mapped as one camera: the lens of the other 21 (k1 = 0)
+// wins (refined window by window, k1 ends near 0.06).
 Deno.test('reconstruct, synthetic: the lens is fitted to the whole sequence, not its last windows', () => {
   const scene = makeSyntheticScene({ ...BASE, path: 'line', pitchDeg: 45,
     cameras: [[1230, 1230, 960, 540, 0, 0, 0, 0], [1230, 1230, 960, 540, 0.1, 0, 0, 0]], cameraOf: (k) => (k >= 21 ? 1 : 0) });
@@ -192,7 +190,7 @@ Deno.test('reconstruct, synthetic: the lens is fitted to the whole sequence, not
   assert(mapper.poses.every(Boolean) && Math.abs(k1) < 0.03, `${mapper.poses.filter(Boolean).length} registered, k1 ${k1.toFixed(4)}`);
 });
 
-// A lens with 3 photos, its prior ratio 7% off (the Pixel 10 ultrawide's EXIF, DESIGN-sfm §13 P8): kept
+// A lens with 3 photos, its prior ratio 7% off (as a phone ultrawide's EXIF, DESIGN-sfm §13 P8): kept
 // while mapping (fewer than minCameraFrames), fitted to the whole map in the final sweeps (minCameraFramesSweeps)
 Deno.test('reconstruct, synthetic: a lens with 3 photos is fitted in the final sweeps', () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 30, turns: 0.6, overlap: 8,

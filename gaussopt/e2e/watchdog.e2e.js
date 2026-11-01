@@ -1,6 +1,6 @@
 // watchdog.e2e.js — The frame loop's watchdog (app.js _watchFrames): a frame held up over 3 s (here the drawing,
 // made to wait 6 s) is logged with what it waits on, the step buttons are refreshed meanwhile (the frame loop refreshes
-// them: stalled, a finished step's buttons stayed as they were until another step was shown), and its end is logged.
+// them: stalled, a finished step's buttons would stay as they were), and its end is logged.
 // A step button's click is logged with the step. On the synthetic room (MESH_E2E_ROOM, as mesh.e2e.js).
 //   cd e2e && node watchdog.e2e.js
 import { existsSync } from 'node:fs';

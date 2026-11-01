@@ -1,4 +1,4 @@
-// Slow: dumps a real COLMAP database (jardin5 by default, SFM_DATABASE to override) with
+// Slow: dumps a real COLMAP database (SFM_DATABASE) with
 // tools/colmap_dump.py and checks the loaded result against the database's own geometry.
 import { loadDump, denoReader } from '../src/sfm/dump.js';
 import { assert, SLOW, env, exists } from './util.js';

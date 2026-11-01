@@ -34,13 +34,13 @@ const DEFAULTS = {
   refine: ['f', 'k1'],
   minCameraFrames: 5,      // several cameras: while mapping, one's intrinsics are refined once it has this many registered frames (P8.3)
   minCameraFramesSweeps: 2, // and in the final sweeps (refine()) from this many: a lens with a few photos is fitted to the
-                            // whole map instead of keeping its EXIF ratio (7% off on the Pixel 10 ultrawide, DESIGN-sfm §13 P8)
+                            // whole map instead of keeping its EXIF ratio (DESIGN-sfm §13 P8)
   minInliers: 30,          // PnP inliers to register a frame
   relativeRegistration: false,  // when PnP has no frame left: registerRelative (photo sets)
   relMinMatches: 50,       // registerRelative: F inliers with the registered neighbour
-  relMinScaleInliers: 8,   // and 2D-3D correspondences agreeing on the baseline length (6: a false one on cuisine)
+  relMinScaleInliers: 8,   // and 2D-3D correspondences agreeing on the baseline length
   relScaleTol: 0.1,        // relative, for that agreement
-  relMaxTurnDeg: 10,       // and the most the pose refinement may turn the pair's rotation (cuisine: right ones 0.4-4.6, a wrong one 35.7)
+  relMaxTurnDeg: 10,       // and the most the pose refinement may turn the pair's rotation
   regrowSegments: false,   // after mapping: offer the frames of smaller segments to the largest (photo sets)
   scanFocal: false,        // several cameras: those but camera 0 get their focal from their first frame to register (scanFocalOf: a video's zooms)
   scanMinCorr: 60,         // 2D-3D correspondences that frame needs
@@ -99,7 +99,7 @@ export class SequentialMapper {
     if (!this.o.hfovDeg && focal === 'auto') {
       // per frame (sampled over the whole sequence), the widest-gap pair that still has enough
       // matches: parallax makes F informative about the focal
-      const Fs = [], stride = Math.max(1, Math.floor(this.n / maxFocalPairs));  // floor (up to 2x maxFocalPairs): ceil loses jardin5's late merge
+      const Fs = [], stride = Math.max(1, Math.floor(this.n / maxFocalPairs));  // floor: up to 2x maxFocalPairs, the denser sample
       for (let i = 0; i < this.n; i += stride) {
         if (this.camOf[i] !== 0) continue;
         const e = this.adj[i].filter(e => e.other > i && e.other - i <= maxFocalGap && e.a.length >= 80 && this.camOf[e.other] === 0)
@@ -116,8 +116,8 @@ export class SequentialMapper {
         const weak = est.sharpness < this.o.weakFocalSharpness ? ' (weakly constrained: refined by BA)' : '';
         this.o.log(`focal: ${f.toFixed(1)} px from ${Fs.length} pairs, sharpness ${est.sharpness.toFixed(2)}${weak} (prior ${meanFocal(this.camera).toFixed(1)})`);
       } else {
-        // a camera's field of view is across its sensor's long side, however the frame is held (desk.mov, 1080 x 1920:
-        // 76 deg across the width started the map at 691 px, AliceVision fits 1743 px)
+        // a camera's field of view is across its sensor's long side, however the frame is held (a portrait
+        // video's width would give far too short a focal)
         const long = Math.max(this.camera.width, this.camera.height);
         f = this.o.fallbackFocal ?? (long / 2) / Math.tan(this.o.fallbackHfovDeg * Math.PI / 360); source = 'fallback';
         const from = this.o.fallbackFocal ? 'the prior' : `${this.o.fallbackHfovDeg} deg across the long side`;
@@ -183,8 +183,7 @@ export class SequentialMapper {
       const med = deg(median(cand.map(c => c.angle)));
       if (cand.length < 100 || med < minAngleDeg) continue;
       // the points within maxReproj, as addPoint checks them: a pair left with few would start a
-      // segment that cannot grow, holding frames a better pair needs (gare-st-lazare: 0 and 36
-      // points, then merged by a weak Sim(3) and kinked the path)
+      // segment that cannot grow, holding frames a better pair needs
       this.poses[i] = P1; this.poses[e.other] = P2;
       const kept = cand.filter(({ m, X }) => this.reprojErr(i, e.a[m], X) <= this.o.maxReproj && this.reprojErr(e.other, e.b[m], X) <= this.o.maxReproj);
       if (kept.length < 100) { this.poses[i] = this.poses[e.other] = null; continue; }
@@ -351,7 +350,7 @@ export class SequentialMapper {
       const s = median(bestInl.map(c => scales[corr.indexOf(c)]));
       const P = this.refinePose(img, pose(s), bestInl), good = bestInl.filter(([kp, pid]) => this.reprojWith(P, img, kp, this.points[pid].X) <= pnpThreshold);
       // the refinement may only correct the pair's rotation, not replace it: a few correspondences
-      // can turn the camera far away (cuisine: 8 of them, a frame 40 deg off)
+      // can turn the camera far away
       const turn = deg(rotationAngle(P.R, R));
       if (good.length < relMinScaleInliers || turn > this.o.relMaxTurnDeg) {
         this.o.log(`frame ${img}: not registered from frame ${e.other}: ${good.length}/${corr.length} 2D-3D after refinement, which turned it by ${turn.toFixed(1)} deg`);
@@ -492,9 +491,8 @@ export class SequentialMapper {
     return this.model();
   }
 
-  // Photo sets: which segment grows first decides what can join it (cuisine: from the pair 3-9,
-  // frames 3, 9, 17, 10 make a segment the rest cannot join; from 2-5, those four join through
-  // frame 10). So each smaller segment, the larger first, is taken apart and its frames (and the
+  // Photo sets: which segment grows first decides what can join it (a small segment can hold
+  // frames through which the others would have joined). So each smaller segment, the larger first, is taken apart and its frames (and the
   // unregistered ones) offered to the largest segment; kept when that loses no frame, undone otherwise.
   regrowSegments() {
     for (let merged = true; merged;) {
@@ -518,7 +516,7 @@ export class SequentialMapper {
       }
     }
     // and the largest segment, now complete, tries the frames still unregistered once more: a frame
-    // registered by a regrow that was undone is not lost (outside-mixed: frame 22, 19 2D-3D)
+    // registered by a regrow that was undone is not lost
     const big = this.largestSegment(), free = new Set([...this.segment.keys()].filter(k => !this.poses[k]));
     if (big >= 0 && free.size) {
       const added = this.grow(big, free);
@@ -536,7 +534,7 @@ export class SequentialMapper {
       let best = -1, bestCount = 0;
       for (let k = 0; k < this.n; k++) {
         if (this.poses[k] || (failed.get(k) ?? 0) > 1 || (candidates && !candidates.has(k))) continue;
-        const c = this.correspondences(k, seg).size;  // a full rescan costs ~0.2 s of jardin5's 125 s
+        const c = this.correspondences(k, seg).size;  // a full rescan: cheap next to the BAs
         if (c > bestCount) { best = k; bestCount = c; }
       }
       if (best < 0 || bestCount < this.o.minInliers) {
@@ -575,7 +573,7 @@ export class SequentialMapper {
   // refined by each window BA in turn, starting from the previous window's: the final f, k1 are
   // the last window's estimate, fitted to its frames. One more sweep with them fixed then fits
   // every other window to that camera (without it, a window keeps the poses and points it made for
-  // its own estimate: gare-st-lazare 1.97 -> 0.79 px median reprojection, jardin5 p90 1.62 -> 0.73).
+  // its own estimate).
   refine({ sweeps = 2, refineIntrinsics = true, extra = 5 } = {}) {
     const W = this.o.window, half = Math.max(1, W >> 1);
     const segs = [...new Set(Array.from(this.segment).filter(s => s >= 0))];
@@ -601,8 +599,7 @@ export class SequentialMapper {
   // The intrinsics fitted to the whole map at once: a window BA (localBA) whose free frames are up to
   // maxFrames per camera of the largest segment, evenly spaced in time, with the intrinsics; the other
   // frames observe as fixed (the sweep after it moves them to the new intrinsics). Refined window by
-  // window instead, the lens was whatever the last windows made of it: desk.mov, k1 = 0.02 over frames
-  // 0-34 and 0.28 over 36-66 (after the whip pans), in each sweep, 0.29 exported.
+  // window instead, the lens would be whatever the last windows made of it.
   fitIntrinsics({ minCameraFrames = this.o.minCameraFrames, maxFrames = 60, iterations = 10 } = {}) {
     const seg = this.largestSegment();
     const byCam = this.cameras.map(() => []);
@@ -615,7 +612,7 @@ export class SequentialMapper {
   // The frames outside `core`, more than minGap from its first frame, sharing the most points with
   // it: at most `extra`, each with at least minShared points (loop partners of a window). Measured
   // from the first frame only, so the frames just after a refine() window qualify too: overlap with
-  // the next window that jardin5 needs (without it, one COLMAP piece: 0.28 -> 0.51 deg median rotation).
+  // the next window.
   partners(core, { extra = 5, minShared = 50, minGap = 0 } = {}) {
     const inCore = new Set(core), shared = new Map();
     for (const k of core) {
@@ -725,7 +722,7 @@ export class SequentialMapper {
   // Inverse of toState(), on a mapper built from the same keyframes and pairs (all of them)
   setState({ json, poses, segment, pointX, pointObsCount, pointObs }) {
     Object.assign(this, { cameras: json.cameras ?? [json.camera], nextSegmentId: json.nextSegmentId ?? json.numSegments, stats: json.stats, o: { ...this.o, ...json.o, log: this.o.log, progress: this.o.progress } });
-    if (json.merged) {  // saved before scanFocal: every camera its own, every focal known
+    if (json.merged) {  // absent when saved before scanFocal: every camera its own, every focal known
       this.merged = Int32Array.from(json.merged);
       this.focalKnown = Uint8Array.from(json.focalKnown);
       this.camOf = this.camerasOf(this.images);

@@ -532,7 +532,7 @@ export class LooseOctree {
   }
 
   // node.maxExtent from per-splat extents (splatExtents) in the viewer's index order (leafIndices, or
-  // the leaf slices): a tree read from a .ply has none, and its leaf cull then dropped the large
+  // the leaf slices): a tree read from a .ply has none, and without it the leaf cull drops the large
   // splats of an off-screen leaf that reach into the frame
   setExtents(extents) {
     const indexMap = this.leafIndices;
@@ -729,8 +729,8 @@ function errorStats(moments, count, hysteresis) {
   return { avgR, Tu: (1 + hysteresis) * avgR };
 }
 
-// Output splats of the pass, in one growable buffer (a small array per splat cost ~100 ms per
-// rebalance at 300k splats): row k of `buf`, its source input splat src[k] (-1 = new) and
+// Output splats of the pass, in one growable buffer (not an array per splat: too slow at
+// 100k+ splats): row k of `buf`, its source input splat src[k] (-1 = new) and
 // alive[k] (0 = merged away); keptOf maps an input splat to its row.
 class KeptSplats {
   constructor(params, count) {
@@ -819,13 +819,12 @@ export function relocatedOpacityScale(o, N) {
 }
 
 // Rule 1 of the floater removal: (x, y, z) -> in front of a training camera, closer than 0.65 z(c).
-// depth: 'observed', z = zMin (of the points the camera observed: a camera walking past things,
-// e.g. gare-st-lazare, carves the ones other cameras saw near it, half the SfM points there), or
-// 'view', z = zView (of all the points in its view, colmap.js computeCameraDepthStats).
+// depth: 'observed', z = zMin (of the points the camera observed: a camera walking past things
+// carves the ones other cameras saw near it), or 'view', z = zView (of all the points in its view,
+// colmap.js computeCameraDepthStats).
 // spare: { positions, count, radius }: a splat within `radius` of one of these points (the SfM's) is not in
-// any cone. 'observed' counts only the points a camera itself saw: on gare-st-lazare the cameras walking past
-// the suitcase statue saw none of its points and carved it, all 5271 points of it nearer than 4 units being
-// in some camera's cone.
+// any cone ('observed' counts only the points a camera itself saw, so it can carve an object it passed by
+// without observing).
 export function nearCameraCone(images, { depth = 'observed', spare = null } = {}) {
   const trainImgs = images ? images.filter(im => !im.isValidation) : [];
   const uv = [0, 0];
@@ -834,8 +833,7 @@ export function nearCameraCone(images, { depth = 'observed', spare = null } = {}
     const { R, t, camera } = im, zc = projectPinhole(R, t, camera, x, y, z, uv);
     return zc > 0 && zc < 0.65 * near(im) && uv[0] >= 0 && uv[0] <= camera.width && uv[1] >= 0 && uv[1] <= camera.height;
   };
-  // Testing every camera for every splat cost ~1 s per rebalance at 300k splats, 370 cameras.
-  // Instead each camera goes into the grid cells its cone (a pyramid of depth D = 0.65 z)
+  // Rather than testing every camera for every splat, each camera goes into the grid cells its cone (a pyramid of depth D = 0.65 z)
   // can reach, so a splat only tests the few cameras of its cell. A cell is skipped when it lies
   // entirely outside one of the pyramid's planes n.(R X + t) >= 0 (camera frame), a conservative
   // test; the pyramid's bounding box bounds the cells visited.
@@ -859,8 +857,7 @@ export function nearCameraCone(images, { depth = 'observed', spare = null } = {}
     cones.push({ im, planes, lo, hi, size: Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) });
   }
   if (!cones.length) return () => false;
-  // cells of half the median cone: on jardin5 (425 cameras, 300k splats) 22 candidate cameras
-  // per splat and 75 ms in all; smaller cells cost more to fill than they save
+  // cells of half the median cone: smaller cells cost more to fill than they save
   const sizes = cones.map(s => s.size).sort((a, b) => a - b), cell = sizes[sizes.length >> 1] / 2, h = 0.5 * cell;
   const key = (i, j, k) => (i * 73856093) ^ (j * 19349663) ^ (k * 83492791);  // collisions only add candidates
   for (const { im, planes, lo, hi } of cones) {

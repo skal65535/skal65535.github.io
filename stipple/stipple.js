@@ -53,15 +53,11 @@ class Cell {
     this.rx_acc += r*x; this.ry_acc += r*y;
     this.rxx_acc += r*x*x; this.rxy_acc += r*x*y; this.ryy_acc += r*y*y;
   }
-  // acc is incremented here (not just on the full add() path) so the Lloyd
-  // step can recover mean-intensity per cell as r_acc/acc and propagate it
-  // into the new Point's color — otherwise points get c=0 every Lloyd iter
-  // and `show_voronoi` flashes black between split/merge frames.
+  // acc counted here too: the Lloyd step colors each new Point with the cell's
+  // mean intensity r_acc/acc.
   addRho(x, y, r) { ++this.acc; this.r_acc += r; this.rx_acc += r*x; this.ry_acc += r*y; }
-  // After average() rx_acc/ry_acc are <r·x>/<r> (r-weighted mean of x).
-  // rxx_acc/rxy_acc/ryy_acc are <r·x²>/<r> etc. mainDirection uses these
-  // consistently r-weighted; computing exx as rxx − rx² (not against an
-  // unweighted mean) keeps the variance estimator coherent.
+  // After average(): rx_acc/ry_acc = <r·x>/<r>, rxx_acc/rxy_acc/ryy_acc = <r·x²>/<r> etc.,
+  // so mainDirection's variances (rxx − rx²) are all r-weighted.
   average() {
     if (!this.acc || this.r_acc <= 0) return this.acc > 0;
     const rn = 1/this.r_acc;

@@ -148,7 +148,7 @@ Deno.test('frame selection: one sharpest pick per spacing, blurry picks dropped 
 });
 
 Deno.test('frame selection: a dull stretch is kept, a blur dip inside it is dropped (local threshold)', () => {
-  // 40 segments of 5 frames; the first half 8x less textured (jardin7's start), segment 10 blurred
+  // 40 segments of 5 frames; the first half 8x less textured, segment 10 blurred
   const n = 200, r = makeRng(7);
   const sharp = Array.from({ length: n }, (_, i) => (i < 100 ? 100 : 800) * (0.9 + 0.2 * r()) * (i >= 48 && i <= 52 ? 0.1 : 1));
   const steps = Array.from({ length: n }, (_, i) => i === 0 ? 0 : 0.01);
@@ -178,7 +178,7 @@ Deno.test({ name: 'MP4 demuxer: jardin5 sample table (SFM_VIDEO)', ignore: !exis
 
 const VP9_VIDEO = env('SFM_VP9_VIDEO') ?? `${HOME}/jardin10.mp4`;
 
-// jardin10.mp4: profile 0 in the frames, 1 in its vpcC (ffprobe agrees with the frames)
+// The default video: profile 0 in the frames, 1 in its vpcC (ffprobe agrees with the frames)
 Deno.test({ name: 'MP4 demuxer: VP9 codec string, profile from the frame header (SFM_VP9_VIDEO)', ignore: !exists(VP9_VIDEO), fn: async () => {
   const reader = await denoFileReader(VP9_VIDEO);
   try {

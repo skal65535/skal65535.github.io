@@ -2,11 +2,12 @@
 // the synthetic room (photo_runs/tools/synth_room.py) trained 1000 steps, then its splats frozen (lrs 0, no rebalance,
 // no opacity reset). Each training view's ground truth replaced by its own render through a known exposure (a log-gain
 // within +-0.1 and an offset within +-0.02 a channel, their means 0: the gauge): learned from there (at 0.02, the last
-// third at 0.004), the gains come back within 0.5% and the offsets within 0.005; no held-out view gets one; the splats' gradient takes the gain (0.8: 0.64 times that of a gain of 1 against the photo
-// over 0.8, the loss linear there; 0.8 without it); a snapshot gives them back. The photos as they were would not do: the splats
-// leave a residual, and the loss (smooth-L1 and L2) is not scale-invariant, so a photo 10% brighter weighs it otherwise
-// and its best gain moved by 1.7% (measured). The gradient cut (no sum into loss_acc), or its sign wrong, leaves them off.
-//   cd e2e && PORT=8791 node exposure.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+// third at 0.004), the gains come back within 0.5% and the offsets within 0.005; no held-out view gets one; the splats'
+// gradient takes the gain (0.8: 0.64 times that of a gain of 1 against the photo over 0.8, the loss linear there; 0.8
+// without it); a snapshot gives them back. The photos as they were would not do: the splats leave a residual, and the
+// loss (smooth-L1 and L2) is not scale-invariant, so a brighter photo weighs it otherwise and moves its best gain. The
+// gradient cut (no sum into loss_acc), or its sign wrong, leaves them off.
+//   cd e2e && PORT=8791 node exposure.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

@@ -77,8 +77,7 @@ export class Tsdf {
   // At world point p: the signed distance to the surface (> 0 in front of it), the unit normal (the
   // tsdf's gradient, towards free space), the smallest view count of the cell's 8 corners and the
   // tsdf; null outside the grid or where tsdf does not change. The distance is tsdf / |gradient|
-  // (a Newton step): tsdf x mu is measured along the cameras' axes, 1.7-2x the true distance on the
-  // test sphere.
+  // (a Newton step): tsdf x mu is measured along the cameras' axes, longer than the true distance.
   sample(p) {
     const [nx, ny] = this.n, f = [0, 1, 2].map(k => (p[k] - this.origin[k]) / this.voxel);
     const c = f.map(Math.floor);
@@ -100,8 +99,8 @@ export class Tsdf {
   // Surface nets on the zero level set: { positions: Float32Array 3V, faces: Uint32Array 3F }. A cell
   // with a corner of weight < minWeight has no vertex; an edge crossing whose ends differ by >= 1.5
   // (of at most 2: an occlusion boundary's jump from free space to behind a surface, not a surface;
-  // a limit of 1 opened holes in a sphere, where oblique views pull the outside values to ~1) does not count. Faces
-  // are counter-clockwise seen from the positive (free space) side.
+  // not 1: oblique views pull the outside values to ~1) does not count. Faces are counter-clockwise
+  // seen from the positive (free space) side.
   extract({ minWeight = 1 } = {}) {
     const [nx, ny, nz] = this.n, D = this.tsdf, Wt = this.weight, s = this.voxel, o = this.origin;
     const cx = nx - 1, cy = ny - 1, cz = nz - 1;

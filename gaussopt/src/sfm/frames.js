@@ -311,10 +311,8 @@ function fitSimilarity(P, Q, { iterations = 200, threshold = 1.5 } = {}) {
 // scale changes faster than zoomRate (log-scale per second) with a similarity explaining at least
 // zoomFit of the tracks; the steps around it faster than 2/3 zoomRate (or lost) join its event,
 // events within zoomGap seconds merge, and an event whose scales multiply to less than zoomMin
-// (either way) is dropped. Measured on 6 videos at 30 fps (photo_runs/NOTES.md): desk.mov's zoom
-// in (x1.85 in 0.2 s) has steps of 1.3-6.1 /s at fits 0.96-1.0; walking (desk, corner2,
-// dodecahedron) stays under 0.9 /s, forward drone flights (jardin4, jardin5) reach 2.1 /s at fits
-// under 0.9, but for one step of jardin4 (3%, under zoomMin).
+// (either way) is dropped. A zoom's steps fit near 1; walking stays under 0.9 /s, forward flights
+// can be faster but fit worse (DESIGN-sfm §5.1).
 // steps: [{ scale, fit }] (steps[i]: from sample i - 1 to i; steps[0] unused), times in seconds.
 // Returns { events: [{ from, to, zoom }] (samples from..to - 1 are inside: `to` is the first after),
 //           span: Int32Array (per sample: the stretch it is in, 0, 1, ..., or -1 inside an event),
@@ -331,7 +329,7 @@ export function zoomEvents(steps, times, options = {}) {
       const r = rate(i);
       if (!(r >= o.zoomRate && steps[i].fit >= o.zoomFit)) continue;
       // steps a..b: out to the last step either way faster than 2/3 zoomRate (or lost), over slower
-      // ones up to zoomGap (desk.mov's zoom out spans a hole in its timestamps)
+      // ones up to zoomGap (a zoom can span a hole in the timestamps)
       const near = (k) => { const q = rate(k); return q === null || q >= o.zoomRate * 2 / 3; };
       const reach = (k, dir) => {
         let last = k;

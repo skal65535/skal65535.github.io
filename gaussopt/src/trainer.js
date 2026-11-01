@@ -29,22 +29,22 @@ const BUF_READ = () => GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST;
 export const TRAIN_DEFAULTS = {
   // Optimizer extras: Monte-Carlo (3DGS-MCMC: noise, L1 terms, relocation)
   mc_noise:        1e6,    // lambda_noise: SGLD noise on the nearly transparent splats' centers, x lr_pos x covariance (3DGS-MCMC: 5e5;
-                           // 1e6 the best of 5e5 / 1e6 / 2e6 here, DESIGN.md §5.4)
+                           // DESIGN.md §5.4)
   mc_opacity_reg:  0.01,   // lambda_o: mean |opacity| added to the loss
   mc_scale_reg:    0.01,   // lambda_s: mean |scale| (per axis)
   mc_relocate:     'opacity',  // the live splats the dead ones move onto, drawn ~ 'opacity' or 'error'
   mc_relocate_mode: 'copy',   // ... as copies in place (3DGS-MCMC) or 'shape': each one drawn splits within its shape (brush)
   // Learning rates
   lr_pos:          0.00002,  // x the scene radius, decaying to 1e-6 x it as brush's lr_mean (x its bounds' median side there;
-                             // 3DGS: 1.6e-4; 5e-5 before DESIGN.md E11, whose sweep has this level on held-out PSNR, the depth better)
+                             // 3DGS: 1.6e-4; DESIGN.md E11)
   lr_pos_final:    0.05,   // lr_pos decays exponentially to lr_pos * lr_pos_final ...
   lr_decay_steps:  10000,  // ... over the planned length (train_steps) or, open-ended, this many steps
   lr_scale:        0.005,
   lr_quat:         0.002,
   lr_color:        0.0025,
-  lr_opacity:      0.01,   // brush's; 0.05 floated splats under the dodecahedron's floor and streaked it (DESIGN.md E9)
+  lr_opacity:      0.01,   // brush's; higher floats splats under floors (DESIGN.md E9)
   ssim:            0,      // D-SSIM loss weight (0 = off: 0.8 L1 + 0.2 L2), see tile_backward
-  bg_lr:           0,      // the background's learning rate (env.js, DESIGN.md E13; 0 = off: black, as before)
+  bg_lr:           0,      // the background's learning rate (env.js, DESIGN.md E13; 0 = off: black)
   exposure_lr:     0,      // each training view's exposure, its learning rate (exposure.js, DESIGN.md E19; 0 = off)
   exposure_from:   1000,   // ... learned from this step on (the splats formed first)
   pose_lr:         0,      // each training view's pose (poses.js, DESIGN.md E19; rad a visit, the translation x the scene radius; 0 = off)
@@ -58,9 +58,9 @@ export const TRAIN_DEFAULTS = {
   split_mode:      'shape', // how a splat splits: 'shape' (within its own shape, as brush; DESIGN.md E9) or 'error' (along its error moments, §5.1)
   opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)
   opacity_reset_until: 15000,  // ... up to this step (3DGS: densify_until_iter), and half the planned length (train_steps)
-  // Shape limits (applied every Adam step; 0: none). Off by default, as brush: on, they shrank the long thin
-  // splats of grass and branches (DESIGN.md E11: +0.4 / +0.6 dB held out on jardin5 / 7, +1.6 on cuisine's training views)
-  max_splat_angle: 0,      // max axis scale / depth, in the training view (0.03 before E11)
+  // Shape limits (applied every Adam step; 0: none). Off by default, as brush: on, they shrink the long thin
+  // splats of grass and branches (DESIGN.md E11)
+  max_splat_angle: 0,      // max axis scale / depth, in the training view (e.g. 0.03)
   max_splat_scale: 0,      // max axis scale, as a fraction of the scene radius (0.1)
   max_anisotropy:  0,      // max ratio of the largest axis to the median one (10)
 };
@@ -105,7 +105,7 @@ export function rebalanceDue(P, step, last, count) {
 // The opacity reset (3DGS; not with monte_carlo, whose L1 term on the opacity prunes instead) at a rebalance
 // at `step`, the last one at `last`: when a multiple of opacity_reset is in (last, step], up to
 // opacity_reset_until and half the planned length (train_steps): the splats need the steps after the last one
-// to earn their opacity back (canyon2.mp4, Adam, 30000 steps: reset at 30000 too, 9.7 dB held out against 19.4 before it)
+// to earn their opacity back
 export function opacityResetDue(P, step, last) {
   const every = resetPeriod(P);
   if (!(every > 0)) return false;
@@ -126,8 +126,7 @@ export function nextOpacityReset(P, step) {
 
 // Whether the training loop (app.js) stops before its next step, at `step`: 'stop' stop_after steps after training
 // started (at `start`), 'val' right before an opacity reset when not validated at this step yet (at `lastVal`), so
-// validation reads the splats before the reset turns them nearly transparent, not just after (canyon2.mp4, Adam:
-// 8.14 dB held out at step 3002, two steps after the reset at 3000)
+// validation reads the splats before the reset turns them nearly transparent, not just after
 export function haltBefore(P, step, lastVal, start) {
   if (P.stop_after > 0 && step - start >= P.stop_after) return 'stop';
   if (P.val_every > 0 && lastVal < step && nextOpacityReset(P, step) === step + 1) return 'val';
@@ -260,9 +259,7 @@ export class GaussOptTrainer {
     this.seedPrep      = null;  // { step, job }: the next rebalance's stipple seeds, in the making (_prepareSeeds)
     this.seedWorker    = null;  // stipple_worker.js, once used
     // Monte-Carlo's noise moves the faint splats with no bound: out of 1.25 times the starting octree's root (the box of
-    // the initial splats; Adam's gradients never took a gallery scene's out of it), one is dead (octree.js
-    // reconcileAndGrow `bounds`). Unbounded, jardin7's splats drifted 20000 units out, and its saved octree had a
-    // leaf of 82k splats (the gallery's sort: 39 ms a frame).
+    // the initial splats), one is dead (octree.js reconcileAndGrow `bounds`)
     const root = octree.root;
     this.sceneBox = root ? { center: [root.cx, root.cy, root.cz], halfSize: 1.25 * root.halfSize } : null;
     this.exposure   = new Exposure();  // the training views' (exposure.js), by image name
@@ -668,8 +665,7 @@ export class GaussOptTrainer {
   }
 
   // Its read, after the step's submit: one Adam step a view, then the gauge (exposure.js). The reads resolve in order.
-  // The rate decays as lr_pos's (posLrDecay): at a fixed one, the gains stayed within 2% of the known ones only just
-  // (exposure.e2e.js: 1.4-2.2%, lr 0.02)
+  // The rate decays as lr_pos's (posLrDecay)
   _expoRead({ staging, names }) {
     const prev = this.pendingExpoRead ?? Promise.resolve();
     const read = staging.mapAsync(GPUMapMode.READ).then(async () => {
@@ -791,8 +787,7 @@ export class GaussOptTrainer {
     const k = this._intrinsics(img);
     if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return out;
     // drawn again while its (tile, splat) entries overflowed the lists: they grow after the render that needed more,
-    // which dropped the rest (the tiles filled last empty). A training step lives with it; one render does not (a
-    // scene of a million splats just loaded: its first, 2.4M entries against 2^20, came out with its lower half black)
+    // which dropped the rest (the tiles filled last empty). A training step lives with it; one render does not
     for (let tries = 0; tries < 3; tries++) {
       await this.binStatsPending;  // its read-back buffer free: this render's count is read
       const capacity = this.tileListCapacity;
@@ -1164,8 +1159,7 @@ export class GaussOptTrainer {
   }
 
   // The training views' cameras refitted with the splats frozen (pose_refit, DESIGN.md E19 2): in training, a view's
-  // pose takes one Adam step a visit (a pass over the views: ~120 in a 20000-step run of the classroom's 164 views,
-  // its pose still 0.08 degree off the true one); here each takes `iters` (_fitCamera, from its current pose and
+  // pose takes one Adam step a visit; here each takes `iters` (_fitCamera, from its current pose and
   // exposure, the pull pose_prior's), kept: the pose's increment and, when the exposures learn, the exposure, into the
   // trainer's states (their Adam moments kept); then the gauge. Needs the step lock. { views, turn, move (means from
   // where they were, degrees and x the radius), ms }
@@ -1267,9 +1261,8 @@ export class GaussOptTrainer {
   // CPU outer loop (inside a step, holding the lock): read back loss / splats / moments / Adam,
   // prune-grow-rebuild (or just rebuild) the octree, carry Adam state over, re-upload.
   // Returns true when stipple seeding rendered another view into hatTex.
-  // Everything here runs on the main thread, so the page stops drawing meanwhile (300k splats:
-  // 160-200 ms, mostly reconcileAndGrow, then the readback, gather and upload; ~33% of the
-  // training time at one rebalance per 100 steps, hence 400 at the cap). No worker: DESIGN.md §5.3.
+  // Everything here runs on the main thread, so the page stops drawing meanwhile (mostly
+  // reconcileAndGrow; hence the sparser rebalance_every_cap at the cap). No worker: DESIGN.md §5.3.
   async _rebalance() {
     const ms = {}, t = [performance.now()], lap = (k) => { t.push(performance.now()); ms[k] = t.at(-1) - t.at(-2); };
     await this._drainLossRead();  // keep history in step order

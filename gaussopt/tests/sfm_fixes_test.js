@@ -1,4 +1,4 @@
-// Regression tests of review fixes in src/sfm: adaptive RANSAC at tiny inlier ratios, registered
+// src/sfm edge cases: adaptive RANSAC at tiny inlier ratios, registered
 // count after repairs, the trainer's point filter, deterministic geometric loop candidates, matched
 // pixels from either match layout.
 import { ransac } from '../src/sfm/geometry.js';

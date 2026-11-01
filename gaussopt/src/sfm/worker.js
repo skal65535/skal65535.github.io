@@ -8,7 +8,7 @@
 // the session goes to its cache/ instead, and the results to it as they are made: images/ (the
 // keyframes, as extracted), sharpness.csv, sparse/0 (the distorted model), gs/ (the trainer's
 // dataset). 'flush' writes everything the session has into a newly attached folder.
-//   in:  { type: 'open', file } | { type: 'project', file } | { type: 'run', options (until: 'keyframes' stops there) }
+//   in:  { type: 'open', file } | { type: 'photos', files } | { type: 'project', file } | { type: 'run', options (until: 'keyframes' stops there) }
 //        | { type: 'action', op, args }
 //        | { type: 'undo' } | { type: 'send' } | { type: 'save' } | { type: 'psnr', values: [[name, dB]] }
 //        | { type: 'photoFilter', filter: { lens?, zoom?, orientation?: [values] } | null }
@@ -16,7 +16,7 @@
 //   out: { type: 'video', info } | { type: 'log', text, level } | { type: 'progress', stage, done, total }
 //        | { type: 'selection', ... } | { type: 'keyframes', count } | { type: 'thumbs', frames: [{ name, time, blob }], aspect (w / h) }
 //        | { type: 'quality', quality, action }
-//        | { type: 'result', sparse, images, summary }
+//        | { type: 'result', sparse, images, masks, summary }
 //        | { type: 'restored' } | { type: 'project', blob, name } | { type: 'idle', status } | { type: 'error', message }
 //        | { type: 'flushed', files: [[path, Blob]] (a memory store's) }
 // Messages are handled one at a time, in order.
@@ -542,7 +542,7 @@ function photoCameras(features) {
 const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}) });
 
 // The mapper options of a photo set: PHOTO_MAPPING, and the EXIF focal as the fallback when F does
-// not observe the focal (P2; not as the start: it is 3-4% low on the Pixel 10)
+// not observe the focal (P2; not as the start: it can be a few % off)
 function photoMapping(o, features) {
   const g = photos.plan.cameras[0];
   const f = focalFromExif(g?.focal35, features.width, features.height);
@@ -669,9 +669,8 @@ async function restoreFrom(fp, mp) {
   return true;
 }
 
-// The trainer's points: seen by trainMinObs keyframes; by default 3 for a video, 2 for photos (photo
-// sets: held-out PSNR higher in all 9 runs of cuisine, salon, minerals x 3 floater settings, +0.15 to
-// +0.77 dB, photo_runs/logs/photo_preset_from_page_log.txt)
+// The trainer's points: seen by trainMinObs keyframes; by default 3 for a video, 2 for photos (a
+// higher held-out PSNR on photo sets)
 const trainMinObs = (o) => o.trainMinObs > 0 ? o.trainMinObs : photos ? 2 : 3;
 
 // S5: undistorted JPEGs, point colors, COLMAP binary model of dataset ds (datasetFromMapper)
@@ -706,7 +705,7 @@ async function handOver(ds, features, o) {
 }
 
 // The cameras for the trainer from the session's current state; null when there is nothing to train
-// on (no piece of 2 photos with points: e.g. out_scene2, out_scene4), the advice says what to shoot
+// on (no piece of 2 photos with points), the advice says what to shoot
 async function send() {
   const t0 = performance.now(), { session, features, o } = current;
   if (!session.mapper.poses.some(Boolean)) return null;
@@ -763,15 +762,15 @@ async function run(options) {
   const { matcher } = await devices();
   const mapping = photos ? photoMapping(o, features) : baseMapping(o);
   // a photo set: every pair matched (the window spans the set, DESIGN-sfm §13.3 P3). The loop
-  // stage stays: it merges segments too (cuisine without it, and without regrowSegments: 7 photos
-  // in one segment, not 12)
+  // stage stays: it merges segments too
   const window = photos ? Math.max(1, features.feats.length - 1) : o.window, loops = o.loops;
   const cameras = photos ? photoCameras(features) : zoomPriors(features);
   if (!photos && cameras) mapping.scanFocal = true;
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
     { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}) });
   current = { session, features, o, version: 0 };  // version: bumped by every action and undo
-  // repair all scores keyframes against their predecessor in time: not for photos (P4)
+  // repair: each stretch of keyframes scored below green re-matched, kept where the scores improve (session.repair);
+  // not for photos (P4)
   if (!photos && o.autoRepair && session.quality().counts.green < session.images.length) {
     const r = await session.repair();
     log(`repair: ${r.kept}/${r.tried} retries kept, scores ${JSON.stringify(r.quality.counts)} (undo reverts it)`, r.quality.counts.red ? 'warn' : 'ok');

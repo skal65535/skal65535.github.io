@@ -1,5 +1,5 @@
 // Undistortion for the hand-over (undistort.wgsl) against a CPU reference built on camera.js,
-// point colors, and (slow) against tools/undistort.py's output (cv2.undistort) on a jardin5 frame.
+// point colors, and (slow) against tools/undistort.py's output (cv2.undistort) on a real video frame.
 import { GpuUndistort, PointColors } from '../src/sfm/undistort.js';
 import { distort } from '../src/sfm/camera.js';
 import { makeRng } from '../src/math.js';

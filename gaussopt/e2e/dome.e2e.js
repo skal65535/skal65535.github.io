@@ -6,7 +6,7 @@
 // pixel's ray (R^T K^-1 p), within 0.03 on average; read at ENV_N texels a face instead, or with the faces mislaid,
 // it is not. Then 50 steps with bg_lr 0.05: the dome's texture read back the same, bit for bit (the learned background's
 // update would copy its 32 x 32 a face over the dome's first texels).
-//   cd e2e && node dome.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+//   cd e2e && node dome.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

@@ -395,7 +395,6 @@ function do_resize() {
 ////// WebGPU init //////
 
 function Oops(e) {
-  // document.body.innerHTML = `Oops! <pre>${e}</pre>`;
   side_canvas.style.display = 'inline-block';
   side_canvas.width = canvas.width * .8;
   const ctx = side_canvas.getContext('2d');
@@ -1544,7 +1543,7 @@ var render = {  /* Run-time data: device, uniforms, pipeline... */
   photo_cache: new Map(),  // camera index -> { tex, bind_group, used } (photos_to_draw)
   max_splats: 500,   // number of splats of the scene
   num_splats: 500,   // number of splats on the CPU
-  stored_splats: 0,  // number of splats transfered to GPU so far
+  stored_splats: 0,  // number of splats transferred to GPU so far
   num_visible: 0,    // visible after depth-sorting
   GPU: {   // data sent to GPU
     sigmas:    null,   // array<u32, 3>: six packed f16s

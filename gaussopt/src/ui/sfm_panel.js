@@ -131,7 +131,7 @@ export class SfmPanel {
     this.photos = null;         // the open photo set: [File] (DESIGN-sfm §13), null for a video
     this.videoName = null;      // the open video's name, or the one a .gosfm was made from
     this.keyframeCount = null;  // keyframes of the last selection + features (worker 'keyframes')
-    this.result = null;     // last { sparse, images, summary } from the worker
+    this.result = null;     // last { sparse, images, masks, summary } from the worker
     this.quality = null;    // last per-keyframe scores
     this.selected = [];     // selected keyframe names (time order)
     this.frameAnalysis = null;  // last S0 'selection' message: sampled frames, sharpness, keyframe picks
@@ -778,7 +778,7 @@ export class SfmPanel {
     if (!this.result) return;
     const app = this.app;
     // photo sets: the floater removal's near depth from every point in a camera's view, not only the
-    // ones it observed (minerals' close-ups: +2.7 dB held out, cuisine and salon unchanged; DESIGN-sfm §13.3 P6)
+    // ones it observed (close-ups; DESIGN-sfm §13.3 P6)
     if (this.photos && !app.urlKeys.has('floater_depth') && app.params.floater_depth !== 'view') {
       app.params.floater_depth = 'view';
       app._refreshGui();

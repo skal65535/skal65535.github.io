@@ -1,5 +1,5 @@
 // Reference defects (src/sfm/reference.js): a ground-truth model is corrupted the way COLMAP's
-// jardin5 model is (a scale break, a weakly supported misregistered frame, a bent step); detection
+// models can be (a scale break, a weakly supported misregistered frame, a bent step); detection
 // must find exactly those, and the consistent pieces must then compare as exact.
 import { referenceDefects, comparePieces, exclusions } from '../src/sfm/reference.js';
 import { compareLocal } from '../src/sfm/compare.js';

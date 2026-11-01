@@ -67,8 +67,7 @@ function hevcCodec(type, c) {
 }
 
 // VP9 codec string (vp09.PP.LL.DD): level and bit depth from the vpcC record, the profile from the
-// first frame's header, which the decoder follows (some muxers write a wrong one: jardin10.mp4's
-// vpcC says profile 1, 4:4:4 for a profile 0, 4:2:0 stream)
+// first frame's header, which the decoder follows (some muxers write a wrong one in vpcC)
 function vp9Codec(c, frame) {
   const profile = ((frame >> 5) & 1) | (((frame >> 4) & 1) << 1), depth = profile < 2 ? 8 : c[6] >> 4;
   return ['vp09', profile, c[5], depth].map((v, k) => k ? String(v).padStart(2, '0') : v).join('.');

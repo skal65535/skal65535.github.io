@@ -28,8 +28,8 @@ Deno.test({ name: 'GPU matcher equals the CPU reference', ignore: !hasGPU, fn: a
 
 const DUMP = env('SFM_DESC_DUMP');
 
-// COLMAP's matcher (SiftGPU, OpenGL) and ours implement the same rule: on jardin5 (4096 features,
-// under COLMAP's 16384 clamp) the matches are identical (91,900 on 20 pairs).
+// COLMAP's matcher (SiftGPU, OpenGL) and ours implement the same rule: on a real video (4096 features,
+// under COLMAP's 16384 clamp) the matches are identical.
 Deno.test({ name: 'GPU matcher vs COLMAP raw matches (SFM_DESC_DUMP)', ignore: !SLOW || !DUMP || !hasGPU, fn: async () => {
   const dump = await loadDump(denoReader(DUMP), { descriptors: true });
   const matcher = await GpuMatcher.create();

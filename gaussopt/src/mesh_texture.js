@@ -29,7 +29,7 @@ export function atlas(mesh, { size = 2048, maxAngle = 60, pad = 2, smooth = 2 } 
   const vf = new Uint32Array(F.length), fill = start.slice(0, nv);
   for (let i = 0; i < F.length; i++) vf[fill[F[i]]++] = (i / 3) | 0;
   // smoothed face normals (face -> vertex -> face, `smooth` times): the TSDF surface is bumpy at the
-  // voxel scale, and simplified it folds (6% of the area at full size, 20-40% simplified, corner1)
+  // voxel scale, and folds, more so simplified
   let sn = fn;
   for (let it = 0; it < smooth; it++) {
     const vn = new Float64Array(3 * nv), next = new Float64Array(3 * nf);

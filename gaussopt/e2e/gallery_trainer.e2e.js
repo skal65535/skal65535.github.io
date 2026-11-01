@@ -5,8 +5,8 @@
 // loaded as a checkpoint (app.loadSceneGlb), the view's pose replaced; the viewer: its page with the camera and the
 // field of view set through a hook patched into the served index.html. On a local gallery scene (GALLERY_SCENE,
 // default pavilion-cams-off, the synthetic Barcelona Pavilion's SfM run; gallery/scenes: the scenes' folder) and its
-// photos (PHOTOS), at its training size (ds 2). Without the trainer's 0.3 px^2 low-pass in the viewer: 25.84 / 26.02 dB;
-// with it 29.71 / 29.41 (pavilion-cams-off, p001).
+// photos (PHOTOS), at its training size (ds 2). Fails without the trainer's 0.3 px^2 low-pass in the viewer (about 26 dB
+// on pavilion-cams-off's p001, 29.5 with it: hence MIN_DB).
 //   cd e2e && node gallery_trainer.e2e.js
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';

@@ -28,8 +28,8 @@ const cameraKey = (l) => `${l.device} | ${l.lens} | ${l.zoom}x`;
 //   size: [w, h] of those, skipped: [{ name, reason }], t0: the first capture time (ms) or null,
 //   digits: the width of the names' number }
 // Photos of the minority orientation of the whole set (filter or not) are rotated by 90°. focal35 is the group's
-// 35 mm equivalent focal times its digital zoom (the Pixel 10 reports the lens's 24 mm at 2x zoom;
-// COLMAP's focal of those photos is 1.98x the 1x ones, DESIGN-sfm §13.2).
+// 35 mm equivalent focal times its digital zoom (a phone may report the lens's own 35 mm focal at 2x
+// zoom, DESIGN-sfm §13.2).
 export function planPhotos(items, { filter = null } = {}) {
   const order = items.map((it, k) => ({ it, k, t: captureTime(it.exif) }))
     .sort((a, b) => (a.t ?? Infinity) - (b.t ?? Infinity) || (a.it.fileName < b.it.fileName ? -1 : a.it.fileName > b.it.fileName ? 1 : 0));

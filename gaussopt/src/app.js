@@ -46,9 +46,8 @@ const DOME_FILL_NAME = Object.fromEntries(Object.entries(DOME_FILL_LABELS).map((
 const TRAIN_BUDGET_MS = 20;
 // A still view is redrawn at least this often (ms), for the changes the redraw key misses (App._draw)
 const REDRAW_MS = 1000;
-// the camera path (P7, path.js): the turn weight, measured on cuisine, salon, minerals, out_scene1
-// (photo_runs/logs/pathweights.log: at 2, no step turns more than capture order's largest), the
-// offer's ratio, and the most cameras the shortest path is computed for
+// the camera path (P7, path.js): the turn weight (at 2, no step turns more than capture order's
+// largest), the offer's ratio, and the most cameras the shortest path is computed for
 const PATH_ROT_WEIGHT = 2, PATH_OFFER = 1.25, PATH_MAX = 100;
 const pathViews = (images) => images.map(im => ({ center: im.center, forward: im.forward }));
 
@@ -1089,8 +1088,6 @@ export class GaussOptApp {
     }
   }
 
-  // Local file: .json (standalone octree for the current splats), .gosnap, .ply or .splat.
-  // plyRel: its name in the checkpoint selector (dropped folders), null for a picked / dropped file.
   // A mesh file (Make mesh's .glb, or a .mesh.ply) shown in the 3D view; not a load (no loadGen)
   async loadMeshFile(file) {
     try {
@@ -1103,6 +1100,8 @@ export class GaussOptApp {
     }
   }
 
+  // Local file: .json (standalone octree for the current splats), .gosnap, .ply or .splat.
+  // plyRel: its name in the checkpoint selector (dropped folders), null for a picked / dropped file.
   async loadPlyOrOctreeFile(file, colmap = this.colmap, gen = ++this.loadGen, plyRel = null) {
     const name = file.name, lname = name.toLowerCase();
     try {
@@ -1242,8 +1241,7 @@ export class GaussOptApp {
     this.demoLive = false;  // the demo path follows it
   }
 
-  // A photo set whose capture order goes back and forth (cuisine: 2.1x the shortest path's length):
-  // the shortest path is offered when PATH_OFFER times shorter, once per model
+  // A photo set whose capture order goes back and forth: the shortest path is offered when PATH_OFFER times shorter, once per model
   _offerShortestPath() {
     const c = this.colmap;
     if (!c?.fromSfm || !this.sfm?.photos || this.params.path_order !== 'capture' || c.images.length > PATH_MAX || c.pathOffered) return;

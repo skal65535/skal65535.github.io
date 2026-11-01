@@ -1,6 +1,6 @@
 // Full S2..S4 pipeline (DESIGN-sfm M2): loop closure, segment merging, refinement sweeps and
-// retriangulation, against exact ground truth; (slow) jardin5 against COLMAP with COLMAP's own
-// defects excluded.
+// retriangulation, against exact ground truth; (slow) a dumped video (SFM_DUMP) against COLMAP with
+// COLMAP's own defects excluded.
 import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { reconstruct } from '../src/sfm/reconstruct.js';
 import { compareModels, compareLocal, checkThresholds, THRESHOLDS } from '../src/sfm/compare.js';
@@ -32,8 +32,7 @@ Deno.test({ name: 'reconstruct, jardin5 (SFM_DUMP): segments merged, every consi
   console.log(`  ${model.images.length}/${input.images.length} registered, ${stats.numSegments} segment(s) after ${stats.loops.merges} merges, ` +
               `${stats.loops.loopEdges} loops; local rotation ${local.medianRelRotDeg.toFixed(3)} deg`);
   assert(model.images.length >= 0.99 * input.images.length, 'registered');
-  // the stretch after the hover at frames 362-373 joins only once refinement extends the tracks
-  // (the late merge, DESIGN-sfm R5)
+  // a stretch after a hover joins only once refinement extends the tracks (the late merge, DESIGN-sfm R5)
   assert(stats.numSegments === 1 && stats.loops.merges >= 3, `${stats.numSegments} segments, ${stats.loops.merges} merges`);
   assert(Math.abs(model.focal / ref.focal - 1) < THRESHOLDS.colmap.focalErr, 'focal');
   assert(fails.length === 0, fails.join('; '));

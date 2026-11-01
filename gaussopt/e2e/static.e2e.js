@@ -1,6 +1,6 @@
 // static.e2e.js — The app served statically (python's http.server, as GitHub Pages or the VPS serve it: no serve.py):
 // the default dataset is under serve.py's /datasets mounts, so the page shows the synthetic scene without asking for it
-// (no request under /datasets/: they were 4 errors in the console, 404s). The probes for serve.py (datasets.json,
+// (no request under /datasets/: each would be a 404 in the console). The probes for serve.py (datasets.json,
 // projects.json) still answer 404: they are how the page finds it is not there.
 //   cd e2e && node static.e2e.js
 import { spawn } from 'node:child_process';

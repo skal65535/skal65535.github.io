@@ -16,7 +16,7 @@ function density(W, H) {
   return residualDensity(gt, hat, W, H);
 }
 
-// stippleSites as it was, every pixel assigned
+// stippleSites with every pixel assigned (the reference)
 function sitesFull(dens, W, H, N, lloydIters = 4, seed = 1234) {
   const cdf = new Float64Array(W * H);
   let acc = 0;

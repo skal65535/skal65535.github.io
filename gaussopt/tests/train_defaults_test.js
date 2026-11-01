@@ -1,5 +1,5 @@
 // The training defaults DESIGN.md E11 took from brush: the shape limits adam_step applies (trainer.js shapeLimits ->
-// TrainUniforms.limits) off, 0 for none, a set limit passed through as before; lr_pos's schedule (posLrDecay).
+// TrainUniforms.limits) off, 0 for none, a set limit passed through; lr_pos's schedule (posLrDecay).
 import { TRAIN_DEFAULTS, shapeLimits, posLrDecay } from '../src/trainer.js';
 import { assert, assertClose } from './util.js';
 

@@ -73,8 +73,7 @@ Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproj
   assert(cameras.size === 2 && [...cameras.values()].every(c => c.model === 'PINHOLE'), 'two PINHOLE cameras');
   const lens = new Map(scene.input.images.map(im => [im.name, im.camera + 1]));
   assert(images.every(im => im.cameraId === lens.get(im.name)), 'each image on its lens\'s camera');
-  // (no focal check: from this scene's self-calibration, 9% high, both focals end ~5% high; the
-  // mapper tests check the focals, photo_runs/NOTES.md)
+  // (no focal check: the mapper tests check the focals)
   let n = 0, err = 0;
   for (const im of images) {
     const cam = im.camera;
@@ -89,7 +88,7 @@ Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproj
   assert(n > 1000 && err / n < 1.5, `${n} observations, mean pinhole reprojection ${(err / n).toFixed(3)} px`);
 });
 
-// The PINHOLE camera of a pincushion lens (desk.mov: k1 = 0.29, portrait) crops the frame just enough
+// The PINHOLE camera of a pincushion lens (a portrait phone video's: k1 = 0.29) crops the frame just enough
 // that no pixel of it falls outside the distorted keyframe (no black border); a barrel lens keeps its focal
 Deno.test('pinholeOf: no pixel of the undistorted frame outside the distorted one, the least crop', () => {
   const inside = (cam, pin) => {

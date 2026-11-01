@@ -10,7 +10,7 @@
 "use strict";
 
 export const OVERLAY = {
-  gridDim: 640,       // the grid's long side (px; 320 lost a 2 px reticle and thin text to the averaging)
+  gridDim: 640,       // the grid's long side (px; at 320 a 2 px reticle and thin text average away)
   maxFrames: 200,     // frames used, spread over the video
   stillTol: 6,        // levels from the pixel's median
   stillShare: 0.85,   // of the frames within stillTol: a still pixel

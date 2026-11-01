@@ -2,17 +2,14 @@
 // color affine before the loss, a gain (as its log) and an offset per channel about mid-grey, c' = g (c - 1/2) + 1/2 + o:
 // the shader's c' = g c + b with b = o + (1 - g) / 2. tile_backward sums the view's gradient in its terms (S_g =
 // dL/dc' (c' - b) = dL/dlog g of c' = g c + b, S_b = dL/dc', over the pixels) at each of its steps; here dL/dlog g = S_g -
-// g S_b / 2, dL/do = S_b, and Adam on these 6 numbers, one update a visit. About 0 the gain and the offset nearly trade
-// (the colors near 1/2: g up and b down give nearly the same image) and Adam, a step per coordinate, crawled along that:
-// the room's photos through known gains (+-10%), 150 visits a view, the gains 4.3-4.7% off and the offsets 0.032-0.034,
-// 1.6-1.8% and 0.017-0.018 so (the splats' residual weighs otherwise in a brighter photo: exposure.e2e.js); colors in
-// [0.4, 0.6], 100 visits, 0.82% against 0.05% (tests/exposure_test.js). Gauge: the splats' colors
+// g S_b / 2, dL/do = S_b, and Adam on these 6 numbers, one update a visit. The pivot at mid-grey: about 0, g c + b's
+// gain and offset nearly trade (the colors near 1/2: g up and b down give nearly the same image) and Adam, a step per
+// coordinate, crawls along that (exposure.e2e.js, tests/exposure_test.js). Gauge: the splats' colors
 // and every gain can trade a common factor, so the mean log-gain and the mean offset over the views are kept at 0 (the
 // splats keep the scene's colors). A view never trained (held out) takes its neighbours' in name order (a video's
 // frames: in time), interpolated by the frame number in the names (else halfway), the first or last one's past the
-// ends: long-garden's exposures drift slowly, a frame's within 0.004 of its two neighbours' mean where they spread by
-// 0.056 (mid-grey's image, mean |deviation|); scored as is (identity), its held-out PSNR fell 1.3 dB under none
-// learned. With none learned at all, as is.
+// ends: exposures drift slowly along a capture, and a held-out view scored as is (identity) does worse than with
+// none learned. With none learned at all, as is.
 "use strict";
 
 export const EXPO_FLOATS = 8;  // tile_backward's sums a step: dL/dlog g (rgb), pad, dL/db (rgb), pad

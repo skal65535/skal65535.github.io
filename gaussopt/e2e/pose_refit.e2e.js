@@ -4,7 +4,7 @@
 // one refit (60 steps a view): the turns and moves left under a fifth of those given; the splats, their Adam state the
 // same bit for bit; the exposures not kept (exposure_lr 0). Then the schedule: pose_refit 30, pose_from 30 steps on: a
 // refit logged 30 and 60 steps after pose_from (the first after the poses had pose_refit steps).
-//   cd e2e && PORT=8791 node pose_refit.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+//   cd e2e && PORT=8791 node pose_refit.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's dataset; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

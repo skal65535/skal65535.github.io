@@ -33,7 +33,7 @@ export function accuracy(session, scene) {
   return { m, fails: checkThresholds(m, 'truth'), tag: `${m.numEst}/${m.numRef} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg` };
 }
 
-// The session tests' orbit: 30 frames (4.9 s to map, 50: 10.7 s); the stretches they damage fit in it
+// The session tests' orbit: 30 frames (half the time of 50 to map); the stretches they damage fit in it
 export const SESSION_ORBIT = { ...ORBIT, numFrames: 30 };
 
 export async function session(options = {}, keep = null) {

@@ -20,7 +20,7 @@ function camera(up, yaw, pitch, roll, rotated = false) {
 
 const UP = normalize([0.2, -1, 0.3]);
 const scenes = {
-  // facing a room from one side, pitched down 10° on average: the old estimate leans ~10°
+  // facing a room from one side, pitched down 10° on average: -(mean +Y) leans ~10°
   'pitched down': (rng) => Array.from({ length: 30 }, () => camera(UP, 120 * rng() - 60, -10 + 8 * (rng() - 0.5), 4 * (rng() - 0.5))),
   'steep, salon-like (-15..-55°)': (rng) => Array.from({ length: 17 }, () => camera(UP, 140 * rng() - 70, -15 - 40 * rng(), 6 * (rng() - 0.5))),
   'a third rotated': (rng) => Array.from({ length: 24 }, (_, k) => camera(UP, 360 * rng(), -8 + 10 * (rng() - 0.5), 4 * (rng() - 0.5), k % 3 === 0)),

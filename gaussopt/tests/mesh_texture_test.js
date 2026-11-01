@@ -1,6 +1,5 @@
 // mesh_texture.js: the atlas of a sphere (charts that do not overlap, uvs in the image, the space
-// between the charts filled), and a plane
-// baked from a view of a known image (the texels get the image's colors at their points; a view whose
+// between the charts filled), and a plane baked from a view of a known image (the texels get the image's colors at their points; a view whose
 // depth says something is in front adds nothing; texels no view sees keep their vertex colors; the
 // gutters are filled).
 import { atlas, texelsOf, bakeView, finishTexture } from '../src/mesh_texture.js';

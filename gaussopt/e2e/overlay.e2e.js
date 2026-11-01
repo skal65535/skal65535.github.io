@@ -1,6 +1,6 @@
 // overlay.e2e.js — A video's on-screen display masked (src/sfm/overlay.js, DESIGN-sfm §5.1.1) through the page: a thermal
 // drone video with burnt-in text bars, a version line, a reticle and a caption (OVERLAY_E2E_VIDEO, default
-// ~/test-parking.mov) mapped and trained 300 steps. The analysis finds the mask (a share of the frame in 8-15%, the
+// SRC below) mapped and trained 300 steps. The analysis finds the mask (a share of the frame in 8-15%, the
 // log says so), the overlay's keypoints are dropped, every camera the trainer gets has its mask, and its ground truths
 // have alpha 0 there (tile_backward leaves those pixels out). With sfm_overlay=0: no mask anywhere.
 //   cd e2e && node overlay.e2e.js

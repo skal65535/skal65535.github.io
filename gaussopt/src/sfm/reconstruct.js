@@ -37,7 +37,7 @@ export function finish(input, { mapper, timings }, options) {
   if (sweeps) stage('refine', () => mapper.refine({ sweeps }));
   if (retriangulate) stage('retriangulate', () => mapper.extendTracks());
   // refinement and retriangulation extend tracks across segment gaps: segments that could not be
-  // merged before may be now (jardin5: the stretch after the hover, DESIGN-sfm R5)
+  // merged before may be now (DESIGN-sfm R5)
   if (loops && sweeps) {
     const late = stage('lateMerge', () => closeLoops(mapper, input.pairs, { rng: makeRng((mapperOptions.seed ?? 1) + 1), log: mapperOptions.log, mergeOnly: true }));
     if (late.merges) {  // tracks across the joint first, then the sweeps (R5)

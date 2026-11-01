@@ -1,8 +1,8 @@
 // gallery_dome.e2e.js — The gallery's 'dome only' (gallery/index.html): the scene's background (scene.glb env: a dome, or
 // the learned one) drawn alone, without the splats nor the mesh, to see what the dome took. Off by default; its click
 // changes the view and a second one brings it back; on, the 'background (dome)' toggle does not hide it, nor does the
-// mesh menu draw over it; dome-only in the URL starts it on. On a scene with a background (GALLERY_SCENE, default
-// canyon3-bg; gallery/scenes: the scenes' folder), served statically as the gallery is.
+// mesh menu draw over it; dome-only in the URL starts it on. On a scene with a background (GALLERY_SCENE;
+// gallery/scenes: the scenes' folder), served statically as the gallery is.
 //   cd e2e && node gallery_dome.e2e.js
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';

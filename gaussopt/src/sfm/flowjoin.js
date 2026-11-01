@@ -1,7 +1,7 @@
 // flowjoin.js — Pieces of a video's map joined across a turn in place, by the optical flow of the
 // frame analysis (DESIGN-sfm §5.4.1). When the camera turns without moving, no new point can be
 // triangulated: the map cannot follow it, and the keyframes after the turn start a piece of their own
-// that shares no point with the first (long-garden.mp4: a 190° yaw at 33.4-35.4 s). The flow tracks
+// that shares no point with the first. The flow tracks
 // through every frame of the turn: a camera turning in place moves each track by one homography,
 // K R K^-1, so the homographies of the analysis's steps (frames.js step, chained per keyframe by the
 // worker: flowH, flowChain) give the rotation between any two keyframes of one chain.
@@ -64,8 +64,7 @@ export function joinByFlow(mapper, options = {}) {
   for (let joined = true; joined;) {
     joined = false;
     // a piece: registered keyframes following each other in time in one segment. A segment can hold
-    // several, interleaved with another's once loop closure merged some (canyon.mp4: 0..106, 226..298
-    // and 389..558 in one, 132..197 and 299..369 in the other, apart only across the turn at 101.6 s)
+    // several, interleaved with another's once loop closure merged some
     const pieces = [];
     for (let k = 0; k < mapper.n; k++) if (mapper.poses[k]) {
       if (pieces.at(-1)?.seg === mapper.segment[k]) pieces.at(-1).frames.push(k);

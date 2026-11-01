@@ -1,6 +1,6 @@
-// mesh_worker.js — Simplify a mesh and write it as .glb off the page's thread (DESIGN.md §9 E5): a 1.3M
-// face mesh takes 10-15 s to simplify; or first grow it behind the splats (mesh_grow.js, 6-22 s in node on the canyons, up to 28
-// bytes a grid cell: 0.6 GB on canyon's 21M). In: { mesh, voxel } or { grow: { splats, cameras, bounds, opts } }, simplify (voxels), up, glb;
+// mesh_worker.js — Simplify a mesh and write it as .glb off the page's thread (DESIGN.md §9 E5): a large
+// mesh takes seconds to simplify; or first grow it behind the splats (mesh_grow.js, up to 28 bytes a grid
+// cell). In: { mesh, voxel } or { grow: { splats, cameras, bounds, opts } }, simplify (voxels), up, glb;
 // out: { glb (when asked), mesh, info: { voxel, grow (growBacking's info), ... } } or { error }.
 import { simplify } from './mesh_simplify.js';
 import { writeGlb } from './glb.js';

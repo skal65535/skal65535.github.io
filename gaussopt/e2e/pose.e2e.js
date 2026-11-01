@@ -5,7 +5,7 @@
 // axis, without their common part: the gauge), and the poses learned back (pose_lr 2e-3, the last third 4e-4): the
 // turns and the moves left come under a fifth of those given; the held-out views take their neighbours' (none of
 // them refined); a snapshot gives the poses back.
-//   cd e2e && PORT=8791 node pose.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+//   cd e2e && PORT=8791 node pose.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's directory; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

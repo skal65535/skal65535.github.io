@@ -4,7 +4,7 @@
 //   [0..7]   magic 'GOSNAP01'
 //   [8..11]  u32 JSON header byte length (incl. padding to 4 bytes)
 //   [12..]   UTF-8 JSON header: { format, version, state: { count, stepCount, ... }, ...,
-//            transform (the scene's leveling, 4x4 row-major; math.js levelTransform; absent before it),
+//            transform (the scene's leveling, 4x4 row-major; math.js levelTransform; absent in older files),
 //            blobs: { name: [byteOffset, byteLength] } }  (see GaussOptApp._encodeSnapshot)
 //   [...]    raw blobs (offsets relative to the start of the blob section, 4-byte aligned):
 //              params  : Float32 count * SPLAT_FLOATS   (raw GPU splat layout, incl. leaf_id/flags)

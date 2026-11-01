@@ -1,10 +1,10 @@
 // dome_ui.e2e.js — The Dome step in the page (app.js buildDome, src/dome.js, ui/phases.js), on a video's COLMAP folder
-// with sky (gare-st-lazare: an overcast sky over the tracks). The Dome step's "Find the sky": a dome (the sky over 5%
+// with sky. The Dome step's "Find the sky": a dome (the sky over 5%
 // of the photos' pixels), in the trainer (setDome, 256 texels a face), in the view (the 'background (dome)' toggle)
 // and in a saved scene (sceneEnv); 'dome only' (the dome alone, no splats nor mesh); the stepper's summary; the fill
 // changed in the panel (panorama: the seen directions their color, not black), filled again at once. Then with dome=auto, Train: the dome first, from the photos
 // before any step, then the training (it fails when the training starts without it).
-//   cd e2e && node dome_ui.e2e.js   (env: DOME_E2E_DATASET, default ~/gskal/brush/gare-st-lazare/gs; SHOTS: a folder for screenshots)
+//   cd e2e && node dome_ui.e2e.js   (env: DOME_E2E_DATASET, a COLMAP folder with sky; SHOTS: a folder for screenshots)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

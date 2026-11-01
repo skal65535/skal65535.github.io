@@ -6,10 +6,9 @@
 // A wrong sign in its gradient would lower them instead, a background not drawn would leave them as they were.
 // Then, reloaded, 600 steps of the default training with bg_lr 0.05: the room is closed, every direction ends on a wall,
 // so the background is seen where the splats do not cover yet (it learns the walls' colors there) or through nearly opaque
-// splats: few of its texels saturated (max - min over 100 / 255, colors no photo has; under 0.3%: measured 0.11%, taught by
-// the pixels it dominates, T_final over 0.5, tile_backward; 0.50-0.57% by every pixel, 1.60% so and its rate not scaled by
-// how much it is seen, env_adam).
-//   cd e2e && node env.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+// splats: few of its texels saturated (max - min over 100 / 255, colors no photo has; under 0.3%, which needs it taught
+// only by the pixels it dominates, T_final over 0.5, tile_backward, and its rate scaled by how much it is seen, env_adam).
+//   cd e2e && node env.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';
@@ -44,7 +43,7 @@ await run(async (page) => {
   });
   if (!(r.views > 0)) fail('no held-out views');
   if (!(Math.abs(r.v1 - r.v0) < 0.01 && r.lit1 === 0)) fail(`bg_lr 0: held-out ${r.v0.toFixed(2)} -> ${r.v1.toFixed(2)} dB, ${(100 * r.lit1).toFixed(1)}% of the background lit`);
-  // measured 5.34 -> 18.88 dB, 15.6% lit (the room's cameras see a part of the directions)
+  // lit: a part only (the room's cameras see a part of the directions)
   if (!(r.v2 > r.v1 + 3 && r.lit2 > 0.05)) fail(`bg_lr 0.05: held-out ${r.v1.toFixed(2)} -> ${r.v2.toFixed(2)} dB, ${(100 * r.lit2).toFixed(1)}% of the background lit`);
   // the default training with the background on: few saturated texels
   await page.goto(appUrl('?dataset=/dataset&ds=2&bg_lr=0.05'));

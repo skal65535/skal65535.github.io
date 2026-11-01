@@ -4,7 +4,7 @@
 // be (app.loadGlbFile): the same splats (positions exact), octree leaves, held-out PSNR (to 0.02 dB: the rotations,
 // scales and opacities go through their linear forms), the leveling and the background. Save photos (.glb): every photo
 // of the dataset, by name, byte for byte as served.
-//   cd e2e && node scene_glb.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+//   cd e2e && node scene_glb.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

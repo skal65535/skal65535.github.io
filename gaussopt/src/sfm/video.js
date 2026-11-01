@@ -40,8 +40,7 @@ export function sampleFrames(video, sampleFps) {
 // Decode the track from the GOP before the first wanted sample (open GOPs reference it) to the
 // last; for every sample index in `wanted` (a Set), in presentation order, awaits
 // onFrame(canvas2d, sampleIndex, seconds) with the frame drawn at width x height. A hardware decoder
-// that fails (Chrome on macOS: a thermal camera's H.264, 'Decoding error.' at its 5th sample, which the
-// software decoder reads whole) is replaced by the software one, for this call and the next ones
+// that fails (some H.264 the software decoder reads whole) is replaced by the software one, for this call and the next ones
 // (video.config); the frames already delivered are not delivered again; video.decoderFallback says why.
 export async function decodeFrames(video, wanted, width, height, onFrame) {
   const delivered = new Set();

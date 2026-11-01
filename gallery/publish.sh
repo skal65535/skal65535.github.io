@@ -4,7 +4,7 @@
 # app (the editor) at gaussopt/index.html: its page, its stylesheet, gaussopt/src, common and stipple as committed
 # (git's files, the working tree's copy), its ../common and ../stipple the gallery's own; no serve.py (the app finds
 # none: no datasets served, no snapshots to the server).
-#   zsh publish.sh SCENES_DIR DEST     e.g. zsh publish.sh ~/gskal/brush/photo_runs/gallery VPS:gallery
+#   zsh publish.sh SCENES_DIR DEST     e.g. zsh publish.sh ./scenes host:gallery
 # SCENES_DIR: index.json and a folder per scene (scene.glb, photos.glb if any: README.md). Nothing else from
 # SCENES_DIR is copied.
 set -e

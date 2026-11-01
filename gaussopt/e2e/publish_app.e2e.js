@@ -1,5 +1,5 @@
 // publish_app.e2e.js — The app (the editor) in the published gallery (gallery/publish.sh): the gallery published to a
-// fresh folder with one scene (GALLERY_SCENE, default canyon3-bg, from gallery/scenes), served statically as the VPS
+// fresh folder with one scene (GALLERY_SCENE, default SCENE below, from gallery/scenes), served statically as the VPS
 // serves it (no serve.py): gaussopt/index.html starts (window.app, its WebGPU device, the Project step shown), every
 // file it asks for is there (no 404), no serve.py found (no snapshots to it); a video (harness.js clip: SFM_E2E_VIDEO's
 // first seconds, served next to it) mapped in the page (its workers) and 20 steps trained; the gallery page next to

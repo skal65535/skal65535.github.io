@@ -1,12 +1,12 @@
 // mesh_grow.js — The mesh behind the splats (DESIGN.md §9 E5), grown from the splats themselves and carved by
 // the cameras' rays, instead of src/mesh.js's TSDF of their rendered depth (which sits at the splats' median depth:
-// a depth pre-pass at it hides a third to half of what the canyon scenes' splats draw). On a voxel grid:
+// a depth pre-pass at it hides much of what the splats draw). On a voxel grid:
 // 1. occupancy: the splats' summed alpha (each to 3 sigma, its covariance + (voxel / 2)^2) reaches `tau`
 // 2. closing: the occupancy dilated by `close` voxels (gaps under twice that closed), except around the camera path
 // 3. seen exterior: the path (the camera centers, joined unless a step is over 5x the median) and the cells each
 //    camera's rays (rayW x rayW * 9 / 16 a camera) cross before their first closed cell (through runs of closed cells
 //    with no splats longer than `passage` voxels: narrow slots seen lengthwise, not holes nor a wall's closed band seen
-//    at a grazing angle; canyon3 at 8 / 16 / 24 voxels: 64 / 82 / 94% of the close-ups' see-through backed); solid: the cells within
+//    at a grazing angle); solid: the cells within
 //    `depth` voxels of a ray's first hit, not crossed by a ray. The rest is the unseen exterior.
 // 4. surface: the level `close + inset` voxels from the seen exterior (behind the splats' front), surface nets;
 //    the unseen exterior cuts the solid there without an inset, and the faces where it does are dropped (a sheet

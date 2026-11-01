@@ -61,9 +61,8 @@ export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, min
 
 // The PINHOLE camera the keyframes are undistorted to: the same size and center, the focal scaled up
 // (the frame cropped) just enough that every pixel of it comes from inside the distorted frame, as
-// COLMAP's undistorter with blank_pixels = 0. A barrel lens (k1 < 0) keeps its focal. desk.mov
-// (k1 = 0.29, the same focal) left 12% of each keyframe black, which the trainer fitted as dark
-// splats along the frame borders.
+// COLMAP's undistorter with blank_pixels = 0. A barrel lens (k1 < 0) keeps its focal. Uncropped,
+// a k1 > 0 lens leaves black borders, which the trainer fits as dark splats.
 export function pinholeOf(cam) {
   const [fx, fy, cx, cy] = intrinsics(cam), { width: w, height: h } = cam, n = 64, border = [];
   for (let k = 0; k <= n; k++) {

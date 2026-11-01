@@ -1,7 +1,6 @@
 // phases.js — The phases of a project (Project · Video · Keyframes · Cameras · Dome · Train · Export; a photo
-// set: Project · Photos · Cameras · Dome · Train · Export) and
-// their states, derived from what is loaded and running, never stored: the stepper of shell.js
-// shows them. DOM-free (tests/phases_test.js).
+// set: Project · Photos · Cameras · Dome · Train · Export) and their states, derived from what is
+// loaded and running, never stored: the stepper of shell.js shows them. DOM-free (tests/phases_test.js).
 "use strict";
 
 export const PHASES = ['project', 'video', 'keyframes', 'cameras', 'dome', 'train', 'export'];

@@ -1,19 +1,19 @@
 // photos.e2e.js — A photo set end to end in the page (DESIGN-sfm §13, P1): the photos are copied
 // into .cache/ (served) and opened with ?photos=<urls> (fetched as Files, as a drop gives them); the worker plans them
 // (EXIF, labels, rotation, one camera), shows the Photos phase and its contact sheet (P5), extracts SIFT
-// on "Find cameras", maps every pair, hands the cameras to the
-// trainer with the shooting advice shown, and training on every photo (no hold-out) fits them.
-//   node photos.e2e.js   (env: SFM_E2E_PHOTOS = a folder of JPEGs, default ~/gskal/brush/cuisine/images;
+// on "Find cameras", maps every pair, hands the cameras to the trainer with the shooting advice shown,
+// and training on every photo (no hold-out) fits them.
+//   node photos.e2e.js   (env: SFM_E2E_PHOTOS = a folder of JPEGs, default SOURCE below;
 //                         SFM_E2E_MIN_REGISTERED, CHROME, PORT, BROWSER)
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { HERE, NAME, fail, urlOf, appUrl, run } from './harness.js';
 
 const SOURCE = process.env.SFM_E2E_PHOTOS ?? `${process.env.HOME}/gskal/brush/cuisine/images`;
-const MIN_REGISTERED = Number(process.env.SFM_E2E_MIN_REGISTERED ?? 12);  // COLMAP's count on cuisine (DESIGN-sfm §13.2)
+const MIN_REGISTERED = Number(process.env.SFM_E2E_MIN_REGISTERED ?? 12);  // COLMAP's count on the default set (DESIGN-sfm §13.2)
 const TRAIN_STEPS = 1000;
-// a smoke floor: cuisine's training views scored 13.4-16.9 dB after ~1000 steps with 3 photos held out
-// (photo_runs/logs/train__cuisine_*); a flat image of the mean colour scores 13.1-13.4 dB on those 3
+// a smoke floor: the default set's training views score about 13.4-16.9 dB after ~1000 steps; a flat image of
+// the mean colour about 13.1-13.4 dB
 const MIN_TRAIN_PSNR = 12;
 
 if (!existsSync(SOURCE)) throw new Error(`no photos in ${SOURCE} (set SFM_E2E_PHOTOS)`);
@@ -61,7 +61,7 @@ await run(async (page) => {
   await page.waitForFunction((n) => window.app.colmap?.images?.length === n && !!window.app.trainer, summary.exported, { timeout: 120000 });
   const names = await page.evaluate(() => window.app.colmap.images.map(im => im.name));
   if (!names.every(n => /^p\d+_PXL_.*\.jpg$/.test(n))) fail(`photo names: ${names.slice(0, 3).join(', ')}`);
-  // the camera path (P7): cuisine's capture order goes back and forth, the shortest path is offered;
+  // the camera path (P7): the default set's capture order goes back and forth, the shortest path is offered;
   // 'shortest' reorders the path, 'capture' restores name order
   const path = await page.evaluate(() => {
     const app = window.app, c = app.colmap, offer = app.logText().match(/camera path: the shortest is ([\d.]+)x shorter[^\n]*/)?.[0] ?? null;

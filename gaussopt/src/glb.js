@@ -207,7 +207,7 @@ export function readMeshNode(g, node) {
 }
 
 // The TSDF voxel a Make mesh was made at: its own (writeGlb's voxel), else its bounds' longest side / 383,
-// the grid's at the default mesh_res 384 (the grid spans the mesh's bounds: canyon, canyon2, canyon3 within 0.1%)
+// the grid's at the default mesh_res 384 (the grid spans about the mesh's bounds)
 export function meshVoxel({ positions: P, voxel = null }) {
   if (voxel) return voxel;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];

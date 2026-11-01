@@ -20,7 +20,7 @@ export function gaussian(rng) {
 const DEFAULTS = {
   seed: 1,
   width: 1920, height: 1080,
-  model: 'OPENCV', params: [1230, 1230, 960, 540, 0.005, -0.002, 0.001, 0.0002],  // jardin5's COLMAP fit
+  model: 'OPENCV', params: [1230, 1230, 960, 540, 0.005, -0.002, 0.001, 0.0002],  // a drone video's COLMAP fit
   path: 'orbit',        // 'orbit' (revisits after one turn) | 'line' (no revisit)
   numFrames: 120,
   turns: 1.25,          // orbit: > 1 gives loops

@@ -1,9 +1,9 @@
 // octree_depth.e2e.js — The octree boxes against the splats' depth (render.js renderScene, wireframe_render): the
 // synthetic room (photo_runs/tools/synth_room.py) trained 600 steps, the view a training camera's. The boxes drawn
-// through the splats (octree_hidden 1) change 21% of the pixels; at the default (0.15) the boxes behind the walls are
-// faint: 12.6% changed (those in front of the walls and the objects still show; with the splats' depth not drawn,
-// 21% again).
-//   cd e2e && node octree_depth.e2e.js   (env: MESH_E2E_ROOM, default ~/gskal/brush/synth/room10; see harness.js)
+// through the splats (octree_hidden 1) change some of the pixels; at the default (0.15) the boxes behind the walls are
+// faint: clearly fewer changed (those in front of the walls and the objects still show; with the splats' depth not
+// drawn, as many as drawn through).
+//   cd e2e && node octree_depth.e2e.js   (env: MESH_E2E_ROOM, default ROOM below; see harness.js)
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fail, appUrl, run } from './harness.js';

@@ -5,7 +5,7 @@
 // kept), and a reload restoring the session (OPFS).
 //   cd e2e && npm install && npm test   (env: SFM_E2E_VIDEO, SFM_E2E_SECONDS, SFM_E2E_DUMP=dir, CHROME, PORT)
 //   BROWSER=safari npm test: the same in Safari through safaridriver (safari.js; a window, not headless)
-// The clip is the first SFM_E2E_SECONDS (default 12) of jardin5.mp4, cut with ffmpeg into .cache/.
+// The clip is the first SFM_E2E_SECONDS (default 12) of SFM_E2E_VIDEO (harness.js SOURCE), cut with ffmpeg into .cache/.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SECONDS, NAME, fail, clip, urlOf, appUrl, run } from './harness.js';
@@ -62,8 +62,7 @@ await run(async (page) => {
   console.log(`training: validation PSNR ${val.psnr.toFixed(2)} dB at step ${val.step}`);
   if (!(val.psnr >= MIN_PSNR)) fail(`validation PSNR ${val.psnr} dB < ${MIN_PSNR} dB`);
   // repairs (DESIGN-sfm §6.3): retry a range and undo it (same scores again), the same for repair
-  // all, then densify a range
-  // and send the larger model to the trainer
+  // all, then densify a range and send the larger model to the trainer
   const sfm = (fn, arg) => page.evaluate(fn, arg);
   const settled = (re) => page.waitForFunction((re) => !window.app.sfm.busy && new RegExp(re).test(window.app.sfm.state.status),
                                                re, { timeout: 10 * 60000, polling: 500 });

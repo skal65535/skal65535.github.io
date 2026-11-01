@@ -68,8 +68,8 @@ export class Poses {
   // One Adam step of a lens on the sum of its views' gradients (dL/dlog f, dL/dcx, dL/dcy, cx and cy in full
   // resolution px, dL/dk1: the radial distortion the SfM's undistortion left, shaders.wgsl distort_jac). Its state:
   // [a, cx, cy, k1], a = log f + log(1 + k1 m), the image's mean magnification (m: the mean r^2 over the image), so
-  // that k1 bends the radial profile without the scale the focal has (learned as log f and k1, they traded one for
-  // the other and crept: lens.e2e.js). a at rate lr, the principal point at lr x the image's width, k1 at lr over r^2
+  // that k1 bends the radial profile without the scale the focal has (learned as log f and k1, they trade one for
+  // the other and creep: lens.e2e.js). a at rate lr, the principal point at lr x the image's width, k1 at lr over r^2
   // at the image's corner (3 m: the corner moves as fast as with a); then the pull (sigma: rad; the principal point's x
   // the width, k1's over the corner's r^2)
   updateLens(camera, g, lr, sigma = 0) {
@@ -82,7 +82,7 @@ export class Poses {
     pull(s, lr, sigma);
   }
 
-  // The gauge (the header) over the views refined; `byName`: their images
+  // The gauge (the header) over the views refined; imagesByName: name -> image
   center(imagesByName) {
     const vs = [...this.views].map(([n, s]) => ({ s, img: imagesByName.get(n) })).filter(x => x.img);
     if (vs.length < 3) return;
