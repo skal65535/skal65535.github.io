@@ -1,0 +1,8 @@
+[
+ {
+  "id": "pavilion-cams-true",
+  "title": "Barcelona Pavilion (200 synthetic photos), from the true cameras",
+  "photos": true,
+  "about": "The Barcelona Pavilion demo scene by eMirage (CC-BY, blender.org's demo files) rendered by Blender at 200 random poses (960 x 540, Cycles, 64 samples), so the true cameras are known, then trained by Gauss-Opt from those cameras and Blender's points (brush 4743c2c): at most 1M splats, no stipple seeds, 20000 steps at half size (480 x 270), 25 views held out. 28.58 dB on the training views, 24.35 on the held-out ones, 24.55 with each held-out camera fitted to its photo (it turned 0.083 degree)."
+ }
+]
