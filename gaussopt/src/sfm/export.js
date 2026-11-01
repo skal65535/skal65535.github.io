@@ -1,13 +1,12 @@
 // export.js — SfM result -> COLMAP sparse model (DESIGN-sfm §4): the cameras.bin / images.bin /
-// points3D.bin that colmap.js (and COLMAP) read, for one segment, as a PINHOLE camera with the
+// points3D.bin (written by colmap.js writeColmapModel, re-exported here) that colmap.js and COLMAP read, for one segment, as a PINHOLE camera with the
 // keypoints moved to undistorted pixel coordinates; the images themselves are undistorted with
 // the same intrinsics by the caller (undistort.js on the GPU in the page, tools/undistort.py).
 // The points are filtered for the trainer (DESIGN-sfm §5.5): observations within maxReprojPx,
 // at least minObs of them, and a viewing angle of at least minAngleDeg between two of them.
 "use strict";
 
-import { mat3ToQuat } from '../math.js';
-import { CAMERA_MODELS, intrinsics, imageFromNormalized, normalizedFromImage, project, poseCenter } from './camera.js';
+import { intrinsics, imageFromNormalized, normalizedFromImage, project, poseCenter } from './camera.js';
 import { triangulationAngle } from './geometry.js';
 
 // mapper: SequentialMapper after reconstruct(); segment: id to export (default: the largest).
@@ -87,47 +86,4 @@ function wideEnough(centers, X, minAngle) {
   return false;
 }
 
-// COLMAP binary files (little endian) for a dataset of datasetFromMapper's shape (cameras: one or more)
-export function writeColmapModel({ camera, cameras: list = [camera], images, points }) {
-  const enc = new TextEncoder();
-  const cameras = new Writer();
-  cameras.u64(list.length);
-  list.forEach((c, k) => {
-    cameras.i32(k + 1).i32(CAMERA_MODELS[c.model][0]).u64(c.width).u64(c.height);
-    for (const p of c.params) cameras.f64(p);
-  });
-
-  const ims = new Writer();
-  ims.u64(images.length);
-  for (const im of images) {
-    const [qw, qx, qy, qz] = mat3ToQuat(im.R);
-    ims.i32(im.id).f64(qw).f64(qx).f64(qy).f64(qz).f64(im.t[0]).f64(im.t[1]).f64(im.t[2]).i32(im.cameraId ?? 1);
-    ims.bytes(enc.encode(im.name)).u8(0).u64(im.points2D.length);
-    for (const [x, y, pid] of im.points2D) ims.f64(x).f64(y).i64(pid);
-  }
-
-  const pts = new Writer();
-  pts.u64(points.length);
-  for (const p of points) {
-    pts.u64(p.id).f64(p.X[0]).f64(p.X[1]).f64(p.X[2]).u8(p.rgb[0]).u8(p.rgb[1]).u8(p.rgb[2]).f64(p.error).u64(p.track.length);
-    for (const [imgId, idx] of p.track) pts.i32(imgId).i32(idx);
-  }
-  return { 'cameras.bin': cameras.buffer(), 'images.bin': ims.buffer(), 'points3D.bin': pts.buffer() };
-}
-
-class Writer {
-  constructor() { this.buf = new ArrayBuffer(1 << 16); this.dv = new DataView(this.buf); this.off = 0; }
-  grow(n) {
-    if (this.off + n <= this.buf.byteLength) return;
-    const next = new ArrayBuffer(Math.max(2 * this.buf.byteLength, this.off + n));
-    new Uint8Array(next).set(new Uint8Array(this.buf, 0, this.off));
-    this.buf = next; this.dv = new DataView(next);
-  }
-  u8(v) { this.grow(1); this.dv.setUint8(this.off, v); this.off += 1; return this; }
-  i32(v) { this.grow(4); this.dv.setInt32(this.off, v, true); this.off += 4; return this; }
-  u64(v) { this.grow(8); this.dv.setBigUint64(this.off, BigInt(v), true); this.off += 8; return this; }
-  i64(v) { this.grow(8); this.dv.setBigInt64(this.off, BigInt(v), true); this.off += 8; return this; }
-  f64(v) { this.grow(8); this.dv.setFloat64(this.off, v, true); this.off += 8; return this; }
-  bytes(a) { this.grow(a.length); new Uint8Array(this.buf, this.off, a.length).set(a); this.off += a.length; return this; }
-  buffer() { return this.buf.slice(0, this.off); }
-}
+export { writeColmapModel } from '../colmap.js';

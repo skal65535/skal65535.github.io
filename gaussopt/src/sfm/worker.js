@@ -23,7 +23,7 @@
 "use strict";
 
 import { openVideo, sampleFrames, decodeFrames, grayOf } from './video.js';
-import { fitSize, resizeArea, selectFrames, zoomEvents } from './frames.js';
+import { fitSize, resizeArea, selectFrames, zoomEvents, flowChains, zoomCameras, zoomPriors } from './frames.js';
 import { OVERLAY, staticMask, dropMasked, maskAt, packMask, unpackMask } from './overlay.js';
 import { GpuSift, SIFT_DEFAULTS } from './sift.js';
 import { GpuMatcher } from './match.js';
@@ -31,21 +31,19 @@ import { GpuUndistort, PointColors } from './undistort.js';
 import { reconstructFromFeatures, featurePairSource } from './pipeline.js';
 import { SfmSession } from './session.js';
 import { packProject, unpackProject, mergeProjects, projectPart } from './project.js';
-import { SESSION_DEFAULTS, PHOTO_MAPPING } from './defaults.js';
+import { SESSION_DEFAULTS } from './defaults.js';
 import { readExif, jpegSize } from './exif.js';
-import { planPhotos, planMore, focalFromExif } from './photos.js';
+import { planPhotos, planMore, photoCameras, photoMapping, baseMapping } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
-import { defaultCamera, withFocal, meanFocal } from './camera.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
 import { xyOnly } from './frontend.js';
-import { mul3 } from './linalg.js';
-import { hashString } from './util.js';
+import { seconds } from './util.js';
+import { hashString } from '../math.js';
 import { storeFrom } from '../project/store.js';
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
 const log = (text, level = '') => post({ type: 'log', text, level });
 const progress = (stage, done, total) => post({ type: 'progress', stage, done, total });
-const seconds = (t) => `${((performance.now() - t) / 1000).toFixed(1)} s`;
 const same = (a, b, keys) => a && keys.every(k => a[k] === b[k]);
 const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay'];  // the options the features depend on
 const perFrame = (feats) => Math.round(feats.reduce((s, f) => s + f.keypoints.length / 4, 0) / feats.length);  // mean features per frame
@@ -213,7 +211,7 @@ async function extract(samples, w, h, o, onFrame) {
     const name = keyframeName(time);
     const gray = grayOf(ctx.getImageData(0, 0, w, h).data, w * h);
     const jpeg = { name, blob: await ctx.canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality }) };
-    const f = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak ?? SESSION_DEFAULTS.siftPeak });
+    const f = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak });
     capped += f.capped;
     total += f.keypoints.length / 4;
     const { keypoints, descriptors, dropped: d } = ov ? dropMasked(f.keypoints, f.descriptors, ov, w, h) : f;
@@ -231,15 +229,20 @@ const overlayMask = (o) => (o.overlay !== false ? unpackMask(cache.analysis?.ove
 // Small JPEGs of the keyframes for the page's contact sheet (src/ui/frames.js), made once per name
 const THUMB_WIDTH = 320, THUMB_DECODES = 4;
 const thumbs = new Map();
+// A thumbnail's JPEG: bitmap (closed) drawn at [x, y, w, h] on a black w x h canvas (the bitmap's size by default)
+async function thumbJpeg(bitmap, w = bitmap.width, h = bitmap.height, at = [0, 0, w, h]) {
+  const canvas = new OffscreenCanvas(w, h), ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bitmap, ...at);
+  bitmap.close();
+  return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
+}
 async function postThumbs(features) {
   const times = new Map(features.feats.map(f => [f.name, f.time]));
   for (const { name, blob } of features.jpegs) {
     if (thumbs.has(name)) continue;
-    const bitmap = await createImageBitmap(blob, { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' });
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    canvas.getContext('2d').drawImage(bitmap, 0, 0);
-    bitmap.close();
-    thumbs.set(name, await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 }));
+    thumbs.set(name, await thumbJpeg(await createImageBitmap(blob, { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' })));
   }
   const frames = features.jpegs.filter(j => times.has(j.name)).map(j => ({ name: j.name, time: times.get(j.name), blob: thumbs.get(j.name) }));
   post({ type: 'thumbs', frames: frames.sort((a, b) => a.time - b.time), aspect: features.width / features.height });
@@ -255,12 +258,7 @@ async function postPhotoThumbs() {
   const thumb = async (p) => {
     const bitmap = await createImageBitmap(files[p.item], { imageOrientation: 'from-image' });
     const s = Math.min(w / bitmap.width, h / bitmap.height), dw = bitmap.width * s, dh = bitmap.height * s;
-    const canvas = new OffscreenCanvas(w, h), ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(bitmap, (w - dw) / 2, (h - dh) / 2, dw, dh);
-    bitmap.close();
-    thumbs.set(p.name, await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 }));
+    thumbs.set(p.name, await thumbJpeg(bitmap, w, h, [(w - dw) / 2, (h - dh) / 2, dw, dh]));
   };
   // THUMB_DECODES at a time: the browser decodes them on several threads
   const todo = plan.photos.filter(p => !thumbs.has(p.name));
@@ -299,62 +297,8 @@ async function keyframes(o, analysis) {
 }
 
 // The keyframes' cameras (zoomCameras) and flow homographies (flowChains), picks: their analysis indices
-const videoKeyframes = (features, picks) => flowChains(zoomCameras(features, picks), picks);
-
-// The analysis's step homographies (frames.js step) chained from the first frame: per keyframe (picks: its
-// analysis index) flowH, the homography from the first frame of its chain to it in keyframe pixels, and
-// flowChain, the chain's id (a lost step starts a new one). Between two keyframes of one chain, the camera's
-// turn when it does not move (flowjoin.js). Nothing when the analysis has no homographies (saved before them).
-function flowChains(features, picks) {
-  const a = cache.motion ?? cache.analysis;
-  if (!a.flowH) return features;
-  const [sw, sh] = fitSize(video.width, video.height, a.options.sharpDim), [fw] = fitSize(sw, sh, a.options.flowDim);
-  const s = features.width / fw, S = [s, 0, 0, 0, s, 0, 0, 0, 1], Si = [1 / s, 0, 0, 0, 1 / s, 0, 0, 0, 1];
-  const abs = new Array(a.times.length), chain = new Int32Array(a.times.length);
-  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  let H = I, id = 0;
-  for (let i = 0; i < a.times.length; i++) {
-    if (i > 0) {
-      const h = a.flowH[i];
-      if (h) {
-        H = mul3(h, H);
-        const n = Math.hypot(...H);
-        H = H.map(x => x / n);
-      } else { H = I; id++; }
-    }
-    abs[i] = H; chain[i] = id;
-  }
-  features.feats.forEach((f, k) => { f.flowH = mul3(mul3(S, abs[picks[k]]), Si); f.flowChain = chain[picks[k]]; });
-  return features;
-}
-
-// A camera per stretch between zooms (cache.zoom) that has keyframes: the one with the most is camera
-// 0 (its focal self-calibrated), the others' focals are scanned from the map (mapper.js scanFocalOf)
-// starting from their image scale relative to it. Sets each keyframe's `camera` (picks: their analysis
-// indices) and features.zoomLevels (per camera, that scale); none of it without a zoom.
-function zoomCameras(features, picks) {
-  const span = picks.map(i => cache.zoom.span[i]), count = new Map();
-  for (const s of span) count.set(s, (count.get(s) ?? 0) + 1);
-  if (count.size < 2) {
-    for (const f of features.feats) delete f.camera;
-    return { ...features, zoomLevels: null };
-  }
-  const first = [...count].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
-  const order = [first, ...[...count.keys()].filter(s => s !== first).sort((a, b) => a - b)];
-  const camera = new Map(order.map((s, c) => [s, c]));
-  features.feats.forEach((f, k) => { f.camera = camera.get(span[k]); });
-  const levels = order.map(s => cache.zoom.level[s] / cache.zoom.level[first]);
-  log(`zoom: ${order.length} cameras, ${order.map((s, c) => `${c}: ${count.get(s)} keyframes from ${cache.analysis.times[picks[span.indexOf(s)]].toFixed(1)} s, x${levels[c].toFixed(2)}`).join('; ')}`);
-  return { ...features, zoomLevels: levels };
-}
-
-// The cameras of a video with zooms (zoomCameras): camera k's prior focal is its image scale relative
-// to camera 0, which the mapper self-calibrates; null without a zoom
-function zoomPriors(features) {
-  if (!features.zoomLevels) return null;
-  const base = defaultCamera('OPENCV', features.width, features.height);
-  return features.zoomLevels.map(r => withFocal(base, meanFocal(base) * r));
-}
+const videoKeyframes = (features, picks) => flowChains(zoomCameras(features, picks, cache.zoom, cache.analysis.times, log), picks,
+                                                      cache.motion ?? cache.analysis, video.width, video.height);
 
 // ── photo sets (DESIGN-sfm §13): photos instead of a video's keyframes ─────────────────────
 
@@ -417,7 +361,7 @@ async function photoFeature(p, file, w, h, o, sift, ctx, canvas) {
   lap('gray');
   const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality });
   lap('jpeg');
-  const { keypoints, descriptors, capped } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak ?? SESSION_DEFAULTS.siftPeak });
+  const { keypoints, descriptors, capped } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak });
   lap('sift');
   await save(`images/${p.name}`, blob);
   return { feat: { name: p.name, time: p.time, camera: p.camera, keypoints, descriptors }, jpeg: { name: p.name, blob }, capped };
@@ -525,28 +469,6 @@ function unaddPhotos(u) {
   photos.files.length = u.files;
   photos.items.length = u.files;
   current.features.kept.length = u.kept;
-}
-
-// A camera model per lens and zoom when the set has several (P8.2), each from its EXIF focal (camera 0's
-// is calibrated, the others keep their ratio to it, mapper.js calibrateFocal); null for one camera
-function photoCameras(features) {
-  const { cameras } = photos.plan, { width: w, height: h } = features;
-  if (cameras.length < 2) return null;
-  return cameras.map(g => {
-    const f = focalFromExif(g.focal35, w, h), cam = defaultCamera('OPENCV', w, h);
-    return f ? withFocal(cam, f) : cam;
-  });
-}
-
-// The mapper options from the run's: a video's, and the start of a photo set's
-const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}) });
-
-// The mapper options of a photo set: PHOTO_MAPPING, and the EXIF focal as the fallback when F does
-// not observe the focal (P2; not as the start: it can be a few % off)
-function photoMapping(o, features) {
-  const g = photos.plan.cameras[0];
-  const f = focalFromExif(g?.focal35, features.width, features.height);
-  return { ...PHOTO_MAPPING, ...baseMapping(o), ...(f ? { fallbackFocal: f } : {}) };
 }
 
 // ── persistence (DESIGN-sfm §4): OPFS per video, and .gosfm projects ────────────
@@ -661,8 +583,9 @@ async function restoreFrom(fp, mp) {
   };
   const session = SfmSession.fromState({ json: mp.json.session, arrays }, keypoints,
                                        { pairSource: featurePairSource(feats, matcher), log: (s) => log(`  ${s}`), progress });
-  current = { session, features: cache.features, o: mp.json.o, version: mp.json.version };
-  if (a) selection(a, mp.json.o);
+  const o = { ...SESSION_DEFAULTS, ...mp.json.o };  // a model saved before an option existed: its default
+  current = { session, features: cache.features, o, version: mp.json.version };
+  if (a) selection(a, o);
   log(`restored the saved session (${mp.json.saved}): ${session.images.length} keyframes; Run all starts over`, 'ok');
   postQuality();
   post({ type: 'restored' });
@@ -760,11 +683,11 @@ async function run(options) {
     return;
   }
   const { matcher } = await devices();
-  const mapping = photos ? photoMapping(o, features) : baseMapping(o);
+  const mapping = photos ? photoMapping(photos.plan, o, features.width, features.height) : baseMapping(o);
   // a photo set: every pair matched (the window spans the set, DESIGN-sfm §13.3 P3). The loop
   // stage stays: it merges segments too
   const window = photos ? Math.max(1, features.feats.length - 1) : o.window, loops = o.loops;
-  const cameras = photos ? photoCameras(features) : zoomPriors(features);
+  const cameras = photos ? photoCameras(photos.plan, features.width, features.height) : zoomPriors(features);
   if (!photos && cameras) mapping.scanFocal = true;
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
     { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}) });

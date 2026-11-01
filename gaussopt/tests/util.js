@@ -1,7 +1,7 @@
 // util.js — Minimal assertions and helpers for `deno test` (no network dependencies).
 "use strict";
 
-import { makeRng } from '../src/math.js';
+import { makeRng, cross, normalize, makeViewMatrix } from '../src/math.js';
 import { gaussian } from '../src/sfm/synth.js';
 import { expSO3 } from '../src/sfm/linalg.js';
 import { loadDump, denoReader } from '../src/sfm/dump.js';
@@ -40,5 +40,13 @@ export const assessColmap = (model, input) => assessAgainstColmap(model, REF_MOD
 export const ORBIT = { numFrames: 50, maxFeatures: 1200, numGround: 8000, numBoxes: 8, numFar: 1000, turns: 1.3, noisePx: 1.0 };
 
 export const rng = (seed) => makeRng(seed);
+
+// A camera at c looking along f (unit): R's rows right (cross(f, up), normalized), down, forward (row-major,
+// world -> camera), t = -R c, view: the column-major 4x4 (math.js makeViewMatrix)
+export function lookAt(c, f, up = [0, -1, 0]) {
+  const r = normalize(cross(f, up)), d = cross(f, r), R = [...r, ...d, ...f];
+  const t = [0, 1, 2].map(k => -(R[3 * k] * c[0] + R[3 * k + 1] * c[1] + R[3 * k + 2] * c[2]));
+  return { R, t, view: makeViewMatrix(R, t) };
+}
 export const randomRotation = (r) => expSO3([0, 1, 2].map(() => gaussian(r)));
 export const randomMatrix = (r, n) => Float64Array.from({ length: n }, () => gaussian(r));

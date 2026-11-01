@@ -84,12 +84,13 @@ import { parsePlyBuffer, SPLAT_FLOATS, sh0ToRgb01 } from '../gaussopt/src/colmap
 import { DemoFlight, PathFlight }         from '../gaussopt/src/demo.js';
 import { Drone }                          from '../gaussopt/src/drone.js';
 import { buildOrbitViewMatrix, orbitAnglesFromCenter, quatToMat3, sigmoid, uprightView } from '../gaussopt/src/math.js';
-import { urlAfterChange }                 from '../gaussopt/src/url.js';
-import { shortestPath }                   from '../gaussopt/src/path.js';
-import { readGlb, meshVoxel, parseGlb }  from '../gaussopt/src/glb.js';
+import { urlAfterChange, replaceSearch }  from '../gaussopt/src/url.js';
+import { shortestPath, PATH_ROT_WEIGHT, PATH_MAX } from '../gaussopt/src/path.js';
+import { readGlb, parseGlb }             from '../gaussopt/src/glb.js';
 import { readSceneGlb, sceneRoot, openPhotosGlb, SCENE_FORMAT } from '../gaussopt/src/scene_glb.js';
 import { ENV_WGSL }                       from '../gaussopt/src/env.js';
-import { decodeImage, mipLevels }         from '../gaussopt/src/mesh_image.js';
+import { decodeImage }                    from '../gaussopt/src/mesh_image.js';
+import { meshBuffers }                    from '../gaussopt/src/mesh_gpu.js';
 const kVisus = {  // mapping from name to shader function
   'gaussian': 'gaussian', 'cone': 'cone',
   '(ellipsis)': 'ellipsis', '(dot)': 'small_dot', '(axis)': 'axis',
@@ -114,8 +115,7 @@ const kMeshViews = ['splats only', 'mesh + splats', 'mesh only', 'wireframe + sp
 const kUrlNames = { scene: 'scene', mode: 'mode', visu: 'visu', mesh: 'mesh' };
 function sync_url(key) {
   if (!(key in kUrlNames)) return;
-  const q = urlAfterChange(location.search, [kUrlNames[key]], key == 'visu' ? kVisus[params.visu] : params[key]);
-  if (q !== null && q !== location.search) history.replaceState(null, '', `${location.pathname}${q}${location.hash}`);
+  replaceSearch(urlAfterChange(location.search, [kUrlNames[key]], key == 'visu' ? kVisus[params.visu] : params[key]));
 }
 onAnyChange((obj, key) => { if (render) render.draw_gen++; if (obj === params) sync_url(key); });
 
@@ -762,32 +762,7 @@ function upload_mesh(m) {
   for (const k of ['pos', 'col', 'uv', 'tex', 'idx', 'edges']) render.mesh?.[k]?.destroy();
   render.mesh = null;
   if (!m) return;
-  const dev = render.device, nv = m.positions.length / 3;
-  const buf = (data, usage) => {
-    const bytes = new Uint8Array(Math.ceil(data.byteLength / 4) * 4);
-    bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-    const b = dev.createBuffer({ size: bytes.length, usage: usage | GPUBufferUsage.COPY_DST });
-    dev.queue.writeBuffer(b, 0, bytes);
-    return b;
-  };
-  const col = new Uint8Array(4 * nv).fill(255);
-  for (let i = 0; i < nv; i++) for (let k = 0; k < 3; k++) col[4 * i + k] = m.colors ? m.colors[3 * i + k] : 180;
-  const seen = new Set(), edges = [];
-  for (let f = 0; f < m.faces.length; f += 3) for (let k = 0; k < 3; k++) {
-    const a = m.faces[f + k], b = m.faces[f + (k + 1) % 3], key = a < b ? a * nv + b : b * nv + a;
-    if (!seen.has(key)) { seen.add(key); edges.push(a, b); }
-  }
-  let tex = null;
-  if (m.uvs && m.image) {
-    const levels = mipLevels(m.image);
-    tex = dev.createTexture({ size: [m.image.width, m.image.height], format: 'rgba8unorm', mipLevelCount: levels.length,
-                              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    levels.forEach((l, i) => dev.queue.writeTexture({ texture: tex, mipLevel: i }, l.data, { bytesPerRow: 4 * l.width }, [l.width, l.height]));
-  }
-  render.mesh = { pos: buf(m.positions, GPUBufferUsage.VERTEX), col: buf(col, GPUBufferUsage.VERTEX),
-                  uv: buf(tex ? m.uvs : new Float32Array(2 * nv), GPUBufferUsage.VERTEX), tex, tex_bind_group: null,
-                  idx: buf(m.faces, GPUBufferUsage.INDEX), idx_count: m.faces.length,
-                  edges: buf(Uint32Array.from(edges), GPUBufferUsage.INDEX), edge_count: edges.length, voxel: meshVoxel(m) };
+  render.mesh = { ...meshBuffers(render.device, m), tex_bind_group: null };
 }
 
 // The scene's background (scene.glb env: the trainer's learned one, DESIGN.md E13, or the Dome step's dome, src/dome.js):
@@ -852,7 +827,7 @@ function draw_mesh(pass, which) {
   pass.setVertexBuffer(1, m.col);
   pass.setVertexBuffer(2, m.uv);
   pass.setIndexBuffer(lines ? m.edges : m.idx, 'uint32');
-  pass.drawIndexed(lines ? m.edge_count : m.idx_count);
+  pass.drawIndexed(lines ? m.edgeCount : m.idxCount);
 }
 
 // The scene's overlay: camera frustums and the path as lines, the sparse points as points, drawn over
@@ -1616,8 +1591,8 @@ async function show_scene(r, entry) {
   };
   sc.lookDepth = median(sc.cameras.map(c => 0.5 * (c.zMin + c.zMax)));
   // photos are taken back and forth: the fly-by and the path line follow the shortest path through
-  // the cameras, with the app's turn weight (gaussopt/src/app.js PATH_ROT_WEIGHT)
-  if (sc.cameras.length <= 100) sc.path = shortestPath(sc.cameras.map(c => ({ center: c.center, forward: [c.view[2], c.view[6], c.view[10]] })), { rotWeight: 2 });
+  // the cameras, by the app's rule (path.js PATH_MAX, PATH_ROT_WEIGHT)
+  if (sc.cameras.length <= PATH_MAX) sc.path = shortestPath(sc.cameras.map(c => ({ center: c.center, forward: [c.view[2], c.view[6], c.view[10]] })), { rotWeight: PATH_ROT_WEIGHT });
   const ply = { count: r.count, params: r.params, octreeData: r.octree ? { meta: r.octree, nodes: r.octree.nodes } : null };
   set_splats(ply);
   const mesh = r.mesh;  // in the scene's frame, as the splats

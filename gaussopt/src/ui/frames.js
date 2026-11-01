@@ -4,7 +4,7 @@
 // outlined, and a click selects that keyframe (shift-click: a range) for the Cameras repairs.
 "use strict";
 
-const SCORE_CSS = { green: '#4ade80', amber: '#fbbf24', red: '#f87171' };
+export const SCORE_CSS = { green: '#4ade80', amber: '#fbbf24', red: '#f87171' };
 
 // p007 · 14 mm · portrait · 25 s: the photo's short name, its 35 mm equivalent focal (zoom included),
 // its orientation as shot and its time from the first photo

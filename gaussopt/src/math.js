@@ -23,10 +23,11 @@ export function logit(p) {
   return Math.log(c / (1 - c));
 }
 
-export function randn() {
-  const u1 = Math.max(1e-7, Math.random());
-  const u2 = Math.random();
-  return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+// FNV-1a hash of a string (32 bits)
+export function hashString(str) {
+  let h = 2166136261;
+  for (let k = 0; k < str.length; k++) h = Math.imul(h ^ str.charCodeAt(k), 16777619);
+  return h >>> 0;
 }
 
 // Deterministic RNG in [0, 1) (mulberry32)
@@ -44,6 +45,8 @@ export function makeRng(seed) {
 export const dot   = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 export const sub   = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+export const norm  = (a) => Math.hypot(a[0], a[1], a[2]);
+export const dist  = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 export const madd  = (a, b, s) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];  // a + b * s
 export const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 export const normalize = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };

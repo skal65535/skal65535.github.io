@@ -1,7 +1,7 @@
-// harness.js — What the e2e tests share: the video clip, a serve.py of this checkout, the browser
-// (headless Chrome through Playwright, or Safari through safaridriver with BROWSER=safari) and
+// harness.js — What the e2e tests share: the video clip, the synthetic room, a serve.py of this checkout or a static
+// server, the browser (headless Chrome through Playwright, or Safari through safaridriver with BROWSER=safari) and
 // its page errors.
-//   env: SFM_E2E_VIDEO, SFM_E2E_SECONDS, CHROME, PORT, BROWSER, VERBOSE
+//   env: SFM_E2E_VIDEO, SFM_E2E_SECONDS, MESH_E2E_ROOM, CHROME, PORT, BROWSER, VERBOSE
 import { chromium } from 'playwright-core';
 import { launchSafari } from './safari.js';
 import { spawn, execFileSync } from 'node:child_process';
@@ -30,6 +30,13 @@ export function clip() {
   return out;
 }
 
+// The synthetic room's dataset (MESH_E2E_ROOM), checked
+export function room() {
+  const dir = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
+  if (!existsSync(join(dir, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${dir} (set MESH_E2E_ROOM)`);
+  return dir;
+}
+
 // The URL path of a file under the app's parent (what serve.py serves)
 export const urlOf = (p) => '/' + relative(dirname(APP), p);
 
@@ -50,19 +57,58 @@ export async function server(args = []) {
   throw new Error(`serve.py did not start on port ${PORT}`);
 }
 
+// python's http.server of `cwd` on `port` (as GitHub Pages or the VPS serve the files), ready once it answers
+export async function staticServer(cwd, port = PORT) {
+  const proc = spawn('python3', ['-m', 'http.server', String(port), '--bind', '127.0.0.1'], { cwd, stdio: 'ignore' });
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null) throw new Error(`http.server exited (${proc.exitCode}) on port ${port}`);
+    if (await fetch(`http://127.0.0.1:${port}/`).then(r => r.ok, () => false)) return proc;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  proc.kill();
+  throw new Error(`http.server did not start on port ${port}`);
+}
+
 // The app's page URL, `query` ('?...') appended
 export const appUrl = (query = '') => `http://localhost:${PORT}${urlOf(join(APP, 'index.html'))}${query}`;
 
-// One test: serve.py (serverArgs) and a browser around body(page), then a FAIL for page errors or
-// PASS, with body's return value as a summary. After a failure, onFail(page) returns what to log
-// (or null); cleanup() runs last. pageOptions: the page's (browser()).
-export async function run(body, { serverArgs = [], onFail = null, cleanup = null, pageOptions = {} } = {}) {
-  const srv = await server(serverArgs);
+// The app ready: its trainer made and the photos readable
+export const appReady = (page, timeout = 120000) =>
+  page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout });
+
+// The gallery's page (gallery/index.html) showing its scene: the scene's info line filled
+export const galleryShown = (page, timeout = 120000) =>
+  page.waitForFunction(() => document.getElementById('scene-info')?.textContent.length > 0, null, { timeout });
+
+// The middle of the canvas as shown, `settle` ms on (a PNG; the corners hold the status labels, which change by
+// themselves); `changed` compares two of them byte for byte
+export async function pixels(page, settle = 3000) {
+  await page.waitForTimeout(settle);
+  const r = await page.locator('#main-canvas').boundingBox();
+  return page.screenshot({ clip: { x: r.x + r.width / 4, y: r.y + r.height / 4, width: r.width / 2, height: r.height / 2 } });
+}
+export const changed = (a, b) => a.length !== b.length || !a.equals(b);
+
+// One test: serve.py (serverArgs) on PORT and a browser around body(page), then a FAIL for page errors or PASS, with
+// body's return value as a summary. With `static` (a folder), python's http.server serves it on staticPort, in place of
+// serve.py when that is PORT. After a failure, onFail(page) returns what to log (or null); cleanup() runs last.
+// pageOptions: the page's (browser()); ignored(e): the page errors not counted.
+export async function run(body, { serverArgs = [], static: dir = null, staticPort = PORT, ignored = () => false,
+                                  onFail = null, cleanup = null, pageOptions = {} } = {}) {
+  const srvs = [];
+  try {
+    if (dir === null || staticPort !== PORT) srvs.push(await server(serverArgs));
+    if (dir !== null) srvs.push(await staticServer(dir, staticPort));
+  } catch (e) {
+    for (const p of srvs) p.kill();
+    throw e;
+  }
   const { page, close, errors } = await browser(pageOptions);
   const t0 = Date.now();
   try {
     const summary = await body(page);
-    const serious = await errors();
+    const serious = (await errors()).filter(e => !ignored(e));
     if (serious.length) fail(`${serious.length} page errors:\n  ${serious.slice(0, 10).join('\n  ')}`);
     if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s)${summary ? `: ${summary}` : ''}`);
   } catch (e) {
@@ -71,7 +117,7 @@ export async function run(body, { serverArgs = [], onFail = null, cleanup = null
     if (log) console.error(log);
   } finally {
     await close();
-    srv.kill();
+    for (const p of srvs) p.kill();
     cleanup?.();
   }
 }

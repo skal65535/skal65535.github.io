@@ -16,10 +16,9 @@
 "use strict";
 
 import { quatToMat3 } from './math.js';
-import { SPLAT_FLOATS } from './colmap.js';
+import { SPLAT_FLOATS, sh0ToRgb01 } from './colmap.js';
 import { Tsdf } from './mesh.js';
 
-const SH_C0 = 0.28209479177387814;
 export const BACKING = { close: 2, inset: 4, depth: 12, passage: 24 };  // growBacking's defaults, in voxels
 
 // Squared Euclidean distance transform (Felzenszwalb & Huttenlocher 2012), in voxels^2, of an [nx, ny, nz]
@@ -79,7 +78,7 @@ export function growBacking({ params, count }, cameras, bounds, { path = null, r
   for (let s = 0; s < count; s++) {
     const p = params.subarray(s * SPLAT_FLOATS, (s + 1) * SPLAT_FLOATS), op = 1 / (1 + Math.exp(-p[3]));
     if (op < 0.02) continue;
-    const rgb = [12, 13, 14].map(k => Math.min(1, Math.max(0, 0.5 + SH_C0 * p[k])));
+    const rgb = [12, 13, 14].map(k => sh0ToRgb01(p[k]));
     const Rm = quatToMat3([p[8], p[9], p[10], p[11]]), s2 = [4, 5, 6].map(k => Math.exp(2 * p[k]));
     const C = [0, 1, 2].map(a => [0, 1, 2].map(b => Rm[3 * a] * Rm[3 * b] * s2[0] + Rm[3 * a + 1] * Rm[3 * b + 1] * s2[1] + Rm[3 * a + 2] * Rm[3 * b + 2] * s2[2] + (a === b ? (v / 2) ** 2 : 0)));
     const i00 = C[1][1] * C[2][2] - C[1][2] * C[2][1], i01 = C[0][2] * C[2][1] - C[0][1] * C[2][2], i02 = C[0][1] * C[1][2] - C[0][2] * C[1][1];

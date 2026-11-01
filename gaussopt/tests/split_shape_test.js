@@ -1,6 +1,7 @@
-// reconcileAndGrow's split_mode 'shape' (octree.js splitByShape, the default since E9): a splat whose error mass R is
+// reconcileAndGrow's split_mode 'shape' (densify.js splitByShape, the default since E9): a splat whose error mass R is
 // over Tu becomes two halves drawn within its own shape.
 import { LooseOctree, MOMENT_FLOATS } from '../src/octree.js';
+import { reconcileAndGrow } from '../src/densify.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
 import { assert } from './util.js';
 import { quatToMat3 } from '../src/math.js';
@@ -16,7 +17,7 @@ Deno.test('split_mode shape: two halves within the splat, scales / sqrt 2, opaci
     moments[i * MOMENT_FLOATS + 2] = i < n / 2 ? 1 : 0;
   }
   const oct = new LooseOctree({ maxLeafSize: 64 }).build(params, n, null);
-  const res = oct.reconcileAndGrow(params, n, moments, null, { maxSplats: 1000, enableFloaters: false, enableMerge: false, splitMode: 'shape' });
+  const res = reconcileAndGrow(oct, params, n, moments, null, { maxSplats: 1000, enableFloaters: false, enableMerge: false, splitMode: 'shape' });
   assert(res.stats.split === n / 2 && res.count === n + n / 2, `${res.stats.split} split, ${res.count} splats`);
   const Rm = quatToMat3(q), axes = [0, 1, 2].map(k => [Rm[k], Rm[3 + k], Rm[6 + k]]);
   const byX = new Map();

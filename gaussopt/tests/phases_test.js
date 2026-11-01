@@ -124,7 +124,7 @@ Deno.test('phases: Train starts, pauses, then leads to the mesh', () => {
   assert(labels('export', { colmap, trainer, mesh: { running: false, step: 900, faces: 1000, mb: 1 } }) === '*Make mesh again');
 });
 
-// The Dome step (src/dome.js, app.js buildDome): off by default (skipped), auto: before the training
+// The Dome step (src/dome.js, ui/dome_step.js): off by default (skipped), auto: before the training
 Deno.test('phases: the Dome step', () => {
   const colmap = { cams: 152, fromSfm: false }, trainer = { step: 0, gt: true };
   const dome = (x) => ({ mode: 'auto', running: false, result: null, ...x });

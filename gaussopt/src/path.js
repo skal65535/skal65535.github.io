@@ -9,6 +9,9 @@
 import { clamp, dot, sub } from './math.js';
 
 const EXACT_MAX = 16;  // Held-Karp up to here (n 2^n states); beyond, 2-opt from several starts
+// The pages' path rule: the shortest path up to PATH_MAX cameras, its turns weighted by PATH_ROT_WEIGHT (stepCosts'
+// rotWeight; at 2, no step turns more than capture order's largest)
+export const PATH_ROT_WEIGHT = 2, PATH_MAX = 100;
 
 const norm = (v) => Math.hypot(v[0], v[1], v[2]);
 const angle = (u, v) => Math.acos(clamp(dot(u, v) / (norm(u) * norm(v)), -1, 1));

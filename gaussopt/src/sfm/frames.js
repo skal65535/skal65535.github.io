@@ -9,6 +9,8 @@
 import { median } from './util.js';
 import { makeRng } from '../math.js';
 import { ransacHomography } from './geometry.js';
+import { mul3 } from './linalg.js';
+import { defaultCamera, withFocal, meanFocal } from './camera.js';
 
 // blurWindow: picks a pick's sharpness is compared with (it centred); blur is a dip among its
 // neighbours, while sharpness also follows the texture of the scene, which changes slowly.
@@ -399,4 +401,59 @@ export function selectFrames({ sharpness: scores, motion: steps, times, span = n
     if (status[i] === 'kept') kept.push(i);
   });
   return { kept, status, path, threshold: median(thresholds), thresholds: new Map(picks.map((i, k) => [i, thresholds[k]])) };
+}
+
+// The analysis `a`'s step homographies (step) chained from the first frame: per keyframe (picks: its analysis
+// index) flowH, the homography from the first frame of its chain to it in keyframe pixels, and flowChain, the
+// chain's id (a lost step starts a new one). Between two keyframes of one chain, the camera's turn when it does not
+// move (flowjoin.js). Nothing when `a` has no homographies (saved before them). videoW x videoH: the video's size.
+export function flowChains(features, picks, a, videoW, videoH) {
+  if (!a.flowH) return features;
+  const [sw, sh] = fitSize(videoW, videoH, a.options.sharpDim), [fw] = fitSize(sw, sh, a.options.flowDim);
+  const s = features.width / fw, S = [s, 0, 0, 0, s, 0, 0, 0, 1], Si = [1 / s, 0, 0, 0, 1 / s, 0, 0, 0, 1];
+  const abs = new Array(a.times.length), chain = new Int32Array(a.times.length);
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  let H = I, id = 0;
+  for (let i = 0; i < a.times.length; i++) {
+    if (i > 0) {
+      const h = a.flowH[i];
+      if (h) {
+        H = mul3(h, H);
+        const n = Math.hypot(...H);
+        H = H.map(x => x / n);
+      } else { H = I; id++; }
+    }
+    abs[i] = H; chain[i] = id;
+  }
+  features.feats.forEach((f, k) => { f.flowH = mul3(mul3(S, abs[picks[k]]), Si); f.flowChain = chain[picks[k]]; });
+  return features;
+}
+
+// A camera per stretch between zooms (`zoom`: zoomEvents') that has keyframes: the one with the most is camera
+// 0 (its focal self-calibrated), the others' focals are scanned from the map (mapper.js scanFocalOf)
+// starting from their image scale relative to it. Sets each keyframe's `camera` (picks: their analysis
+// indices; times: the analysis's, for the log) and features.zoomLevels (per camera, that scale); none of it
+// without a zoom.
+export function zoomCameras(features, picks, zoom, times, log = () => {}) {
+  const span = picks.map(i => zoom.span[i]), count = new Map();
+  for (const s of span) count.set(s, (count.get(s) ?? 0) + 1);
+  if (count.size < 2) {
+    for (const f of features.feats) delete f.camera;
+    return { ...features, zoomLevels: null };
+  }
+  const first = [...count].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+  const order = [first, ...[...count.keys()].filter(s => s !== first).sort((a, b) => a - b)];
+  const camera = new Map(order.map((s, c) => [s, c]));
+  features.feats.forEach((f, k) => { f.camera = camera.get(span[k]); });
+  const levels = order.map(s => zoom.level[s] / zoom.level[first]);
+  log(`zoom: ${order.length} cameras, ${order.map((s, c) => `${c}: ${count.get(s)} keyframes from ${times[picks[span.indexOf(s)]].toFixed(1)} s, x${levels[c].toFixed(2)}`).join('; ')}`);
+  return { ...features, zoomLevels: levels };
+}
+
+// The cameras of a video with zooms (zoomCameras): camera k's prior focal is its image scale relative
+// to camera 0, which the mapper self-calibrates; null without a zoom
+export function zoomPriors(features) {
+  if (!features.zoomLevels) return null;
+  const base = defaultCamera('OPENCV', features.width, features.height);
+  return features.zoomLevels.map(r => withFocal(base, meanFocal(base) * r));
 }

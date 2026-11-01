@@ -59,45 +59,15 @@ function ransacSim3(mapper, corr, { rng, threshold, iterations, minInliers }) {
   return { G: res.model, inliers: corr.filter((_, k) => res.inliers[k]) };
 }
 
-// Move a whole segment by the Sim(3) G (old world -> new world)
-export function transformSegment(mapper, seg, G) {
-  const Ginv = inverse(G);
-  const moved = new Set();
-  for (let k = 0; k < mapper.n; k++) {
-    if (mapper.segment[k] !== seg) continue;
-    mapper.poses[k] = toPose(compose(fromPose(mapper.poses[k]), Ginv));
-    for (const pid of mapper.kpPoint[k]) {
-      if (pid < 0 || moved.has(pid) || !mapper.points[pid]) continue;
-      moved.add(pid);
-      mapper.points[pid].X = apply(G, mapper.points[pid].X);
-    }
-  }
-}
-
-// Merge track pa into pb when they never share an image
-function fuse(mapper, pa, pb) {
-  if (pa === pb) return false;
-  const A = mapper.points[pa], B = mapper.points[pb];
-  if (!A || !B) return false;
-  for (const img of A.obs.keys()) if (B.obs.has(img)) return false;
-  for (const [img, kp] of A.obs) { B.obs.set(img, kp); mapper.kpPoint[img][kp] = pb; }
-  mapper.points[pa] = null;
-  return true;
-}
-
-// mergeOnly: segment merges (and their track fusion) only, no loop edges / pose graph: a local
-// repair joining a re-mapped stretch back (session.js redo) must not move the rest of the map
-export function closeLoops(mapper, pairs, { rng, log = () => {}, mergeOnly = false, ...options } = {}) {
+// Segment merges, largest support first, by the pooled G of all pairs between them, with their track
+// fusion; no loop edges or pose graph: a local repair joining a re-mapped stretch back (session.js redo)
+// does not move the rest of the map. Returns { merges, fused }.
+export function mergeSegments(mapper, pairs, { rng, log = () => {}, ...options } = {}) {
   const o = { ...DEFAULTS, ...options };
-  const stats = { verified: 0, merges: 0, loopEdges: 0, fused: 0, poseGraph: [], loops: [] };
-  const registered = (p) => mapper.poses[p.i] && mapper.poses[p.j];
-  const candidates = () => pairs.filter(p => registered(p) &&
-    (mapper.segment[p.i] !== mapper.segment[p.j] || Math.abs(p.j - p.i) > o.longRange));
-
-  // ── 2. segment merges ──
+  const stats = { merges: 0, fused: 0 };
   for (;;) {
     const bySegPair = new Map();
-    for (const p of candidates()) {
+    for (const p of candidates(mapper, pairs, o)) {
       const sa = mapper.segment[p.i], sb = mapper.segment[p.j];
       if (sa === sb) continue;
       const key = `${sa},${sb}`;
@@ -113,20 +83,33 @@ export function closeLoops(mapper, pairs, { rng, log = () => {}, mergeOnly = fal
     const [sa, sb] = best.key.split(',').map(Number);
     const size = (s) => mapper.segment.reduce((c, x) => c + (x === s), 0);
     // G maps sa's map onto sb's: move the smaller segment
-    if (size(sa) <= size(sb)) { transformSegment(mapper, sa, best.res.G); relabel(mapper, sa, sb); }
-    else { transformSegment(mapper, sb, inverse(best.res.G)); relabel(mapper, sb, sa); }
-    for (const c of best.res.inliers) stats.fused += fuse(mapper, c.pa, c.pb);
+    if (size(sa) <= size(sb)) { mapper.transformSegment(sa, best.res.G); mapper.relabelSegment(sa, sb); }
+    else { mapper.transformSegment(sb, inverse(best.res.G)); mapper.relabelSegment(sb, sa); }
+    for (const c of best.res.inliers) stats.fused += mapper.fuseTracks(c.pa, c.pb);
     stats.merges++;
     log(`merged segments ${sa} and ${sb}: ${best.res.inliers.length} inliers, scale ${best.res.G.s.toFixed(3)}`);
   }
+  return stats;
+}
 
-  if (mergeOnly) return stats;
+// Pairs between registered frames of different segments or more than longRange apart
+function candidates(mapper, pairs, { longRange }) {
+  return pairs.filter(p => mapper.poses[p.i] && mapper.poses[p.j] &&
+    (mapper.segment[p.i] !== mapper.segment[p.j] || Math.abs(p.j - p.i) > longRange));
+}
+
+// Segment merges (mergeSegments), then loop edges and a pose graph per segment, then the fusion of the
+// tracks the loops matched
+export function closeLoops(mapper, pairs, { rng, log = () => {}, ...options } = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const merged = mergeSegments(mapper, pairs, { rng, log, ...options });
+  const stats = { verified: 0, merges: merged.merges, loopEdges: 0, fused: merged.fused, poseGraph: [], loops: [] };
 
   // ── 3. loop edges + pose graph, per segment ──
   const loops = [];
   const perFrame = new Map();
   const userFirst = (a, b) => (b.type === 'user-loop') - (a.type === 'user-loop') || b.matches.length - a.matches.length;
-  for (const p of candidates().filter(p => mapper.segment[p.i] === mapper.segment[p.j]).sort(userFirst)) {
+  for (const p of candidates(mapper, pairs, o).filter(p => mapper.segment[p.i] === mapper.segment[p.j]).sort(userFirst)) {
     const c = perFrame.get(p.i) ?? 0;
     if (c >= o.loopsPerFrame) continue;
     perFrame.set(p.i, c + 1);
@@ -189,13 +172,8 @@ export function closeLoops(mapper, pairs, { rng, log = () => {}, mergeOnly = fal
   // ── 4. fuse the tracks matched by verified loops (re-verified after the correction) ──
   for (const { p } of loops) {
     const res = ransacSim3(mapper, correspondences(mapper, p), { rng, ...o });
-    if (res) for (const c of res.inliers) stats.fused += fuse(mapper, c.pa, c.pb);
+    if (res) for (const c of res.inliers) stats.fused += mapper.fuseTracks(c.pa, c.pb);
   }
   log(`loops: ${stats.loopEdges}/${stats.verified} verified, ${stats.merges} merges, ${stats.fused} tracks fused`);
   return stats;
 }
-
-export function relabel(mapper, from, to) {
-  for (let k = 0; k < mapper.n; k++) if (mapper.segment[k] === from) mapper.segment[k] = to;
-}
-

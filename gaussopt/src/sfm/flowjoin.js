@@ -10,15 +10,15 @@
 //     homography, in the camera's own normalized coordinates, is a rotation within maxSpread);
 //   - centre: b at a's centre (the flow says the camera turned in place);
 //   - scale: B's speed at its start matches A's at its end (an assumption: no point is seen on both sides).
-// B's segment, whole, is moved into A's world (loop.js transformSegment) and joins A's; the keyframes
+// B's segment, whole, is moved into A's world (SequentialMapper.transformSegment) and joins A's; the keyframes
 // between a and b get a's centre and their flow rotation. The refinement after it (reconstruct.js)
 // adjusts them to their points.
 "use strict";
 
+import { dist } from '../math.js';
 import { intrinsics, poseCenter, poseFromCenter } from './camera.js';
 import { mul3, transpose3, mulVec3, svd, det3, projectToSO3, invert3, rotationAngle } from './linalg.js';
 import { deg, quantile } from './util.js';
-import { transformSegment, relabel } from './loop.js';
 
 const DEFAULTS = {
   maxGapSeconds: 3,    // the most time between a and b
@@ -52,7 +52,7 @@ function speed(mapper, frames, q) {
   for (let k = 1; k < frames.length; k++) {
     const a = frames[k - 1], b = frames[k], dt = mapper.images[b].time - mapper.images[a].time;
     const Ca = poseCenter(mapper.poses[a]), Cb = poseCenter(mapper.poses[b]);
-    if (dt > 0) v.push(Math.hypot(Cb[0] - Ca[0], Cb[1] - Ca[1], Cb[2] - Ca[2]) / dt);
+    if (dt > 0) v.push(dist(Cb, Ca) / dt);
   }
   return quantile(v, q);
 }
@@ -83,8 +83,8 @@ export function joinByFlow(mapper, options = {}) {
       if (!(vA > 0 && vB > 0)) { o.log(`${tag}: a piece does not move (speeds ${vA}, ${vB})`); continue; }
       const s = vA / vB, Ra = mapper.poses[a].R, Ca = poseCenter(mapper.poses[a]);
       const RbA = mul3(rot.R, Ra), GR = mul3(transpose3(RbA), mapper.poses[b].R), r = mulVec3(GR, poseCenter(mapper.poses[b]));
-      transformSegment(mapper, B.seg, { s, R: GR, t: [Ca[0] - s * r[0], Ca[1] - s * r[1], Ca[2] - s * r[2]] });
-      relabel(mapper, B.seg, A.seg);
+      mapper.transformSegment(B.seg, { s, R: GR, t: [Ca[0] - s * r[0], Ca[1] - s * r[1], Ca[2] - s * r[2]] });
+      mapper.relabelSegment(B.seg, A.seg);
       let carried = 0;
       for (let k = a + 1; k < b; k++) {
         if (mapper.poses[k]) continue;

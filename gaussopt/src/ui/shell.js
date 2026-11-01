@@ -154,7 +154,7 @@ export class Shell {
       colmap: colmap ? { cams: colmap.images.length, fromSfm: !!colmap.fromSfm } : null,
       trainer: tr ? { step: tr.stepCount, training: app.params.training, psnr: tr.lastPsnr, gt: !!app.gtAvailable } : null,
       mesh: app.meshState,
-      dome: app.domeState,
+      dome: app.domeStep.state,
     };
   }
 
@@ -169,11 +169,11 @@ export class Shell {
       case 'cameras': return sfm.run();
       case 'update': return sfm.requestSend('update');
       case 'send': return sfm.requestSend('restart');
-      case 'train': return app._setTraining(!app.params.training);
+      case 'train': return app.setTraining(!app.params.training);
       case 'step': return app.stepOnce();
       case 'mesh': this.show('export'); return app.saveMesh();
-      case 'dome': return app.buildDome();
-      case 'domeOff': return app.clearDome();
+      case 'dome': return app.domeStep.build();
+      case 'domeOff': return app.domeStep.set(null);
     }
   }
 

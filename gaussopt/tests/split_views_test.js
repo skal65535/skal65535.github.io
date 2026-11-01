@@ -1,6 +1,7 @@
-// reconcileAndGrow's split gate (octree.js, splitMinViews / visitsPerView): with N_eff = W^2 / S counting
+// reconcileAndGrow's split gate (densify.js, splitMinViews / visitsPerView): with N_eff = W^2 / S counting
 // view visits, a splat splits only when N_eff / visitsPerView reaches splitMinViews.
 import { LooseOctree, MOMENT_FLOATS } from '../src/octree.js';
+import { reconcileAndGrow } from '../src/densify.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
 import { assert, rng } from './util.js';
 
@@ -20,7 +21,7 @@ function scene() {
 function grow(opts) {
   const { params, moments, n } = scene();
   const oct = new LooseOctree({ maxLeafSize: 64 }).build(params, n, null);
-  return oct.reconcileAndGrow(params, n, moments, null,
+  return reconcileAndGrow(oct, params, n, moments, null,
                               { maxSplats: 10000, enableFloaters: false, enableMerge: false, visitsPerView: 10, ...opts }).stats;
 }
 

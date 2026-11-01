@@ -1,18 +1,13 @@
 // mesh.js: TSDF fusion + surface nets on exact depth maps of a sphere, seen from cameras all around it.
 import { depthBounds, Tsdf, colorVertices, finishColors, meshToPly, meshFromPly } from '../src/mesh.js';
-import { assert } from './util.js';
+import { assert, lookAt } from './util.js';
 
 const RADIUS = 1, W = 128, H = 128, F = 120;
 
 // A camera at `c` looking at the origin: R rows = right, down, forward (world -> camera), t = -R c
 function lookAtOrigin(c) {
   const f = c.map(x => -x / Math.hypot(...c));
-  const up = Math.abs(f[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
-  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-  const norm = (a) => a.map(x => x / Math.hypot(...a));
-  const r = norm(cross(f, up)), d = cross(f, r);
-  const R = [...r, ...d, ...f];
-  return { R, t: [0, 1, 2].map(k => -(R[3 * k] * c[0] + R[3 * k + 1] * c[1] + R[3 * k + 2] * c[2])) };
+  return lookAt(c, f, Math.abs(f[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]);
 }
 
 // 20 cameras on a Fibonacci sphere (at 64 x 64 pixels the coarse depth folds surface nets into

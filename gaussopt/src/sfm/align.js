@@ -1,8 +1,10 @@
 // align.js — Similarity alignment of point sets (Umeyama 1991): dst ~ s R src + t.
-// Used by loop closure (loop.js: Sim(3) between segments) and P3P (geometry.js: rigid pose).
+// Used by loop closure (loop.js: Sim(3) between segments), P3P (geometry.js: rigid pose) and the SfM panel's
+// camera update (robustUmeyama).
 "use strict";
 
 import { svd, transpose, matMul, det3, mulVec3 } from './linalg.js';
+import { apply } from './sim3.js';
 
 // The centroid of points [[x, y, z]]
 export const mean = (P) => [0, 1, 2].map(k => P.reduce((s, p) => s + p[k], 0) / P.length);
@@ -31,4 +33,18 @@ export function umeyama(src, dst, { withScale = true } = {}) {
   const rms = mulVec3(R, ms);
   const t = [md[0] - s * rms[0], md[1] - s * rms[1], md[2] - s * rms[2]];
   return { s, R, t };
+}
+
+// umeyama refitted once without the pairs whose residual exceeds 3x the median (e.g. the cameras a repair moved)
+export function robustUmeyama(src, dst) {
+  let idx = src.map((_, k) => k), G = null;
+  for (let pass = 0; pass < 2; pass++) {
+    G = umeyama(idx.map(k => src[k]), idx.map(k => dst[k]));
+    const res = src.map((p, k) => Math.hypot(...apply(G, p).map((x, d) => x - dst[k][d])));
+    const med = [...res].sort((a, b) => a - b)[res.length >> 1];
+    const keep = src.map((_, k) => k).filter(k => res[k] <= 3 * med + 1e-12);
+    if (keep.length < 3 || keep.length === idx.length) break;
+    idx = keep;
+  }
+  return G;
 }

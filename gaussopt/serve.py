@@ -157,6 +157,22 @@ def copy_body(rfile, out, length):
     return done
 
 
+def write_body(rfile, target, length):
+    """`length` bytes of a request body into file `target` (its folder made), whole or not at all: through a
+    temporary file beside it. ValueError when the body is cut short, OSError when the file cannot be written."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".upload-")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            got = copy_body(rfile, out, length)
+        if got != length:
+            raise ValueError(f"upload cut short: {got} of {length} bytes")
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
     gs_map = {}
     default_ds = None     # mount path, set by main()
@@ -264,17 +280,7 @@ class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
         if length is None:
             return
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".upload-")
-            try:
-                with os.fdopen(fd, "wb") as out:
-                    got = copy_body(self.rfile, out, length)
-                if got != length:
-                    raise ValueError(f"upload cut short: {got} of {length} bytes")
-                os.replace(tmp, target)
-            finally:
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
+            write_body(self.rfile, target, length)
         except ValueError as e:
             self._json(400, {"ok": False, "error": str(e)})
             return
@@ -389,15 +395,13 @@ class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
         if length is None:
             return
         try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            with open(out_file, "wb") as out:
-                got = copy_body(self.rfile, out, length)
+            write_body(self.rfile, out_file, length)
+        except ValueError as e:
+            self._json(400, {"ok": False, "error": str(e)})
+            return
         except OSError as e:
             print(f"[serve.py] cannot save {out_file}: {e.strerror or e}", file=sys.stderr, flush=True)
             self._json(500, {"ok": False, "error": f"cannot write {out_file}: {e.strerror or e}"})
-            return
-        if got != length:
-            self._json(400, {"ok": False, "error": f"upload cut short: {got} of {length} bytes"})
             return
         print(f"[serve.py] Saved {out_file} ({length} bytes)", flush=True)
         self._json(200, {"ok": True, "path": str(out_file), "bytes": length})

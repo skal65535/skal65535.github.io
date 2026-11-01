@@ -30,9 +30,9 @@ await run(async (page) => {
   await wait(() => window.app?.sfm?.state.status === 'ready');
   await page.evaluate(() => window.app.sfm.run(null, true));
   await wait(() => window.app.trainer?.count > 0 && window.app.colmap?.fromSfm && window.app.gtAvailable);  // the photos are readable
-  await page.evaluate(() => window.app._setTraining(true));
+  await page.evaluate(() => window.app.setTraining(true));
   await wait((n) => window.app.trainer.stepCount >= n, STEPS);
-  await page.evaluate(() => window.app._setTraining(false));
+  await page.evaluate(() => window.app.setTraining(false));
   await new Promise(r => setTimeout(r, 2000));  // the frame in flight finishes its steps
   const before = await page.evaluate(() => ({ step: window.app.trainer.stepCount, cams: window.app.colmap.images.length,
                                               keyframes: window.app.sfm.quality.frames.length }));

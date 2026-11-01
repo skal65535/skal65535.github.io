@@ -50,7 +50,7 @@ export function rgbPsnrAffine(a, b, W, H, bpr, { masked = false } = {}) {
   return { psnr: psnrOf(sumSq / (Math.max(1, n) * 3)), gain: fit.map(f => f[0]), offset: fit.map(f => f[1] / 255) };
 }
 
-// PSNR over parts of the image (null for an empty part): covered / uncovered, by the render's own final
+// PSNR over parts of the image (null for an empty part), and over all of it (all: rgbPsnr's): covered / uncovered, by the render's own final
 // transmittance (pix: tile_forward's pix_state, 4 floats per pixel, T_final first; covered: T_final < tMax,
 // as meanDepthSpread), with coverage the covered fraction of the pixels; centre / border, the middle half
 // of the width and height (a quarter of the pixels) and the rest. Covered alone can be gamed by a model
@@ -73,7 +73,8 @@ export function rgbPsnrRegions(a, b, W, H, bpr, pix, tMax = COVERED_T, { masked 
     }
   }
   const p = (k) => n[k] ? psnrOf(sq[k] / (3 * n[k])) : null;
-  return { covered: p(0), uncovered: p(1), coverage: n[0] / Math.max(1, n[0] + n[1]), centre: p(2), border: p(3) };
+  return { covered: p(0), uncovered: p(1), coverage: n[0] / Math.max(1, n[0] + n[1]), centre: p(2), border: p(3),
+           all: psnrOf((sq[0] + sq[1]) / (3 * Math.max(1, n[0] + n[1]))) };
 }
 
 // PSNR of the two images averaged over f x f blocks (the partial last row / column of blocks is

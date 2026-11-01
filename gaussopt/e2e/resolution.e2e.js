@@ -3,24 +3,16 @@
 // resolution doubles, the splats and the step count stay, training goes on at the new size (the loss's PSNR is
 // measured over its pixels) and the held-out views are scored at it.
 //   cd e2e && node resolution.e2e.js
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=4'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const train = async (n) => {
-      P.stop_after = n; app.trainStartStep = tr.stepCount;
-      app._setTraining(true);
-      for (const t0 = Date.now(); tr.stepCount < app.trainStartStep + n || P.training; await new Promise(res => setTimeout(res, 100)))
-        if (Date.now() - t0 > 120000) throw new Error(`stuck at step ${tr.stepCount}`);
-    };
+    const { train: trainOf } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n, 120000);
     await train(300);
     const a = { W: tr.trainW, H: tr.trainH, step: tr.stepCount, count: tr.count, val: (await tr.evaluateValidation())?.psnr };
     const params0 = tr.cpuParams.slice(0, 16 * 100);

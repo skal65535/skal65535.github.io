@@ -8,26 +8,16 @@
 // loss (smooth-L1 and L2) is not scale-invariant, so a brighter photo weighs it otherwise and moves its best gain. The
 // gradient cut (no sum into loss_acc), or its sign wrong, leaves them off.
 //   cd e2e && PORT=8791 node exposure.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const train = async (n) => {  // n steps more
-      P.stop_after = n;
-      app._setTraining(true);
-      const end = tr.stepCount + n;
-      for (const t0 = Date.now(); tr.stepCount < end || P.training; await new Promise(res => setTimeout(res, 100)))
-        if (Date.now() - t0 > 300000) throw new Error(`stuck at step ${tr.stepCount} of ${end}, training ${P.training}`);
-      await tr._drainLossRead();
-    };
+    const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, exposure_lr: 0.02, exposure_from: 0 });
@@ -37,16 +27,14 @@ await run(async (page) => {
     const off = views.map((_, i) => [0, 1, 2].map(c => 0.02 * Math.cos(2.9 * i + 1.1 * c)));
     for (const t of [lg, off]) for (let c = 0; c < 3; c++) { const m = t.reduce((s, x) => s + x[c], 0) / t.length; for (const x of t) x[c] -= m; }
     const W = tr.trainW, H = tr.trainH, bpr = tr.rowPitch;
-    for (const [i, v] of views.entries()) {
-      tr._lastHatKey = '';
-      const out = await tr._renderViewForward(v), [hat] = await tr._readback('expo_gt', [{ tex: out.hatTex }]), gt = hat.slice();
+    await photoIsRender(tr, views, (hat, i) => {
+      const gt = hat.slice();
       for (let y = 0; y < H; y++) for (let x = 0, o = y * bpr; x < W; x++, o += 4) {
         for (let c = 0; c < 3; c++) gt[o + c] = Math.max(0, Math.min(255, Math.round(255 * (Math.exp(lg[i][c]) * (hat[o + c] / 255 - 0.5) + 0.5 + off[i][c]))));
         gt[o + 3] = 255;
       }
-      tr.device.queue.writeTexture({ texture: out.gtTex }, gt, { bytesPerRow: bpr }, [W, H]);
-    }
-    tr._invalidateCaches();
+      return gt;
+    });
     await train(steps * 2 / 3);
     P.exposure_lr = 0.004;  // the rate's decay (posLrDecay) to 5% comes at the planned length, far past these steps
     await train(steps / 3);
@@ -63,10 +51,9 @@ await run(async (page) => {
     // (its render plus +-5 / 255: the loss linear there, smooth-L1's knee at 0.04), the 2D gradients (grads_2d,
     // adam_step skipped: it clears them) 0.8^2 = 0.64 times the latter's (the chain's factor g twice; 0.8 without it)
     const { Exposure } = await import('./src/exposure.js');
-    const v = views[0], img = tr.images[v], k = tr._intrinsics(img), G = 0.8;
+    const v = views[0], img = tr.images[v], k = tr.intrinsics(img), G = 0.8;
     tr.exposure = new Exposure();
-    tr._lastHatKey = '';
-    const out = await tr._renderViewForward(v), [c] = await tr._readback('expo_c', [{ tex: out.hatTex }]);
+    const out = { gtTex: await tr.ensureGtTexture(v) }, { hat: c } = await tr.readView(v);
     const yB = c.slice(), yA = c.slice();
     for (let o = 0; o < c.length; o += 4) for (let ch = 0; ch < 3; ch++) {
       yB[o + ch] = Math.max(0, Math.min(255, c[o + ch] + (((o >> 2) * 7 + ch * 3) % 2 ? 5 : -5)));

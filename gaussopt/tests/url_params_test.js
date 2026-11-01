@@ -1,7 +1,7 @@
 // url.js urlAfterChange (names: params.js urlNamesOf): a UI change rewrites a param given in the URL (by name, alias or sfm_ name),
 // leaves the others as typed, and adds nothing
 import { urlNamesOf, URL_FLAGS } from '../src/params.js';
-import { urlAfterChange } from '../src/url.js';
+import { urlAfterChange, urlFlagOn, urlOptions, urlWithFirst } from '../src/url.js';
 import { assert } from './util.js';
 
 const eq = (a, b, what) => assert(a === b, `${what}: ${JSON.stringify(a)}, expected ${JSON.stringify(b)}`);
@@ -18,4 +18,16 @@ Deno.test('urlAfterChange: only params in the URL, by alias or name, the rest as
   eq(urlAfterChange('?target=0,0,0', urlNamesOf('target'), [1, 2.5, 3], URL_FLAGS), '?target=1,2.5,3', 'array');
   eq(urlAfterChange('?sfm_spacing=0.03&photos=/a/b.jpg', ['sfm_spacing'], 0.05), '?sfm_spacing=0.05&photos=/a/b.jpg', 'SfM panel');
   eq(urlAfterChange('?train', urlNamesOf('training'), false, URL_FLAGS), '', 'the last param');
+});
+
+Deno.test('urlOptions: the prefixed params of the defaults, of their types; a flag off for 0 / false / off / no', () => {
+  const o = urlOptions({ a: true, b: true, c: false, n: 1, s: 'x', u: 2 }, '?sfm_a=off&sfm_b=No&sfm_c=1&sfm_n=2.5&sfm_s=y&u=3', 'sfm_');
+  eq(JSON.stringify(o), JSON.stringify({ a: false, b: false, c: true, n: 2.5, s: 'y' }), 'options');
+  eq(['0', 'false', 'OFF', 'no', '1', 'true', 'on', ''].map(urlFlagOn).join(), 'false,false,false,false,true,true,true,true', 'flags');
+});
+
+Deno.test('urlWithFirst: the given params in front, encoded, their old values out, the rest as typed', () => {
+  eq(urlWithFirst('?ds=2&dataset=/old&train&ply=a.ply', [['dataset', '/datasets/a b'], ['ply', null]]), '?dataset=/datasets/a%20b&ds=2&train', 'dataset set, ply out');
+  eq(urlWithFirst('', [['dataset', '[synth]'], ['ply', null]]), '?dataset=%5Bsynth%5D', 'from none');
+  eq(urlWithFirst('?dataset=/x', [['dataset', null], ['ply', null]]), '', 'both out');
 });

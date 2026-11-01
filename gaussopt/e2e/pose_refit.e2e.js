@@ -5,35 +5,21 @@
 // same bit for bit; the exposures not kept (exposure_lr 0). Then the schedule: pose_refit 30, pose_from 30 steps on: a
 // refit logged 30 and 60 steps after pose_from (the first after the poses had pose_refit steps).
 //   cd e2e && PORT=8791 node pose_refit.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's dataset; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const train = async (n) => {
-      P.stop_after = n;
-      app._setTraining(true);
-      const end = tr.stepCount + n;
-      for (const t0 = Date.now(); tr.stepCount < end || P.training; await new Promise(res => setTimeout(res, 100)))
-        if (Date.now() - t0 > 300000) throw new Error(`stuck at step ${tr.stepCount} of ${end}`);
-      await tr._drainLossRead();
-    };
+    const { train: trainOf, photoIsRender, splatState, changedCount } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, pose_lr: 1e-9, pose_from: 0 });
-    const views = tr.trainViews, W = tr.trainW, H = tr.trainH, bpr = tr.rowPitch;
-    for (const v of views) {
-      tr._lastHatKey = '';
-      const out = await tr._renderViewForward(v), [hat] = await tr._readback('refit_gt', [{ tex: out.hatTex }]);
-      tr.device.queue.writeTexture({ texture: out.gtTex }, hat, { bytesPerRow: bpr }, [W, H]);
-    }
+    const views = tr.trainViews;
+    await photoIsRender(tr, views);
     const truth = tr.images.map(im => ({ R: im.R.slice(), center: im.center.slice() }));
     let seed = 7;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -52,12 +38,11 @@ await run(async (page) => {
       return { deg: Math.acos(Math.min(1, (t3 - 1) / 2)) * 180 / Math.PI, move: Math.hypot(...im.center.map((x, k) => x - T.center[k])) / R };
     });
     const mean = (a, k) => a.reduce((s, e) => s + e[k], 0) / a.length;
-    const state = async () => (await tr._readback('state', [{ buf: tr.splatsBuf, bytes: tr.count * 64 }, { buf: tr.adamMBuf, bytes: tr.count * 64 },
-                                                             { buf: tr.adamVBuf, bytes: tr.count * 64 }])).map(a => a.slice());
+    const state = () => splatState(tr);
     const e0 = errors(), s0 = await state();
     const info = await tr._withStepLock(() => tr._refitCameras(60));
     const e1 = errors(), s1 = await state();
-    const changed = s0.map((a, i) => a.reduce((c, x, j) => c + (Object.is(x, s1[i][j]) ? 0 : 1), 0));
+    const changed = changedCount(s0, s1);
     // the schedule
     Object.assign(P, { pose_refit: 30, pose_refit_iters: 2, pose_from: tr.stepCount + 30 });
     const logged = [];

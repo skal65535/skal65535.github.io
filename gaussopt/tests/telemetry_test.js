@@ -1,6 +1,6 @@
 // The train PSNR curve's mean over a pass (render.js passMean): each sample is one view's PSNR, the views in a
 // round robin, so the raw curve repeats the views' difficulty once a pass; the mean over a pass is flat.
-import { passMean } from '../src/render.js';
+import { passMean } from '../src/ui/telemetry.js';
 import { assert, assertClose } from './util.js';
 
 Deno.test('telemetry: the mean over a pass of a round robin of views is flat', () => {

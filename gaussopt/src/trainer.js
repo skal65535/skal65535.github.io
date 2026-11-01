@@ -1,179 +1,39 @@
 // trainer.js — Hybrid GPU/CPU 3DGS optimizer: GPU inner loop (project -> tile forward ->
 // tile backward + WLBG moments -> Adam / Monte-Carlo update), CPU outer
-// loop every `rebalance_every` steps (prune / grow / floaters / octree rebuild, see octree.js).
+// loop every `rebalance_every` steps (prune / grow / floaters / octree rebuild, see densify.js).
 "use strict";
 
 import { SPLAT_FLOATS } from './colmap.js';
 import { MOMENT_FLOATS } from './octree.js';
-import { loadShaders } from './render.js';
+import { reconcileAndGrow } from './densify.js';
+import { loadShaders } from './shaders.js';
+import { imageBlob } from './mesh_image.js';
 import { dispatch } from './gpu.js';
 import { ENV_N, ENV_TEXELS, envFromBytes, envToBytes } from './env.js';
 import { buildViewDepthGrid, seedsFromView } from './stipple.js';
 import { makeRegionGrid, regionStats, RegionTracker } from './regions.js';
 import { rgbPsnr, rgbPsnrDown, ssimMean, rgbPsnrRegions, rgbPsnrAffine, COVERED_T } from './metrics.js';
 import { Exposure, EXPO_FLOATS } from './exposure.js';
+import { LOSS_ENV_AT, LOSS_EXPO_AT, LOSS_WORDS, CAMG_FLOATS } from './loss_acc.js';
 import { Poses } from './poses.js';
+import { adamFrom } from './per_view.js';
 import { setPose } from './colmap.js';
+import { TRAIN_DEFAULTS, posLrDecay, shapeLimits, rebalanceDue, opacityResetDue, nextOpacityReset, seedPrepDue, splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, SEED_LEAD } from './schedule.js';
 
 const UNIFORM_BYTES = 224;     // TrainUniforms (shaders.wgsl): 56 x f32
-const EXPO_OFF  = 16 + ENV_TEXELS * 16;  // loss_acc's bytes of the camera's gradient: the exposure's (tile_backward EXPO_AT), then
-const CAMG_FLOATS = EXPO_FLOATS + 12;    // the pose's and the lens's (cam_reduce CAM_AT: rho, phi, log f, cx, cy, k1, 2 pad)
+const EXPO_OFF  = LOSS_EXPO_AT * 4;      // loss_acc's bytes of the camera's gradient (loss_acc.js)
 const EXPO_RING = 16;          // the camera gradients of this many steps read back at once (_expoRecord)
 const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry plot
-export const SEED_LEAD = 16;  // steps between the read of the stipple seeds' view and their rebalance (_prepareSeeds)
 const OPT_METHODS   = { adam: 0, monte_carlo: 1 };
 const BUF_RW   = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 const BUF_READ = () => GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST;
 
-// Defaults of the params a training step reads (the app's params start from these)
-export const TRAIN_DEFAULTS = {
-  // Optimizer extras: Monte-Carlo (3DGS-MCMC: noise, L1 terms, relocation)
-  mc_noise:        1e6,    // lambda_noise: SGLD noise on the nearly transparent splats' centers, x lr_pos x covariance (3DGS-MCMC: 5e5;
-                           // DESIGN.md §5.4)
-  mc_opacity_reg:  0.01,   // lambda_o: mean |opacity| added to the loss
-  mc_scale_reg:    0.01,   // lambda_s: mean |scale| (per axis)
-  mc_relocate:     'opacity',  // the live splats the dead ones move onto, drawn ~ 'opacity' or 'error'
-  mc_relocate_mode: 'copy',   // ... as copies in place (3DGS-MCMC) or 'shape': each one drawn splits within its shape (brush)
-  // Learning rates
-  lr_pos:          0.00002,  // x the scene radius, decaying to 1e-6 x it as brush's lr_mean (x its bounds' median side there;
-                             // 3DGS: 1.6e-4; DESIGN.md E11)
-  lr_pos_final:    0.05,   // lr_pos decays exponentially to lr_pos * lr_pos_final ...
-  lr_decay_steps:  10000,  // ... over the planned length (train_steps) or, open-ended, this many steps
-  lr_scale:        0.005,
-  lr_quat:         0.002,
-  lr_color:        0.0025,
-  lr_opacity:      0.01,   // brush's; higher floats splats under floors (DESIGN.md E9)
-  ssim:            0,      // D-SSIM loss weight (0 = off: 0.8 L1 + 0.2 L2), see tile_backward
-  bg_lr:           0,      // the background's learning rate (env.js, DESIGN.md E13; 0 = off: black)
-  exposure_lr:     0,      // each training view's exposure, its learning rate (exposure.js, DESIGN.md E19; 0 = off)
-  exposure_from:   1000,   // ... learned from this step on (the splats formed first)
-  pose_lr:         0,      // each training view's pose (poses.js, DESIGN.md E19; rad a visit, the translation x the scene radius; 0 = off)
-  lens_lr:         0,      // each lens's log focal (the principal point x the image's width; 0 = off)
-  pose_from:       1000,   // both from this step on
-  pose_prior:      0,      // their pull to the SfM's: the increments held within about this (degrees; 0 = none)
-  pose_refit:      0,      // every N steps (with pose_lr), each training camera refitted with the splats frozen (0 = never)
-  pose_refit_iters: 20,    // ... its steps a view
-  drop_rate:       0,      // DropGaussian: share of splats skipped in each training render (0 = off)
-  split_min_views: 0,      // growth splits only splats seen from at least this many views (N_eff; 0 = any)
-  split_mode:      'shape', // how a splat splits: 'shape' (within its own shape, as brush; DESIGN.md E9) or 'error' (along its error moments, §5.1)
-  opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)
-  opacity_reset_until: 15000,  // ... up to this step (3DGS: densify_until_iter), and half the planned length (train_steps)
-  // Shape limits (applied every Adam step; 0: none). Off by default, as brush: on, they shrink the long thin
-  // splats of grass and branches (DESIGN.md E11)
-  max_splat_angle: 0,      // max axis scale / depth, in the training view (e.g. 0.03)
-  max_splat_scale: 0,      // max axis scale, as a fraction of the scene radius (0.1)
-  max_anisotropy:  0,      // max ratio of the largest axis to the median one (10)
-};
-
-// lr_pos's factor at `step`: down exponentially to lr_pos_final over the planned length (train_steps), or
-// lr_decay_steps when open-ended, then flat
-export const posLrDecay = (P, step) =>
-  Math.pow(P.lr_pos_final, Math.min(1, step / Math.max(1, P.train_steps > 0 ? P.train_steps : P.lr_decay_steps)));
-
-// An Adam state starting at p (poses.js, exposure.js)
-const fresh = (p) => ({ p: Float64Array.from(p), m: new Float64Array(p.length), v: new Float64Array(p.length), t: 0 });
 // The angle in degrees between two rotations (row-major 3 x 3)
 const turnDeg = (A, B) => {
   let tr = 0;
   for (let i = 0; i < 9; i++) tr += A[i] * B[i];
   return Math.acos(Math.min(1, (tr - 1) / 2)) * 180 / Math.PI;
 };
-
-// The shape limits as TrainUniforms.limits.xyz: max scale / depth, max world scale, log(max anisotropy); 0 is none
-const NO_LIMIT = 1e6;
-export const shapeLimits = (P, R) => [
-  P.max_splat_angle > 0 ? P.max_splat_angle : NO_LIMIT,
-  (P.max_splat_scale > 0 ? P.max_splat_scale : NO_LIMIT) * R,
-  Math.log(P.max_anisotropy > 0 ? Math.max(1, P.max_anisotropy) : NO_LIMIT),
-];
-
-// Whether step `step` rebalances, the last rebalance at step `last`: rebalance_every steps
-// after it, rebalance_every_cap once `count` is at the splat cap (0: rebalance_every), and at
-// every opacity reset. While the lease's budget falls (consolidating, until consolidationEnd): rebalance_every
-// steps, and one at its end, so the count is max_splats from there
-export function rebalanceDue(P, step, last, count) {
-  if (consolidating(P, step)) {
-    const c1 = consolidationEnd(P);
-    if (last < c1 && step >= c1) return true;
-    if (step < c1) return step - last >= P.rebalance_every;
-  }
-  const atCap = P.rebalance_every_cap > 0 && count >= 0.99 * splatBudget(P, step);
-  return step - last >= (atCap ? P.rebalance_every_cap : P.rebalance_every) ||
-         (P.opacity_reset > 0 && step % P.opacity_reset === 0);
-}
-
-// The opacity reset (3DGS; not with monte_carlo, whose L1 term on the opacity prunes instead) at a rebalance
-// at `step`, the last one at `last`: when a multiple of opacity_reset is in (last, step], up to
-// opacity_reset_until and half the planned length (train_steps): the splats need the steps after the last one
-// to earn their opacity back
-export function opacityResetDue(P, step, last) {
-  const every = resetPeriod(P);
-  if (!(every > 0)) return false;
-  const m = Math.floor(step / every) * every;
-  return m > last && m <= resetUntil(P);
-}
-const resetPeriod = (P) => P.opt_method === 'monte_carlo' ? 0 : P.opacity_reset;
-const resetUntil = (P) => P.train_steps > 0 ? Math.min(P.opacity_reset_until, P.train_steps / 2) : P.opacity_reset_until;
-
-// The first step after `step` that may reset the opacities: the next multiple of opacity_reset, which rebalances
-// (rebalanceDue; while consolidating, the reset waits for the next rebalance), Infinity when none is left
-export function nextOpacityReset(P, step) {
-  const every = resetPeriod(P);
-  if (!(every > 0)) return Infinity;
-  const m = (Math.floor(step / every) + 1) * every;
-  return m <= resetUntil(P) ? m : Infinity;
-}
-
-// Whether the training loop (app.js) stops before its next step, at `step`: 'stop' stop_after steps after training
-// started (at `start`), 'val' right before an opacity reset when not validated at this step yet (at `lastVal`), so
-// validation reads the splats before the reset turns them nearly transparent, not just after
-export function haltBefore(P, step, lastVal, start) {
-  if (P.stop_after > 0 && step - start >= P.stop_after) return 'stop';
-  if (P.val_every > 0 && lastVal < step && nextOpacityReset(P, step) === step + 1) return 'val';
-  return null;
-}
-
-// The splat budget at `step` (DESIGN.md §9 E7): max_splats, or with a planned length (train_steps > 0) and a
-// lease (cap_lease > 0), max_splats x (1 + cap_lease) until the consolidation, the last consolidate_frac of the
-// steps: there it falls linearly back to max_splats over the first 3/4, the rest trains at max_splats
-export const consolidationEnd = (P) => P.train_steps * (1 - 0.25 * P.consolidate_frac);
-// Whether step `step` (no rebalance), the last rebalance at `last`, starts the stipple seeds of the next one
-// (GaussOptTrainer._prepareSeeds): it is due SEED_LEAD steps on, seeds it, and this window has none yet (`prepStep`,
-// the step of the last ones made, or undefined). A rebalance that comes earlier seeds in the page.
-export function seedPrepDue(P, step, last, count, prepStep) {
-  const ahead = step + SEED_LEAD;
-  if (!P.enable_rebalance || !P.stipple_seed || !(Number(P.stipple_count) > 0) || prepStep > last) return false;
-  return rebalanceDue(P, ahead, last, count) && !consolidating(P, ahead);
-}
-
-export function splatBudget(P, step) {
-  const T = P.train_steps, lease = P.cap_lease;
-  if (!(T > 0) || !(lease > 0)) return P.max_splats;
-  const c0 = T * (1 - P.consolidate_frac), c1 = consolidationEnd(P);
-  const f = step <= c0 ? 1 : step >= c1 ? 0 : (c1 - step) / (c1 - c0);
-  return Math.round(P.max_splats * (1 + lease * f));
-}
-// The consolidation's keep score: each splat's W (visibility mass) per window, averaged over the windows it
-// lived with a decay of 0.7 a window (a video's window does not visit every view). vis: { sum, norm, score } or null
-export function visibilityScore(vis, moments, count) {
-  const sum = new Float32Array(count), norm = new Float32Array(count), score = new Float32Array(count);
-  const ok = vis?.sum.length === count;
-  for (let i = 0; i < count; i++) {
-    sum[i] = (ok ? 0.7 * vis.sum[i] : 0) + moments[i * MOMENT_FLOATS];
-    norm[i] = (ok ? 0.7 * vis.norm[i] : 0) + 1;
-    score[i] = sum[i] / norm[i];
-  }
-  return { sum, norm, score };
-}
-// through a rebalance: src[i] = the pre-rebalance index of splat i (-1: new, no history)
-export function remapVisibility(vis, src) {
-  const sum = new Float32Array(src.length), norm = new Float32Array(src.length);
-  for (let i = 0; i < src.length; i++) if (src[i] >= 0) { sum[i] = vis.sum[src[i]]; norm[i] = vis.norm[src[i]]; }
-  return { sum, norm, score: null };
-}
-// the last consolidate_frac of a planned length: the lease's consolidation, and with polish Monte-Carlo's noise and L1 terms off
-export const endPhase = (P, step) => P.train_steps > 0 && step > P.train_steps * (1 - P.consolidate_frac);
-export const consolidating = (P, step) => P.cap_lease > 0 && endPhase(P, step);
 
 // Fixed-point (x65536) 64-bit squared-error sum [lo, hi] of loss_acc
 const lossFixed = (u32) => u32[1] * 4294967296 + u32[0];
@@ -186,7 +46,7 @@ function meanDepthSpread(pix) {
 }
 
 // Per part, the mean over the views that have it (rgbPsnrRegions; null when none does)
-export function meanRegions(perView) {
+function meanRegions(perView) {
   return Object.fromEntries(Object.keys(perView[0] ?? {}).map(k => {
     const v = perView.map(r => r[k]).filter(x => x !== null);
     return [k, v.length ? v.reduce((x, y) => x + y, 0) / v.length : null];
@@ -237,6 +97,7 @@ export class GaussOptTrainer {
     this.refineLeft     = 0;  // display: GPU refine passes still owed after the view stopped
     this.numVisibleView = 0;  // display-view sort (viewIdxBuf)
     this.sortGen    = 0;      // bumped whenever cpuParams / octree change: invalidates the CPU sorts
+    this.envGen     = 0;      // bumped when the background is set (setEnv, setDome): invalidates the hatTex render
 
     this.stepCount     = 0;
     this.lastRebalanceStep = 0;  // step of the last rebalance (rebalanceDue)
@@ -259,7 +120,7 @@ export class GaussOptTrainer {
     this.seedPrep      = null;  // { step, job }: the next rebalance's stipple seeds, in the making (_prepareSeeds)
     this.seedWorker    = null;  // stipple_worker.js, once used
     // Monte-Carlo's noise moves the faint splats with no bound: out of 1.25 times the starting octree's root (the box of
-    // the initial splats), one is dead (octree.js reconcileAndGrow `bounds`)
+    // the initial splats), one is dead (densify.js reconcileAndGrow `bounds`)
     const root = octree.root;
     this.sceneBox = root ? { center: [root.cx, root.cy, root.cz], halfSize: 1.25 * root.halfSize } : null;
     this.exposure   = new Exposure();  // the training views' (exposure.js), by image name
@@ -307,9 +168,7 @@ export class GaussOptTrainer {
   // step count stay; the per-pixel buffers are made again and the ground truths reloaded at the new size
   async setDownsample(ds) {
     return this._withStepLock(async () => {
-      while (this.gtLoading.size) await Promise.allSettled([...this.gtLoading.values()]);
-      for (const tex of this.gtTextures.values()) tex.destroy();
-      this.gtTextures.clear();
+      await this._dropGtTextures();
       for (const v of [this.hatTex, this.ssimCoefBuf, this.ssimSumsBuf, this.ssimGradTex, this.pixStateBuf,
                        this.tileCountsBuf, this.tileCursorBuf, this.tileRangesBuf]) v.destroy();
       this.params.downsample = ds;
@@ -318,6 +177,24 @@ export class GaussOptTrainer {
       this.seedPrep = null;  // its view was read at the old size
       this.sortGen++;
     });
+  }
+
+  // The octree changed: `octree` in its place, or this one rebuilt or loosened (beta); the sorts are made again.
+  // `upload`: the splats from cpuParams again (the build reordered them), their moments and Adam state reset.
+  setOctree(octree = this.octree, { upload = false } = {}) {
+    this.octree = octree;
+    if (upload) this._uploadSplats();
+    else this.sortGen++;
+  }
+
+  // The ground truths being loaded, loaded; then every one dropped (its texture freed)
+  async _settleGtLoads() {
+    while (this.gtLoading.size) await Promise.allSettled([...this.gtLoading.values()]);
+  }
+  async _dropGtTextures() {
+    await this._settleGtLoads();
+    for (const tex of this.gtTextures.values()) tex.destroy();
+    this.gtTextures.clear();
   }
 
   // Forget the cached training sort, display sort key and hatTex render
@@ -337,9 +214,7 @@ export class GaussOptTrainer {
   // unusable afterwards (step / renders return null).
   async destroy() {
     return this._withStepLock(async () => {
-      while (this.gtLoading.size) await Promise.allSettled([...this.gtLoading.values()]);
-      for (const tex of this.gtTextures.values()) tex.destroy();
-      this.gtTextures.clear();
+      await this._dropGtTextures();
       for (const v of [...Object.values(this), ...(this.refineUniformBufs || [])]) {
         if (v instanceof GPUBuffer || v instanceof GPUTexture) v.destroy();
       }
@@ -376,7 +251,7 @@ export class GaussOptTrainer {
       this._buffer(`sort_refine_${k}`, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST));
 
     this.trainUniformBuf = this._buffer('train_uniforms', UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-    this.lossBuf     = this._buffer('loss_acc', EXPO_OFF + CAMG_FLOATS * 4, BUF_RW());  // + the background's and the camera's gradients
+    this.lossBuf     = this._buffer('loss_acc', LOSS_WORDS * 4, BUF_RW());  // + the background's and the camera's gradients
     this.expoRingBuf = this._buffer('expo_ring', EXPO_RING * CAMG_FLOATS * 4, BUF_RW());
     this.lossReadBuf = this._buffer('loss_read', 16, BUF_READ());
     // the background (env.js): rgb + pad a texel (env_adam's), Adam's moments, and the texture the tile passes read
@@ -467,12 +342,7 @@ export class GaussOptTrainer {
   async _loadGtTexture(imgIdx) {
     const imgInfo = this.images[imgIdx];
     if (!imgInfo) return null;
-    let blob = imgInfo.fileBlob;
-    if (!blob && imgInfo.imageUrl) {
-      const resp = await fetch(imgInfo.imageUrl);
-      if (!resp.ok) throw new Error(`Failed to fetch ${imgInfo.imageUrl}`);
-      blob = await resp.blob();
-    }
+    const blob = await imageBlob(imgInfo);
     if (!blob) return null;
 
     const size = [this.trainW, this.trainH];
@@ -500,10 +370,10 @@ export class GaussOptTrainer {
     return tex;
   }
 
-  // Intrinsics of image `img` at training resolution (+ NDC-normalized focals for the sort).
-  _intrinsics(img) {
+  // Intrinsics of image `img` at training resolution (+ NDC-normalized focals for the sort), at `zoom` x its focals.
+  intrinsics(img, zoom = 1) {
     const c = img.camera;
-    const fx = c.fx * this.scaleFx, fy = c.fy * this.scaleFy;
+    const fx = c.fx * this.scaleFx * zoom, fy = c.fy * this.scaleFy * zoom;
     return { fx, fy, cx: c.cx * this.scaleFx, cy: c.cy * this.scaleFy, k1: c.k1Residual ?? 0,  // poses.js
              fxNorm: 2 * fx / this.trainW, fyNorm: 2 * fy / this.trainH };
   }
@@ -548,6 +418,7 @@ export class GaussOptTrainer {
   // The list capacity follows the entry count read back asynchronously: an overflow
   // (entries dropped for that render) grows it for the next one.
   _runPasses(gtTex = null, extra = null) {
+    this._lastHatKey = '';  // hatTex is drawn again
     const n = this.numVisible, U = this.trainUniformBuf, B = this.binUniformBuf;
     const nTiles = this.tilesX * this.tilesY;
     this.device.queue.writeBuffer(B, 0, new Uint32Array([n, this.tilesX, nTiles, this.tileListCapacity]));
@@ -579,7 +450,7 @@ export class GaussOptTrainer {
         this._pass(enc, this.pipeEnvAdam, [U, this.envBuf, this.lossBuf, this.envMBuf, this.envVBuf], Math.ceil(ENV_TEXELS / 64));
         enc.copyBufferToTexture({ buffer: this.envBuf, bytesPerRow: ENV_N * 16 }, { texture: this.envTex }, [ENV_N, 6 * ENV_N]);
       } else {
-        enc.clearBuffer(this.lossBuf, 16, ENV_TEXELS * 16);  // the background's part (the exposure's is read after: _expoRecord)
+        enc.clearBuffer(this.lossBuf, LOSS_ENV_AT * 4, ENV_TEXELS * 16);  // the background's part (the exposure's is read after: _expoRecord)
       }
       // per-splat 2D->3D chain rule + Adam / MC update, over the visible splats only (the ones with grads)
       this._pass(enc, this.pipeAdam, [U, this.splatsBuf, this.grads2dBuf, this.adamMBuf, this.adamVBuf, this.momentsBuf,
@@ -605,6 +476,20 @@ export class GaussOptTrainer {
       }
       return total;
     }).catch(() => {}).finally(() => { this.binStatsPending = null; });
+  }
+
+  // The splats, their moments and Adam's m and v read back, after the `first` sources' (_readback's)
+  _readSplatState(label, first = []) {
+    const splatBytes = this.count * SPLAT_FLOATS * 4;
+    return this._readback(label, [...first, { buf: this.splatsBuf, bytes: splatBytes }, { buf: this.momentsBuf, bytes: this.count * MOMENT_FLOATS * 4 },
+                                  { buf: this.adamMBuf, bytes: splatBytes }, { buf: this.adamVBuf, bytes: splatBytes }]);
+  }
+
+  // The splats read back into cpuParams (and the octree's extents unless not `extents`): the CPU sorts are made again
+  _toCpuParams(params, { extents = true } = {}) {
+    this.cpuParams.set(params);
+    if (extents) this.octree.updateExtents(this.cpuParams);
+    this.sortGen++;
   }
 
   // Copy GPU resources into one staging buffer and return CPU copies, one per source.
@@ -773,21 +658,27 @@ export class GaussOptTrainer {
     return this._renderViewForward(viewIdx);
   }
 
-  // Lock-free version, for callers already holding the step lock. Cached per (view, step, count).
-  async _renderViewForward(viewIdx) {
+  // Lock-free version, for callers already holding the step lock; `zoom` scales the focals (a wider view at zoom < 1).
+  // Cached per view, pose, intrinsics, exposure, step, splats and background, until another render draws hatTex.
+  async _renderViewForward(viewIdx, zoom = 1) {
     if (this.images.length === 0 || this.count === 0) return null;
     const idx = Math.min(Math.max(0, viewIdx | 0), this.images.length - 1);
     const gtTex = await this.ensureGtTexture(idx);
     if (!gtTex || this.destroyed) return null;  // destroy() may have run meanwhile (no step lock here)
     const out = { viewIdx: idx, gtTex, hatTex: this.hatTex };
-    const hatKey = `${idx}:${this.stepCount}:${this.count}`;
+    const img = this.images[idx], k = this.intrinsics(img, zoom);
+    const hatKey = `${idx}:${this.stepCount}:${this.count}:${this.sortGen}:${this.envGen}:${k.fx},${k.fy},${k.cx},${k.cy},${k.k1}:${this.exposure.uniforms(img.name).join()}${viewKey(img.view)}`;
     if (this._lastHatKey === hatKey) return out;
+    if (await this._draw(img, k)) this._lastHatKey = hatKey;
+    return out;
+  }
 
-    const img = this.images[idx];
-    const k = this._intrinsics(img);
-    if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return out;
-    // drawn again while its (tile, splat) entries overflowed the lists: they grow after the render that needed more,
-    // which dropped the rest (the tiles filled last empty). A training step lives with it; one render does not
+  // Forward-render camera `img` (an image, or any camera setPose made) with intrinsics k into hatTex; false when no
+  // splat is in view (hatTex left as it was). Drawn again while its (tile, splat) entries overflowed the lists: they
+  // grow after the render that needed more, which dropped the rest (the tiles filled last empty). A training step
+  // lives with it; one render does not
+  async _draw(img, k) {
+    if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return false;
     for (let tries = 0; tries < 3; tries++) {
       await this.binStatsPending;  // its read-back buffer free: this render's count is read
       const capacity = this.tileListCapacity;
@@ -795,8 +686,36 @@ export class GaussOptTrainer {
       this._runPasses();
       if (!((await this.binStatsPending) > capacity)) break;
     }
-    this._lastHatKey = hatKey;
-    return out;
+    return true;
+  }
+
+  // View `view` read back: `what` of 'hat' (its render), 'gt' (its photo), both rgba8 in rows of rowPitch bytes, and
+  // 'pix' (pix_state, 4 floats a pixel: [T, z_med, last_k, spread]), with the intrinsics `k` it was drawn with;
+  // rendered unless only 'gt' is asked, at `zoom` x its focals. `view`: an image index, or a camera setPose made (no
+  // 'gt'; null when no splat is in view). Null without splats or the photo. Takes the step lock; _readView is for
+  // callers holding it.
+  async readView(view, what = ['hat'], opts) {
+    return this._withStepLock(() => this._readView(view, what, opts));
+  }
+  async _readView(view, what, { zoom = 1 } = {}) {
+    let out;
+    if (typeof view === 'object') {
+      const k = this.intrinsics(view, zoom);
+      if (this.count === 0 || !await this._draw(view, k)) return null;
+      out = { k };
+    } else {
+      if (!this.images.length) return null;
+      const idx = Math.min(Math.max(0, view | 0), this.images.length - 1);
+      out = what.some(w => w !== 'gt') ? await this._renderViewForward(idx, zoom) : { viewIdx: idx, gtTex: await this.ensureGtTexture(idx) };
+      if (!out?.gtTex) return null;
+      out.k = this.intrinsics(this.images[idx], zoom);
+    }
+    const W = this.trainW, H = this.trainH;
+    const srcs = { hat: { tex: this.hatTex }, gt: { tex: out.gtTex }, pix: { buf: this.pixStateBuf, bytes: W * H * 16 } };
+    const data = await this._readback(`read_${what.join('_')}`, what.map(w => srcs[w]));
+    const r = { viewIdx: out.viewIdx, k: out.k };
+    what.forEach((w, i) => { r[w] = data[i]; });
+    return r;
   }
 
   // One GPU training iteration (next training camera, or `forcedCamIdx` if it is a training view).
@@ -812,7 +731,6 @@ export class GaussOptTrainer {
         this.lastRefitStep = this.stepCount;
         this.lastRefit = await this._refitCameras(P.pose_refit_iters);
       }
-      this._lastHatKey = '';
       return await this._stepImpl(forcedCamIdx);
     } finally {
       this.stepInFlight = false;
@@ -837,7 +755,7 @@ export class GaussOptTrainer {
     if (!gtTex) return null;
 
     const img = this.images[viewIdx];
-    const k = this._intrinsics(img);
+    const k = this.intrinsics(img);
     if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return null;
 
     this.stepCount++;
@@ -896,6 +814,7 @@ export class GaussOptTrainer {
   // background, fixed: the tile passes read it at its own size (env_taps_tex), tile_backward sends it no gradient, and
   // bg_lr is not applied while it is on. null: back to the learned background.
   setDome(rgb, n) {
+    this.envGen++;
     this.envTex.destroy();
     this.domeN = rgb ? n : 0;
     const m = this.domeN || ENV_N;
@@ -913,6 +832,7 @@ export class GaussOptTrainer {
   }
   setEnv(rgb) {
     if (this.domeN) throw new Error('setEnv: a dome is on (setDome(null) first)');
+    this.envGen++;
     const f32 = envFromBytes(rgb);
     this.device.queue.writeBuffer(this.envBuf, 0, f32);
     this.device.queue.writeTexture({ texture: this.envTex }, f32, { bytesPerRow: ENV_N * 16 }, [ENV_N, 6 * ENV_N]);
@@ -923,9 +843,7 @@ export class GaussOptTrainer {
     return this._withStepLock(async () => {
       await this._drainLossRead();
       const [params] = await this._readback('sync_splats', [{ buf: this.splatsBuf, bytes: this.count * SPLAT_FLOATS * 4 }]);
-      this.cpuParams.set(params);
-      this.octree.updateExtents(this.cpuParams);
-      this.sortGen++;
+      this._toCpuParams(params);
     });
   }
 
@@ -937,7 +855,7 @@ export class GaussOptTrainer {
     const c0 = this.images[0]?.camera, c1 = images[0]?.camera;
     if (c0 && c1 && (c0.width !== c1.width || c0.height !== c1.height)) throw new Error('replaceImages: the image size changed');
     return this._withStepLock(async () => {
-      while (this.gtLoading.size) await Promise.allSettled([...this.gtLoading.values()]);
+      await this._settleGtLoads();
       const index = new Map(images.map((im, i) => [im.name, i]));
       const textures = new Map();
       for (const [i, tex] of this.gtTextures) {
@@ -976,16 +894,8 @@ export class GaussOptTrainer {
   async readbackTrainingState() {
     return this._withStepLock(async () => {
       await this._drainLossRead();
-      const splatBytes = this.count * SPLAT_FLOATS * 4;
-      const [params, moments, adam_m, adam_v] = await this._readback('snapshot_read', [
-        { buf: this.splatsBuf,  bytes: splatBytes },
-        { buf: this.momentsBuf, bytes: this.count * MOMENT_FLOATS * 4 },
-        { buf: this.adamMBuf,   bytes: splatBytes },
-        { buf: this.adamVBuf,   bytes: splatBytes },
-      ]);
-      this.cpuParams.set(params);
-      this.octree.updateExtents(this.cpuParams);
-      this.sortGen++;
+      const [params, moments, adam_m, adam_v] = await this._readSplatState('snapshot_read');
+      this._toCpuParams(params);
       return {
         count:         this.count,
         stepCount:     this.stepCount,
@@ -1052,7 +962,6 @@ export class GaussOptTrainer {
       const W = this.trainW, H = this.trainH, bpr = this.rowPitch;
       try {
         for (const v of this.valViews) {
-          this._lastHatKey = '';
           const out = await this._renderViewForward(v);
           if (!out) continue;
           const enc = this.device.createCommandEncoder({ label: 'val_ssim' });
@@ -1065,14 +974,14 @@ export class GaussOptTrainer {
           // the camera's on-screen display (alpha 0 in the ground truth) left out of the PSNRs; the 1/4-resolution
           // one sees the photo's own values there, SSIM (on the GPU) the whole frame
           const masked = !!this.images[v].camera?.mask;
-          const psnr = rgbPsnr(gt, hat, W, H, bpr, { masked });
+          const { all: psnr, ...regions } = rgbPsnrRegions(gt, hat, W, H, bpr, pix, undefined, { masked });
           perView.push([this.images[v].name, psnr]);
           sumPsnr += psnr;
           sumFit += rgbPsnrAffine(gt, hat, W, H, bpr, { masked }).psnr;
           sumSsim += ssimMean(ssimSums, W, H);
           sumPsnr4 += rgbPsnrDown(gt, masked ? withMasked(hat, gt) : hat, W, H, bpr, 4);
           sumSpread += meanDepthSpread(pix);
-          perViewRegions.push(rgbPsnrRegions(gt, hat, W, H, bpr, pix, undefined, { masked }));
+          perViewRegions.push(regions);
           n++;
         }
       } finally {
@@ -1105,7 +1014,7 @@ export class GaussOptTrainer {
       this.device.queue.submit([enc.finish()]);
       await this.device.queue.onSubmittedWorkDone();
       saved.destroy();
-      this._writeUniforms(this.images[0], this._intrinsics(this.images[0]));  // camOnly off
+      this._writeUniforms(this.images[0], this.intrinsics(this.images[0]));  // camOnly off
       this._invalidateCaches();
     }
   }
@@ -1116,7 +1025,7 @@ export class GaussOptTrainer {
   async _fitCamera(img, gtTex, pose, expo, iters, extra, sigma = 0) {
     pose.apply([img]);
     for (let i = 0; i < iters; i++) {
-      const k = this._intrinsics(img), f = Math.pow(0.1, i / Math.max(1, iters - 1));
+      const k = this.intrinsics(img), f = Math.pow(0.1, i / Math.max(1, iters - 1));
       if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) break;
       this._writeUniforms(img, k, extra, true, true, true);
       this.device.queue.writeBuffer(this.lossBuf, 0, new Uint32Array(4));
@@ -1143,11 +1052,10 @@ export class GaussOptTrainer {
         if (!gtTex) continue;
         const { R, t } = img, c0 = img.center.slice(), expoHad = this.exposure.views.get(img.name);
         const pose = new Poses(this.poses.radius), expo = this.exposure;
-        pose.views.set(img.name, fresh(this.poses._between(img) ?? new Float64Array(6)));
-        expo.views.set(img.name, fresh(expoHad?.p ?? expo._between(img.name) ?? new Float64Array(6)));
+        pose.views.set(img.name, adamFrom(this.poses.between(img) ?? new Float64Array(6)));
+        expo.views.set(img.name, adamFrom(expoHad?.p ?? expo.between(img.name) ?? new Float64Array(6)));
         await this._fitCamera(img, gtTex, pose, expo, iters, extra);
-        this._lastHatKey = '';
-        const out = await this._renderViewForward(v), [gt, hat] = await this._readback('fit_val', [{ tex: out.gtTex }, { tex: this.hatTex }]);
+        const { gt, hat } = await this._readView(v, ['gt', 'hat']);
         perView.push([img.name, rgbPsnr(gt, hat, W, H, bpr, { masked: !!img.camera?.mask }), turnDeg(img.R, R),
                       Math.hypot(...img.center.map((x, k) => x - c0[k])) / this.poses.radius]);
         setPose(img, R, t);
@@ -1173,8 +1081,8 @@ export class GaussOptTrainer {
         if (!gtTex) continue;
         const R0 = img.R.slice(), c0 = img.center.slice(), expoHad = this.exposure.views.get(img.name);
         const pose = new Poses(this.poses.radius), expo = this.exposure;
-        pose.views.set(img.name, fresh(this.poses.views.get(img.name)?.p ?? new Float64Array(6)));
-        expo.views.set(img.name, fresh(expoHad?.p ?? new Float64Array(6)));
+        pose.views.set(img.name, adamFrom(this.poses.views.get(img.name)?.p ?? new Float64Array(6)));
+        expo.views.set(img.name, adamFrom(expoHad?.p ?? new Float64Array(6)));
         await this._fitCamera(img, gtTex, pose, expo, iters, extra, sigma);
         if (!this.poses.views.has(img.name)) this.poses.update(img, [0, 0, 0, 0, 0, 0], 0);  // a state for it
         this.poses.views.get(img.name).p.set(pose.views.get(img.name).p);
@@ -1210,14 +1118,13 @@ export class GaussOptTrainer {
   // next step's renders come after it). { viewIdx, read: promise of [gt, hat, pix], args: the rest of seedsFromView's }
   async _seedRead() {
     const viewIdx = this.trainViews[this.seedCursor++ % this.trainViews.length];
-    this._lastHatKey = '';
     const out = await this._renderViewForward(viewIdx);
     if (!out || this.numVisible === 0) return null;
     const W = this.trainW, H = this.trainH, img = this.images[viewIdx];
     const read = this._readback('stipple_readback', [
       { tex: out.gtTex }, { tex: this.hatTex }, { buf: this.pixStateBuf, bytes: W * H * 16 },
     ]);
-    const { fx, fy, cx, cy } = this._intrinsics(img);
+    const { fx, fy, cx, cy } = this.intrinsics(img);
     const depthGrid = this.points3D
       ? buildViewDepthGrid(img, this.points3D, this.scaleFx, this.scaleFy, W, H)
       : { grid: new Float32Array(1), gw: 1, gh: 1, cell: Math.max(W, H), median: 0.5 * (img.zMin + img.zMax) };
@@ -1267,17 +1174,9 @@ export class GaussOptTrainer {
     const ms = {}, t = [performance.now()], lap = (k) => { t.push(performance.now()); ms[k] = t.at(-1) - t.at(-2); };
     await this._drainLossRead();  // keep history in step order
     const P = this.params;
-    const splatBytes = this.count * SPLAT_FLOATS * 4;
-    const [loss, params, moments, adamM0, adamV0] = await this._readback('rebalance_read', [
-      { buf: this.lossBuf,    bytes: 16 },
-      { buf: this.splatsBuf,  bytes: splatBytes },
-      { buf: this.momentsBuf, bytes: this.count * MOMENT_FLOATS * 4 },
-      { buf: this.adamMBuf,   bytes: splatBytes },
-      { buf: this.adamVBuf,   bytes: splatBytes },
-    ]);
+    const [loss, params, moments, adamM0, adamV0] = await this._readSplatState('rebalance_read', [{ buf: this.lossBuf, bytes: 16 }]);
     this._recordLoss(lossFixed(new Uint32Array(loss.buffer, loss.byteOffset, 2)), this.stepCount, this.count);
-    this.cpuParams.set(params);
-    this.sortGen++;
+    this._toCpuParams(params, { extents: false });  // the extents: at its end (_uploadSplats)
     lap('read');
 
     // mean error mass R_i over active splats (diagnostic heatmap scale)
@@ -1314,7 +1213,7 @@ export class GaussOptTrainer {
       this.lastSeedInfo = null;
       let seedSplats = null;
       if (P.stipple_seed && !consolidating(P, this.stepCount)) {
-        // at the cap too: the seeds take the room the prunes free (octree.js reconcileAndGrow)
+        // at the cap too: the seeds take the room the prunes free (densify.js reconcileAndGrow)
         const nSeeds = Math.min(Number(P.stipple_count) || 0, P.max_splats);
         const prep = this.seedPrep?.step > this.lastRebalanceStep ? await this.seedPrep.job.catch(() => null) : null;
         this.seedPrep = null;
@@ -1327,7 +1226,7 @@ export class GaussOptTrainer {
         }
         lap('seed');
       }
-      const res = this.octree.reconcileAndGrow(this.cpuParams, this.count, moments, this.images, {
+      const res = reconcileAndGrow(this.octree, this.cpuParams, this.count, moments, this.images, {
         maxSplats:      budget,
         keepScore:      lease ? this.vis.score : null,
         repairMask,

@@ -1,11 +1,14 @@
 // util.js — Small helpers shared by the SfM modules: robust statistics, angles, matched keypoint
-// coordinates, string hash.
+// coordinates, timing.
 "use strict";
 
 import { dot } from '../math.js';
 import { mul3, transpose3 } from './linalg.js';
 
 export const deg = (radians) => radians * 180 / Math.PI;
+
+// Time since t (performance.now()) as 'x.x s'
+export const seconds = (t) => `${((performance.now() - t) / 1000).toFixed(1)} s`;
 
 // Median (mean of the two middle values for even lengths); NaN when empty
 export function median(values) {
@@ -32,13 +35,6 @@ export function matchedPixels(kpA, kpB, matches, stride = 2) {
     x2[k] = [kpB[stride * b], kpB[stride * b + 1]];
   }
   return [x1, x2];
-}
-
-// FNV-1a hash of a string (32 bits)
-export function hashString(str) {
-  let h = 2166136261;
-  for (let k = 0; k < str.length; k++) h = Math.imul(h ^ str.charCodeAt(k), 16777619);
-  return h >>> 0;
 }
 
 // Angle (radians) between two 3-vectors

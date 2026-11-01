@@ -6,7 +6,7 @@
 "use strict";
 
 import { atlas, bakeView, finishTexture, texelsOf } from './mesh_texture.js';
-import { decodeImage, mipLevels } from './mesh_image.js';
+import { decodeImage, mipLevels, imageBlob } from './mesh_image.js';
 import { SPLAT_FLOATS } from './colmap.js';
 
 // A depth view: { R (world -> camera, row-major 3x3), t, fx, fy, cx, cy, W, H,
@@ -206,24 +206,20 @@ export function meshToPly({ positions, faces, colors }) {
   return out;
 }
 
-// View `i` of a Trainer as a depth view (forward render; the caller holds the step lock), its rgb the
-// splat render, or the photo (at training size) when `photo`.
-// maxSpread: only pixels whose depth spread (pix_state.w, (z_q3 - z_q1) / z_med) is below it.
+// View `i` of a Trainer as a depth view (forward render), its rgb the splat render, or the photo (at training size)
+// when `photo`. maxSpread: only pixels whose depth spread (pix_state.w, (z_q3 - z_q1) / z_med) is below it.
 async function renderDepthView(tr, i, maxSpread, photo = false) {
   const W = tr.trainW, H = tr.trainH;
-  tr._lastHatKey = '';
-  const out = await tr._renderViewForward(i);
-  const r = out && await tr._readback('mesh_readback', [{ buf: tr.pixStateBuf, bytes: W * H * 16 }, { tex: photo ? out.gtTex : tr.hatTex }]);
+  const r = await tr.readView(i, ['pix', photo ? 'gt' : 'hat']);
   if (!r) return null;
-  const [pix, rgb] = r, depth = new Float32Array(W * H), img = tr.images[i], k = tr._intrinsics(img);
+  const { pix, k } = r, rgb = photo ? r.gt : r.hat, depth = new Float32Array(W * H), img = tr.images[i];
   for (let p = 0; p < W * H; p++) if (pix[4 * p] < 0.5 && pix[4 * p + 3] < maxSpread) depth[p] = pix[4 * p + 1];
   return { R: img.R, t: img.t, fx: k.fx, fy: k.fy, cx: k.cx, cy: k.cy, W, H, depth, rgb, pitch: tr.rowPitch };
 }
 
-// The Tsdf of a Trainer's current splats from views `ids` (image indices). lock(fn) runs fn under
-// the step lock (identity when the caller already holds it, as the rebalance does).
-export async function fuseTrainer(tr, ids, { res = 256, trunc = 3, freeWeight = 1, maxSpread = Infinity, lock = (fn) => fn(), onView = null } = {}) {
-  const render = (i) => lock(() => renderDepthView(tr, i, maxSpread));
+// The Tsdf of a Trainer's current splats from views `ids` (image indices)
+async function fuseTrainer(tr, ids, { res = 256, trunc = 3, freeWeight = 1, maxSpread = Infinity, onView = null } = {}) {
+  const render = (i) => renderDepthView(tr, i, maxSpread);
   const grid = new Tsdf(await sampleBounds(render, ids), { res, trunc, freeWeight });
   for (let n = 0; n < ids.length; n++) {
     const v = await render(ids[n]);
@@ -248,12 +244,7 @@ async function sampleBounds(render, ids) {
 // mesh_grow.js growBacking's inputs from a Trainer: its splats (from the GPU), its cameras (at their photos' size)
 // and the grid's bounds, those of its views' rendered depth (as fuseTrainer's)
 export async function backingInputs(tr, { maxSpread = Infinity } = {}) {
-  let bounds;
-  try {
-    bounds = await sampleBounds((i) => tr._withStepLock(() => renderDepthView(tr, i, maxSpread)), tr.images.map((im, i) => i));
-  } finally {
-    tr._invalidateCaches();
-  }
+  const bounds = await sampleBounds((i) => renderDepthView(tr, i, maxSpread), tr.images.map((im, i) => i));
   await tr.syncSplatsFromGpu();
   const cameras = tr.images.map(({ center, view, camera: c }) => ({ center: Array.from(center), view: Array.from(view), fx: c.fx, fy: c.fy, cx: c.cx, cy: c.cy,
                                                                     width: c.width, height: c.height }));
@@ -277,35 +268,26 @@ export function meshFromPly(buffer) {
 // The mesh of a Trainer's current splats, from the forward render of its views (every `stride`-th).
 // Returns { mesh: { positions, faces, colors }, info }; onProgress(phase, done, total) may be async.
 export async function meshFromTrainer(trainer, { res = 256, trunc = 3, freeWeight = 0.1, maxSpread = Infinity, stride = 1, minWeight = 1, onProgress = null } = {}) {
-  const tr = trainer, lock = (fn) => tr._withStepLock(fn);
+  const tr = trainer;
   const ids = tr.images.map((im, i) => i).filter(i => i % stride === 0);
   const t0 = performance.now();
-  try {
-    const grid = await fuseTrainer(tr, ids, { res, trunc, freeWeight, maxSpread, lock, onView: (n, of) => onProgress?.('fuse', n, of) });
-    const mesh = grid.extract({ minWeight });
-    const acc = new Float64Array(4 * mesh.positions.length / 3);
-    for (let n = 0; n < ids.length; n++) {
-      const v = await lock(() => renderDepthView(tr, ids[n], maxSpread));
-      if (v) colorVertices(mesh, v, grid.mu, acc);
-      await onProgress?.('color', n + 1, ids.length);
-    }
-    mesh.colors = finishColors(acc);
-    return { mesh, info: { views: ids.length, grid: grid.n, voxel: grid.voxel, trunc, bounds: { min: grid.origin, max: grid.n.map((n, k) => grid.origin[k] + (n - 1) * grid.voxel) },
-                           vertices: mesh.positions.length / 3, faces: mesh.faces.length / 3, ms: performance.now() - t0 } };
-  } finally {
-    tr._invalidateCaches();
+  const grid = await fuseTrainer(tr, ids, { res, trunc, freeWeight, maxSpread, onView: (n, of) => onProgress?.('fuse', n, of) });
+  const mesh = grid.extract({ minWeight });
+  const acc = new Float64Array(4 * mesh.positions.length / 3);
+  for (let n = 0; n < ids.length; n++) {
+    const v = await renderDepthView(tr, ids[n], maxSpread);
+    if (v) colorVertices(mesh, v, grid.mu, acc);
+    await onProgress?.('color', n + 1, ids.length);
   }
+  mesh.colors = finishColors(acc);
+  return { mesh, info: { views: ids.length, grid: grid.n, voxel: grid.voxel, trunc, bounds: { min: grid.origin, max: grid.n.map((n, k) => grid.origin[k] + (n - 1) * grid.voxel) },
+                         vertices: mesh.positions.length / 3, faces: mesh.faces.length / 3, ms: performance.now() - t0 } };
 }
 
 // Image `i` of a Trainer at its own size (the SfM's undistorted JPEG, or the dataset's file; larger
 // than the training size), with its 2 x 2 mean levels; null without a file
 async function photoLevels(tr, i) {
-  const im = tr.images[i];
-  let blob = im.fileBlob;
-  if (!blob && im.imageUrl) {
-    const r = await fetch(im.imageUrl);
-    if (r.ok) blob = await r.blob();
-  }
+  const blob = await imageBlob(tr.images[i]).catch(() => null);
   return blob ? mipLevels(await decodeImage(blob)) : null;
 }
 
@@ -314,19 +296,15 @@ async function photoLevels(tr, i) {
 // then at the training size) or splat render ('render') baked into it where its rendered depth is
 // within `tol` of the texel. Returns { mesh (with uvs), image: RGBA bytes, size, info }.
 export async function textureFromTrainer(trainer, mesh, { size = 2048, tol, ids = null, source = 'photo', full = true, maxSpread = Infinity, weight = 'footprint', power = 1, onProgress = null } = {}) {
-  const tr = trainer, lock = (fn) => tr._withStepLock(fn), t0 = performance.now();
+  const tr = trainer, t0 = performance.now();
   ids ??= tr.images.map((im, i) => i);
   const at = mesh.uvs ? { mesh, info: {} } : atlas(mesh, { size });
   const texels = texelsOf(at.mesh, size), acc = new Float64Array(4 * texels.index.length);  // power > 1: weights beyond float32
-  try {
-    for (let n = 0; n < ids.length; n++) {
-      const v = await lock(() => renderDepthView(tr, ids[n], maxSpread, source === 'photo'));
-      if (v && source === 'photo' && full) v.levels = await photoLevels(tr, ids[n]);  // null: no file, the training size
-      if (v) bakeView(texels, v, tol, acc, { weight, power });
-      await onProgress?.('texture', n + 1, ids.length);
-    }
-  } finally {
-    tr._invalidateCaches();
+  for (let n = 0; n < ids.length; n++) {
+    const v = await renderDepthView(tr, ids[n], maxSpread, source === 'photo');
+    if (v && source === 'photo' && full) v.levels = await photoLevels(tr, ids[n]);  // null: no file, the training size
+    if (v) bakeView(texels, v, tol, acc, { weight, power });
+    await onProgress?.('texture', n + 1, ids.length);
   }
   const { image, seen } = finishTexture(texels, size, acc);
   return { mesh: at.mesh, image, size, info: { ...at.info, texels: texels.index.length, used: texels.index.length / (size * size), overlap: texels.overlap,

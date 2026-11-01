@@ -10,7 +10,7 @@ import { DirStore, ServerStore, MemoryStore } from '../project/store.js';
 import { Project } from '../project/project.js';
 import { zipBlob } from '../project/zip.js';
 import { downloadBlob } from './download.js';
-import { loadColmapFromMemory } from '../colmap.js';
+import { loadColmapFromMemory, valSplitOf } from '../colmap.js';
 
 const IDB = 'gaussopt', IDB_STORE = 'handles', RECENT = 'recent-project';
 
@@ -118,7 +118,7 @@ export class ProjectPanel {
       app.sfm?.setStore(store.describe());  // first: a store the worker cannot take leaves nothing attached
       app.project = project;
       this.state.where = project.where;
-      app._setSnapshotsEnabled(app.serverOk);
+      app.setSnapshotsEnabled(app.serverOk);
       if (project.isNew) await this.fill(project);
       else await this.resume(project);
       app.log(`Project: ${project.where}`, 'ok');
@@ -127,11 +127,13 @@ export class ProjectPanel {
     }
   }
 
-  // What the page has, into a new project: the SfM session and its results (worker), the trainer's state
+  // What the page has, into a new project: the SfM session and its results (worker; a memory store's files come
+  // back to be written here), the trainer's state
   async fill(project) {
     const app = this.app;
     if (app.sfm?.videoName) await project.update({ source: app.sfm.sourceInfo(), ...app.sfm.keyframesRecord() });
-    if (app.sfm) await app.sfm.flush();
+    const files = app.sfm ? await app.sfm.flush() : null;
+    for (const [path, blob] of files ?? []) await project.write(path, blob);
     if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
     await project.update({ settings: app.settings(), transform: [...app.sceneTransform] });
   }
@@ -148,7 +150,7 @@ export class ProjectPanel {
     if (!await project.read('gs/sparse/cameras.bin')) return;
     const sparse = {};
     for (const f of ['cameras.bin', 'images.bin', 'points3D.bin']) sparse[f] = await (await project.read(`gs/sparse/${f}`))?.arrayBuffer();
-    const colmap = loadColmapFromMemory(sparse, [], { valSplit: m.source?.photos ? 'none' : app.params.val_split });  // sfm_panel valSplit
+    const colmap = loadColmapFromMemory(sparse, [], { valSplit: valSplitOf(!!m.source?.photos, app.params.val_split) });
     for (const im of colmap.images) {  // a folder's files are cheap to open; serve.py's are fetched by the trainer
       if (project.store.urlOf) im.imageUrl = project.store.urlOf(`gs/images/${im.name}`);
       else im.fileBlob = await project.read(`gs/images/${im.name}`);
@@ -171,11 +173,7 @@ export class ProjectPanel {
       const project = await Project.open(store);
       app.project = project;
       if (app.sfm) app.sfm.setStore(store.describe());
-      if (app.sfm?.videoName) await project.update({ source: app.sfm.sourceInfo() });
-      const files = app.sfm ? await app.sfm.flush() : [];
-      for (const [path, blob] of files ?? []) await store.write(path, blob);
-      if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
-      await project.update({ settings: app.settings(), transform: [...app.sceneTransform] });
+      await this.fill(project);
       const zip = await zipBlob([...store.files]);
       downloadBlob(zip, `${store.name}.zip`);
       app.log(`Downloaded ${store.name}.zip (${store.files.size} files, ${(zip.size / 1e6).toFixed(0)} MB)`, 'ok');

@@ -43,7 +43,7 @@ await run(async (page) => {
     find: [...document.querySelectorAll('#phase-foot button')].find(b => /Find cameras/.test(b.textContent))?.disabled ?? null,
   }));
   console.log(`Photos phase: ${JSON.stringify(ui)}`);
-  if (ui.title !== 'Photos' || ui.steps.join() !== 'Project,Photos,Cameras,Train,Export' || ui.timeline || !ui.sheet) fail(`Photos phase: ${JSON.stringify(ui)}`);
+  if (ui.title !== 'Photos' || ui.steps.join() !== 'Project,Photos,Cameras,Dome,Train,Export' || ui.timeline || !ui.sheet) fail(`Photos phase: ${JSON.stringify(ui)}`);
   if (!/^p001 · 24 mm · portrait · 0 s$/.test(ui.caption ?? '')) fail(`photo caption: ${ui.caption}`);
   if (ui.find !== false) fail(`Find cameras button: ${ui.find === null ? 'missing' : 'disabled'}`);
   await page.evaluate(() => [...document.querySelectorAll('#phase-foot button')].find(b => /Find cameras/.test(b.textContent)).click());
@@ -80,8 +80,7 @@ await run(async (page) => {
   if (!advice) fail('no shooting advice in the Cameras phase');
   console.log(`advice:\n${advice.split('\n').map(l => `  ${l}`).join('\n')}`);
   await page.waitForFunction(() => window.app.gtAvailable, null, { timeout: 120000 });
-  await page.evaluate((n) => { window.app.params.stop_after = n; window.app._setTraining(true); }, TRAIN_STEPS);
-  await page.waitForFunction((n) => window.app.trainer.stepCount >= n && !window.app.params.training, TRAIN_STEPS, { timeout: 15 * 60000, polling: 1000 });
+  await page.evaluate(async (n) => (await import('./e2e/page_util.js')).train(window.app, n, 15 * 60000), TRAIN_STEPS);
   const psnr = await page.evaluate(async () => {
     const tr = window.app.trainer, keep = tr.valViews;
     tr.valViews = tr.images.map((im, i) => i);

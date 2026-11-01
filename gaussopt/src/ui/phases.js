@@ -20,7 +20,7 @@ export const STATE_ICONS = { todo: '○', running: '●', done: '✓', stale: '�
 //              quality: { keyframes, registered, problems, version } | null, sentVersion: n | null } | null
 //   colmap:  { cams, fromSfm } | null           the trainer's cameras
 //   trainer: { step, training, psnr, gt? } | null
-//   dome:    { mode: 'auto' | 'off', running, result: { worth, farShare, fill (its name, null: a scene's) } | null } | null  the Dome step (app.js domeState)
+//   dome:    { mode: 'auto' | 'off', running, result: { worth, farShare, fill (its name, null: a scene's) } | null } | null  the Dome step (ui/dome_step.js state)
 //   mesh:    { running, step, faces?, texture?, mb?, error? } | null  the last Make mesh (app.js meshState)
 // }
 // Returns { [phase]: { state: 'todo' | 'running' | 'done' | 'stale' | 'skipped', summary } }.

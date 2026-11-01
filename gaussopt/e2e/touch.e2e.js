@@ -5,16 +5,13 @@
 // short); two fingers spread move it forward along its view. The status is one line along the view's bottom, and the
 // charts are drawn at the screen's pixels.
 //   cd e2e && node touch.e2e.js
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   await page.evaluate(() => {  // the charts' tab (a click on the open tab folds the dock)
     if (!document.querySelector('.dock-pane[data-tab="charts"]')?.classList.contains('shown')) document.querySelector('.dock-tabs button[data-tab="charts"]')?.click();
   });

@@ -1,6 +1,6 @@
-// rebalanceDue (trainer.js): the rebalance schedule, every K steps, every K_cap once the splat count
+// rebalanceDue (schedule.js): the rebalance schedule, every K steps, every K_cap once the splat count
 // is at the cap, and at each opacity reset; the stipple seeds made SEED_LEAD steps before each (seedPrepDue).
-import { rebalanceDue, opacityResetDue, haltBefore, seedPrepDue, SEED_LEAD } from '../src/trainer.js';
+import { rebalanceDue, opacityResetDue, haltBefore, seedPrepDue, SEED_LEAD } from '../src/schedule.js';
 import { assert } from './util.js';
 
 // Steps 1..steps that rebalance; count(step) = splat count before that step

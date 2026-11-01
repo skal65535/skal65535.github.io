@@ -8,8 +8,8 @@ import { writeSceneGlb, readSceneGlb, writePhotosGlb, readPhotosGlb, SCENE_FORMA
 import { parseGlb, readAccessor, readGlb } from '../src/glb.js';
 import { LooseOctree } from '../src/octree.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
-import { makeRng, levelTransform, upFromTransform, quatToMat3, sigmoid, IDENTITY4 } from '../src/math.js';
-import { assert } from './util.js';
+import { makeRng, levelTransform, upFromTransform, quatToMat3, sigmoid, IDENTITY4, normalize } from '../src/math.js';
+import { assert, lookAt } from './util.js';
 
 const rng = makeRng(5), N = 2000;
 function splats() {
@@ -27,10 +27,7 @@ function splats() {
 }
 // a camera at c looking along f (y down), as the dataset's views: column-major world -> camera
 function camera(name, c, f, isValidation = false) {
-  const n = (v) => v.map(x => x / Math.hypot(...v)), fw = n(f), r = n([fw[2], 0, -fw[0]]);
-  const d = [fw[1] * r[2] - fw[2] * r[1], fw[2] * r[0] - fw[0] * r[2], fw[0] * r[1] - fw[1] * r[0]];
-  const R = [...r, ...d, ...fw], t = [0, 1, 2].map(i => -(R[3 * i] * c[0] + R[3 * i + 1] * c[1] + R[3 * i + 2] * c[2]));
-  return { name, view: new Float32Array([R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[5], R[8], 0, t[0], t[1], t[2], 1]),
+  return { name, view: lookAt(c, normalize(f)).view,
            camera: { fx: 500, fy: 520, cx: 321.5, cy: 239.25, width: 640, height: 480 }, zMin: 0.5, zMax: 9.25, isValidation };
 }
 

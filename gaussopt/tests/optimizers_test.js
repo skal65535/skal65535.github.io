@@ -1,5 +1,6 @@
-// Monte-Carlo's CPU steps (DESIGN.md §5.4): the relocation of the dead splats (octree.js relocate, 3DGS-MCMC).
-import { LooseOctree, relocate, relocatedOpacityScale, MOMENT_FLOATS } from '../src/octree.js';
+// Monte-Carlo's CPU steps (DESIGN.md §5.4): the relocation of the dead splats (densify.js relocate, 3DGS-MCMC).
+import { LooseOctree, MOMENT_FLOATS } from '../src/octree.js';
+import { reconcileAndGrow, relocate, relocatedOpacityScale } from '../src/densify.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
 import { sigmoid, logit } from '../src/math.js';
 import { assert, assertClose, rng } from './util.js';
@@ -16,7 +17,7 @@ Deno.test('relocate: N copies keep the opacity at the center and the integrated 
   }
 });
 
-// a KeptSplats-like `out` (octree.js) of rows with opacities `ops`, unit scales
+// a KeptSplats-like `out` (densify.js) of rows with opacities `ops`, unit scales
 function rows(ops) {
   const n = ops.length, cap = n + 8, buf = new Float32Array(cap * SPLAT_FLOATS), src = new Int32Array(cap);
   ops.forEach((o, k) => { buf[k * SPLAT_FLOATS] = k; buf[k * SPLAT_FLOATS + 3] = o > 0 ? logit(o) : -Infinity; src[k] = k; });  // logit clamps 0 to 0.001: drawable
@@ -24,6 +25,7 @@ function rows(ops) {
     n, cap, buf, src,
     row(k) { return this.buf.subarray(k * SPLAT_FLOATS, (k + 1) * SPLAT_FLOATS); },
     _grow(c) { const b = new Float32Array(c * SPLAT_FLOATS), s = new Int32Array(c); b.set(this.buf); s.set(this.src); this.buf = b; this.src = s; this.cap = c; },
+    newRow() { if (this.n === this.cap) this._grow(2 * this.cap); this.src[this.n] = -1; return this.n++; },
   };
 }
 
@@ -71,7 +73,7 @@ function capped(seeds = 0) {
   }
   const oct = new LooseOctree({ maxLeafSize: 64 }).build(params, n, null);
   const seedSplats = seeds ? params.slice(150 * SPLAT_FLOATS, (150 + seeds) * SPLAT_FLOATS) : null;
-  return oct.reconcileAndGrow(params, n, moments, null, { maxSplats: n, enableFloaters: false, enableMerge: false,
+  return reconcileAndGrow(oct, params, n, moments, null, { maxSplats: n, enableFloaters: false, enableMerge: false,
                                                           optMethod: 'monte_carlo', seedSplats });
 }
 
@@ -91,7 +93,7 @@ Deno.test('monte_carlo: a splat out of `bounds` is dead and relocated in it (the
                  i * SPLAT_FLOATS);
       moments[i * MOMENT_FLOATS] = 10; moments[i * MOMENT_FLOATS + 1] = 10; moments[i * MOMENT_FLOATS + 2] = 0.01;
     }
-    const out = new LooseOctree({ maxLeafSize: 64 }).build(params, n, null).reconcileAndGrow(params, n, moments, null,
+    const out = reconcileAndGrow(new LooseOctree({ maxLeafSize: 64 }).build(params, n, null), params, n, moments, null,
       { maxSplats: n, enableFloaters: false, enableMerge: false, enableSplit: false, optMethod: 'monte_carlo', bounds });
     let far = 0;
     for (let i = 0; i < out.count; i++) if (Math.abs(out.params[i * SPLAT_FLOATS]) > 3) far++;
@@ -111,8 +113,8 @@ Deno.test('monte_carlo: a splat out of `bounds` is dead and relocated in it (the
   assert(Math.abs(oct.root.halfSize - 0.505 * 4) < 1e-6, `root half ${oct.root.halfSize}`);
 });
 
-// E7, the cap lease: the budget's schedule (trainer.js splatBudget) and the consolidation's trim (octree.js)
-import { splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, rebalanceDue } from '../src/trainer.js';
+// E7, the cap lease: the budget's schedule (schedule.js splatBudget) and the consolidation's trim (densify.js)
+import { splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, rebalanceDue } from '../src/schedule.js';
 
 Deno.test('cap lease: max_splats x (1 + lease) until the consolidation, then linearly back, then max_splats', () => {
   const P = { max_splats: 1000, cap_lease: 0.5, train_steps: 10000, consolidate_frac: 0.2 };
@@ -141,7 +143,7 @@ Deno.test('cap lease: over the budget the splats seen least go (or the lowest ke
       const moments = new Float32Array(n * MOMENT_FLOATS);
       for (let i = 0; i < n; i++) { moments[i * MOMENT_FLOATS] = p[i * F + 15] === 1 ? 1 : 10; moments[i * MOMENT_FLOATS + 1] = 10; moments[i * MOMENT_FLOATS + 2] = 0.01; }
       const keepScore = score ? Float32Array.from({ length: n }, (_, i) => p[i * F + 15] === 2 ? 1 : 5) : null;
-      const a = oct.reconcileAndGrow(p, n, moments, null, { maxSplats: 120, enableFloaters: false, enableMerge: false, optMethod, keepScore });
+      const a = reconcileAndGrow(oct, p, n, moments, null, { maxSplats: 120, enableFloaters: false, enableMerge: false, optMethod, keepScore });
       const marks = [0, 0, 0];
       for (let k = 0; k < a.count; k++) if (a.params[k * F + 3] > 0) marks[a.params[k * F + 15]]++;
       return { a, marks };

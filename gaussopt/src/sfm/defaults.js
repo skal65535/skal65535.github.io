@@ -4,7 +4,11 @@
 
 import { FRAME_DEFAULTS } from './frames.js';
 
-export const PIPELINE_DEFAULTS = { window: 10, loops: true };
+// The sequential window, in keyframes: each one matched with the next WINDOW (frontend.js), the window BA's
+// free frames (mapper.js), a session's neighbours (session.js)
+export const WINDOW = 10;
+
+export const PIPELINE_DEFAULTS = { window: WINDOW, loops: true };
 
 export const SESSION_DEFAULTS = {
   sampleFps: 30, ...FRAME_DEFAULTS, maxDim: 1920, jpegQuality: 0.95,

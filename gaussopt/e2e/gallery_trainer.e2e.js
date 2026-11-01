@@ -8,10 +8,9 @@
 // photos (PHOTOS), at its training size (ds 2). Fails without the trainer's 0.3 px^2 low-pass in the viewer (about 26 dB
 // on pavilion-cams-off's p001, 29.5 with it: hence MIN_DB).
 //   cd e2e && node gallery_trainer.e2e.js
-import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { APP, HERE, NAME, PORT, SAFARI, appUrl, browser, fail, server, urlOf } from './harness.js';
+import { APP, HERE, NAME, PORT, SAFARI, appUrl, fail, galleryShown, run, urlOf } from './harness.js';
 
 const SCENE = process.env.GALLERY_SCENE ?? 'pavilion-cams-off';
 const PHOTOS = process.env.PHOTOS ?? `${process.env.HOME}/gskal/brush/synth/bl_pabellon_p200/photos`;
@@ -43,13 +42,8 @@ const viewOf = ({ R, t }) => [R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[
 
 // RGB PSNR of two same-sized PNG screenshots / renders, decoded in the page
 const psnr = (page, a, b) => page.evaluate(async ([a, b]) => {
-  const px = async (s) => {
-    const im = await createImageBitmap(await (await fetch(`data:image/png;base64,${s}`)).blob());
-    const c = new OffscreenCanvas(im.width, im.height), x = c.getContext('2d');
-    x.drawImage(im, 0, 0);
-    return x.getImageData(0, 0, im.width, im.height).data;
-  };
-  const [p, q] = [await px(a), await px(b)];
+  const { pngPixels } = await import('/gaussopt/e2e/page_util.js');
+  const [p, q] = [await pngPixels(a), await pngPixels(b)];
   if (p.length !== q.length) return NaN;
   let e = 0;
   for (let i = 0; i < p.length; i += 4) for (let c = 0; c < 3; c++) e += (p[i + c] - q[i + c]) ** 2;
@@ -60,14 +54,9 @@ if (SAFARI) {  // the viewer's hook is a Playwright route
   console.log(`SKIP in ${NAME}: Chrome only`);
   process.exit(0);
 }
-const srv = await server([]);
 // the gallery served statically on PORT + 1, as it is (serve.py does not follow gallery/scenes' link out of its root)
-const GPORT = PORT + 1, gsrv = spawn('python3', ['-m', 'http.server', String(GPORT), '--bind', '127.0.0.1'], { cwd: dirname(APP), stdio: 'ignore' });
-await new Promise(r => setTimeout(r, 1500));
-const { page, close, errors } = await browser();
-const t0 = Date.now();
-try {
-  const summary = await (async () => {
+const GPORT = PORT + 1;
+await run(async (page) => {
   copyFileSync(glb, join(HERE, '.cache', 'gallery_trainer.glb'));
   await page.goto(appUrl(`?photos=${names.map(n => encodeURIComponent(urlOf(join(dir, n)))).join(',')}&${QUERY}`));
   await page.waitForFunction(() => window.app?.sfm?.state.status === 'ready', null, { timeout: 120000 });
@@ -92,12 +81,10 @@ try {
       return btoa(s);
     };
     // the median depth of its render, by the view's own pose
-    tr._lastHatKey = ''; tr._invalidateCaches();
-    await tr._renderViewForward(v);
-    const [pix] = await tr._readback('gallery_trainer', [{ buf: tr.pixStateBuf, bytes: W * H * 16 }]);
+    const { pix, k } = await tr.readView(v, ['pix']);
     const z = []; for (let i = 0; i < pix.length; i += 16) if (pix[i] < 0.5) z.push(pix[i + 1]);
     z.sort((a, b) => a - b);
-    return { v, W, H, fx: tr._intrinsics(img).fx, R: Array.from(img.R), t: Array.from(img.t), depth: z[z.length >> 1] };
+    return { v, W, H, fx: k.fx, R: Array.from(img.R), t: Array.from(img.t), depth: z[z.length >> 1] };
   }, VIEW);
   if (T.error) return fail(T.error);
   const cams = [{ R: T.R, t: T.t, center: mv(tr3(T.R), T.t).map(x => -x) }, turned(T.R, T.t, 8, T.depth)];
@@ -109,12 +96,9 @@ try {
     try {
       for (const { R, t } of cams) {
         setPose(img, R, t);
-        tr._lastHatKey = ''; tr._invalidateCaches();
-        const r = await tr._renderViewForward(v);
-        const [hat] = await tr._readback('gallery_trainer', [{ tex: r.hatTex }]);
-        out.push(await window.__png(hat));
+        out.push(await window.__png((await tr.readView(v)).hat));
       }
-    } finally { setPose(img, R0, t0); tr._invalidateCaches(); }
+    } finally { setPose(img, R0, t0); }
     return out;
   }, { v: T.v, cams });
 
@@ -128,7 +112,7 @@ try {
     await route.fulfill({ response: r, body: s, headers: { ...r.headers(), 'content-type': 'text/html' } });
   });
   await page.goto(`http://localhost:${GPORT}/gallery/index.html?scene=${SCENE}&mode=orbit&canvas-only&cameras-hidden`);
-  await page.waitForFunction(() => document.getElementById('scene-info')?.textContent.length > 0, null, { timeout: 120000 });
+  await galleryShown(page);
   const fov = 2 * Math.atan(T.W / (2 * T.fx)) * 180 / Math.PI, got = [];
   for (const [k, c] of cams.entries()) {
     await page.evaluate(({ view, center, fov }) => { window.__cam = { view, center }; window.__fov = fov; window.dispatchEvent(new Event('resize')); }, { view: viewOf(c), center: c.center, fov });
@@ -142,14 +126,4 @@ try {
   const label = ['its own camera', 'turned 8 degrees'];
   got.forEach((db, k) => { if (!(db >= MIN_DB[k])) fail(`${VIEW} ${label[k]}: the viewer's render ${db.toFixed(2)} dB from the trainer's (at least ${MIN_DB[k]})`); });
   return `${SCENE} ${VIEW}: the viewer against the trainer ${got.map((db, k) => `${db.toFixed(2)} dB ${label[k]}`).join(', ')}`;
-  })();
-  const serious = await errors();
-  if (serious.length) fail(`${serious.length} page errors:\n  ${serious.slice(0, 10).join('\n  ')}`);
-  if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s): ${summary}`);
-} catch (e) {
-  fail(e.message);
-} finally {
-  await close();
-  srv.kill();
-  gsrv.kill();
-}
+}, { static: dirname(APP), staticPort: GPORT });

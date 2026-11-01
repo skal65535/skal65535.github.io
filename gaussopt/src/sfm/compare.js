@@ -6,9 +6,10 @@
 // numPoints? } (fromColmap, mapper.model(), synth.js truth.model).
 "use strict";
 
-import { sub } from '../math.js';
+import { sub, dist } from '../math.js';
 import { mul3, transpose3, mulVec3, rotationAngle, projectToSO3 } from './linalg.js';
 import { poseCenter } from './camera.js';
+import { depthIn } from './geometry.js';
 import { apply as applySim3 } from './sim3.js';
 import { mean } from './align.js';
 import { median, quantile, deg, angleBetween, relativeRotation } from './util.js';
@@ -31,7 +32,7 @@ export function fromColmap({ images, points3D }) {
       const i = points3D.pointIndexById.get(im.obs2D[o + 2]);
       if (i === undefined) continue;
       const p = points3D.positions;
-      d.push(im.R[6] * p[3 * i] + im.R[7] * p[3 * i + 1] + im.R[8] * p[3 * i + 2] + im.t[2]);
+      d.push(depthIn(im, [p[3 * i], p[3 * i + 1], p[3 * i + 2]]));
     }
     return median(d);
   };
@@ -48,7 +49,7 @@ export function compareModels(est, ref) {
   const common = refSorted.filter(im => byName.has(im.name));
   const refCenters = refSorted.map(poseCenter);
   let pathLength = 0;
-  for (let i = 1; i < refCenters.length; i++) pathLength += Math.hypot(...refCenters[i].map((x, k) => x - refCenters[i - 1][k]));
+  for (let i = 1; i < refCenters.length; i++) pathLength += dist(refCenters[i], refCenters[i - 1]);
 
   const result = {
     numRef: ref.images.length, numEst: est.images.length, numCommon: common.length,
@@ -82,7 +83,7 @@ export function compareModels(est, ref) {
     const c = applySim3(sim, src[i]);
     return {
       name: im.name,
-      centerErr: Math.hypot(c[0] - dst[i][0], c[1] - dst[i][1], c[2] - dst[i][2]),
+      centerErr: dist(c, dst[i]),
       rotDeg: deg(rotationAngle(mul3(e.R, At), im.R)),
     };
   });

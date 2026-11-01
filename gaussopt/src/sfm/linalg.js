@@ -26,16 +26,18 @@ export function transpose(A, m, n) {
   return T;
 }
 
+const SVD_SWEEPS = 60, SVD_EPS = 1e-15;  // one-sided Jacobi: the most sweeps, the off-diagonal tolerance
+
 // A = U diag(S) V^T, S descending. U is m x n (thin), V is n x n (full).
 // Wide inputs (m < n) are padded with zero rows, so V still spans the null space.
-export function svd(A, m, n, { maxSweeps = 60, eps = 1e-15 } = {}) {
+export function svd(A, m, n) {
   const rows = Math.max(m, n);
   const U = new Float64Array(rows * n);
   U.set(A.subarray ? A.subarray(0, m * n) : A.slice(0, m * n));
   const V = new Float64Array(n * n);
   for (let i = 0; i < n; i++) V[i * n + i] = 1;
 
-  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+  for (let sweep = 0; sweep < SVD_SWEEPS; sweep++) {
     let rotated = false;
     for (let p = 0; p < n - 1; p++) {
       for (let q = p + 1; q < n; q++) {
@@ -44,7 +46,7 @@ export function svd(A, m, n, { maxSweeps = 60, eps = 1e-15 } = {}) {
           const up = U[i * n + p], uq = U[i * n + q];
           alpha += up * up; beta += uq * uq; gamma += up * uq;
         }
-        if (gamma === 0 || Math.abs(gamma) <= eps * Math.sqrt(alpha * beta)) continue;
+        if (gamma === 0 || Math.abs(gamma) <= SVD_EPS * Math.sqrt(alpha * beta)) continue;
         rotated = true;
         const zeta = (beta - alpha) / (2 * gamma);
         const t = Math.sign(zeta || 1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta));

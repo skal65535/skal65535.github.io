@@ -9,8 +9,8 @@
 "use strict";
 
 import { mkGui } from '../../../common/controls.js';
-import { loadColmapFromMemory, setPose } from '../colmap.js';
-import { umeyama } from '../sfm/align.js';
+import { loadColmapFromMemory, setPose, valSplitOf } from '../colmap.js';
+import { robustUmeyama } from '../sfm/align.js';
 import { compose, inverse, apply, fromPose, toPose } from '../sfm/sim3.js';
 import { rotationAngle } from '../sfm/linalg.js';
 import { SESSION_DEFAULTS } from '../sfm/defaults.js';
@@ -20,12 +20,14 @@ import { downloadBlob } from './download.js';
 // the frame strip: keyframe picks bright, blurry picks red, zooms violet (other samples dim)
 const STRIP_COLORS = { kept: 'rgba(148, 163, 184, 0.9)', blurry: '#f87171', zoom: '#a78bfa' };
 import { IDENTITY4 } from '../math.js';
+import { urlOptions as urlOptionsOf } from '../url.js';
+import { isPhoto, chooseFiles } from './files.js';
+import { SCORE_CSS } from './frames.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
 const STAGES = { analyze: 'analyzing frames', features: 'keyframes + SIFT', match: 'matching', register: 'mapping: registered',
                  loopMatch: 'matching loop candidates', loops: 'closing loops', refine: 'refining windows',
                  retriangulate: 'retriangulating', lateMerge: 'merging segments', repair: 'repairing stretches', undistort: 'undistorting' };
-const SCORE_CSS = { green: '#4ade80', amber: '#fbbf24', red: '#f87171' };
 const SCORE_ABGR = { green: 0xff80de4a, amber: 0xff24bffb, red: 0xff7171f8 }, SELECTED_ABGR = 0xffffffff;
 
 const DEFAULTS = { ...SESSION_DEFAULTS, autoSend: true, fixFocal: true };
@@ -80,33 +82,10 @@ const TIPS = {
   save: 'the whole SfM session as one .gosfm file, to reopen and repair later',
 };
 
-// Sim(3) mapping src points onto dst (Umeyama), refitted without the pairs whose residual
-// exceeds 3x the median (cameras a repair moved)
-function robustSim3(src, dst) {
-  let idx = src.map((_, k) => k), G = null;
-  for (let pass = 0; pass < 2; pass++) {
-    G = umeyama(idx.map(k => src[k]), idx.map(k => dst[k]));
-    const res = src.map((p, k) => Math.hypot(...apply(G, p).map((x, d) => x - dst[k][d])));
-    const med = [...res].sort((a, b) => a - b)[res.length >> 1];
-    const keep = src.map((_, k) => k).filter(k => res[k] <= 3 * med + 1e-12);
-    if (keep.length < 3 || keep.length === idx.length) break;
-    idx = keep;
-  }
-  return G;
-}
-
 // The options of DEFAULTS in `o` (a project's saved settings), of the same types
 const known = (o = {}) => Object.fromEntries(Object.entries(o).filter(([k, v]) => k in DEFAULTS && typeof v === typeof DEFAULTS[k]));
 
-function urlOptions() {
-  const args = new URLSearchParams(location.search), out = {};
-  for (const [k, v] of Object.entries(DEFAULTS)) {
-    const a = args.get(`sfm_${k}`);
-    if (a === null) continue;
-    out[k] = typeof v === 'number' ? Number(a) : typeof v === 'boolean' ? a !== '0' && a !== 'false' : a;
-  }
-  return out;
-}
+const urlOptions = () => urlOptionsOf(DEFAULTS, location.search, 'sfm_');
 
 // The worker's photo filter from the panel's toggles: per label, the values on, when not all of them
 function filterOf(labels, on) {
@@ -119,7 +98,6 @@ function filterOf(labels, on) {
 }
 
 // A photo of a photo set (JPEG; HEIC is not decoded everywhere, DESIGN-sfm §13.3 P1)
-export const isPhoto = (f) => /^image\/jpeg$/.test(f.type ?? '') || /\.jpe?g$/i.test(f.name ?? '');
 
 export class SfmPanel {
   constructor(app) {
@@ -165,7 +143,7 @@ export class SfmPanel {
     vid.add({ pick: () => this._pickFile() }, 'pick').name('Choose another video or photos…');
     vid.add(s, 'status').name('status').listen().disable();
     this.filterFolder = vid.addFolder('Use only… (photo labels)');  // photo sets: _buildPhotoFilter
-    this.filterFolder._host.parentElement.hidden = true;  // the folder (controls.js GuiGroup): shown for photo sets
+    this.filterFolder.show(false);  // shown for photo sets
     const guide = document.querySelector('#phase-body .shoot-guide');  // index.html, Project phase
     if (guide) shell.section('video').append(guide.cloneNode(true));
 
@@ -191,7 +169,7 @@ export class SfmPanel {
     this.addPhotosBtn = cams.add({ add: () => this._pickPhotosToAdd() }, 'add').name('Add photos… (where the advice says)');
     // DESIGN-sfm §6.3
     const fix = cams.addFolder('Repair (selection on the timeline)');
-    fix._host.parentElement.classList.add('btn-grid');  // the actions two per row
+    fix.addClass('btn-grid');  // the actions two per row
     fix.add(s, 'selection').name('selected').listen().disable();
     const act = (label, fn) => fix.add({ [label]: fn }, label).name(label);
     this.repairBtns = [
@@ -237,23 +215,15 @@ export class SfmPanel {
     const ready = this.ready;
     for (const b of this.repairBtns) b.enable(ready);
     this.addPhotosBtn.enable(ready && !!this.photos);
-    if (this.addPhotosBtn._row_el) this.addPhotosBtn._row_el.hidden = !this.photos;  // photo sets only
+    this.addPhotosBtn.show(!!this.photos);  // photo sets only
     this.exportBtn.enable(!!this.result && !this.busy && !this.running);
     this.saveBtn.enable(ready);
     this.app.shell.refresh();
   }
 
-  open(file = null) {
-    if (file) this.load(file);
-  }
-
   _pickFile() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'video/*,.mp4,.mov,.m4v,.gosfm,image/jpeg,.jpg,.jpeg';
-    input.multiple = true;  // several photos: a photo set
-    input.onchange = () => input.files.length > 1 || isPhoto(input.files[0] ?? {}) ? this.load([...input.files]) : input.files[0] && this.load(input.files[0]);
-    input.click();
+    // several photos: a photo set
+    chooseFiles('video/*,.mp4,.mov,.m4v,.gosfm,image/jpeg,.jpg,.jpeg', (files) => this.load(files.length > 1 || isPhoto(files[0]) ? files : files[0]), true);
   }
 
   // c: { inMain, total, seenBy, advice } of a photo set, null for a video (hidden)
@@ -279,7 +249,7 @@ export class SfmPanel {
   _buildPhotoFilter(labels, filter) {
     const f = this.filterFolder;
     f.clear();
-    f._host.parentElement.hidden = false;
+    f.show();
     const on = {};
     for (const [label, values] of Object.entries(labels)) {
       if (values.length < 2) continue;  // nothing to choose
@@ -310,12 +280,7 @@ export class SfmPanel {
   // pieces apart regrown; undone like a repair
   _pickPhotosToAdd() {
     if (!this.ready || !this.photos) return;
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/jpeg,.jpg,.jpeg';
-    input.multiple = true;
-    input.onchange = () => { if (input.files.length) this.addPhotos([...input.files]); };
-    input.click();
+    chooseFiles('image/jpeg,.jpg,.jpeg', (files) => this.addPhotos(files), true);
   }
 
   addPhotos(files) {
@@ -404,7 +369,7 @@ export class SfmPanel {
   }
 
   // The trainer's held-out views: none for a photo set (each photo counts, DESIGN-sfm §13.3 P6)
-  get valSplit() { return this.photos ? 'none' : this.app.params.val_split; }
+  get valSplit() { return valSplitOf(!!this.photos, this.app.params.val_split); }
 
   sourceInfo() {
     const v = this.videoInfo ?? {}, f = this.file;
@@ -453,7 +418,7 @@ export class SfmPanel {
     this.quality = null;
     this.keyframeCount = null;
     if (this.app.params.training) this._log('training paused while the video is processed (one GPU)', 'warn');
-    this.app._setTraining(false);  // one GPU: SfM first (DESIGN-sfm §5.7)
+    this.app.setTraining(false);  // one GPU: SfM first (DESIGN-sfm §5.7)
     this._enable();
     this.sendMode = null;
     this.autoSend = !until && send;
@@ -809,7 +774,7 @@ export class SfmPanel {
       const before = new Map(old.images.map(im => [im.name, im]));
       const common = ds.images.filter(im => before.has(im.name));
       if (common.length < 3) throw new Error(`only ${common.length} keyframes in common with the trainer's model`);
-      const G = robustSim3(common.map(im => im.center), common.map(im => before.get(im.name).center));
+      const G = robustUmeyama(common.map(im => im.center), common.map(im => before.get(im.name).center));
       for (const im of ds.images) {
         const pose = toPose(compose(fromPose(im), inverse(G)));
         setPose(im, pose.R, pose.t);

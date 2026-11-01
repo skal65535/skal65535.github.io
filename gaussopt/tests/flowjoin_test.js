@@ -5,7 +5,6 @@ import { makeSyntheticScene } from '../src/sfm/synth.js';
 import { reconstruct, mapSequential } from '../src/sfm/reconstruct.js';
 import { SequentialMapper } from '../src/sfm/mapper.js';
 import { flowRotation, joinByFlow } from '../src/sfm/flowjoin.js';
-import { transformSegment } from '../src/sfm/loop.js';
 import { umeyama } from '../src/sfm/align.js';
 import { poseCenter } from '../src/sfm/camera.js';
 import { compareModels } from '../src/sfm/compare.js';
@@ -51,11 +50,11 @@ Deno.test('flow join: a segment holding pieces on both sides of another\'s, the 
   assert(segs.length === 2, `segments ${segs}`);
   for (const seg of segs) {
     const ks = [...mapper.segment.keys()].filter(k => mapper.poses[k] && mapper.segment[k] === seg);
-    transformSegment(mapper, seg, umeyama(ks.map(k => poseCenter(mapper.poses[k])), ks.map(k => poseCenter(scene.truth.images[k]))));
+    mapper.transformSegment(seg, umeyama(ks.map(k => poseCenter(mapper.poses[k])), ks.map(k => poseCenter(scene.truth.images[k]))));
   }
   const [early, late] = segs.sort((p, q) => mapper.segment.indexOf(p) - mapper.segment.indexOf(q)), n = mapper.n;
   for (let k = n - 5; k < n; k++) mapper.segment[k] = early;
-  transformSegment(mapper, late, { s: 2.5, R: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [3, -1, 7] });
+  mapper.transformSegment(late, { s: 2.5, R: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [3, -1, 7] });
   const stats = joinByFlow(mapper);
   const m = compareModels(mapper.model(), scene.truth.model);
   const tag = `${JSON.stringify(stats.joins)}, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;

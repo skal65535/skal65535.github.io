@@ -3,8 +3,8 @@
 // keep. Needs ../common/args.js (parse_arg*) loaded as a classic script before this module.
 "use strict";
 
-import { TRAIN_DEFAULTS } from './trainer.js';
-export { urlAfterChange } from './url.js';
+import { TRAIN_DEFAULTS } from './schedule.js';
+import { urlFlagOn } from './url.js';
 
 export const VISU_MODES = { 'gaussian': 0, 'cone': 1, 'ellipsis': 2, 'small_dot': 3, 'axis': 4 };
 
@@ -218,12 +218,13 @@ export function defaultParams() {
     resume_ply:      parse_arg_str('ply', POINTS3D),
     training:        parse_arg_bool('train'),
     steps_per_frame: parse_arg('spf', 8, 1, 20),
-    downsample:      parse_arg('ds', 4, 1, 8),
 
-    // Optimizer: 'adam' | 'monte_carlo' (SGLD/MCMC)
-    opt_method:      parse_arg_str('opt', 'monte_carlo'),  // E6: the best on average; opt=adam for plain Adam
-    // learning rates, MC, shape limits, opacity reset (trainer.js)
+    // the training's (schedule.js), and those the URL sets by an alias
     ...TRAIN_DEFAULTS,
+    downsample:      parse_arg('ds', TRAIN_DEFAULTS.downsample, 1, 8),
+    opt_method:      parse_arg_str('opt', TRAIN_DEFAULTS.opt_method),
+    max_splats:      parse_arg('max_splats', TRAIN_DEFAULTS.max_splats, 1000, 2000000),
+    stipple_seed:    urlFlagOn(parse_arg_str('stipple', '1')),  // on by default (E6; stipple=0: off; a bare 'stipple': on)
 
     // Camera & view
     snap_to_colmap:  false,
@@ -268,26 +269,6 @@ export function defaultParams() {
     max_leaf_size:   256,
     aniso_init:      true,   // init splats from the PCA of their 8 nearest COLMAP points
     beta:            0.20,
-    rebalance_every: 100,
-    rebalance_every_cap: 400,  // once the count is at max_splats (0: rebalance_every), DESIGN.md §5.3
-    enable_rebalance:true,
-    enable_split:    true,
-    enable_merge:    true,
-    remove_floaters: true,
-    floater_depth:   'observed',  // near-camera carve depth: 'observed' | 'view' (octree.js nearCameraCone)
-    floater_spare:   0.01,        // x sceneRadius: splats this near an SfM point are not carved (0: off; DESIGN.md §5)
-    max_splats:      parse_arg('max_splats', 300000, 1000, 2000000),
-    cap_lease:       0,      // E7: the count may go this fraction over max_splats until the consolidation (needs train_steps)
-    train_steps:     0,      // E7: the planned length of the training (0: open-ended, no lease)
-    consolidate_frac: 0.2,   // E7: the last fraction of train_steps, back to max_splats (trainer.js splatBudget)
-    polish:          false,  // E7: Monte-Carlo's noise and L1 terms off over that last fraction (plain Adam steps)
-    prune_opacity:   0.008,
-    hysteresis:      0.35,
-    stipple_seed:    !['0', 'false', 'off'].includes(parse_arg_str('stipple', '1')), // E4: seed new splats from residual stippling (on by default, E6; stipple=0: off; a bare 'stipple': on)
-    stipple_count:   2000,
-    region_log:      false,  // E7: per-rebalance error of fixed cells of the scene, in trainer.regionLog (regions.js)
-    region_res:      8,      // E7: cells per axis
-    region_repair:   0,      // E7: > 0: the stuck cells' splits need R > Tu / (1 + this), Monte-Carlo relocates there (1 + this) as often
 
     // Evaluation: held-out (validation camera) PSNR every N training steps (0 = off)
     val_every:       parse_arg('val', 500, 0, 100000),
@@ -313,7 +294,7 @@ export function applyUrlParams(params, search = location.search) {
     if (name === alias && typeof def !== 'boolean') { keys.add(k); continue; }
     const v = args.get(name);
     if (typeof def === 'boolean') {
-      params[k] = !['0', 'false', 'off', 'no'].includes(v.toLowerCase());
+      params[k] = urlFlagOn(v);
     } else if (typeof def === 'number') {
       const x = parseFloat(v);
       if (!Number.isFinite(x)) { console.warn(`URL param ${k}=${v}: not a number`); continue; }

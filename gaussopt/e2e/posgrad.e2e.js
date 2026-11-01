@@ -38,7 +38,7 @@ await run(async (page) => {
       const params = Float32Array.from(base);
       const octree = new LooseOctree({ maxLeafSize: 64 }).build(params, 1, [img]);
       const tr = await GaussOptTrainer.create(device, octree, { count: 1, params }, [img], { downsample: 1 });
-      const k = tr._intrinsics(img);
+      const k = tr.intrinsics(img);
       tr.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm);
       // lrs 0, Adam step 1, limits that never bind, no loss extras, no regularizers
       tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 100, 100, Math.log(1e4), 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -87,7 +87,7 @@ await run(async (page) => {
     const two = Float32Array.from([...toWorld([0.1, 0, -3]), 0, -3, -3, -3, 0, 1, 0, 0, 0, 0.2, 0.3, 0.4, 0,
                                    ...toWorld([0.1, 0, 3]), 0, -3, -3, -3, 0, 1, 0, 0, 0, 0.2, 0.3, 0.4, 0]);
     const tr2 = await GaussOptTrainer.create(device, new LooseOctree({ maxLeafSize: 64 }).build(two, 2, [img]), { count: 2, params: two }, [img], { downsample: 1 });
-    const k2 = tr2._intrinsics(img), visible = tr2.updateSortingForView(img.center, img.view, k2.fxNorm, k2.fyNorm);
+    const k2 = tr2.intrinsics(img), visible = tr2.updateSortingForView(img.center, img.view, k2.fxNorm, k2.fyNorm);
     tr2._writeUniforms(img, k2, [0, 0, 0, 0, 0, 0, 0, 1, 100, 100, Math.log(1e4), 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     const g = new Float32Array(24);
     for (const b of [0, 12]) { g[b + 3] = 1e-3; g[b + 4] = 0.01; g[b + 9] = 1; }

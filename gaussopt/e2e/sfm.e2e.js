@@ -54,7 +54,7 @@ await run(async (page) => {
 
   // hand-over (autoSend) -> the trainer has the cameras; train to the first validation
   await page.waitForFunction((n) => window.app.colmap?.images?.length === n && !!window.app.trainer, summary.exported, { timeout: 120000 });
-  await page.evaluate(() => window.app._setTraining(true));
+  await page.evaluate(() => window.app.setTraining(true));
   const val = await page.waitForFunction(() => {
     const m = document.getElementById('log-body').innerText.match(/Val PSNR @ step (\d+): ([\d.]+) dB/);
     return m ? { step: Number(m[1]), psnr: Number(m[2]) } : null;
@@ -73,7 +73,7 @@ await run(async (page) => {
     const s = window.app.sfm, n = window.__psnr = { sent: 0, got: 0 }, viewPsnr = s.viewPsnr.bind(s);
     s.viewPsnr = (v) => { if (s.worker && s.quality && v?.length) n.sent++; viewPsnr(v); };
     s.worker.addEventListener('message', ({ data }) => { if (data.type === 'quality' && !data.action) n.got++; });
-    window.app._setTraining(false);
+    window.app.setTraining(false);
   });
   await page.waitForFunction(() => {
     const a = window.app, n = window.__psnr;
@@ -113,13 +113,13 @@ await run(async (page) => {
   if (added < 2) fail(`densify added ${added} keyframes`);
   if (upd.step !== before.step || upd.splats !== before.splats || upd.added !== added) fail(`update did not keep the training: ${JSON.stringify(upd)} vs ${JSON.stringify(before)}`);
   if (!(upd.moved < 0.01)) fail(`unchanged cameras moved by ${upd.moved} of the scene radius`);
-  await sfm(() => window.app._setTraining(true));
+  await sfm(() => window.app.setTraining(true));
   const val2 = await page.waitForFunction((after) => {
     const all = [...document.getElementById('log-body').innerText.matchAll(/Val PSNR @ step (\d+): ([\d.]+) dB/g)];
     const m = all.at(-1);
     return m && Number(m[1]) > after ? { step: Number(m[1]), psnr: Number(m[2]) } : null;
   }, before.step, { timeout: 15 * 60000, polling: 2000 }).then(h => h.jsonValue());
-  await sfm(() => window.app._setTraining(false));
+  await sfm(() => window.app.setTraining(false));
   console.log(`after the update: validation PSNR ${val2.psnr.toFixed(2)} dB at step ${val2.step} (was ${val.psnr.toFixed(2)} at ${val.step})`);
   if (val2.psnr < val.psnr - 1) fail(`validation PSNR fell from ${val.psnr} to ${val2.psnr} dB after the update`);
 

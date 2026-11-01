@@ -58,6 +58,7 @@ Deno.test('metrics: PSNR by part, covered / uncovered by T_final, centre / borde
   assertClose(r.centre, dB(10, 1 / 19), 1e-9, 'centre');
   const all = rgbPsnr(a, b, W, H, BPR), mse = (p, n) => n * 10 ** (-p / 10);
   assertClose(mse(r.border, W * H - 19 * 13) + mse(r.centre, 19 * 13), mse(all, W * H), 1e-9, 'centre + border = the whole image');
+  assertClose(r.all, all, 1e-9, 'all: rgbPsnr');
   const none = rgbPsnrRegions(a, a, W, H, BPR, new Float32Array(W * H * 4));
   assert(none.uncovered === null && none.coverage === 1 && none.covered === 99.9, 'all covered: no uncovered part');
 });

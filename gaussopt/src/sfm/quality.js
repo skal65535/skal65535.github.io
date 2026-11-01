@@ -13,11 +13,11 @@
 // checked on the current map: one frame relocalized on the other's points (see relocalize).
 "use strict";
 
-import { makeRng, sub } from '../math.js';
+import { makeRng, hashString, sub, dist } from '../math.js';
 import { poseCenter } from './camera.js';
 import { mulVec3, rotationAngle } from './linalg.js';
 import { twoViewPose, depthIn, ransacPnP } from './geometry.js';
-import { median, deg, angleBetween, relativeRotation, hashString } from './util.js';
+import { median, deg, angleBetween, relativeRotation } from './util.js';
 
 const DEFAULTS = {
   minSupportRel: 0.1, weakSupportRel: 0.3,  // x the median number of points per keyframe
@@ -35,7 +35,6 @@ const DEFAULTS = {
   lowPsnrDb: 3,                             // after training: below the median view PSNR by this
 };
 
-const norm = (v) => Math.hypot(v[0], v[1], v[2]);
 const angleDeg = (u, v) => deg(angleBetween(u, v));
 
 // Two-view relative pose of keyframes prev -> k (geometry.js twoViewPose): depends on their
@@ -63,7 +62,7 @@ function relocalize(mapper, i, j, rng) {
   const r = ransacPnP(rays, pixels, points, mapper.cam(j), { rng, threshold: 4 });
   if (!r || r.numInliers < 30) return null;
   const Q = mapper.poses[j], depth = median(points.filter((_, k) => r.inliers[k]).map(X => depthIn(Q, X)));
-  return { rotDeg: deg(rotationAngle(r.model.R, Q.R)), offset: norm(sub(poseCenter(r.model), poseCenter(Q))) / depth };
+  return { rotDeg: deg(rotationAngle(r.model.R, Q.R)), offset: dist(poseCenter(r.model), poseCenter(Q)) / depth };
 }
 
 // Model vs two-view: { rotDeg, dirDeg }
@@ -120,7 +119,7 @@ export function keyframeQuality(mapper, { loops = [], checkLoops = false, viewPs
       const key = `${mapper.images[prev].name}|${mapper.images[k].name}`;
       if (!cache.has(key)) cache.set(key, pairPose(mapper, prev, k, makeRng(seed + hashString(key)), o));
       if (cache.get(key)) frames[k].twoView = twoViewAgreement(mapper, prev, k, cache.get(key));
-      frames[k].breakRatio = norm(sub(centers[k], centers[prev])) / frames[k].depth;
+      frames[k].breakRatio = dist(centers[k], centers[prev]) / frames[k].depth;
     }
   }
 

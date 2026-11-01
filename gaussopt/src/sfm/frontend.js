@@ -6,8 +6,9 @@
 
 import { ransacFundamental } from './geometry.js';
 import { makeRng } from '../math.js';
+import { WINDOW } from './defaults.js';
 
-const FRONTEND_DEFAULTS = { window: 10, maxError: 4, minInliers: 15 };
+const FRONTEND_DEFAULTS = { window: WINDOW, maxError: 4, minInliers: 15 };
 
 // The matched pixels of a pair, [u1, v1, u2, v2] per match (SIFT keypoints: 4 floats each)
 export function packPair(kpA, kpB, matches) {

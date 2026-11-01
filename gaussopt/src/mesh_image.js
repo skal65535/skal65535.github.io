@@ -1,7 +1,17 @@
 // mesh_image.js — A mesh texture's image (DESIGN.md §9 E5) between RGBA bytes, a JPEG file (the .glb's)
 // and its GPU mip levels; shared by the app and the gallery. encodeJpeg / decodeImage need a browser
-// (OffscreenCanvas, createImageBitmap).
+// (OffscreenCanvas, createImageBitmap). And a dataset image's file (imageBlob).
 "use strict";
+
+// A dataset image's file (colmap.js images): its Blob (a dropped folder's, the SfM's), else fetched from its imageUrl;
+// null with neither. A failed fetch throws.
+export async function imageBlob(im) {
+  if (im.fileBlob) return im.fileBlob;
+  if (!im.imageUrl) return null;
+  const resp = await fetch(im.imageUrl);
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText || 'Not Found'} (${im.imageUrl})`);
+  return resp.blob();
+}
 
 // A mesh texture (RGBA bytes, size x size) as a JPEG file, and an image file (a Blob, or a .glb's image:
 // { bytes, mimeType }) as RGBA ({ data, width, height })

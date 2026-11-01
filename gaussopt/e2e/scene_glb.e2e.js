@@ -5,14 +5,10 @@
 // scales and opacities go through their linear forms), the leveling and the background. Save photos (.glb): every photo
 // of the dataset, by name, byte for byte as served.
 //   cd e2e && node scene_glb.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
-const ready = (page) => page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
 // the app's save caught: { name: base64 }
 const catchSaves = (page) => page.evaluate(() => {
   window.__saved = {};
@@ -25,14 +21,11 @@ const catchSaves = (page) => page.evaluate(() => {
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2&bg_lr=0.05'));
-  await ready(page);
+  await appReady(page);
   await catchSaves(page);
   const before = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer;
-    app.params.stop_after = 300;
-    app._setTraining(true);
-    for (const t0 = Date.now(); tr.stepCount < 300 || app.params.training; await new Promise(res => setTimeout(res, 100)))
-      if (Date.now() - t0 > 240000) throw new Error(`stuck at step ${tr.stepCount}`);
+    await (await import('./e2e/page_util.js')).train(app, 300, 240000);
     app.tiltView(10);
     await app.saveSceneGlb();
     await app.savePhotosGlb();
@@ -61,7 +54,7 @@ await run(async (page) => {
 
   // a fresh page: the scene opened as a picked file
   await page.goto(appUrl('?dataset=/dataset&ds=2&bg_lr=0.05'));
-  await ready(page);
+  await appReady(page);
   const after = await page.evaluate(async ({ b64, name }) => {
     const app = window.app;
     await app.loadGlbFile(new File([Uint8Array.from(atob(b64), c => c.charCodeAt(0))], name));

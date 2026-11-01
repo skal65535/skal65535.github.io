@@ -7,7 +7,7 @@
 // normalizedFromImage); poses are world -> camera {R, t} as in camera.js.
 "use strict";
 
-import { dot, sub } from '../math.js';
+import { dot, sub, dist } from '../math.js';
 import { nullVector, svd, matMul, transpose, mul3, transpose3, mulVec3, det3, rotationAngle } from './linalg.js';
 import { umeyama } from './align.js';
 import { project, normalizedFromImage, meanFocal } from './camera.js';
@@ -279,8 +279,7 @@ export function twoViewPose(x1, x2, camera, { rng, maxHomographyRatio = 0.7, max
 // With s2 = u s1, s3 = v s1, the law of cosines gives two quadratics in u with the same u^2
 // coefficient; their difference is linear in u, and substituting back gives a quartic in v.
 export function p3p(b, X) {
-  const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-  const a2 = d(X[1], X[2]) ** 2, b2 = d(X[0], X[2]) ** 2, c2 = d(X[0], X[1]) ** 2;
+  const a2 = dist(X[1], X[2]) ** 2, b2 = dist(X[0], X[2]) ** 2, c2 = dist(X[0], X[1]) ** 2;
   if (a2 < 1e-24 || b2 < 1e-24 || c2 < 1e-24) return [];
   const ca = dot(b[1], b[2]), cb = dot(b[0], b[2]), cg = dot(b[0], b[1]);
   const K = [1, -2 * cb, 1];                                         // 1 + v^2 - 2 v cb

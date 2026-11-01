@@ -14,10 +14,10 @@
 "use strict";
 
 import { setPose } from './colmap.js';
+import { mul3 } from './sfm/linalg.js';
+import { adamState, adamStep, byName, neighbours } from './per_view.js';
 
-const B1 = 0.9, B2 = 0.999, EPS = 1e-12;
-const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true });
-const frameNumber = (name) => { const m = name.match(/(\d+)\D*$/); return m ? Number(m[1]) : null; };
+const EPS = 1e-12;
 
 // Rodrigues: the rotation matrix (row-major 3 x 3) of the rotation vector w
 export function expRot(w) {
@@ -28,16 +28,11 @@ export function expRot(w) {
           a * z + b * x * y, 1 - b * (x * x + z * z), -a * x + b * y * z,
           -a * y + b * x * z, a * x + b * y * z, 1 - b * (x * x + y * y)];
 }
-const mul3 = (A, B) => [0, 1, 2].flatMap(i => [0, 1, 2].map(j => A[3 * i] * B[j] + A[3 * i + 1] * B[3 + j] + A[3 * i + 2] * B[6 + j]));
 const mv = (A, v) => [0, 1, 2].map(i => A[3 * i] * v[0] + A[3 * i + 1] * v[1] + A[3 * i + 2] * v[2]);
 const mtv = (A, v) => [0, 1, 2].map(i => A[i] * v[0] + A[3 + i] * v[1] + A[6 + i] * v[2]);  // A^T v
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
-function adam(s, j, g, lr) {
-  s.m[j] = B1 * s.m[j] + (1 - B1) * g;
-  s.v[j] = B2 * s.v[j] + (1 - B2) * g * g;
-  s.p[j] -= lr * (s.m[j] / (1 - B1 ** s.t)) / (Math.sqrt(s.v[j] / (1 - B2 ** s.t)) + EPS);
-}
+const adam = (s, j, g, lr) => adamStep(s, j, g, lr, EPS);
 // The pull to the SfM's values: p -= lr p / sigma (lr: the state's rate over the units' scale, the same for each)
 function pull(s, lr, sigma) {
   if (!(sigma > 0)) return;
@@ -46,7 +41,6 @@ function pull(s, lr, sigma) {
 }
 // The mean r^2 = (x / z)^2 + (y / z)^2 over a lens's image, at the SfM's focal (fixed: updateLens's a)
 const meanR2 = (cam) => ((cam.width ** 2 + cam.height ** 2) / (12 * (cam.sfmLens ?? cam).fx ** 2)) || 1 / 3;
-const state = (n) => ({ p: new Float64Array(n), m: new Float64Array(n), v: new Float64Array(n), t: 0 });
 
 export class Poses {
   constructor(radius = 1) {
@@ -59,7 +53,7 @@ export class Poses {
   // lrRot x the radius, then the pull to the SfM's (sigma: rad, 0 = none)
   update(img, g, lrRot, sigma = 0) {
     let s = this.views.get(img.name);
-    if (!s) this.views.set(img.name, s = state(6));
+    if (!s) this.views.set(img.name, s = adamState(6));
     s.t++;
     for (let j = 0; j < 6; j++) adam(s, j, j < 3 ? g[j] * this.radius : g[j], lrRot);
     pull(s, lrRot, sigma);
@@ -74,7 +68,7 @@ export class Poses {
   // the width, k1's over the corner's r^2)
   updateLens(camera, g, lr, sigma = 0) {
     let s = this.lenses.get(camera);
-    if (!s) this.lenses.set(camera, s = state(4));
+    if (!s) this.lenses.set(camera, s = adamState(4));
     s.t++;
     const m = meanR2(camera), gk = (g[3] ?? 0) - g[0] * m / (1 + s.p[3] * m);  // dL/dk1 at a fixed
     const rate = [lr, lr * camera.width, lr * camera.width, lr / (3 * m)];
@@ -113,15 +107,10 @@ export class Poses {
   }
 
   // The increment of a view without its own: its neighbours' in name order, as world quantities, in its frame
-  _between(img) {
+  between(img) {
     if (!this.views.size) return null;
     if (this._sorted?.length !== this.views.size) this._sorted = [...this.views.keys()].sort(byName);
-    const names = this._sorted;
-    let lo = 0, hi = names.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (byName(names[mid], img.name) < 0) lo = mid + 1; else hi = mid; }
-    const a = names[Math.max(0, lo - 1)], b = names[Math.min(names.length - 1, lo)];
-    const [fa, fb, f] = [a, b, img.name].map(frameNumber);
-    const t = a === b ? 0 : fa !== null && fb !== null && f !== null && fb > fa ? Math.min(1, Math.max(0, (f - fa) / (fb - fa))) : 0.5;
+    const { a, b, t } = neighbours(this._sorted, img.name);
     const world = (n) => {  // [w, dc] of view n (its SfM rotation: this._R0 by name)
       const p = this.views.get(n).p, R0 = this._R0.get(n);
       return [mtv(R0, [p[3], p[4], p[5]]), mtv(R0, [p[0], p[1], p[2]])];
@@ -132,11 +121,11 @@ export class Poses {
     return [...mv(R0, lerp(da, db)), ...mv(R0, lerp(wa, wb))];
   }
 
-  // Each image's pose and each lens's intrinsics from the SfM's through the increments (held-out views: _between)
+  // Each image's pose and each lens's intrinsics from the SfM's through the increments (held-out views: between)
   apply(images) {
     this._R0 = new Map(images.map(im => [im.name, (im.sfmPose ?? im).R]));
     for (const img of images) {
-      const p = this.views.get(img.name)?.p ?? this._between(img);
+      const p = this.views.get(img.name)?.p ?? this.between(img);
       if (!p) continue;
       img.sfmPose ??= { R: img.R, t: img.t, center: img.center };
       const E = expRot([p[3], p[4], p[5]]), { R, t } = img.sfmPose;
@@ -159,8 +148,8 @@ export class Poses {
   }
   static fromJSON(obj, images, radius) {
     const P = new Poses(radius), byImg = new Map(images.map(im => [im.name, im]));
-    for (const [n, p] of Object.entries(obj?.views ?? {})) { const s = state(6); s.p.set(p.map((x, j) => j < 3 ? x / radius : x)); P.views.set(n, s); }
-    for (const [n, p] of Object.entries(obj?.lenses ?? {})) { const im = byImg.get(n); if (im) { const s = state(4); s.p.set(p); P.lenses.set(im.camera, s); } }  // k1 0 in older ones
+    for (const [n, p] of Object.entries(obj?.views ?? {})) { const s = adamState(6); s.p.set(p.map((x, j) => j < 3 ? x / radius : x)); P.views.set(n, s); }
+    for (const [n, p] of Object.entries(obj?.lenses ?? {})) { const im = byImg.get(n); if (im) { const s = adamState(4); s.p.set(p); P.lenses.set(im.camera, s); } }  // k1 0 in older ones
     return P;
   }
 }

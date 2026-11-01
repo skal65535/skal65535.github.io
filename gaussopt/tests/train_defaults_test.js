@@ -1,6 +1,6 @@
-// The training defaults DESIGN.md E11 took from brush: the shape limits adam_step applies (trainer.js shapeLimits ->
+// The training defaults DESIGN.md E11 took from brush: the shape limits adam_step applies (schedule.js shapeLimits ->
 // TrainUniforms.limits) off, 0 for none, a set limit passed through; lr_pos's schedule (posLrDecay).
-import { TRAIN_DEFAULTS, shapeLimits, posLrDecay } from '../src/trainer.js';
+import { TRAIN_DEFAULTS, shapeLimits, posLrDecay } from '../src/schedule.js';
 import { assert, assertClose } from './util.js';
 
 // what the shader caps a splat's largest axis to (shaders.wgsl adam_step): min(limits.x z, limits.y), and its

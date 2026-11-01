@@ -9,6 +9,7 @@
 // compared with its own Sim(3).
 "use strict";
 
+import { dist } from '../math.js';
 import { rotationAngle } from './linalg.js';
 import { poseCenter } from './camera.js';
 import { twoViewPose } from './geometry.js';
@@ -27,7 +28,7 @@ export function referenceDefects(ref, { est = null, input = null, rng = null, mi
 
   const steps = [], centers = ims.map(poseCenter);
   for (let k = 1; k < ims.length; k++) {
-    const b = Math.hypot(...centers[k].map((x, i) => x - centers[k - 1][i]));
+    const b = dist(centers[k], centers[k - 1]);
     if (ims[k].medianDepth > 0) steps.push({ name: ims[k].name, bd: b / ims[k].medianDepth });
   }
   const limit = Math.max(minBreak, breakFactor * median(steps.map(s => s.bd)));

@@ -34,7 +34,7 @@ export function accuracy(session, scene) {
 }
 
 // The session tests' orbit: 30 frames (half the time of 50 to map); the stretches they damage fit in it
-export const SESSION_ORBIT = { ...ORBIT, numFrames: 30 };
+const SESSION_ORBIT = { ...ORBIT, numFrames: 30 };
 
 export async function session(options = {}, keep = null) {
   const scene = makeSyntheticScene({ ...SESSION_ORBIT, ...options });

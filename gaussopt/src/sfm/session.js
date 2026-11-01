@@ -20,10 +20,11 @@
 
 import { makeRng } from '../math.js';
 import { mapSequential, finish } from './reconstruct.js';
-import { SequentialMapper } from './mapper.js';
-import { closeLoops } from './loop.js';
+import { SequentialMapper, copySnapshot } from './mapper.js';
+import { mergeSegments } from './loop.js';
 import { keyframeQuality } from './quality.js';
 import { imageRecord } from './frontend.js';
+import { WINDOW } from './defaults.js';
 
 // Key of an unordered keyframe pair by names
 export const key = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -33,7 +34,7 @@ export const withNames = (pairs, images) => pairs.map(p => ({ ...p, a: images[p.
 export class SfmSession {
   // input: { camera, cameras? (one per lens), images: [{ name, keypoints, time?, camera? (index) }] (time order), pairs: [{ i, j, type, matches }] }
   // mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); loops: S3 on / off
-  constructor(input, { pairSource = null, mapping = {}, loops = true, window = 10, seed = 1, log = () => {}, progress = () => {} } = {}) {
+  constructor(input, { pairSource = null, mapping = {}, loops = true, window = WINDOW, seed = 1, log = () => {}, progress = () => {} } = {}) {
     this.camera = input.camera;
     this.cameras = input.cameras ?? null;
     this.images = input.images;
@@ -231,7 +232,7 @@ export class SfmSession {
   // Segment merges over all pairs (Sim(3) + track fusion), the rest of the map untouched
   _merge() {
     const pairs = this._indexed();
-    const stats = closeLoops(this.mapper, pairs, { rng: this.mapper.rng, log: this.log, mergeOnly: true });
+    const stats = mergeSegments(this.mapper, pairs, { rng: this.mapper.rng, log: this.log });
     this.mapper.addPairs(pairs);
     return stats;
   }
@@ -398,9 +399,9 @@ export class SfmSession {
       for (const k of keys) this.rejected.add(k);
       this.pairs = this.pairs.filter(p => !keys.has(key(p.a, p.b)));
       if (this.afterSequential?.images === this.images) {
-        // a copy (snapshot() reads only what a snapshot holds): restore() hands its arrays to the
-        // live mapper, and afterSequential stays the replay point (undo keeps a reference to it)
-        this.mapper.restore(this.mapper.snapshot.call(this.afterSequential.snapshot));
+        // a copy: restore() hands its arrays to the live mapper, and afterSequential stays the replay
+        // point (undo keeps a reference to it)
+        this.mapper.restore(copySnapshot(this.afterSequential.snapshot));
         this._closeAndRefine();
         this.log('reject loop: loop closure and refinement replayed from the sequential map (later repairs are not kept)');
       } else {

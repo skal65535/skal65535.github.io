@@ -3,15 +3,10 @@
 // (no request under /datasets/: each would be a 404 in the console). The probes for serve.py (datasets.json,
 // projects.json) still answer 404: they are how the page finds it is not there.
 //   cd e2e && node static.e2e.js
-import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
-import { APP, NAME, PORT, appUrl, browser, fail } from './harness.js';
+import { APP, appUrl, fail, run } from './harness.js';
 
-const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'], { cwd: dirname(APP), stdio: 'ignore' });
-for (let i = 0; i < 50 && !await fetch(`http://localhost:${PORT}/`).then(r => r.ok, () => false); i++) await new Promise(r => setTimeout(r, 200));
-const { page, close, errors } = await browser();
-const t0 = Date.now();
-try {
+await run(async (page) => {
   const asked = [];
   page.on('request', r => { if (new URL(r.url()).pathname.startsWith('/datasets/')) asked.push(r.url()); });
   await page.goto(appUrl());
@@ -19,12 +14,5 @@ try {
   const log = await page.evaluate(() => window.app.logText());
   if (asked.length) fail(`served statically: ${asked.length} requests under /datasets/ (${asked.join(', ')})`);
   if (!/No dataset server: showing a synthetic scene/.test(log)) fail('served statically: no note of the synthetic scene in the log');
-  const errs = (await errors()).filter(e => !/datasets\.json|projects\.json/.test(e));
-  if (errs.length) fail(`page errors besides serve.py's probes:\n  ${errs.join('\n  ')}`);
-  if (!process.exitCode) console.log(`PASS in ${NAME} (${((Date.now() - t0) / 1000).toFixed(0)} s): served statically, the synthetic scene shown, nothing asked under /datasets/`);
-} catch (e) {
-  fail(e.message);
-} finally {
-  await close();
-  srv.kill();
-}
+  return 'served statically, the synthetic scene shown, nothing asked under /datasets/';
+}, { static: dirname(APP), ignored: e => /datasets\.json|projects\.json/.test(e) });

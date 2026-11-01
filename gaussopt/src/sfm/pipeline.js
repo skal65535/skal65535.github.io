@@ -10,8 +10,7 @@ import { SfmSession, withNames } from './session.js';
 import { defaultCamera } from './camera.js';
 import { makeRng } from '../math.js';
 import { PIPELINE_DEFAULTS } from './defaults.js';
-
-const seconds = (t) => `${((performance.now() - t) / 1000).toFixed(1)} s`;
+import { seconds } from './util.js';
 
 // features: [{ name, keypoints, descriptors }] in time order, all `width` x `height`.
 // mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); log(line), progress(stage, done, total).

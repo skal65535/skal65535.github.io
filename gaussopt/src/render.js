@@ -2,97 +2,13 @@
 //   - Free-view & COLMAP-pose splat renderer (shapes + diagnostic heatmaps)
 //   - 3D wireframe overlays (Loose Octree boxes, COLMAP camera frustums, camera path, WLBG split vectors)
 //   - Split-screen Target / Render / Residual comparison
-//   - Side-canvas rolling PSNR & Octree/WLBG/MC/SA telemetry plot
+// (the side canvas's telemetry: ui/telemetry.js; the fly-to: fly.js)
 "use strict";
 
-import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics, fitRect } from './math.js';
+import { clamp, viewTransform, fitRect } from './math.js';
 import { bindGroup } from './gpu.js';
-import { mipLevels } from './mesh_image.js';
-import { meshVoxel } from './glb.js';
-import { ENV_WGSL } from './env.js';
-
-let _shaderCache = null;
-
-// `// === <name> ===` sections -> { name: code }, the `_*` ones (shared code) inserted at each
-// `// #include _<name>` line and left out; `shared`: more `_*` sections (env.js's _env)
-export function splitWgslSource(src, shared = { _env: ENV_WGSL }) {
-  const sections = { ...shared }, out = {};
-  const re = /\/\/\s*===\s*([a-zA-Z0-9_]+)\s*===\s*\n/g;
-  const parts = src.split(re);
-  for (let i = 1; i < parts.length; i += 2) sections[parts[i]] = parts[i + 1];
-  for (const [name, code] of Object.entries(sections)) {
-    if (name.startsWith('_')) continue;
-    out[name] = code.replace(/^\/\/ #include (_\w+)$/gm, (_, inc) => {
-      if (!(inc in sections)) throw new Error(`shaders.wgsl ${name}: no section ${inc}`);
-      return sections[inc];
-    });
-  }
-  return out;
-}
-
-// Lines ending in `// @sg` are kept only when the device has 'subgroups' (and the module
-// then gets `enable subgroups;`), lines ending in `// @nosg` only when it hasn't.
-function selectSubgroupLines(code, device) {
-  if (!/\/\/ @(no)?sg\s*$/m.test(code)) return code;
-  const sg = device.features.has('subgroups');
-  const lines = code.split('\n').filter(l => !(sg ? /\/\/ @nosg\s*$/ : /\/\/ @sg\s*$/).test(l));
-  return (sg ? 'enable subgroups;\ndiagnostic(off, subgroup_uniformity);\n' : '') + lines.join('\n');
-}
-
-export async function loadShaders(device) {
-  if (_shaderCache && _shaderCache.device === device) return _shaderCache.mods;
-  const url = new URL('./shaders.wgsl', import.meta.url);
-  const src = await (await fetch(url)).text();
-  const map = splitWgslSource(src);
-  const mods = {};
-  for (const [name, code] of Object.entries(map)) {
-    mods[name] = device.createShaderModule({ code: selectSubgroupLines(code, device), label: name });
-  }
-  _shaderCache = { device, mods };
-  return mods;
-}
-
-// Fly-to animation: cubic Bezier for the camera center (bowed outward from `sceneCenter`
-// and slightly towards -Y, so it arcs instead of cutting through the scene), slerp for the
-// orientation, linear blend of the intrinsics, over FLY_MS.
-const FLY_MS = 680;
-export function createCameraSplineAnimation({
-  fromView, fromCenter, fromFx, fromFy, fromCx, fromCy,
-  toImg, W, H, sceneCenter = [0, 0, 0],
-}) {
-  const p0 = [...fromCenter], p3 = [...toImg.center];
-  const d = sub(p3, p0);
-  const chord = Math.hypot(...d);
-  const out = normalize(sub(madd(p0, d, 0.5), sceneCenter));
-  const ctrl = (a) => {
-    const p = madd(madd(p0, d, a), out, 0.18 * chord);
-    p[1] -= 0.04 * chord;
-    return p;
-  };
-  const { fx: toFx, fy: toFy, cx: toCx, cy: toCy } = fitIntrinsics(toImg.camera, W, H);
-  return {
-    startTime: performance.now(),
-    p0, p1: ctrl(0.33), p2: ctrl(0.67), p3,
-    q0: viewMatToQuat(fromView), q1: viewMatToQuat(toImg.view),
-    fromFx, fromFy, fromCx, fromCy, toFx, toFy, toCx, toCy,
-  };
-}
-
-export function evaluateCameraSpline(anim) {
-  const t = clamp((performance.now() - anim.startTime) / FLY_MS, 0, 1);
-  const s = t * t * t * (t * (t * 6 - 15) + 10);  // quintic smoothstep (C2 easing)
-  const u = 1 - s;
-  const b = [u * u * u, 3 * u * u * s, 3 * u * s * s, s * s * s];
-  const camCenter = [0, 1, 2].map(k => b[0] * anim.p0[k] + b[1] * anim.p1[k] + b[2] * anim.p2[k] + b[3] * anim.p3[k]);
-  const lerp = (a, z) => a + (z - a) * s;
-  return {
-    done: t >= 1,
-    view: viewFromQuat(quatSlerp(anim.q0, anim.q1, s), camCenter),
-    camCenter,
-    fx: lerp(anim.fromFx, anim.toFx), fy: lerp(anim.fromFy, anim.toFy),
-    cx: lerp(anim.fromCx, anim.toCx), cy: lerp(anim.fromCy, anim.toCy),
-  };
-}
+import { meshBuffers } from './mesh_gpu.js';
+import { loadShaders } from './shaders.js';
 
 // ── GPU renderer ─────────────────────────────────────────────────────────────
 
@@ -156,7 +72,7 @@ export class GaussOptRenderer {
     this.pipeWire       = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER, { depth: depthState('less') });
     this.pipeWireHid    = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER, { depth: depthState('greater-equal') });
     this.pipeEnv        = pipe(mods.env_render,       'triangle-list',  BLEND_UNDER);  // the background, under the splats
-    this.envBuf = null;  // setEnv(): the background's buffer (env.js), the trainer's own while it trains
+    this.envBuf = null;  // the background's buffer (env.js) to draw, set by the app: the dome's, or the trainer's while it learns
     this.pipeFrustumImg = pipe(mods.frustum_image,    'triangle-strip', BLEND_OVER);
     this.pipeBlit       = pipe(mods.compare_blit,     'triangle-strip', null, { depth: null });
     const meshBuffers = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
@@ -194,35 +110,7 @@ export class GaussOptRenderer {
     for (const k of ['pos', 'col', 'uv', 'tex', 'idx', 'edges']) this.mesh?.[k]?.destroy();
     this.mesh = null;
     if (!m || !m.faces.length) return;
-    const dev = this.device, nv = m.positions.length / 3;
-    const buf = (data, usage, label) => {  // padded to 4 bytes, as writeBuffer wants
-      const bytes = new Uint8Array(Math.ceil(data.byteLength / 4) * 4);
-      bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-      const b = dev.createBuffer({ size: bytes.length, usage: usage | GPUBufferUsage.COPY_DST, label });
-      dev.queue.writeBuffer(b, 0, bytes);
-      return b;
-    };
-    const col = new Uint8Array(4 * nv).fill(255);
-    for (let i = 0; i < nv; i++) for (let k = 0; k < 3; k++) col[4 * i + k] = m.colors ? m.colors[3 * i + k] : 180;
-    const seen = new Set(), edges = [];
-    for (let f = 0; f < m.faces.length; f += 3) for (let k = 0; k < 3; k++) {
-      const a = m.faces[f + k], b = m.faces[f + (k + 1) % 3], key = a < b ? a * nv + b : b * nv + a;
-      if (!seen.has(key)) { seen.add(key); edges.push(a, b); }
-    }
-    let tex = null;
-    if (m.uvs && m.image) {
-      const levels = mipLevels(m.image);
-      tex = dev.createTexture({ size: [m.image.width, m.image.height], format: 'rgba8unorm', mipLevelCount: levels.length,
-                                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST, label: 'mesh_tex' });
-      levels.forEach((l, i) => dev.queue.writeTexture({ texture: tex, mipLevel: i }, l.data, { bytesPerRow: 4 * l.width }, [l.width, l.height]));
-    }
-    this.mesh = {
-      pos: buf(m.positions, GPUBufferUsage.VERTEX, 'mesh_pos'), col: buf(col, GPUBufferUsage.VERTEX, 'mesh_col'),
-      uv: buf(tex ? m.uvs : new Float32Array(2 * nv), GPUBufferUsage.VERTEX, 'mesh_uv'), tex,
-      idx: buf(m.faces, GPUBufferUsage.INDEX, 'mesh_idx'), idxCount: m.faces.length,
-      edges: buf(Uint32Array.from(edges), GPUBufferUsage.INDEX, 'mesh_edges'), edgeCount: edges.length, voxel: meshVoxel(m),
-      bg: new Map(),
-    };
+    this.mesh = { ...meshBuffers(this.device, m), bg: new Map() };
   }
 
   _drawMesh(pass, pipeline, lines = false) {
@@ -449,94 +337,3 @@ export class GaussOptRenderer {
   }
 }
 
-// ── Side-canvas telemetry ────────────────────────────────────────────────────
-
-// Each sample's mean PSNR over the samples of the last `passSteps` steps (history: { step, psnr }, steps rising)
-export function passMean(history, passSteps) {
-  let lo = 0, sum = 0;
-  return history.map((h, i) => {
-    sum += h.psnr;
-    while (history[lo].step <= h.step - passSteps) sum -= history[lo++].psnr;
-    return sum / (i - lo + 1);
-  });
-}
-
-// Octree / rebalance stats, `statsText`, and the train PSNR curve (by sample index) with held-out validation PSNR
-// (orange points, by step). Each sample is one training view's PSNR, the views in a fixed round robin, so the raw
-// curve (faint) repeats how hard each view is, once a pass; the bold line is the mean over the last `passSteps` steps
-// (one pass over the training views; 0: the raw curve alone).
-export function drawTelemetryPanel(canvas, history, octree, statsText = '', valHistory = [], passSteps = 0) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  // its size on screen (CSS pixels; the canvas's own when not laid out), its pixels at the device's density
-  const W = canvas.clientWidth || canvas.width, H = canvas.clientHeight || canvas.height, dpr = canvas.clientWidth ? devicePixelRatio || 1 : 1;
-  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
-    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.lineWidth = 1;
-  ctx.fillStyle = '#121318';
-  ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = '#2a2d3a';
-  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
-
-  ctx.font = W < 500 ? '9px monospace' : '12px monospace';  // a phone's pane: the header lines fit more
-  ctx.fillStyle = '#e0e6f0';
-  const s = octree ? octree.lastStats : { split: 0, cloned: 0, pruned: 0, floaters: 0, merged: 0, teleported: 0 };
-  ctx.fillText(`Octree Leaves: ${octree ? octree.leaves.length : 0} | Rebalance: +${s.split} split, +${s.cloned} clone, ` +
-               `-${s.pruned} prune, -${s.floaters} floaters, -${s.merged} merge${s.teleported ? `, ↻${s.teleported} mcmc` : ''}`, 12, 18);
-  if (statsText) {
-    ctx.fillStyle = '#8ef';
-    ctx.fillText(statsText, 12, 36);
-  }
-  if (!history || history.length < 2) return;
-
-  const padL = 44, padR = 16, padT = 46, padB = 20;
-  const pw = W - padL - padR, ph = H - padT - padB;
-  const s0 = history[0].step, s1 = history[history.length - 1].step;
-  const vals = (valHistory || []).filter(v => v.step >= s0 && v.step <= s1);
-  let minPsnr = 10, maxPsnr = 35;
-  for (const h of [...history, ...vals]) {
-    if (h.psnr < minPsnr) minPsnr = Math.floor(h.psnr - 1);
-    if (h.psnr > maxPsnr) maxPsnr = Math.ceil(h.psnr + 1);
-  }
-  const yOf = (psnr) => padT + ph * (1 - clamp((psnr - minPsnr) / Math.max(1, maxPsnr - minPsnr), 0, 1));
-
-  ctx.strokeStyle = '#252834';
-  ctx.fillStyle = '#889';
-  ctx.beginPath();
-  for (let i = 0; i <= 4; i++) {
-    const y = padT + (ph * i) / 4;
-    ctx.moveTo(padL, y);
-    ctx.lineTo(padL + pw, y);
-    ctx.fillText(`${(maxPsnr - ((maxPsnr - minPsnr) * i) / 4).toFixed(1)}dB`, 4, y + 4);
-  }
-  ctx.stroke();
-
-  const xOf = (i) => padL + (i / (history.length - 1)) * pw;
-  ctx.strokeStyle = passSteps > 1 ? '#4af5' : '#4af';
-  ctx.lineWidth = passSteps > 1 ? 1 : 1.8;
-  ctx.beginPath();
-  history.forEach((h, i) => ctx.lineTo(xOf(i), yOf(h.psnr)));
-  ctx.stroke();
-  if (passSteps > 1) {
-    ctx.strokeStyle = '#4af';
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    passMean(history, passSteps).forEach((m, i) => ctx.lineTo(xOf(i), yOf(m)));
-    ctx.stroke();
-  }
-
-  if (vals.length > 0 && s1 > s0) {
-    ctx.strokeStyle = ctx.fillStyle = '#fa4';
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    for (const v of vals) {
-      const x = padL + ((v.step - s0) / (s1 - s0)) * pw, y = yOf(v.psnr);
-      ctx.lineTo(x, y);
-      ctx.fillRect(x - 2, y - 2, 4, 4);
-    }
-    ctx.stroke();
-    ctx.fillText(`val ${vals[vals.length - 1].psnr.toFixed(2)} dB`, W - padR - 90, padT - 4);
-  }
-}

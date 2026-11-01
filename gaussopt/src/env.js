@@ -1,7 +1,7 @@
 // env.js — The background behind the splats (DESIGN.md §9 E13): a cube map of ENV_N x ENV_N texels a face over the
 // world's directions, rgb in [0, 1], drawn where a pixel's splats leave it transparent (C + T_final env(dir)) and
 // learned with them (`bg_lr`): what is far away (sky, the far end of a valley) goes there instead of onto a sheet of
-// splats at the scene's edge. One copy of the lookup (ENV_WGSL, the `_env` include of shaders.wgsl, render.js loadShaders)
+// splats at the scene's edge. One copy of the lookup (ENV_WGSL, the `_env` include of shaders.wgsl, shaders.js loadShaders)
 // for the trainer, the app's view and the gallery.
 "use strict";
 
@@ -55,5 +55,3 @@ export function envFromBytes(u8) {
   for (let t = 0; t < ENV_TEXELS; t++) for (let c = 0; c < 3; c++) out[4 * t + c] = u8[3 * t + c] / 255;
   return out;
 }
-// any texel not black: an env worth drawing
-export const envUsed = (u8) => u8.some(x => x > 0);

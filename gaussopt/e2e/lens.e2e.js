@@ -5,35 +5,21 @@
 // fifth of its push, the focal and k1 within a twentieth (k1 is learned with the focal through log f, the two trade:
 // poses.js updateLens's a).
 //   cd e2e && PORT=8791 node lens.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const train = async (n) => {
-      P.stop_after = n;
-      app._setTraining(true);
-      const end = tr.stepCount + n;
-      for (const t0 = Date.now(); tr.stepCount < end || P.training; await new Promise(res => setTimeout(res, 100)))
-        if (Date.now() - t0 > 300000) throw new Error(`stuck at step ${tr.stepCount} of ${end}, training ${P.training}`);
-      await tr._drainLossRead();
-    };
+    const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, lens_lr: 1e-3, pose_from: 0 });
-    const views = tr.trainViews, steps = 150 * views.length, W = tr.trainW, H = tr.trainH, bpr = tr.rowPitch;
-    for (const v of views) {
-      tr._lastHatKey = '';
-      const out = await tr._renderViewForward(v), [hat] = await tr._readback('lens_gt', [{ tex: out.hatTex }]);
-      tr.device.queue.writeTexture({ texture: out.gtTex }, hat, { bytesPerRow: bpr }, [W, H]);
-    }
+    const views = tr.trainViews, steps = 150 * views.length;
+    await photoIsRender(tr, views);
     const cams = [...new Set(views.map(v => tr.images[v].camera))];
     const truth = cams.map(c => ({ fx: c.fx, cx: c.cx, cy: c.cy }));
     for (const c of cams) {  // the state's a: log f + log(1 + k1 m), m the mean r^2 (poses.js updateLens)
@@ -44,7 +30,6 @@ await run(async (page) => {
     tr.poses.apply(tr.images);
     const err = () => cams.map((c, i) => ({ f: Math.abs(c.fx / truth[i].fx - 1), c: Math.hypot(c.cx - truth[i].cx, c.cy - truth[i].cy), k: Math.abs(c.k1Residual ?? 0) }));
     const e0 = err();
-    tr._invalidateCaches();
     await train(steps * 2 / 3);
     P.lens_lr = 2e-4;
     await train(steps / 3);

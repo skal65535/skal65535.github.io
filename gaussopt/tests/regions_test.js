@@ -1,6 +1,7 @@
 // regions.js (DESIGN.md §9 E7): fixed cells over the splat centers, and each cell's window error.
 import { makeRegionGrid, regionOf, regionStats, RegionTracker } from '../src/regions.js';
-import { LooseOctree, relocate } from '../src/octree.js';
+import { LooseOctree } from '../src/octree.js';
+import { reconcileAndGrow, relocate } from '../src/densify.js';
 import { logit } from '../src/math.js';
 import { MOMENT_FLOATS } from '../src/octree.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
@@ -61,7 +62,7 @@ Deno.test('regions: the repair lowers the stuck splats\' split threshold and dra
   const pass = (repairBoost) => {
     const q = Float32Array.from(p), oct = new LooseOctree({ maxLeafSize: 64 });
     oct.sceneRadius = 1; oct.leaves = [{}];  // reconcile only reads these; radius 1: the splats are large (split in two)
-    return oct.reconcileAndGrow(q, n, m, null, { maxSplats: 1000, enableFloaters: false, enableMerge: false, repairMask: mask, repairBoost }).stats;
+    return reconcileAndGrow(oct, q, n, m, null, { maxSplats: 1000, enableFloaters: false, enableMerge: false, repairMask: mask, repairBoost }).stats;
   };
   const a = pass(0), b = pass(0.5);
   assert(a.split + a.cloned === 0 && b.split + b.cloned === 50, `splits: no boost ${a.split + a.cloned}, boost 0.5 ${b.split + b.cloned}`);
@@ -69,7 +70,7 @@ Deno.test('regions: the repair lowers the stuck splats\' split threshold and dra
   let hits = 0;
   for (let t = 0; t < 400; t++) {
     const out = { n: 2, cap: 8, buf: new Float32Array(8 * F), src: Int32Array.from([0, 1, 0, 0, 0, 0, 0, 0]),
-                  row(k) { return this.buf.subarray(k * F, (k + 1) * F); }, _grow() {} };
+                  row(k) { return this.buf.subarray(k * F, (k + 1) * F); }, newRow() { this.src[this.n] = -1; return this.n++; } };
     out.buf[3] = logit(0.5); out.buf[F + 3] = logit(0.5);
     relocate(out, 1, null, Uint8Array.from([1, 0]), 3);
     hits += out.buf[3] < logit(0.5) - 1e-6 ? 1 : 0;  // row 0 drawn: its opacity went down

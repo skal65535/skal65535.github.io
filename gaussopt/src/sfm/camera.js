@@ -38,6 +38,9 @@ export function intrinsics({ model, params: p }) {
   return model === 'PINHOLE' || model === 'OPENCV' ? [p[0], p[1], p[2], p[3]] : [p[0], p[0], p[1], p[2]];
 }
 
+// Focal (pixels) of a field of view of hfovDeg across `size` pixels
+export const focalFromHfov = (size, hfovDeg) => (size / 2) / Math.tan(hfovDeg * Math.PI / 360);
+
 export const meanFocal = (cam) => { const [fx, fy] = intrinsics(cam); return (fx + fy) / 2; };
 
 // The same camera with focal f (fx = f; fy keeps its ratio to fx)

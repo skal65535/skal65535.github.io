@@ -12,10 +12,10 @@
 // none learned. With none learned at all, as is.
 "use strict";
 
+import { adamState, adamStep, byName, neighbours } from './per_view.js';
+
 export const EXPO_FLOATS = 8;  // tile_backward's sums a step: dL/dlog g (rgb), pad, dL/db (rgb), pad
-const B1 = 0.9, B2 = 0.999, EPS = 1e-8, PIVOT = 0.5;
-const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true });
-const frameNumber = (name) => { const m = name.match(/(\d+)\D*$/); return m ? Number(m[1]) : null; };
+const EPS = 1e-8, PIVOT = 0.5;
 
 export class Exposure {
   constructor() { this.views = new Map(); }  // image name -> { p: [log g rgb, o rgb], m, v, t }
@@ -23,39 +23,26 @@ export class Exposure {
   // TrainUniforms.expo_g / expo_b of view `name`: [g rgb, 1, b rgb, 0] (c' = g c + b); a view with none its neighbours'
   // (the header), identity when no view has one
   uniforms(name) {
-    const p = this.views.get(name)?.p ?? this._between(name);
+    const p = this.views.get(name)?.p ?? this.between(name);
     if (!p) return [1, 1, 1, 1, 0, 0, 0, 0];
     const g = [0, 1, 2].map(c => Math.exp(p[c]));
     return [...g, 1, ...g.map((x, c) => p[3 + c] + PIVOT * (1 - x)), 0];
   }
 
   // The parameters of a view without its own: its neighbours' in name order, interpolated by frame number
-  _between(name) {
+  between(name) {
     if (!this.views.size) return null;
     if (this._sorted?.length !== this.views.size) this._sorted = [...this.views.keys()].sort(byName);
-    const names = this._sorted;
-    let lo = 0, hi = names.length;  // the first name after `name`
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (byName(names[mid], name) < 0) lo = mid + 1; else hi = mid; }
-    if (lo === 0) return this.views.get(names[0]).p;
-    if (lo === names.length) return this.views.get(names.at(-1)).p;
-    const a = names[lo - 1], b = names[lo], [fa, fb, f] = [a, b, name].map(frameNumber);
-    const t = fa !== null && fb !== null && f !== null && fb > fa ? Math.min(1, Math.max(0, (f - fa) / (fb - fa))) : 0.5;
-    const pa = this.views.get(a).p, pb = this.views.get(b).p;
+    const { a, b, t } = neighbours(this._sorted, name), pa = this.views.get(a).p, pb = this.views.get(b).p;
     return pa.map((x, j) => (1 - t) * x + t * pb[j]);
   }
 
   // One Adam step of view `name` on its gradient (EXPO_FLOATS, as tile_backward sums it) at rate lr
   update(name, grad, lr) {
     let s = this.views.get(name);
-    if (!s) this.views.set(name, s = { p: new Float64Array(6), m: new Float64Array(6), v: new Float64Array(6), t: 0 });
+    if (!s) this.views.set(name, s = adamState(6));
     s.t++;
-    const bc1 = 1 - B1 ** s.t, bc2 = 1 - B2 ** s.t;
-    for (let j = 0; j < 6; j++) {
-      const g = j < 3 ? grad[j] - PIVOT * Math.exp(s.p[j]) * grad[4 + j] : grad[j + 1];
-      s.m[j] = B1 * s.m[j] + (1 - B1) * g;
-      s.v[j] = B2 * s.v[j] + (1 - B2) * g * g;
-      s.p[j] -= lr * (s.m[j] / bc1) / (Math.sqrt(s.v[j] / bc2) + EPS);
-    }
+    for (let j = 0; j < 6; j++) adamStep(s, j, j < 3 ? grad[j] - PIVOT * Math.exp(s.p[j]) * grad[4 + j] : grad[j + 1], lr, EPS);
   }
 
   // The gauge: the mean log-gain and offset over the views removed
@@ -76,7 +63,7 @@ export class Exposure {
     const e = new Exposure();
     for (const [k, a] of Object.entries(obj ?? {})) {
       const p = Float64Array.from([0, 1, 2, 0, 1, 2].map((c, j) => j < 3 ? Math.log(a[c]) : a[3 + c] - PIVOT * (1 - a[c])));
-      e.views.set(k, { p, m: new Float64Array(6), v: new Float64Array(6), t: 0 });
+      e.views.set(k, { ...adamState(6), p });
     }
     return e;
   }

@@ -12,7 +12,7 @@
 // DOM-free (tests/dome_test.js).
 "use strict";
 
-export const DOME_DEFAULTS = {
+const DOME_DEFAULTS = {
   n: 256,           // the cube map's texels a face
   width: 1024,      // the lat-long map's (height: half); its texel 360 / width degrees
   tau: 0.03,        // the views' spread (rgb in [0, 1], their channels' mean) under which a texel is far
@@ -33,7 +33,7 @@ export const DOME_FILLS = {
 const LUM = [0.299, 0.587, 0.114];
 
 // up (unit, world) -> { x, y, z }: the lat-long frame, y up
-export function domeFrame(up) {
+function domeFrame(up) {
   const l = Math.hypot(...up), y = up.map(v => v / l);
   const a = Math.abs(y[0]) < 0.9 ? [1, 0, 0] : [0, 0, 1];
   const d = a[0] * y[0] + a[1] * y[1] + a[2] * y[2];
@@ -70,7 +70,7 @@ function keepBigPatches(far, W, H, nMin) {
 
 // Fill where w = 0 from where w > 0 (v: W x H x 3 float, w: W x H in [0, 1]): a pyramid of weighted means, each
 // level's holes from the coarser one upsampled and blurred (3 x 3, twice; longitude wraps)
-export function pushPull(v, w, W, H) {
+function pushPull(v, w, W, H) {
   let total = 0;
   for (let i = 0; i < W * H; i++) total += w[i];
   if (W <= 2 || H <= 2 || total === 0) {

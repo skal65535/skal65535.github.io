@@ -7,16 +7,13 @@
 // it is not. Then 50 steps with bg_lr 0.05: the dome's texture read back the same, bit for bit (the learned background's
 // update would copy its 32 x 32 a face over the dome's first texels).
 //   cd e2e && node dome.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params, n = 64;
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
@@ -30,12 +27,10 @@ await run(async (page) => {
       const d = dir(f, (row + 0.5) / n * 2 - 1, (col + 0.5) / n * 2 - 1), l = Math.hypot(...d);
       for (let c = 0; c < 3; c++) dome[3 * ((f * n + row) * n + col) + c] = Math.round(255 * (d[c] / l / 2 + 0.5));
     }
-    const view = 0, img = tr.images[view], k = tr._intrinsics(img), W = tr.trainW, H = tr.trainH;
+    const view = 0, img = tr.images[view], k = tr.intrinsics(img), W = tr.trainW, H = tr.trainH;
     const render = async () => {
-      tr._lastHatKey = '';
-      await tr.renderViewForward(view);
-      const [pix, rgb] = await tr._readback('dome_e2e', [{ buf: tr.pixStateBuf, bytes: W * H * 16 }, { tex: tr.hatTex }]);
-      return { pix: pix.slice(), rgb: rgb.slice() };
+      const { pix, hat } = await tr.readView(view, ['pix', 'hat']);
+      return { pix, rgb: hat };
     };
     tr.setDome(new Uint8Array(18 * n * n), n);
     const black = await render();
@@ -66,7 +61,7 @@ await run(async (page) => {
     const dome0 = await readDome(), step0 = tr.stepCount;
     P.bg_lr = 0.05;
     P.stop_after = tr.stepCount + 50;
-    app._setTraining(true);
+    app.setTraining(true);
     for (const t0 = Date.now(); tr.stepCount < P.stop_after || P.training; await new Promise(res => setTimeout(res, 100)))
       if (Date.now() - t0 > 120000) throw new Error(`stuck at step ${tr.stepCount}`);
     const dome1 = await readDome();

@@ -21,3 +21,31 @@ export function urlAfterChange(search, names, value, flags = []) {
   }
   return parts.length ? `?${parts.join('&')}` : '';
 }
+
+// A boolean URL value: off for 0, false, off and no (any case), else on
+export const urlFlagOn = (v) => !['0', 'false', 'off', 'no'].includes(v.toLowerCase());
+
+// The options of `defaults` given in `search` as <prefix><name>, of the defaults' types (the SfM panel's sfm_<name>)
+export function urlOptions(defaults, search, prefix) {
+  const args = new URLSearchParams(search), out = {};
+  for (const [k, v] of Object.entries(defaults)) {
+    const a = args.get(prefix + k);
+    if (a === null) continue;
+    out[k] = typeof v === 'number' ? Number(a) : typeof v === 'boolean' ? urlFlagOn(a) : a;
+  }
+  return out;
+}
+
+// `search` with `first` ([name, value] pairs, a null value left out) in front, any of their names it had taken out;
+// values encoded as urlAfterChange's (app.js _syncUrl: dataset, ply)
+export function urlWithFirst(search, first) {
+  const names = new Set(first.map(([n]) => n));
+  const rest = search.replace(/^\?/, '').split('&').filter(kv => kv && !names.has(decodeURIComponent(kv.split('=')[0])));
+  const q = [...first.filter(([, v]) => v !== null).map(([n, v]) => `${n}=${encodeURIComponent(v).replace(/%2F/g, '/')}`), ...rest].join('&');
+  return q ? `?${q}` : '';
+}
+
+// The page's URL query set to `q` (history.replaceState), unless null or the same
+export function replaceSearch(q) {
+  if (q !== null && q !== location.search) history.replaceState(null, '', `${location.pathname}${q}${location.hash}`);
+}

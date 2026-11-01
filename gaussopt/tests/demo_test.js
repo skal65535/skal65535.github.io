@@ -1,15 +1,11 @@
 // The gallery's fly-by on the path (demo.js PathFlight): unsmoothed, through every camera's center at its
 // orientation, and still at the center of a turn in place; smoothed, the cameras' jitter out.
 import { PathFlight } from '../src/demo.js';
-import { viewFromAxes, normalize, cross } from '../src/math.js';
-import { assert } from './util.js';
+import { normalize } from '../src/math.js';
+import { assert, lookAt } from './util.js';
 
 // A camera at c looking along f (up -y)
-const cam = (c, f) => {
-  f = normalize(f);
-  const r = normalize(cross(f, [0, -1, 0])), d = cross(f, r);
-  return { center: c, view: viewFromAxes(r, d, f, c) };
-};
+const cam = (c, f) => ({ center: c, view: lookAt(c, normalize(f)).view });
 const maxDiff = (a, b) => Math.max(...Array.from(a, (x, i) => Math.abs(x - b[i])));
 
 // a straight flight with a 90° turn in place at x = 2, then on

@@ -21,7 +21,7 @@ const pass = (page, query) => page.evaluate(async () => {
   for (const t0 = Date.now(); !(app.colmap?.fromSfm && app.trainer && app.gtAvailable); await sleep(500))
     if (Date.now() - t0 > 600000 || /^error/.test(app.sfm.state.status)) throw new Error(`no cameras: ${app.sfm.state.status}`);
   const tr = app.trainer, P = app.params;
-  P.stop_after = 300; app.trainStartStep = tr.stepCount; app._setTraining(true);
+  P.stop_after = 300; app.trainStartStep = tr.stepCount; app.setTraining(true);
   for (const t0 = Date.now(); tr.stepCount < 300 || P.training; await sleep(200)) if (Date.now() - t0 > 300000) throw new Error(`stuck at step ${tr.stepCount}`);
   const cams = [...new Set(app.colmap.images.map(im => im.camera))], masks = cams.map(c => c.mask);
   const share = masks[0] ? masks[0].data.reduce((a, b) => a + b, 0) / masks[0].data.length : 0;

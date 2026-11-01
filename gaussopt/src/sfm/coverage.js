@@ -4,7 +4,10 @@
 // point. SHOOTING holds the guide's numbers, measured on real photo sets (DESIGN-sfm §13.2).
 "use strict";
 
+import { dist } from '../math.js';
 import { poseCenter } from './camera.js';
+import { depthIn } from './geometry.js';
+import { angleBetween, deg } from './util.js';
 
 // Two photos match well (>= minLinkMatches F inliers) when the view turns <= maxTurnDeg between them
 // and the camera moves <= maxStep of the scene depth (most pairs within both do, few turning more than
@@ -13,10 +16,7 @@ const SHOOTING = { maxTurnDeg: 30, maxStep: 0.5, minLinkMatches: 50 };
 const START_MATCHES = 100;  // matches of the initial pair (mapper.js initializeWith)
 
 const axisOf = (R) => [R[6], R[7], R[8]];  // the viewing direction in the world (row 3 of R)
-const turnDeg = (Ra, Rb) => {
-  const a = axisOf(Ra), b = axisOf(Rb);
-  return Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180 / Math.PI;
-};
+const turnDeg = (Ra, Rb) => deg(angleBetween(axisOf(Ra), axisOf(Rb)));
 
 // mapper: SequentialMapper after reconstruct(), its images in capture order (photos.js names).
 // Returns {
@@ -56,13 +56,12 @@ export function coverage(mapper, o = SHOOTING) {
     for (const img of P.obs.keys()) {
       if (!depth.has(img)) continue;
       n++;
-      const { R, t } = mapper.poses[img];
-      depth.get(img).push(R[6] * P.X[0] + R[7] * P.X[1] + R[8] * P.X[2] + t[2]);
+      depth.get(img).push(depthIn(mapper.poses[img], P.X));
     }
     if (n === 2) two++;
     else if (n >= 3) threePlus++;
   }
-  const median = (v) => { const s = [...v].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : NaN; };
+  const upperMedian = (v) => { const s = [...v].sort((a, b) => a - b); return s.length ? s[s.length >> 1] : NaN; };
 
   const gaps = [], order = [...depth.keys()].sort((a, b) => a - b);
   for (let i = 1; i < order.length; i++) {
@@ -70,7 +69,7 @@ export function coverage(mapper, o = SHOOTING) {
     if (m >= o.minLinkMatches) continue;
     const [ca, cb] = [centers.get(a), centers.get(b)];
     gaps.push({ a, b, matches: m, turnDeg: turnDeg(mapper.poses[a].R, mapper.poses[b].R),
-                step: Math.hypot(ca[0] - cb[0], ca[1] - cb[1], ca[2] - cb[2]) / median(depth.get(a)) });
+                step: dist(ca, cb) / upperMedian(depth.get(a)) });
   }
   // the strongest pair of all (when nothing could start a map)
   let strongest = null;

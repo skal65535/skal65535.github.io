@@ -9,23 +9,24 @@ import {
   parsePlyBuffer, parseSplatBuffer, exportPlyBuffer,
 } from './colmap.js';
 import { LooseOctree } from './octree.js';
-import {
-  GaussOptRenderer, drawTelemetryPanel, createCameraSplineAnimation, evaluateCameraSpline, MESH_OFF,
-} from './render.js';
+import { GaussOptRenderer, MESH_OFF } from './render.js';
+import { createCameraSplineAnimation, evaluateCameraSpline } from './fly.js';
+import { drawTelemetryPanel } from './ui/telemetry.js';
 import { readGlb, writeGlb, parseGlb } from './glb.js';
 import { writeSceneGlb, readSceneGlb, writePhotosGlb, sceneRoot, SCENE_FORMAT } from './scene_glb.js';
 import { ENV_N } from './env.js';
-import { buildDome, fillDome } from './dome.js';
-import { encodeJpeg, decodeImage } from './mesh_image.js';
+import { encodeJpeg, decodeImage, imageBlob } from './mesh_image.js';
 import { clamp, dot, sub, madd, logit, buildOrbitViewMatrix, estimateWorldUp, orbitAnglesFromCenter, fitIntrinsics, fitRect, IDENTITY4, upFromTransform, levelTransform, parseTransform } from './math.js';
-import { GaussOptTrainer, haltBefore } from './trainer.js';
+import { GaussOptTrainer } from './trainer.js';
+import { haltBefore } from './schedule.js';
 import {
   VISU_MODES, COLOR_MODES, COMPARE_MODES, FRUSTUM_IMAGES, MESH_VIEWS, MESH_KINDS, MESH_TEXTURES, OPT_METHODS, TIPS, DATASETS, NOT_A_URL, POINTS3D,
-  SNAPSHOT_PARAMS, PROJECT_PARAMS, defaultParams, applyUrlParams, urlNamesOf, urlAfterChange, URL_FLAGS,
+  SNAPSHOT_PARAMS, PROJECT_PARAMS, defaultParams, applyUrlParams, urlNamesOf, URL_FLAGS,
 } from './params.js';
+import { urlAfterChange, urlWithFirst, replaceSearch } from './url.js';
 import { Drone } from './drone.js';
 import { DemoFlight } from './demo.js';
-import { shortestPath, pathStats } from './path.js';
+import { shortestPath, pathStats, PATH_ROT_WEIGHT, PATH_MAX } from './path.js';
 import { encodeSnapshot, decodeSnapshot, isSnapshotName, SNAPSHOT_EXT } from './snapshot.js';
 import { backingInputs, meshFromTrainer, meshFromPly, textureFromTrainer } from './mesh.js';
 import { BACKING } from './mesh_grow.js';
@@ -34,21 +35,17 @@ import { Shell } from './ui/shell.js';
 import { FramesSheet } from './ui/frames.js';
 import { ProjectPanel } from './ui/project_panel.js';
 import { downloadBlob } from './ui/download.js';
+import { isPhoto, isVideo } from './ui/files.js';
+import { DomeStep, DOME_FILL_LABELS } from './ui/dome_step.js';
 import { FramePacer } from './pace.js';
-
-const DOME_VIEW_W = 256;  // the Dome step's photos, at most this wide (the sky is smooth)
-// the Dome step's fills (params.js dome_fill, dome.js DOME_FILLS): label -> value; and the stepper's word for each
-const DOME_FILL_LABELS = { 'sky only': 'unseen', 'panorama': 'seen', 'sky everywhere': 'all' };
-const DOME_FILL_NAME = Object.fromEntries(Object.entries(DOME_FILL_LABELS).map(([k, v]) => [v, k]));
 
 // CPU time budget per frame for training steps (FramePacer sets their count, steps_per_frame
 // bounds it)
 const TRAIN_BUDGET_MS = 20;
 // A still view is redrawn at least this often (ms), for the changes the redraw key misses (App._draw)
 const REDRAW_MS = 1000;
-// the camera path (P7, path.js): the turn weight (at 2, no step turns more than capture order's
-// largest), the offer's ratio, and the most cameras the shortest path is computed for
-const PATH_ROT_WEIGHT = 2, PATH_OFFER = 1.25, PATH_MAX = 100;
+// the camera path (P7, path.js PATH_ROT_WEIGHT, PATH_MAX): the ratio past which the shortest path is offered
+const PATH_OFFER = 1.25;
 const pathViews = (images) => images.map(im => ({ center: im.center, forward: im.forward }));
 
 const SETTINGS_DELAY_MS = 800;  // after the last control change, the settings go to project.json
@@ -126,9 +123,7 @@ export class GaussOptApp {
     this.projectPanel = null; // its controls (src/ui/project_panel.js)
     this.guis        = [];    // control groups (project, train, view, mesh), see _setupGui()
     this.meshState   = null;  // the last Make mesh: { running, step, faces?, texture?, mb?, error? } (ui/phases.js)
-    this.dome        = null;  // the Dome step's result (src/dome.js buildDome, or a scene's): { worth, farShare, n, cube, latlong?, ... }
-    this.domeRunning = false;
-    this.domeBuf     = null;  // the dome for the view (render.js env_render: a vec4f a texel), when it is worth it
+    this.domeStep    = new DomeStep(this);
     this.datasetFolder = null;
     this.servedDatasets = null;  // mounts listed by serve.py's datasets.json (null: no server)
     this.plySelectFolder = null;
@@ -138,7 +133,7 @@ export class GaussOptApp {
     this.holdTarget  = false;
     this.lastStepOut = null;
     this.expSummary  = '';    // last 'ok' / 'error' log line, shown on the side canvas
-    this.mouse       = { down: false, x: 0, y: 0, sx: 0, sy: 0 };
+    this.mouse       = { down: false, sx: 0, sy: 0 };  // a press, where it started (a click: it moved < 5 px)
     this.worldUp     = [0, -1, 0]; // orbit up axis: the cameras' up (upEstimate) through sceneTransform
     this.upEstimate  = [0, -1, 0]; // the up estimated from the cameras (estimateWorldUp)
     this.sceneTransform = [...IDENTITY4];  // the scene's global transform, leveled by Level (project.json `transform`)
@@ -181,10 +176,6 @@ export class GaussOptApp {
     this.shell = new Shell(this);
     this._setupEvents();
     this._setupGui();
-    // any control (the SfM panel's too): the settings into the project, once the user pauses
-    for (const ev of ['input', 'change']) document.addEventListener(ev, (e) => {
-      if (e.target.closest?.('.skal-gui')) this._settingsChanged();
-    });
     await this._probeServer();
     // ?video= or ?photos= (comma-separated URLs) alone: the cameras come from the panel, no default dataset to load
     const q = new URLSearchParams(location.search), video = q.get('video'), photos = q.get('photos');
@@ -205,20 +196,20 @@ export class GaussOptApp {
     // Export step: Make mesh's settings (the mesh's display stays in Visualization)
     const domeG = mkGui(document.getElementById('dome-gui'), { draggable: false, tips: TIPS });
     domeG.add(P, 'dome', ['auto', 'off']).name('dome').onChange(() => this.shell.refresh());
-    domeG.add(P, 'dome_fill', DOME_FILL_LABELS).name('fill').onChange(() => this.refillDome());
+    domeG.add(P, 'dome_fill', DOME_FILL_LABELS).name('fill').onChange(() => this.domeStep.refill());
     const meshF = mkGui(document.getElementById('export-mesh'), { draggable: false, tips: TIPS }).addFolder('Mesh');
     meshF.add(P, 'mesh_kind', MESH_KINDS).name('kind');
     meshF.add(P, 'mesh_res', 64, 512, 32).name('grid');
     meshF.add(P, 'mesh_simplify', 0, 4, 0.25).name('simplify (voxels)');
     meshF.add(P, 'mesh_texture', MESH_TEXTURES).name('texture');
     this.guis = [proj, gui, view, meshF, domeG];
-    // a param given in the URL follows its control (the SfM panel's as sfm_<name>): the URL keeps
-    // reloading the page as shown
+    // any control (the SfM panel's too) puts the settings into the project once the user pauses; a param given in
+    // the URL follows its control (the SfM panel's as sfm_<name>): the URL keeps reloading the page as shown
     onAnyChange((obj, key, value) => {
       this.drawGen++;
+      this._settingsChanged();
       const names = obj === this.params ? urlNamesOf(key) : obj === this.sfm?.o ? [`sfm_${key}`] : [];
-      const q = names.length ? urlAfterChange(location.search, names, value, URL_FLAGS) : null;
-      if (q !== null && q !== location.search) history.replaceState(null, '', `${location.pathname}${q}${location.hash}`);
+      if (names.length) replaceSearch(urlAfterChange(location.search, names, value, URL_FLAGS));
     });
     const wire = () => this._refreshWireframes();
 
@@ -283,7 +274,7 @@ export class GaussOptApp {
     levelF.add({ tilt_ccw_fine: () => this.tiltView(-0.2) }, 'tilt_ccw_fine').name('↺ 0.2°');
     levelF.add({ tilt_cw_fine: () => this.tiltView(0.2) }, 'tilt_cw_fine').name('↻ 0.2°');
     levelF.add({ level_reset: () => this.resetLevel() }, 'level_reset').name('reset to the cameras\' up');
-    levelF._host.parentElement.classList.add('btn-grid');
+    levelF.addClass('btn-grid');
 
     const splatF = view.addFolder('Splats');
     splatF.add(P, 'visu_mode', VISU_MODES).name('shape');
@@ -344,13 +335,13 @@ export class GaussOptApp {
       if (!this.octree || !this.trainer) return;
       this.octree.maxLeafSize = v;
       this.octree.build(this.trainer.cpuParams, this.trainer.count, this.colmap?.images);
-      this.trainer._uploadSplats();
+      this.trainer.setOctree(this.octree, { upload: true });
       wire();
     });
     octF.add(P, 'beta', 0.0, 0.4, 0.05).name('loose overlap β').onChange(v => {
       if (!this.octree) return;
       this.octree.beta = v;
-      if (this.trainer) this.trainer.sortGen++;
+      this.trainer?.setOctree();
       wire();
     });
     octF.add(P, 'rebalance_every', 20, 500, 10).name('rebalance K');
@@ -359,12 +350,12 @@ export class GaussOptApp {
 
   // The split wipe's position only in the split mode
   _showViewRows() {
-    if (this.splitCtrl?._row_el) this.splitCtrl._row_el.hidden = this.params.compare_mode !== 1;
+    this.splitCtrl?.show(this.params.compare_mode === 1);
   }
 
   // Only the chosen optimizer's own folder (Monte-Carlo) is shown
   _showMethodFolders() {
-    for (const [m, f] of Object.entries(this.methodFolders ?? {})) f._host.parentElement.hidden = this.params.opt_method !== m;
+    for (const [m, f] of Object.entries(this.methodFolders ?? {})) f.show(this.params.opt_method === m);
   }
 
   // Example datasets that can load here, plus what is loaded when it is none of them
@@ -410,14 +401,14 @@ export class GaussOptApp {
       ok = !!j?.datasets;
       if (ok) this.servedDatasets = [...Object.keys(j.datasets), ...(j.default ? [j.default] : [])];
     } catch {}
-    this._setSnapshotsEnabled(ok);
+    this.setSnapshotsEnabled(ok);
     this._rebuildDatasetSelector();
   }
 
   // Snapshots go into the project's splats/, else to serve.py (POST /save)
   get snapshotsOk() { return !!this.project || !!this.serverOk; }
 
-  _setSnapshotsEnabled(ok) {
+  setSnapshotsEnabled(ok) {
     if (this.serverOk !== ok) {
       this.log(ok ? 'serve.py reachable: snapshots enabled'
                   : 'serve.py not reachable: snapshots disabled (saves fall back to downloads)', ok ? 'info' : 'warn');
@@ -472,14 +463,15 @@ export class GaussOptApp {
     this._showViewRows();
   }
 
-  _setTraining(on) {
+  setTraining(on) {
     if (on && !this.gtAvailable) {
       this.log('Training needs the dataset images (none loaded)', 'warn');
       on = false;
     }
     // dome auto: the Dome step first, from the photos alone (before any step); the training starts after it
-    if (on && !this.params.training && this.params.dome === 'auto' && !this.dome && this.trainer?.stepCount === 0) {
-      if (!this.domeRunning) this.buildDome().then(() => { if (this.dome) this._setTraining(true); });
+    const dome = this.domeStep;
+    if (on && !this.params.training && this.params.dome === 'auto' && !dome.dome && this.trainer?.stepCount === 0) {
+      if (!dome.running) dome.build().then(() => { if (dome.dome) this.setTraining(true); });
       return;
     }
     if (on && !this.params.training && this.trainer) this.trainStartStep = this.trainer.stepCount;
@@ -490,7 +482,7 @@ export class GaussOptApp {
   // One training step, then pause (Train's "Step ×1")
   async stepOnce() {
     if (!this.trainer || !this.gtAvailable) return;
-    this._setTraining(false);
+    this.setTraining(false);
     this.lastStepOut = await this.trainer.step(this.params.snap_to_colmap ? this.params.cam_idx : null);
     this._refreshWireframes();
   }
@@ -512,8 +504,8 @@ export class GaussOptApp {
       cv.setPointerCapture(e.pointerId);
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       this.mouse.down = true;
-      this.mouse.x = this.mouse.sx = e.clientX;
-      this.mouse.y = this.mouse.sy = e.clientY;
+      this.mouse.sx = e.clientX;
+      this.mouse.sy = e.clientY;
     });
     for (const ev of ['pointerup', 'pointercancel']) cv.addEventListener(ev, e => this.pointers.delete(e.pointerId));
     // Click (< 5 px drag) on a frustum opens its thumbnail. Runs before the window handler
@@ -602,10 +594,7 @@ export class GaussOptApp {
     $('FolderElmt').addEventListener('change', e => {
       if (e.target.files.length > 0) this.loadDroppedFolder(e.target.files);
     });
-    $('PlyElmt').addEventListener('change', e => {
-      const f = e.target.files[0];
-      if (f) /\.glb$/i.test(f.name) ? this.loadGlbFile(f) : /\.mesh\.ply$/i.test(f.name) ? this.loadMeshFile(f) : this.loadPlyOrOctreeFile(f);
-    });
+    $('PlyElmt').addEventListener('change', e => { if (e.target.files.length) this.openFiles(e.target.files); });
     $('BtnVideo').addEventListener('click', () => this.openVideoPanel());
 
     const stop = e => { e.preventDefault(); e.stopPropagation(); };
@@ -613,23 +602,21 @@ export class GaussOptApp {
     document.addEventListener('dragover', stop);
     document.addEventListener('drop', e => {
       stop(e);
-      const files = e.dataTransfer.files;
-      if (!files || files.length === 0) return;
-      const n = files[0].name;
-      if (files.length === 1 && (files[0].type.startsWith('video/') || /\.(mp4|mov|m4v|gosfm)$/i.test(n))) {
-        this.openVideoPanel(files[0]);
-      } else if (files.length > 1 && [...files].every(f => /^image\/jpeg$/.test(f.type) || /\.jpe?g$/i.test(f.name))) {
-        this.openVideoPanel([...files]);  // photos, not a COLMAP folder (DESIGN-sfm §13)
-      } else if (files.length === 1 && /\.glb$/i.test(n)) {
-        this.loadGlbFile(files[0]);
-      } else if (files.length === 1 && /\.mesh\.ply$/i.test(n)) {
-        this.loadMeshFile(files[0]);
-      } else if (files.length === 1 && (/\.(ply|splat|json)$/i.test(n) || isSnapshotName(n))) {
-        this.loadPlyOrOctreeFile(files[0]);
-      } else {
-        this.loadDroppedFolder(files);
-      }
+      if (e.dataTransfer.files?.length) this.openFiles(e.dataTransfer.files);
     });
+  }
+
+  // Picked or dropped files: a video or .gosfm, or several photos (not a COLMAP folder, DESIGN-sfm §13), to the
+  // SfM panel; a scene or mesh .glb, a .mesh.ply, a checkpoint (.ply, .splat, .gosnap) or an octree .json; else a
+  // gs/ folder's files
+  openFiles(files) {
+    const f = files[0], n = f.name, one = files.length === 1;
+    if (one && isVideo(f)) this.openVideoPanel(f);
+    else if (!one && [...files].every(isPhoto)) this.openVideoPanel([...files]);
+    else if (one && /\.glb$/i.test(n)) this.loadGlbFile(f);
+    else if (one && /\.mesh\.ply$/i.test(n)) this.loadMeshFile(f);
+    else if (one && (/\.(ply|splat|json)$/i.test(n) || isSnapshotName(n))) this.loadPlyOrOctreeFile(f);
+    else this.loadDroppedFolder(files);
   }
 
   // Free camera: 'drone' (src/drone.js: drag = look, wheel / pinch = forward / back, the flight keys) or 'demo' (a
@@ -899,7 +886,7 @@ export class GaussOptApp {
     try {
       this.clearError();
       this.setSceneTransform(IDENTITY4, { save: false });  // another scene
-      this._setTraining(false);
+      this.setTraining(false);
       if (url === '[synth]') {
         const splats = createSyntheticScene();
         if (await this._initOctreeAndTrainer(splats, null, gen)) {
@@ -941,7 +928,7 @@ export class GaussOptApp {
         this._onProgress(`Fetching video ${file}...`);
         file = await fetchFile(file, 'video.mp4');
       }
-      this.sfm.open(file);
+      if (file) this.sfm.load(file);
     } catch (e) {
       this.showError(`Video panel: ${e.message}`);
     }
@@ -1001,14 +988,7 @@ export class GaussOptApp {
     } else {
       return;
     }
-    const enc = v => encodeURIComponent(v).replace(/%2F/g, '/');
-    const rest = location.search.slice(1).split('&')
-      .filter(kv => kv && !/^(dataset|ply)(=|$)/.test(kv));
-    const parts = [];
-    if (dataset) parts.push(`dataset=${enc(dataset)}`);
-    if (ply) parts.push(`ply=${enc(ply)}`);
-    const q = [...parts, ...rest].join('&');
-    history.replaceState(null, '', `${location.pathname}${q ? '?' + q : ''}${location.hash}`);
+    history.replaceState(null, '', `${location.pathname}${urlWithFirst(location.search, [['dataset', dataset], ['ply', ply]])}${location.hash}`);
   }
 
   _newOctree() {
@@ -1114,10 +1094,7 @@ export class GaussOptApp {
         this.octree = oct;
         this.drawGen++;
         this._loggedStats = oct.lastStats;
-        if (this.trainer) {
-          this.trainer.octree = oct;
-          this.trainer.sortGen++;
-        }
+        this.trainer?.setOctree(oct);
         this._refreshWireframes();
         this.log(`Loaded saved LooseOctree from ${name} (${oct.leaves.length} leaves, β=${oct.beta})`, 'ok');
         return;
@@ -1163,7 +1140,7 @@ export class GaussOptApp {
     if (colmap) this.shell.advance('train');
     if (this.trainer) this.retired.push(this.trainer);
     this.trainer = trainer;
-    this._setDome(null);  // made from other cameras (a scene's comes back with it, loadSceneGlb)
+    this.domeStep.set(null);  // made from other cameras (a scene's comes back with it, loadSceneGlb)
     this.drawGen++;
     this.pacer   = new FramePacer();  // another scene: another GPU time per step
     this.octree  = octree;
@@ -1194,7 +1171,7 @@ export class GaussOptApp {
     }
     if (this.autoTrain) {
       this.autoTrain = false;
-      this._setTraining(true);
+      this.setTraining(true);
     }
     return true;
   }
@@ -1343,11 +1320,15 @@ export class GaussOptApp {
   async writeSnapshotTo(project, kind = 'manual') {
     const { buf, name, counters } = await this._encodeSnapshot(kind);
     await project.write(`splats/${name}`, buf);
-    this._saved(counters.stepCount);
     const val = this.trainer.valHistory.at(-1);
     await project.update({ phases: { train: { step: counters.stepCount, splats: counters.count, latest: `splats/${name}`,
                                               ...(val ? { valPsnr: +val.psnr.toFixed(2), valSsim: +val.ssim.toFixed(3) } : {}) } } });
-    this.log(`Snapshot @ step ${counters.stepCount} (${counters.count} splats, ${mb(buf)} MB) -> ${project.where} splats/${name}`, 'ok');
+    this._snapshotSaved(counters, buf, `${project.where} splats/${name}`);
+  }
+
+  _snapshotSaved(counters, buf, where) {
+    this._saved(counters.stepCount);
+    this.log(`Snapshot @ step ${counters.stepCount} (${counters.count} splats, ${mb(buf)} MB) -> ${where}`, 'ok');
   }
 
   // Serialize the full training state; runs from frame() between steps
@@ -1373,11 +1354,10 @@ export class GaussOptApp {
       j = await this._postSave(name, buf, dataset);
     } catch (e) {
       if (!(e instanceof TypeError)) throw e;  // TypeError = network error: serve.py went away
-      this._setSnapshotsEnabled(false);
+      this.setSnapshotsEnabled(false);
       throw new Error(`serve.py unreachable, snapshots disabled (${e.message})`);
     }
-    this.log(`Snapshot @ step ${counters.stepCount} (${counters.count} splats, ${mb(buf)} MB) -> ${j.path}`, 'ok');
-    this._saved(counters.stepCount);
+    this._snapshotSaved(counters, buf, j.path);
     if (this.colmap?.baseUrl === dataset) this._addCheckpointEntry(`splats_gaussopt/${name}`);
   }
 
@@ -1407,7 +1387,7 @@ export class GaussOptApp {
     for (const k of SNAPSHOT_PARAMS) {
       if (!this.urlKeys.has(k) && h.params && k in h.params) this.params[k] = h.params[k];
     }
-    this._setTraining(false);
+    this.setTraining(false);
     this._refreshGui();
 
     const octree = LooseOctree.fromJSON({ ...h.octree, leafIndices: snap.blobs.leaf_idx || null });
@@ -1450,7 +1430,7 @@ export class GaussOptApp {
 
   async _makeMesh(step) {
     const P = this.params, wasTraining = P.training, behind = P.mesh_kind === 'behind';
-    this._setTraining(false);
+    this.setTraining(false);
     let job, info;  // the worker's input: the fused mesh, or growBacking's inputs (mesh_grow.js)
     try {
       if (behind) {
@@ -1468,7 +1448,7 @@ export class GaussOptApp {
       this.log(`Mesh failed: ${e.message}`, 'warn');
       return { error: e.message };
     } finally {
-      if (wasTraining) this._setTraining(true);
+      if (wasTraining) this.setTraining(true);
     }
     const size = P.mesh_texture;
     const out = await new Promise((resolve) => {
@@ -1489,7 +1469,7 @@ export class GaussOptApp {
     let shown = out.mesh, glb = out.glb, texture = 0;
     if (size) {
       const was = P.training;
-      this._setTraining(false);
+      this.setTraining(false);
       try {
         const t = await textureFromTrainer(this.trainer, out.mesh, { size, tol: info.trunc * info.voxel });
         const jpeg = await encodeJpeg(t.image, size);
@@ -1502,7 +1482,7 @@ export class GaussOptApp {
         this.log(`Mesh texture failed (${e.message}): saved with its vertex colors`, 'warn');
         glb = writeGlb(out.mesh, { up: this.worldUp, voxel: info.voxel });
       } finally {
-        if (was) this._setTraining(true);
+        if (was) this.setTraining(true);
       }
     }
     this.showMesh({ ...shown, voxel: info.voxel });
@@ -1518,126 +1498,6 @@ export class GaussOptApp {
     this.drawGen++;
   }
 
-  // The Dome step's state for the stepper (ui/phases.js)
-  get domeState() {
-    const d = this.dome;
-    return { mode: this.params.dome, running: this.domeRunning,
-             result: d ? { worth: d.worth, farShare: d.farShare, fill: d.fill ? DOME_FILL_NAME[d.fill] : null } : null };
-  }
-
-  // The Dome step (src/dome.js): the training views' photos (the trainer's, at most DOME_VIEW_W wide), their cameras
-  // and the world's up; a dome behind the splats when the sky covers enough of them (trainer.setDome: fixed while they train)
-  async buildDome() {
-    const tr = this.trainer;
-    if (!tr || !this.gtAvailable || this.domeRunning) return;
-    this.domeRunning = true;
-    this.shell?.refresh();
-    try {
-      const t0 = performance.now(), ids = tr.trainViews.length ? tr.trainViews : tr.images.map((_, i) => i), views = [];
-      for (const i of ids) {
-        const v = await this._domeView(tr, i);
-        if (this.trainer !== tr) return;
-        if (v) views.push(v);
-      }
-      const d = await buildDome(views, this.worldUp, { fill: this.params.dome_fill }, () => new Promise(r => setTimeout(r, 0)));
-      if (this.trainer !== tr) return;
-      this._setDome(d);
-      const pct = (x) => `${(100 * x).toFixed(1)}%`;
-      this.log(`Dome: the sky ${pct(d.farShare)} of ${views.length} photos' pixels (${pct(d.seen)} of the directions seen; exposure ` +
-               `${d.gains[0].toFixed(2)}-${d.gains[1].toFixed(2)}): ${d.worth ? `a dome of ${d.n}² a face, ${DOME_FILL_NAME[d.fill]}` : 'no dome'}, ` +
-               `${((performance.now() - t0) / 1000).toFixed(1)} s`, d.worth ? 'ok' : undefined);
-    } catch (e) {
-      this.showError(`Dome: ${e.message}`);
-    } finally {
-      this.domeRunning = false;
-      this.shell?.refresh();
-    }
-  }
-
-  // Training view i as dome.js wants it: rgba (alpha 0: the camera's on-screen display) at most DOME_VIEW_W wide (a box
-  // filter), its intrinsics at that size, R (world to camera)
-  async _domeView(tr, i) {
-    const gt = await tr.ensureGtTexture(i);
-    if (!gt) return null;
-    const [px] = await tr._withStepLock(() => tr._readback('dome_view', [{ tex: gt }]));
-    const W = tr.trainW, H = tr.trainH, s = Math.max(1, Math.ceil(W / DOME_VIEW_W)), w = Math.floor(W / s), h = Math.floor(H / s);
-    const rgba = new Uint8Array(4 * w * h);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const acc = [0, 0, 0];
-      let alpha = 255;
-      for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) {
-        const o = (y * s + dy) * tr.rowPitch + 4 * (x * s + dx);
-        for (let c = 0; c < 3; c++) acc[c] += px[o + c];
-        alpha = Math.min(alpha, px[o + 3]);
-      }
-      for (let c = 0; c < 3; c++) rgba[4 * (y * w + x) + c] = Math.round(acc[c] / (s * s));
-      rgba[4 * (y * w + x) + 3] = alpha;
-    }
-    const img = tr.images[i], k = tr._intrinsics(img);
-    return { R: img.R, fx: k.fx / s, fy: k.fy / s, cx: k.cx / s, cy: k.cy / s, w, h, rgba };
-  }
-
-  // The dome on (a buildDome result worth it, or a scene's), off (null, or not worth it): the trainer's, the view's, the
-  // Dome step's preview
-  _setDome(d) {
-    this.dome = d;
-    const on = !!d?.worth;
-    if (this.trainer && (on || this.trainer.domeN)) this.trainer.setDome(on ? d.cube : null, on ? d.n : 0);
-    this.domeBuf?.destroy();
-    this.domeBuf = null;
-    if (on) {
-      const f32 = new Float32Array(4 * 6 * d.n * d.n);
-      for (let t = 0; t < 6 * d.n * d.n; t++) for (let c = 0; c < 3; c++) f32[4 * t + c] = d.cube[3 * t + c] / 255;
-      this.domeBuf = this.gpu.device.createBuffer({ size: f32.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, label: 'dome' });
-      this.gpu.device.queue.writeBuffer(this.domeBuf, 0, f32);
-    }
-    this._drawDomePreview();
-    this.drawGen++;
-    this.shell?.refresh();
-  }
-  clearDome() { this._setDome(null); }
-
-  // The dome made from the photos filled again with params.js dome_fill (dome.js fillDome: its maps, no photos): at
-  // once, also while the splats train (they were trained with the other one until then)
-  refillDome() {
-    const d = this.dome, fill = this.params.dome_fill;
-    if (!d?.maps || this.domeRunning || d.fill === fill) return;
-    const { cube, filled } = fillDome(d.maps, fill, d.n);
-    this._setDome({ ...d, fill, cube, latlong: { ...d.latlong, filled } });
-    this.log(`Dome: filled again, ${DOME_FILL_NAME[fill]}`);
-  }
-
-  // The Dome step's picture: the sky found (magenta: seen, not sky; black: unseen) over the dome made from it
-  _drawDomePreview() {
-    const canvas = document.getElementById('dome-preview'), stats = document.getElementById('dome-stats'), d = this.dome;
-    if (!canvas || !stats) return;
-    const ll = d?.latlong;
-    canvas.hidden = !ll;
-    stats.textContent = !d ? '' : d.farShare === null ? `A dome from the scene (${d.n}² texels a face).`
-      : !ll ? `Sky: ${(100 * d.farShare).toFixed(1)}% of the photos' pixels; a dome made elsewhere (${d.n}² texels a face).`  // train.mjs DOME=
-      : `Sky: ${(100 * d.farShare).toFixed(1)}% of the photos' pixels (a dome from 1%), ${(100 * d.seen).toFixed(0)}% of the directions seen, ` +
-        `exposure ${d.gains[0].toFixed(2)}-${d.gains[1].toFixed(2)}. ${d.worth ? `The dome: ${d.n}² texels a face, fixed while the splats train.` : 'No dome.'} ` +
-        `Above: the sky found (magenta: seen, not sky; black: never seen); below: the dome, ${DOME_FILL_NAME[d.fill] ?? d.fill}` +
-        ({ unseen: ' (black: left to the splats).', seen: ' (what the cameras saw, the rest filled in).', all: ' (the sky spread everywhere).' }[d.fill] ?? '.');
-    if (!ll) return;
-    canvas.width = ll.W;
-    canvas.height = 2 * ll.H;
-    const img = new ImageData(ll.W, 2 * ll.H);
-    [ll.observed, ll.filled].forEach((rgb, half) => {
-      for (let i = 0; i < ll.W * ll.H; i++) {
-        const o = 4 * (half * ll.W * ll.H + i);
-        img.data[o] = rgb[3 * i]; img.data[o + 1] = rgb[3 * i + 1]; img.data[o + 2] = rgb[3 * i + 2]; img.data[o + 3] = 255;
-      }
-    });
-    canvas.getContext('2d').putImageData(img, 0, 0);
-  }
-
-  // The scene's background for a .glb (scene_glb.js env): the dome, else the learned one (bg_lr), else none
-  async sceneEnv() {
-    if (this.dome?.worth) return { n: this.dome.n, rgb: this.dome.cube, ...(this.dome.farShare !== null && { sky: this.dome.farShare }) };
-    return this.params.bg_lr > 0 && this.trainer ? { n: ENV_N, rgb: await this.trainer.readEnv() } : null;
-  }
-
   // The scene as one .glb (scene_glb.js): the splats (KHR_gaussian_splatting), the octree, the cameras, the path,
   // the sparse points, the mesh on show, the background, the leveling and the page's settings
   async saveSceneGlb() {
@@ -1645,7 +1505,7 @@ export class GaussOptApp {
     const tr = this.trainer, step = tr.stepCount, c = this.colmap;
     this.log(`Saving the scene @ step ${step} (${tr.count} splats)...`);
     await tr.syncSplatsFromGpu();
-    const env = await this.sceneEnv();
+    const env = await this.domeStep.sceneEnv();
     const bytes = writeSceneGlb({
       count: tr.count, params: tr.cpuParams, octree: this.octree, cameras: c?.images ?? [], path: c?.path ?? null,
       points: c?.points3D && !c.points3D.fallback ? c.points3D : null, transform: this.sceneTransform, upEstimate: this.upEstimate,
@@ -1664,7 +1524,7 @@ export class GaussOptApp {
     this.log(`Saving ${imgs.length} photos...`);
     const photos = [];
     for (const im of imgs) {
-      const blob = im.fileBlob ?? (im.imageUrl ? await (await fetchOk(im.imageUrl)).blob() : null);
+      const blob = await imageBlob(im);
       if (!blob) throw new Error(`no file for ${im.name}`);
       photos.push({ name: im.name, bytes: new Uint8Array(await blob.arrayBuffer()), mimeType: /\.png$/i.test(im.name) ? 'image/png' : 'image/jpeg',
                     width: im.camera.width, height: im.camera.height });
@@ -1696,7 +1556,7 @@ export class GaussOptApp {
       if (!await this._initOctreeAndTrainer({ count: r.count, params: r.params, octreeData: null }, colmap, gen, { octree, fromFile: true })) return;
       this.setSceneTransform(r.transform);
       if (r.env?.n === ENV_N) this.trainer.setEnv(r.env.rgb);
-      else if (r.env) this._setDome({ worth: true, farShare: r.env.sky ?? null, n: r.env.n, cube: r.env.rgb, latlong: null });
+      else if (r.env) this.domeStep.set({ worth: true, farShare: r.env.sky ?? null, n: r.env.n, cube: r.env.rgb, latlong: null });
       if (r.mesh) {
         if (r.mesh.texture) r.mesh.image = await decodeImage(r.mesh.texture);
         this.showMesh(r.mesh);
@@ -1813,7 +1673,7 @@ export class GaussOptApp {
         }
       } catch (e) {  // e.g. a training photo that can't be loaded: pause instead of retrying every frame
         if (tr === this.trainer) {
-          this._setTraining(false);
+          this.setTraining(false);
           this.showError(`Training step failed, paused: ${e.message}`);
         }
       }
@@ -1832,7 +1692,7 @@ export class GaussOptApp {
           this.snapRequest = 'auto';
         }
         if (P.stop_after > 0 && P.training && tr.stepCount - this.trainStartStep >= P.stop_after) {
-          this._setTraining(false);
+          this.setTraining(false);
           this.valRequest = true;
           this.log(`stop_after: paused @ step ${tr.stepCount} (${tr.count} splats)`, 'ok', 'train');
         }
@@ -1937,7 +1797,7 @@ export class GaussOptApp {
       if (!skip) {
         const numVis = tr.sortForDisplay(center, view, 2 * fx / W, 2 * fy / H);
         // the background: the dome (Dome step), or the learned one as it learns (E13); dome_only: it alone
-        const env = this.domeBuf ?? (P.bg_lr > 0 ? tr.envBuf : null), envOnly = P.dome_only && !!env;
+        const env = this.domeStep.buf ?? (P.bg_lr > 0 ? tr.envBuf : null), envOnly = P.dome_only && !!env;
         this.renderer.envBuf = P.show_dome || envOnly ? env : null;
         this.renderer.renderScene({
           splatsBuf:      tr.splatsBuf,

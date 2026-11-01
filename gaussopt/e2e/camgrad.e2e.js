@@ -41,7 +41,7 @@ await run(async (page) => {
       const base = Float32Array.from([...toWorld(xc), 0, ...ls, 0, ...q.map(x => x / qn), 0.2, 0.3, 0.4, 0]);
       const octree = new LooseOctree({ maxLeafSize: 64 }).build(base, 1, [img]);
       const tr = await GaussOptTrainer.create(device, octree, { count: 1, params: base }, [img], { downsample: 1 });
-      const k0 = { ...tr._intrinsics(img), k1: K1 };
+      const k0 = { ...tr.intrinsics(img), k1: K1 };
       tr.updateSortingForView(img.center, img.view, k0.fxNorm, k0.fyNorm);
       const extra = [0, 0, 0, 0, 0, 0, 0, 1, 100, 100, Math.log(1e4), 0, 0, 0, 0, 0, 0, 0, 0, 0];
       const U = tr.trainUniformBuf;

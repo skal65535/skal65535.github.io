@@ -9,16 +9,13 @@
 // splats: few of its texels saturated (max - min over 100 / 255, colors no photo has; under 0.3%, which needs it taught
 // only by the pixels it dominates, T_final over 0.5, tile_backward, and its rate scaled by how much it is seen, env_adam).
 //   cd e2e && node env.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's folder; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
@@ -27,7 +24,7 @@ await run(async (page) => {
     tr._uploadSplats();
     const train = async (n) => {  // n steps (null when they do not come within 120 s)
       P.stop_after = tr.stepCount + n;
-      app._setTraining(true);
+      app.setTraining(true);
       for (const t0 = Date.now(); tr.stepCount < P.stop_after || P.training; await new Promise(res => setTimeout(res, 100)))
         if (Date.now() - t0 > 120000) throw new Error(`stuck at step ${tr.stepCount} of ${P.stop_after}, training ${P.training}: ${app.logText().split('\n').slice(-5).join(' | ')}`);
     };
@@ -47,13 +44,10 @@ await run(async (page) => {
   if (!(r.v2 > r.v1 + 3 && r.lit2 > 0.05)) fail(`bg_lr 0.05: held-out ${r.v1.toFixed(2)} -> ${r.v2.toFixed(2)} dB, ${(100 * r.lit2).toFixed(1)}% of the background lit`);
   // the default training with the background on: few saturated texels
   await page.goto(appUrl('?dataset=/dataset&ds=2&bg_lr=0.05'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const saturated = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer;
-    app.params.stop_after = 600;
-    app._setTraining(true);
-    for (const t0 = Date.now(); tr.stepCount < 600 || app.params.training; await new Promise(res => setTimeout(res, 100)))
-      if (Date.now() - t0 > 240000) throw new Error(`stuck at step ${tr.stepCount}`);
+    await (await import('./e2e/page_util.js')).train(app, 600, 240000);
     const rgb = await tr.readEnv();
     let sat = 0;
     for (let t = 0; t < rgb.length; t += 3) if (Math.max(rgb[t], rgb[t + 1], rgb[t + 2]) - Math.min(rgb[t], rgb[t + 1], rgb[t + 2]) > 100) sat++;

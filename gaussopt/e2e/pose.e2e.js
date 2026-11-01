@@ -6,35 +6,21 @@
 // turns and the moves left come under a fifth of those given; the held-out views take their neighbours' (none of
 // them refined); a snapshot gives the poses back.
 //   cd e2e && PORT=8791 node pose.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's directory; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const train = async (n) => {  // n steps more
-      P.stop_after = n;
-      app._setTraining(true);
-      const end = tr.stepCount + n;
-      for (const t0 = Date.now(); tr.stepCount < end || P.training; await new Promise(res => setTimeout(res, 100)))
-        if (Date.now() - t0 > 300000) throw new Error(`stuck at step ${tr.stepCount} of ${end}, training ${P.training}`);
-      await tr._drainLossRead();
-    };
+    const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, pose_lr: 2e-3, pose_from: 0 });
-    const views = tr.trainViews, steps = 150 * views.length, W = tr.trainW, H = tr.trainH, bpr = tr.rowPitch;
-    for (const v of views) {  // each training photo its render at its pose
-      tr._lastHatKey = '';
-      const out = await tr._renderViewForward(v), [hat] = await tr._readback('pose_gt', [{ tex: out.hatTex }]);
-      tr.device.queue.writeTexture({ texture: out.gtTex }, hat, { bytesPerRow: bpr }, [W, H]);
-    }
+    const views = tr.trainViews, steps = 150 * views.length;
+    await photoIsRender(tr, views);
     const truth = tr.images.map(im => ({ R: im.R.slice(), center: im.center.slice() }));
     // the increments: 0.5 degree about a random axis, 1% of the radius along another, the gauge removed
     let seed = 3;
@@ -57,7 +43,6 @@ await run(async (page) => {
     });
     const mean = (a, k) => a.reduce((s, e) => s + e[k], 0) / a.length;
     const e0 = errors();
-    tr._invalidateCaches();
     await train(steps * 2 / 3);
     P.pose_lr = 4e-4;
     await train(steps / 3);

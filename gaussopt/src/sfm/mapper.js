@@ -10,18 +10,20 @@
 //      and drop observations that no longer reproject.
 "use strict";
 
-import { makeRng } from '../math.js';
-import { normalizedFromImage, project, poseCenter, meanFocal, withFocal } from './camera.js';
+import { makeRng, dist } from '../math.js';
+import { normalizedFromImage, project, poseCenter, meanFocal, withFocal, focalFromHfov } from './camera.js';
 import { ransacFundamental, ransacHomography, relativePose, triangulate, triangulationAngle, depthIn, ransacPnP } from './geometry.js';
 import { estimateFocal } from './focal.js';
 import { bundleAdjust } from './ba.js';
 import { median, deg, matchedPixels } from './util.js';
 import { mul3, mulVec3, rotationAngle } from './linalg.js';
+import { compose, inverse, apply, fromPose, toPose } from './sim3.js';
+import { WINDOW } from './defaults.js';
 
 const DEFAULTS = {
   seed: 1,
   pairTypes: ['seq'],
-  window: 10,              // window BA: the last `window` registered frames around the new one are free
+  window: WINDOW,          // window BA: the last `window` registered frames around the new one are free
   focal: 'auto',           // 'auto' | pixels | 'prior' (keep the input camera)
   hfovDeg: null,           // horizontal field of view instead of `focal` (DESIGN-sfm §5.3: hfov=)
   minFocalSharpness: 1.3,  // below: the focal is unobservable from F, use the fallback field of view
@@ -55,6 +57,22 @@ const DEFAULTS = {
   log: () => {},
   progress: () => {},       // (stage, done, total): 'register' while growing, 'refine' per window
 };
+
+// Copy of a mapper's mutable state, or of a snapshot of it (features and pair matches are shared,
+// never mutated)
+export function copySnapshot(s) {
+  return {
+    cameras: s.cameras.map(c => ({ ...c, params: [...c.params] })), camOf: s.camOf.slice(),
+    merged: s.merged.slice(), focalKnown: s.focalKnown.slice(),
+    images: s.images, n: s.n, nextSegmentId: s.nextSegmentId,
+    poses: s.poses.map(p => p && { R: [...p.R], t: [...p.t] }),
+    segment: s.segment.slice(), byFlow: s.byFlow.slice(),
+    points: s.points.map(P => P && { X: [...P.X], obs: new Map(P.obs) }),
+    kpPoint: s.kpPoint.map(a => a.slice()),
+    adj: s.adj.map(list => list.slice()),
+    stats: structuredClone(s.stats), o: { ...s.o, refine: [...s.o.refine] },
+  };
+}
 
 export class SequentialMapper {
   constructor(input, options = {}) {
@@ -94,8 +112,7 @@ export class SequentialMapper {
   calibrateFocal() {
     const { focal, maxFocalGap, maxFocalPairs } = this.o;
     if (focal === 'prior') { this.stats.focalSource = 'prior'; return (this.stats.focalInit = meanFocal(this.camera)); }
-    const fromHfov = (deg) => (this.camera.width / 2) / Math.tan(deg * Math.PI / 360);
-    let f = this.o.hfovDeg ? fromHfov(this.o.hfovDeg) : focal, source = this.o.hfovDeg ? 'hfov' : 'given';
+    let f = this.o.hfovDeg ? focalFromHfov(this.camera.width, this.o.hfovDeg) : focal, source = this.o.hfovDeg ? 'hfov' : 'given';
     if (!this.o.hfovDeg && focal === 'auto') {
       // per frame (sampled over the whole sequence), the widest-gap pair that still has enough
       // matches: parallax makes F informative about the focal
@@ -119,7 +136,7 @@ export class SequentialMapper {
         // a camera's field of view is across its sensor's long side, however the frame is held (a portrait
         // video's width would give far too short a focal)
         const long = Math.max(this.camera.width, this.camera.height);
-        f = this.o.fallbackFocal ?? (long / 2) / Math.tan(this.o.fallbackHfovDeg * Math.PI / 360); source = 'fallback';
+        f = this.o.fallbackFocal ?? focalFromHfov(long, this.o.fallbackHfovDeg); source = 'fallback';
         const from = this.o.fallbackFocal ? 'the prior' : `${this.o.fallbackHfovDeg} deg across the long side`;
         this.o.log(`focal: not observable from ${Fs.length} pairs (sharpness ${est ? est.sharpness.toFixed(2) : '-'}, ` +
                    `e.g. translation without rotation): using ${from} = ${f.toFixed(1)} px; set hfov= or focal= if known`);
@@ -393,7 +410,7 @@ export class SequentialMapper {
     const C = poseCenter(this.poses[img]);
     const minAngle = this.o.minAngleDeg * Math.PI / 180;
     const nbrs = this.adj[img].filter(e => this.poses[e.other] && this.segment[e.other] === this.segment[img])
-      .map(e => ({ e, base: Math.hypot(...poseCenter(this.poses[e.other]).map((x, k) => x - C[k])) }))
+      .map(e => ({ e, base: dist(poseCenter(this.poses[e.other]), C) }))
       .sort((p, q) => q.base - p.base);
     let created = 0;
     for (const { e } of nbrs) {
@@ -686,20 +703,39 @@ export class SequentialMapper {
     this.camOf = this.camerasOf(images);
   }
 
-  // Copy of the mutable state, for undo (features and pair matches are shared, never mutated)
-  snapshot() {
-    return {
-      cameras: this.cameras.map(c => ({ ...c, params: [...c.params] })), camOf: this.camOf.slice(),
-      merged: this.merged.slice(), focalKnown: this.focalKnown.slice(),
-      images: this.images, n: this.n, nextSegmentId: this.nextSegmentId,
-      poses: this.poses.map(p => p && { R: [...p.R], t: [...p.t] }),
-      segment: this.segment.slice(), byFlow: this.byFlow.slice(),
-      points: this.points.map(P => P && { X: [...P.X], obs: new Map(P.obs) }),
-      kpPoint: this.kpPoint.map(a => a.slice()),
-      adj: this.adj.map(list => list.slice()),
-      stats: structuredClone(this.stats), o: { ...this.o, refine: [...this.o.refine] },
-    };
+  // Move a whole segment by the Sim(3) G (old world -> new world)
+  transformSegment(seg, G) {
+    const Ginv = inverse(G);
+    const moved = new Set();
+    for (let k = 0; k < this.n; k++) {
+      if (this.segment[k] !== seg) continue;
+      this.poses[k] = toPose(compose(fromPose(this.poses[k]), Ginv));
+      for (const pid of this.kpPoint[k]) {
+        if (pid < 0 || moved.has(pid) || !this.points[pid]) continue;
+        moved.add(pid);
+        this.points[pid].X = apply(G, this.points[pid].X);
+      }
+    }
   }
+
+  // Frames of segment `from` into segment `to`
+  relabelSegment(from, to) {
+    for (let k = 0; k < this.n; k++) if (this.segment[k] === from) this.segment[k] = to;
+  }
+
+  // Merge track pa into pb when they never share an image
+  fuseTracks(pa, pb) {
+    if (pa === pb) return false;
+    const A = this.points[pa], B = this.points[pb];
+    if (!A || !B) return false;
+    for (const img of A.obs.keys()) if (B.obs.has(img)) return false;
+    for (const [img, kp] of A.obs) { B.obs.set(img, kp); this.kpPoint[img][kp] = pb; }
+    this.points[pa] = null;
+    return true;
+  }
+
+  // Copy of the mutable state, for undo (copySnapshot)
+  snapshot() { return copySnapshot(this); }
 
   // Back to a snapshot (which is consumed: its arrays become the live state)
   restore(s) { Object.assign(this, s); }

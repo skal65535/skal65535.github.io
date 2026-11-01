@@ -1,6 +1,7 @@
 // ply_octree_test.js — .ply checkpoint with an embedded Loose Octree: round trip of the tree and
 // the splats' leaf ids, and octree-culled vs exhaustive sorts keeping the same splats.
-import { LooseOctree, nearCameraCone, splatExtents } from '../src/octree.js';
+import { LooseOctree, splatExtents } from '../src/octree.js';
+import { nearCameraCone } from '../src/densify.js';
 import { SPLAT_FLOATS, exportPlyBuffer, parsePlyBuffer } from '../src/colmap.js';
 import { makeRng, projectPinhole } from '../src/math.js';
 import { expSO3, mul3 } from '../src/sfm/linalg.js';

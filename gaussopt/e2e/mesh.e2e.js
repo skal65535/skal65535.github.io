@@ -11,21 +11,19 @@
 // the mesh: its diagonal alone drawn, no fill, no splat); without the mesh, the splats are colored.
 // The save itself is captured (it would write into the dataset's splats_gaussopt/).
 //   cd e2e && node mesh.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's directory; see harness.js)
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { APP, fail, appUrl, run } from './harness.js';
+import { APP, fail, appUrl, run, room, appReady } from './harness.js';
 
 const { readGlb, rotationToY } = await import(join(APP, 'src', 'glb.js'));
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 const geo = JSON.parse(readFileSync(join(ROOM, 'scene_sdf.json'), 'utf8'));
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   // 600 steps: by then the splats under the floor have faded (at 300, too many vertices below it)
-  await page.evaluate(() => { window.app.params.stop_after = 600; window.app._setTraining(true); });
-  await page.waitForFunction(() => window.app.trainer.stepCount >= 600 && !window.app.params.training, null, { timeout: 300000 });
+  await page.evaluate(async () => (await import('./e2e/page_util.js')).train(window.app, 600));
   const r = await page.evaluate(async () => {
     const app = window.app;
     const saved = new Promise(res => { app._saveOrDownload = async (bytes, name) => res({ bytes: Array.from(bytes), name }); });

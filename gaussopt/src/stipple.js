@@ -148,7 +148,7 @@ export function seedsFromView({ gt, hat, pix, W, H, bytesPerRow, budget, seed, i
 
 // Seed splats for one view. pix: Float32Array [T, z_med, last_k, spread] per pixel (pix_state); gt: RGBA8 rows.
 // Returns { params: Float32Array(n * SPLAT_FLOATS), count, covered, fromPoints, fromMedian }.
-export function makeSeedSplats({
+function makeSeedSplats({
   img, sites, pix, gt, bytesPerRow, W, H, fx, fy, cx, cy, depthGrid,
   opacity = 0.2, maxRadiusPx = 8,
 }) {

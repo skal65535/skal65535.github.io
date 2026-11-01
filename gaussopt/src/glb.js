@@ -42,6 +42,11 @@ export class GlbWriter {
     }
     return this.accessor(a);
   }
+  // a normalized unsigned-byte accessor of `n` components (colors: VEC4)
+  bytes(u8, n = 4, { byteStride } = {}) {
+    return this.accessor({ bufferView: this.view(u8, { byteStride, target: ARRAY_BUFFER }), componentType: UNSIGNED_BYTE, normalized: true,
+                           count: u8.length / n, type: TYPES[n] });
+  }
   finish(json) {
     const bin = new Uint8Array(this.length);
     for (const [off, u8] of this.parts) bin.set(u8, off);
@@ -95,7 +100,7 @@ export function addMesh(w, json, { positions, faces, colors, uvs }, { up = null,
   if (colors) {
     const c = new Uint8Array(4 * nv);
     for (let i = 0; i < nv; i++) { c[4 * i] = colors[3 * i]; c[4 * i + 1] = colors[3 * i + 1]; c[4 * i + 2] = colors[3 * i + 2]; c[4 * i + 3] = 255; }
-    attributes.COLOR_0 = w.accessor({ bufferView: w.view(c, { byteStride: 4, target: ARRAY_BUFFER }), componentType: UNSIGNED_BYTE, normalized: true, count: nv, type: 'VEC4' });
+    attributes.COLOR_0 = w.bytes(c, 4, { byteStride: 4 });
   } else if (texture) {
     const u = new Uint16Array(2 * nv);
     for (let i = 0; i < 2 * nv; i++) u[i] = Math.max(0, Math.min(65535, Math.round(uvs[i] * 65535)));

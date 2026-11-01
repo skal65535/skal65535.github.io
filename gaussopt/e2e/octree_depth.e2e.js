@@ -4,22 +4,16 @@
 // faint: clearly fewer changed (those in front of the walls and the objects still show; with the splats' depth not
 // drawn, as many as drawn through).
 //   cd e2e && node octree_depth.e2e.js   (env: MESH_E2E_ROOM, default ROOM below; see harness.js)
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   await page.evaluate(async () => {
-    const app = window.app, tr = app.trainer;
-    app.params.stop_after = 600;
-    app._setTraining(true);
-    for (const t0 = Date.now(); tr.stepCount < 600 || app.params.training; await new Promise(res => setTimeout(res, 100)))
-      if (Date.now() - t0 > 240000) throw new Error(`stuck at step ${tr.stepCount}`);
+    const app = window.app;
+    await (await import('./e2e/page_util.js')).train(app, 600, 240000);
     Object.assign(app.params, { show_cameras: false, show_path: false, show_splits: false });
   });
   // the canvas's pixels (rgba) with the given params, after a few frames
@@ -27,12 +21,7 @@ await run(async (page) => {
     await page.evaluate((set) => { Object.assign(window.app.params, set); window.app._refreshWireframes(); }, set);
     await page.waitForTimeout(1500);
     const png = (await page.locator('#main-canvas').screenshot()).toString('base64');
-    return page.evaluate(async (png) => {
-      const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${png}`)).blob());
-      const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d');
-      g.drawImage(bmp, 0, 0);
-      return Array.from(g.getImageData(0, 0, bmp.width, bmp.height).data);
-    }, png);
+    return page.evaluate(async (png) => Array.from(await (await import('./e2e/page_util.js')).pngPixels(png)), png);
   };
   const changed = (a, b) => {  // share of the pixels whose color moved by over 24 levels
     let n = 0;

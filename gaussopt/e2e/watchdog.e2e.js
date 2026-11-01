@@ -3,16 +3,13 @@
 // them: stalled, a finished step's buttons would stay as they were), and its end is logged.
 // A step button's click is logged with the step. On the synthetic room (MESH_E2E_ROOM, as mesh.e2e.js).
 //   cd e2e && node watchdog.e2e.js
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { fail, appUrl, run } from './harness.js';
+import { fail, appUrl, run, room, appReady } from './harness.js';
 
-const ROOM = process.env.MESH_E2E_ROOM ?? `${process.env.HOME}/gskal/brush/synth/room10`;
-if (!existsSync(join(ROOM, 'scene_sdf.json'))) throw new Error(`no synthetic room in ${ROOM} (set MESH_E2E_ROOM)`);
+const ROOM = room();
 
 await run(async (page) => {
   await page.goto(appUrl('?dataset=/dataset&ds=2'));
-  await page.waitForFunction(() => !!window.app?.trainer && window.app.gtAvailable, null, { timeout: 120000 });
+  await appReady(page);
   const r = await page.evaluate(async () => {
     const app = window.app, draw = app._draw.bind(app), sleep = (ms) => new Promise(res => setTimeout(res, ms));
     let hold = true, refreshes = 0;

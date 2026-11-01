@@ -37,7 +37,7 @@ await run(async (page) => {
         device.queue.writeTexture({ texture: tex }, target, { bytesPerRow: W * 4 }, [W, H]);
         return tex;
       };
-      const k = tr._intrinsics(img), gt = await tr.ensureGtTexture(0);
+      const k = tr.intrinsics(img), gt = await tr.ensureGtTexture(0);
       tr.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm);
       tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, ssim, drop[0], drop[1], 0]);
       const pass = tr._pass;

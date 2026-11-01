@@ -16,11 +16,11 @@
 "use strict";
 
 import { GlbWriter, addMesh, parseGlb, readAccessor, viewBytes, readMeshNode, rotationToY } from './glb.js';
-import { SPLAT_FLOATS, assignLeafIds } from './colmap.js';
-import { sigmoid, mat3ToQuat, upFromTransform, parseTransform } from './math.js';
+import { SPLAT_FLOATS, assignLeafIds, sh0ToRgb01 } from './colmap.js';
+import { sigmoid, mat3ToQuat, upFromTransform, parseTransform, makeViewMatrix } from './math.js';
 
 export const SCENE_FORMAT = 'gaussopt-scene/1', PHOTOS_FORMAT = 'gaussopt-photos/1';
-const KHR = 'KHR_gaussian_splatting', SH_C0 = 0.28209479177387814, PATH_STEP = 0.5;
+const KHR = 'KHR_gaussian_splatting', PATH_STEP = 0.5;
 const srgbToLinear = (c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 
 // scene: { count, params (Float32Array, colmap.js SPLAT_FLOATS a splat), octree (LooseOctree) | null,
@@ -52,12 +52,12 @@ export function writeSceneGlb({ count, params, octree = null, cameras = [], path
     S.set([Math.exp(params[b + 4]), Math.exp(params[b + 5]), Math.exp(params[b + 6])], 3 * i);
     A[i] = sigmoid(params[b + 3]);
     DC.set([params[b + 12], params[b + 13], params[b + 14]], 3 * i);
-    for (let k = 0; k < 3; k++) C[4 * i + k] = Math.round(255 * srgbToLinear(Math.min(1, Math.max(0, 0.5 + SH_C0 * params[b + 12 + k]))));
+    for (let k = 0; k < 3; k++) C[4 * i + k] = Math.round(255 * srgbToLinear(sh0ToRgb01(params[b + 12 + k])));
     C[4 * i + 3] = Math.round(255 * A[i]);
   }
   const attributes = {
     POSITION: w.floats(P, 3, { minMax: true }),
-    COLOR_0: w.accessor({ bufferView: w.view(C, { target: 34962 }), componentType: 5121, normalized: true, count, type: 'VEC4' }),
+    COLOR_0: w.bytes(C),
     [`${KHR}:ROTATION`]: w.floats(Q, 4), [`${KHR}:SCALE`]: w.floats(S, 3), [`${KHR}:OPACITY`]: w.floats(A, 1),
     [`${KHR}:SH_DEGREE_0_COEF_0`]: w.floats(DC, 3),
   };
@@ -70,8 +70,7 @@ export function writeSceneGlb({ count, params, octree = null, cameras = [], path
     for (let i = 0; i < n; i++) { for (let k = 0; k < 3; k++) lin[4 * i + k] = Math.round(255 * srgbToLinear(points.colors[3 * i + k] / 255)); lin[4 * i + 3] = 255; }
     const srgb = new Uint8Array(4 * n);
     for (let i = 0; i < n; i++) srgb.set([points.colors[3 * i], points.colors[3 * i + 1], points.colors[3 * i + 2], 255], 4 * i);
-    const bytes = (u8) => w.accessor({ bufferView: w.view(u8, { target: 34962 }), componentType: 5121, normalized: true, count: n, type: 'VEC4' });
-    json.meshes.push({ name: 'points', primitives: [{ mode: 0, attributes: { POSITION: w.floats(points.positions, 3, { minMax: true }), COLOR_0: bytes(lin), _SRGB: bytes(srgb) } }] });
+    json.meshes.push({ name: 'points', primitives: [{ mode: 0, attributes: { POSITION: w.floats(points.positions, 3, { minMax: true }), COLOR_0: w.bytes(lin), _SRGB: w.bytes(srgb) } }] });
     child({ name: 'points', mesh: json.meshes.length - 1 });
   }
 
@@ -110,9 +109,7 @@ export function writeSceneGlb({ count, params, octree = null, cameras = [], path
     }
     const node = json.nodes.push({ name: 'path', camera: order[0], translation: tr.slice(0, 3), rotation: rot.slice(0, 4) }) - 1;
     root.children.push(node);
-    const input = w.accessor({ bufferView: w.view(Float32Array.from(times)), componentType: 5126, count: times.length, type: 'SCALAR', min: [0], max: [Math.fround(times.at(-1))] });
-    const tAcc = w.accessor({ bufferView: w.view(Float32Array.from(tr)), componentType: 5126, count: order.length, type: 'VEC3' });
-    const rAcc = w.accessor({ bufferView: w.view(Float32Array.from(rot)), componentType: 5126, count: order.length, type: 'VEC4' });
+    const input = w.floats(times, 1, { target: null, minMax: true }), tAcc = w.floats(tr, 3, { target: null }), rAcc = w.floats(rot, 4, { target: null });  // no target: animation data
     json.animations = [{ name: 'path', samplers: [{ input, output: tAcc, interpolation: 'LINEAR' }, { input, output: rAcc, interpolation: 'LINEAR' }],
                          channels: [{ sampler: 0, target: { node, path: 'translation' } }, { sampler: 1, target: { node, path: 'rotation' } }] }];
   }
@@ -158,7 +155,7 @@ export function readSceneGlb(buffer) {
     const e = n.extras.gaussopt, M = n.matrix, center = [M[12], M[13], M[14]];
     const R = [M[0], M[1], M[2], -M[4], -M[5], -M[6], -M[8], -M[9], -M[10]];  // rows: right, down, forward
     const t = [0, 1, 2].map(r => -(R[3 * r] * center[0] + R[3 * r + 1] * center[1] + R[3 * r + 2] * center[2]));
-    const view = new Float32Array([R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[5], R[8], 0, t[0], t[1], t[2], 1]);
+    const view = makeViewMatrix(R, t);
     return { name: n.name, view, center, camera: { fx: e.fx, fy: e.fy, cx: e.cx, cy: e.cy, width: e.width, height: e.height },
              zMin: e.zMin, zMax: e.zMax, isValidation: e.validation };
   });
@@ -190,7 +187,7 @@ export function readPhotosGlb(buffer) {
 // a .glb), then each photo by one of its own, kept in the browser's Cache Storage (PHOTO_CACHE: the file's URL, its
 // version (ETag, Last-Modified or size) and the photo's name) for the next time. A server that ignores Range sends
 // the whole file: the photos are then read from it. { names, info, photo(name) -> Promise<Blob>, ranged }
-export const PHOTO_CACHE = 'gaussopt-photos';
+const PHOTO_CACHE = 'gaussopt-photos';
 const HEAD_BYTES = 65536;
 export async function openPhotosGlb(url) {
   const abs = new URL(url, globalThis.location?.href).href;

@@ -1,7 +1,7 @@
 // Photo sets (DESIGN-sfm §13.3 P1, P8): EXIF reading on JPEG bytes built here, and the plan of a
 // mixed set (capture order, names, labels, rotation, camera groups).
 import { readExif, captureTime, jpegSize } from '../src/sfm/exif.js';
-import { planPhotos, planMore, focalFromExif } from '../src/sfm/photos.js';
+import { planPhotos, planMore, focalFromExif, photoCameras, photoMapping } from '../src/sfm/photos.js';
 import { assert, assertClose, SLOW, env, exists, hasGPU } from './util.js';
 import { GpuSift } from '../src/sfm/sift.js';
 import { GpuMatcher } from '../src/sfm/match.js';
@@ -165,3 +165,13 @@ for (const [set, input, maxFeatures, minCommon, known] of CASES) {
     assert(passed >= 2, tags.join("; "));
   } });
 }
+
+Deno.test('photoCameras, photoMapping: the cameras\' EXIF focals at the image size; camera 0\'s the fallback, over the run\'s options', () => {
+  const plan = { cameras: [{ focal35: 24 }, { focal35: 77 }] }, w = 3000, h = 4000;  // portrait
+  assertClose(photoCameras(plan, w, h).map(c => c.params[0]), [focalFromExif(24, w, h), focalFromExif(77, w, h)], 1e-9, 'priors');
+  assert(photoCameras({ cameras: [{ focal35: 24 }] }, w, h) === null, 'one camera: no priors');
+  const m = photoMapping(plan, { sweeps: 3, focal: 'self', hfovDeg: 0 }, w, h);
+  assert(m.fallbackFocal === focalFromExif(24, w, h) && m.sweeps === 3 && m.focal === 'self' && !('hfovDeg' in m), JSON.stringify(m));
+  for (const [k, v] of Object.entries(PHOTO_MAPPING)) assert(JSON.stringify(m[k]) === JSON.stringify(v), `PHOTO_MAPPING.${k}`);
+  assert(!('fallbackFocal' in photoMapping({ cameras: [{ focal35: null }] }, {}, w, h)), 'no EXIF focal: no fallback');
+});

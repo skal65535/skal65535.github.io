@@ -4,6 +4,8 @@
 "use strict";
 
 import { captureTime } from './exif.js';
+import { defaultCamera, withFocal } from './camera.js';
+import { PHOTO_MAPPING } from './defaults.js';
 
 const DIAGONAL_35MM = Math.hypot(36, 24);  // mm: the 35 mm equivalent focal is relative to it
 
@@ -101,8 +103,28 @@ export function planMore(plan, items) {
 }
 
 // The chosen group's focal in pixels for an image `width` x `height` (as used), from its 35 mm
-// equivalent, or null; and the horizontal field of view it implies (the mapper's fallback, P2)
+// equivalent, or null
 export function focalFromExif(focal35, width, height) {
   return focal35 > 0 ? focal35 * Math.hypot(width, height) / DIAGONAL_35MM : null;
 }
-export const hfovDeg = (focalPx, width) => 2 * Math.atan(width / 2 / focalPx) * 180 / Math.PI;
+
+// A camera model per lens and zoom of `plan` when it has several (P8.2), each from its EXIF focal at w x h (camera
+// 0's is calibrated, the others keep their ratio to it, mapper.js calibrateFocal); null for one camera
+export function photoCameras(plan, w, h) {
+  const { cameras } = plan;
+  if (cameras.length < 2) return null;
+  return cameras.map(g => {
+    const f = focalFromExif(g.focal35, w, h), cam = defaultCamera('OPENCV', w, h);
+    return f ? withFocal(cam, f) : cam;
+  });
+}
+
+// The mapper options from the run's: a video's, and the start of a photo set's
+export const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}) });
+
+// The mapper options of photo set `plan` (at w x h) for the run's `o`: PHOTO_MAPPING, and camera 0's EXIF focal as the
+// fallback when F does not observe the focal (P2; not as the start: it can be a few % off)
+export function photoMapping(plan, o, w, h) {
+  const f = focalFromExif(plan.cameras[0]?.focal35, w, h);
+  return { ...PHOTO_MAPPING, ...baseMapping(o), ...(f ? { fallbackFocal: f } : {}) };
+}

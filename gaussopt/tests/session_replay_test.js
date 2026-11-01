@@ -1,9 +1,7 @@
 // session.js rejectLoops replays from the sequential map: an undone replay must leave that map
 // as it was, so the next replay gives what it gives on a fresh session; the loop is gone, the map accurate.
 import { assert } from './util.js';
-import { session, key, accuracy } from './session_util.js';
-
-const poses = (s) => JSON.stringify(s.mapper.poses);
+import { session, key, accuracy, posesOf } from './session_util.js';
 
 Deno.test('session: reject loop X, undo, reject loop Y = reject loop Y', async () => {
   const { s } = await session();
@@ -14,7 +12,7 @@ Deno.test('session: reject loop X, undo, reject loop Y = reject loop Y', async (
   assert(s.undo() === 'rejectLoops', 'undo');
   await s.rejectLoops([[y.a, y.b]]);
   await t.rejectLoops([[y.a, y.b]]);
-  assert(poses(s) === poses(t), 'the replay started from another map');
+  assert(posesOf(s) === posesOf(t), 'the replay started from another map');
   assert(!t.loops.some(l => key(l.a, l.b) === key(y.a, y.b)) && t.rejected.has(key(y.a, y.b)), 'loop gone');
   assert(accuracy(t, scene).fails.length === 0, `after reject loop: ${accuracy(t, scene).tag}`);
 });

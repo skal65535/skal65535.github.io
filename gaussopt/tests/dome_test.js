@@ -2,7 +2,7 @@
 // direction only (far), ground and walls that depend on where the camera is (near), each view under its own
 // exposure gain.
 import { buildDome, cubeDir, fillDome } from '../src/dome.js';
-import { assert } from './util.js';
+import { assert, lookAt } from './util.js';
 
 const UP = [0, -1, 0];  // the cameras' world: +y down
 const sky = (d) => {  // a direction's sky: bluer and darker up high
@@ -17,9 +17,7 @@ function views({ K = 24, w = 64, h = 48, f = 40, pitchDeg = 10, withSky = true, 
   for (let k = 0; k < K; k++) {
     const yaw = k * 0.45, ph = pitchDeg * Math.PI / 180, p = [0.4 * k, 0, 0];
     const fw = [Math.sin(yaw) * Math.cos(ph), -Math.sin(ph), Math.cos(yaw) * Math.cos(ph)];
-    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    let x = cross(fw, UP); const lx = Math.hypot(...x); x = x.map(v => v / lx);
-    const y = cross(fw, x), R = [...x, ...y, ...fw];
+    const { R } = lookAt(p, fw, UP);
     const rgba = new Uint8Array(4 * w * h), g = gains(k);
     for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
       const rx = (px + 0.5 - w / 2) / f, ry = (py + 0.5 - h / 2) / f;

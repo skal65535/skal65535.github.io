@@ -128,6 +128,9 @@ class GuiGroup {
   }
 
   tip(text) { if (this._title) setTip(this._title, text); return this; }
+  // A folder's: shown or hidden (lil-gui's show()), and a class on it (e.g. 'btn-grid': its buttons two per row)
+  show(on = true) { this._host.parentElement.hidden = !on; return this; }
+  addClass(name) { this._host.parentElement.classList.add(name); return this; }
 
   add(obj, key, a, b, c) {
     const v = obj[key];
@@ -212,6 +215,7 @@ class Ctrl {
   name(text) { this._labelText = text; if (this._label) this._label.textContent = text; return this; }
   onChange(cb) { this._cb = cb; return this; }
   tip(text) { if (this._row_el) setTip(this._row_el, text); return this; }
+  show(on = true) { if (this._row_el) this._row_el.hidden = !on; return this; }  // as lil-gui's
   _fire() {
     if (this._cb) this._cb(this._obj[this._key]);
     changeHook?.(this._obj, this._key, this._obj[this._key]);
