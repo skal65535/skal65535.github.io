@@ -50,7 +50,7 @@
     (WebGPU structure-from-motion, then <a href="https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/">Gaussian Splatting</a>)
     from a handful of photos. Shown: the trained splats, the cameras the photos were taken from, the path through them,
     and the 3D points the reconstruction found. <i>Fly-by</i> follows the camera path (<kbd>r</kbd>: resume it);
-    drag to orbit, wheel to zoom; <kbd>f</kbd> or a flight key: <i>drone</i> (drag = stick, <kbd>↑</kbd>/<kbd>↓</kbd> forward / back,
+    drag to orbit, shift-drag or right-drag (two fingers on a phone) to pan, wheel to zoom; <kbd>f</kbd> or a flight key: <i>drone</i> (drag = stick, <kbd>↑</kbd>/<kbd>↓</kbd> forward / back,
     <kbd>←</kbd>/<kbd>→</kbd> yaw, <kbd>e</kbd>/<kbd>q</kbd> climb / descend, <kbd>space</kbd> re-center, wheel = tilt);
     <kbd>h</kbd>: the URL options.
   </p>
@@ -162,7 +162,7 @@ const params = {
   znear: 0.01,
   zfar: 100.,
   auto_rotate: false,
-  mouse: {on:false, x:0., y:0., sx:0., sy:0., zoom:false, l0: 0. },  // sx, sy: drone, where the drag started
+  mouse: {on:false, x:0., y:0., sx:0., sy:0., zoom:false, l0: 0., pan:false, c:null },  // sx, sy: drone, where the drag started; pan: orbit's target moved; c: the pinch's centre
 
   // Visual
   visu: visu_from_url(parse_arg_str('visu', 'gaussian')),  // a kVisus key
@@ -257,6 +257,17 @@ function GetPinchScale(touches) {
   return Math.hypot(z_1[0] - z_2[0], z_1[1] - z_2[1]);
 }
 
+// orbit: the target moved in the view's plane by a drag of (dx, dy) CSS pixels, the scene following the pointer
+function PanBy(dx, dy) {
+  const b = canvas.getBoundingClientRect(), v = render.cv_view;  // world -> camera, column-major: x = (v[0], v[4], v[8])
+  if (!v) return;
+  const ux = 2. * params.radius / render.fx * dx / b.width, uy = 2. * params.radius / render.fy * dy / b.height;
+  params.target = params.target.map((t, i) => t - ux * v[4 * i] - uy * v[4 * i + 1]);
+}
+function PinchCentre(touches) {
+  return [0.5 * (touches[0].clientX + touches[1].clientX), 0.5 * (touches[0].clientY + touches[1].clientY)];
+}
+
 function DownEvent(event) {
   event.preventDefault();
   if (event.touches && event.touches.length >= 2) {
@@ -264,14 +275,15 @@ function DownEvent(event) {
       params.mouse.on = false;
       params.mouse.zoom = true;
       params.mouse.l0 = GetPinchScale(event.touches);
+      params.mouse.c = PinchCentre(event.touches);
       return;
     }
   }
   params.mouse.on = true;
-  if (params.mode == 'drone') {  // the stick: the drag's offset from here
-    [params.mouse.sx, params.mouse.sy] = [event.clientX ?? event.touches?.[0]?.clientX, event.clientY ?? event.touches?.[0]?.clientY];
-    return;
-  }
+  // shift-drag, the right or the middle button: pan
+  params.mouse.pan = !event.touches && (event.shiftKey || event.button == 1 || event.button == 2);
+  [params.mouse.sx, params.mouse.sy] = [event.clientX ?? event.touches?.[0]?.clientX, event.clientY ?? event.touches?.[0]?.clientY];
+  if (params.mode == 'drone') return;  // the stick: the drag's offset from (sx, sy)
   if (params.mode != 'orbit') set_mode('orbit');
 }
 function UpEvent(event) {
@@ -287,6 +299,9 @@ canvas.addEventListener('pointermove', (event) => {
     const l = Math.hypot(sx, sy);
     if (l > 1) { sx /= l; sy /= l; }
     render.drone.stick = [sx, sy];
+  } else if (params.mouse.on && params.mouse.pan) {
+    PanBy(event.clientX - params.mouse.sx, event.clientY - params.mouse.sy);
+    [params.mouse.sx, params.mouse.sy] = [event.clientX, event.clientY];
   } else if (params.mouse.on) {
     params.phi    = Math.max(-89., Math.min(89., params.phi - (params.mouse.y - mouse_y) * 140.));
     params.theta += (params.mouse.x - mouse_x) * 140.;
@@ -303,11 +318,14 @@ canvas.addEventListener('touchmove', (event) => {
   if (params.mouse.zoom == false) return;
   event.preventDefault();
   if (event.touches && event.touches.length == 2) {
-    const l1 = GetPinchScale(event.touches);
+    const l1 = GetPinchScale(event.touches), c1 = PinchCentre(event.touches);
     params.radius *= (params.mouse.l0 / l1);
     params.mouse.l0 = l1;
+    if (params.mode == 'orbit') PanBy(c1[0] - params.mouse.c[0], c1[1] - params.mouse.c[1]);  // two fingers: pan too
+    params.mouse.c = c1;
   }
 }, { passive: false });
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());  // the right button pans
 canvas.addEventListener('wheel', (event) => {
   event.preventDefault();
   if (params.mode == 'drone') { render.drone.tilt(event.deltaY > 0 ? 0.05 : -0.05); return; }  // gimbal tilt
@@ -457,8 +475,12 @@ const compute_axis_code = `
         );
         var cov2d = transpose(T) * Vk * T;
 
-        // low-pass filter: avoid degenerate cases of sub-pixel sizes
-        // cov2d[0][0] += 1e-8; cov2d[1][1] += 1e-8;
+        // low-pass filter: the trainer's 0.3 px^2 (shaders.wgsl project_splats), so that a splat thinner than a pixel
+        // (a flat one edge-on) is drawn as trained, not as a hard line. cov2d here: 2 x the clip-space covariance
+        // (kQuad's [-2, 2] at sqrt(8 / 4) sigma) x z^2 (J without its 1/z), a pixel 2 / dim of clip space
+        let px = 2. * vpos.z / params.dim;
+        cov2d[0][0] += 0.6 * px.x * px.x;
+        cov2d[1][1] += 0.6 * px.y * px.y;
 
         // only need the upper 2x2 matrix
         return vec3f(cov2d[0][0], cov2d[1][1], cov2d[0][1]);
