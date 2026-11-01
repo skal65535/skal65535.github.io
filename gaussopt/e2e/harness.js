@@ -55,10 +55,10 @@ export const appUrl = (query = '') => `http://localhost:${PORT}${urlOf(join(APP,
 
 // One test: serve.py (serverArgs) and a browser around body(page), then a FAIL for page errors or
 // PASS, with body's return value as a summary. After a failure, onFail(page) returns what to log
-// (or null); cleanup() runs last.
-export async function run(body, { serverArgs = [], onFail = null, cleanup = null } = {}) {
+// (or null); cleanup() runs last. pageOptions: the page's (browser()).
+export async function run(body, { serverArgs = [], onFail = null, cleanup = null, pageOptions = {} } = {}) {
   const srv = await server(serverArgs);
-  const { page, close, errors } = await browser();
+  const { page, close, errors } = await browser(pageOptions);
   const t0 = Date.now();
   try {
     const summary = await body(page);
@@ -76,8 +76,9 @@ export async function run(body, { serverArgs = [], onFail = null, cleanup = null
   }
 }
 
-// { page, close, errors(): the page errors so far, favicon misses aside }
-export async function browser() {
+// { page, close, errors(): the page errors so far, favicon misses aside }; pageOptions: Playwright's newPage options
+// over the default viewport (e.g. a phone: viewport, isMobile, hasTouch; Chrome only)
+export async function browser(pageOptions = {}) {
   if (SAFARI) {  // the errors are kept in the page: banked before each navigation
     const { page, close } = await launchSafari({ width: 1400, height: 1000 });
     const seen = [];
@@ -88,7 +89,7 @@ export async function browser() {
     return { page, close, errors: async () => [...seen, ...await page.errors()].filter(e => !/favicon/.test(e)) };
   }
   const b = await chromium.launch({ executablePath: CHROME, headless: true, args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU'] });
-  const page = await b.newPage({ viewport: { width: 1400, height: 1000 }, acceptDownloads: true });
+  const page = await b.newPage({ viewport: { width: 1400, height: 1000 }, acceptDownloads: true, ...pageOptions });
   const seen = [];
   page.on('pageerror', e => seen.push(`page: ${e.message}`));
   page.on('console', m => {

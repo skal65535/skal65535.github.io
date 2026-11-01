@@ -21,7 +21,8 @@ import { triangulationAngle } from './geometry.js';
 export function datasetFromMapper(mapper, { segment = null, maxReprojPx = 2, minObs = 3, minAngleDeg = 1.5, pinhole = true } = {}) {
   const seg = segment ?? mapper.largestSegment();
   const all = mapper.cameras ?? [mapper.camera], live = all.map((_, c) => (mapper.merged?.[c] ?? c) === c);
-  const sfmCams = all.filter((_, c) => live[c]), newIndex = live.map((_, c) => live.slice(0, c).filter(Boolean).length);
+  let j = 0;
+  const sfmCams = all.filter((_, c) => live[c]), newIndex = live.map(l => (l ? j++ : -1));
   const camOf = (k) => newIndex[mapper.camOf?.[k] ?? 0];
   const cameras = sfmCams.map(cam => pinhole ? pinholeOf(cam) : { ...cam, params: [...cam.params] });
 

@@ -179,6 +179,7 @@ class GuiGroup {
 
   // Remove every control and sub-group (e.g. to rebuild a select with new options).
   clear() {
+    for (const c of this.controllersRecursive()) c._removed = true;  // their listen() polling ends
     this._host.replaceChildren();
     this._controls = [];
     return this;
@@ -230,13 +231,16 @@ class Ctrl {
 
   // Poll obj[key] each frame and reflect it back into the UI. Used for
   // read-only displays (.listen().disable()) and for params changed
-  // externally (e.g. autoplay updating a slider).
+  // externally (e.g. autoplay updating a slider). A row out of the page
+  // (not yet attached, or moved) is checked again every 0.5 s; one removed
+  // by clear() stops.
   listen() {
     if (this._polling) return this;
     this._polling = true;
     let last;
     const tick = () => {
-      if (!this._row_el?.isConnected) return;
+      if (this._removed) return;
+      if (!this._row_el?.isConnected) { setTimeout(tick, 500); return; }
       const v = this._obj[this._key];
       if (v !== last) { this._refresh(v); last = v; }
       requestAnimationFrame(tick);

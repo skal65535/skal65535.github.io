@@ -23,6 +23,7 @@ import { mapSequential, finish } from './reconstruct.js';
 import { SequentialMapper } from './mapper.js';
 import { closeLoops } from './loop.js';
 import { keyframeQuality } from './quality.js';
+import { imageRecord } from './frontend.js';
 
 // Key of an unordered keyframe pair by names
 export const key = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -94,8 +95,7 @@ export class SfmSession {
   toState() {
     const pairs = this._indexed(), { json: mapper, ...mapperArrays } = this.mapper.toState();
     return {
-      json: { images: this.images.map(im => ({ name: im.name, time: im.time, ...(im.camera !== undefined ? { camera: im.camera } : {}),
-                                               ...(im.flowH ? { flowH: im.flowH, flowChain: im.flowChain } : {}) })), loops: this.loops, rejected: [...this.rejected],
+      json: { images: this.images.map(imageRecord), loops: this.loops, rejected: [...this.rejected],
               mapping: this.mapping, loopsOn: this.loopsOn, window: this.window, seed: this.seed,
               pairTypes: pairs.map(p => p.type), mapper },
       arrays: {

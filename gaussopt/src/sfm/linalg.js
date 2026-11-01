@@ -125,6 +125,19 @@ export const mulVec3 = (A, v) => [
 ];
 export const det3 = (A) =>
   A[0] * (A[4] * A[8] - A[5] * A[7]) - A[1] * (A[3] * A[8] - A[5] * A[6]) + A[2] * (A[3] * A[7] - A[4] * A[6]);
+// out = A^-1 (3x3); false when A is singular
+export function invert3(A, out) {
+  const [a, b, c, d, e, f, g, h, i] = A;
+  const A0 = e * i - f * h, A1 = -(d * i - f * g), A2 = d * h - e * g;
+  const det = a * A0 + b * A1 + c * A2;
+  if (!(Math.abs(det) > 1e-300)) return false;
+  const s = 1 / det;
+  out[0] = A0 * s; out[1] = -(b * i - c * h) * s; out[2] = (b * f - c * e) * s;
+  out[3] = A1 * s; out[4] = (a * i - c * g) * s; out[5] = -(a * f - c * d) * s;
+  out[6] = A2 * s; out[7] = -(a * h - b * g) * s; out[8] = (a * e - b * d) * s;
+  return true;
+}
+
 const skew3 = ([x, y, z]) => [0, -z, y, z, 0, -x, -y, x, 0];
 
 // Axis-angle vector w (|w| = angle) -> rotation matrix (Rodrigues)

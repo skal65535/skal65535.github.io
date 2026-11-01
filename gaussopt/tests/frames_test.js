@@ -1,6 +1,6 @@
 // S0 (DESIGN-sfm §5.1): MP4 demuxing, and keyframe selection against video2splat.py `select`.
 import { demux } from '../src/sfm/mp4.js';
-import { resizeArea, sharpness, flowPyramid, goodFeatures, trackLK, motion, step, zoomEvents, selectFrames, analyzeFrame } from '../src/sfm/frames.js';
+import { resizeArea, sharpness, flowPyramid, goodFeatures, trackLK, step, zoomEvents, selectFrames, analyzeFrame } from '../src/sfm/frames.js';
 import { makeRng } from '../src/math.js';
 import { assert, assertClose, SLOW, env, exists } from './util.js';
 
@@ -68,8 +68,28 @@ Deno.test('pyramidal LK recovers a known translation (subpixel and 25 px)', () =
     const stay = pts.filter(([x, y]) => x + dx < w - 1 && y + dy < h - 1 && x + dx > 0 && y + dy > 0).length;  // still in the image
     assert(err.length > 0.9 * stay, `(${dx}, ${dy}): ${err.length} of ${stay} tracked`);
     assert(err[err.length >> 1] < 0.05, `(${dx}, ${dy}): median error ${err[err.length >> 1].toFixed(3)} px`);
-    assertClose(motion(A, B), Math.hypot(dx, dy) / Math.hypot(w, h), 0.05 / Math.hypot(w, h) + 1e-4, 'motion');
+    assertClose(step(A, B).motion, Math.hypot(dx, dy) / Math.hypot(w, h), 0.05 / Math.hypot(w, h) + 1e-4, 'motion');
   }
+});
+
+// An on-screen display (DESIGN-sfm §5.1.1): text bars that do not move, sharper than a faint scene (thermal
+// asphalt). Their corners outnumber the scene's and the median motion is theirs; with them kept out of the
+// corners (not only of the tracks: the strongest corner sets the threshold, 400 at most), the scene's.
+Deno.test('step without the tracks on an overlay: the scene\'s motion, not the overlay\'s 0', () => {
+  const w = 320, h = 200, bar = 24, dx = 6.3, dy = -2.4, r = makeRng(7);
+  const text = Array.from({ length: 160 }, () => [r() * w, r() < 0.5 ? r() * (bar - 6) : h - bar + r() * (bar - 6), 2 + 3 * r()]);
+  const frame = (dx, dy) => {
+    const im = texture(w, h, dx, dy).map(v => 128 + 0.3 * (v - 128));  // faint
+    for (const [x0, y0, s] of text) for (let y = Math.floor(y0); y < y0 + s; y++) for (let x = Math.floor(x0); x < x0 + s && x < w; x++) im[y * w + x] = 255;
+    return flowPyramid(im, w, h);
+  };
+  const A = frame(0, 0), B = frame(dx, dy), want = Math.hypot(dx, dy) / Math.hypot(w, h);
+  const keep = (x, y) => y >= bar && y < h - bar;
+  const all = step(A, B), masked = step(A, B, keep);
+  assert(all.motion < 0.2 * want, `with the bars: ${(all.motion / want).toFixed(2)} of the motion (the premise: they hold it)`);
+  assertClose(masked.motion, want, 0.1 * want, 'without the bars');
+  assert(Math.abs(masked.scale - 1) < 0.01, `scale ${masked.scale}`);
+  assert(step(A, B, () => false).motion === Infinity, 'no corner kept: lost');
 });
 
 // A zoom scales every track alike: step() reads it from the similarity fitted to the tracks
@@ -194,7 +214,7 @@ Deno.test({ name: 'frame selection on jardin5 matches video2splat.py --spacing 0
   for await (const g of ffmpegGray(VIDEO, 1000, 562)) {
     const a = analyzeFrame(g, 1000, 562);
     sharp.push(a.sharpness);
-    if (prev) steps.push(motion(prev, a.flow));
+    if (prev) steps.push(step(prev, a.flow).motion);
     prev = a.flow;
   }
   const rows = (await Deno.readTextFile(SHARPNESS_CSV)).trim().split('\n').slice(1).map(l => l.split(','));

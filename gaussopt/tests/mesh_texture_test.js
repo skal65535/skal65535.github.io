@@ -116,3 +116,14 @@ Deno.test('bakeView: a photo 8 x the depth\'s size is read at the level of the t
   }
   assert(worst <= 4, `texel color off by ${worst}`);
 });
+
+Deno.test('atlas: 200k charts (gare-st-lazare\'s 4.5M-face mesh: more than the call stack takes as arguments)', () => {
+  const n = 200000, P = new Float32Array(9 * n), F = new Uint32Array(3 * n);
+  for (let i = 0; i < n; i++) {  // apart triangles, a chart each
+    const x = 2 * (i % 1000), y = 2 * Math.floor(i / 1000);
+    P.set([x, y, 0, x + 1, y, 0, x, y + 1, 0], 9 * i); F.set([3 * i, 3 * i + 1, 3 * i + 2], 3 * i);
+  }
+  const a = atlas({ positions: P, faces: F, colors: null }, { size: 4096, pad: 1 });
+  assert(a.info.charts === n, `${a.info.charts} charts`);
+  assert(a.info.largest > 0 && a.info.largest <= a.info.rects, `largest ${a.info.largest}, rects ${a.info.rects}`);
+});

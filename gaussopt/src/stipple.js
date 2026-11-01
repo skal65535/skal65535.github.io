@@ -6,7 +6,8 @@
 //   3. depth   = rendered z_med where the pixel is covered (T_final < 0.5), else the
 //                nearest COLMAP point observed in that view, else the view's median depth
 //   4. splats  = unprojected sites, GT color, low opacity, isotropic scale from cell area
-// Pure CPU: the trainer does the GPU readbacks (GaussOptTrainer._stippleSeeds()).
+// Pure CPU: the trainer does the GPU readbacks (GaussOptTrainer._stippleSeeds(), _prepareSeeds()) and steps
+// 1, 2 and 4 run in stipple_worker.js, ahead of the rebalance, or in the page when they could not (seedsFromView).
 "use strict";
 
 import { computeVoronoi } from '../../stipple/stipple.js';
@@ -14,14 +15,14 @@ import { SPLAT_FLOATS, rgbToSh0 } from './colmap.js';
 import { clamp, logit, makeRng } from './math.js';
 
 // Density for the sampler: mean-RGB residual minus its image mean, clamped at 0.
-// gt / hat: RGBA8 rows of `bytesPerRow` bytes.
-export function residualDensity(gt, hat, W, H, bytesPerRow = W * 4) {
+// gt / hat: RGBA8 rows of `bytesPerRow` bytes; masked: gt's alpha 0 pixels have none (a video's on-screen display).
+export function residualDensity(gt, hat, W, H, bytesPerRow = W * 4, { masked = false } = {}) {
   const res = new Float32Array(W * H);
   let sum = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const o = y * bytesPerRow + x * 4;
-      const r = (Math.abs(gt[o] - hat[o]) + Math.abs(gt[o + 1] - hat[o + 1]) + Math.abs(gt[o + 2] - hat[o + 2])) / 765;
+      const r = masked && gt[o + 3] === 0 ? 0 : (Math.abs(gt[o] - hat[o]) + Math.abs(gt[o + 1] - hat[o + 1]) + Math.abs(gt[o + 2] - hat[o + 2])) / 765;
       res[y * W + x] = r;
       sum += r;
     }
@@ -55,13 +56,14 @@ export function stippleSites(density, W, H, N, { lloydIters = 4, seed = 1234 } =
 
   let area = null;
   for (let it = 0; it <= lloydIters; it++) {
-    const owner = computeVoronoi(W, H, pts);
+    const owner = computeVoronoi(W, H, pts, density);  // the pixels without density weigh nothing
     const m = new Float64Array(pts.length), mx = new Float64Array(pts.length), my = new Float64Array(pts.length);
     area = new Float32Array(pts.length);
     for (let y = 0, i = 0; y < H; y++) {
       for (let x = 0; x < W; x++, i++) {
         const c = owner[i], r = density[i];
-        if (r > 0) area[c]++;  // cell area restricted to under-fit pixels
+        if (!(r > 0)) continue;  // no weight (and not assigned)
+        area[c]++;  // cell area restricted to under-fit pixels
         // Centroids weighted by r^2: a 2D CVT has site density ~ sqrt(weight), so this keeps
         // seeds proportional to the error mass r (as the importance sampling started) while
         // Lloyd still regularizes their spacing.
@@ -135,6 +137,13 @@ function unprojectPixel(img, fx, fy, cx, cy, u, v, z) {
     c[1] + R[1] * xc + R[4] * yc + R[7] * z,
     c[2] + R[2] * xc + R[5] * yc + R[8] * z,
   ];
+}
+
+// Steps 1, 2 and 4 for one view: its readback (gt / hat RGBA8 rows of bytesPerRow, pix_state), pose (img: R, center),
+// intrinsics and depth grid -> makeSeedSplats' { params, count, covered, fromPoints, fromMedian }
+export function seedsFromView({ gt, hat, pix, W, H, bytesPerRow, budget, seed, img, fx, fy, cx, cy, depthGrid, masked = false }) {
+  const sites = stippleSites(residualDensity(gt, hat, W, H, bytesPerRow, { masked }), W, H, budget, { seed });
+  return makeSeedSplats({ img, sites, pix, gt, bytesPerRow, W, H, fx, fy, cx, cy, depthGrid });
 }
 
 // Seed splats for one view. pix: Float32Array [T, z_med, last_k, 0] per pixel; gt: RGBA8 rows.

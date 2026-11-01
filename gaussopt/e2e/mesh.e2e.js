@@ -42,7 +42,7 @@ await run(async (page) => {
     for (let t = 0; t < 50 && !app.meshState?.faces; t++) await new Promise(res => setTimeout(res, 100));  // saveMesh returns after the save
     app.shell.refresh();
     const step = document.querySelector('.step[data-phase="export"]');
-    return got && { ...got, up: app.worldUp, view: app.params.mesh_view, log: app.logText().split('\n').filter(l => /Mesh/.test(l)), phase, settings,
+    return got && { ...got, up: app.worldUp, view: app.params.mesh_view, shownVoxel: window.__shown?.voxel, log: app.logText().split('\n').filter(l => /Mesh/.test(l)), phase, settings,
                     exportStep: { cls: step.className, sum: step.querySelector('.step-sum').textContent } };
   });
   if (r?.noButton) fail(`no enabled "Make mesh →" in the Train step: ${JSON.stringify(r.noButton)}`);
@@ -53,6 +53,9 @@ await run(async (page) => {
   if (!/^gaussopt_\d{5}\.mesh\.glb$/.test(r.name)) fail(`saved as ${r.name}`);
   const mesh = readGlb(Uint8Array.from(r.bytes).buffer, { gltfFrame: true }), nv = mesh.positions.length / 3, nf = mesh.faces.length / 3;
   if (!(nv > 1000 && nf > 1000)) fail(`${nv} vertices, ${nf} faces`);
+  // the grid's voxel, as logged (3 digits), in the .glb and on the mesh shown
+  const voxel = Number(r.log.find(l => /^Mesh: /.test(l))?.match(/voxel ([\d.e-]+)/)?.[1]);
+  if (!(voxel > 0 && Math.abs(mesh.voxel - voxel) < 5e-3 * voxel && r.shownVoxel === mesh.voxel)) fail(`voxel: logged ${voxel}, .glb ${mesh.voxel}, shown ${r.shownVoxel}`);
   // the vertices inside the room, give or take 6%: all but a few (splats behind the walls), once turned
   // back by R^T (R takes the app's world up to glTF's +Y)
   const R = rotationToY(r.up);
@@ -120,8 +123,10 @@ await run(async (page) => {
   await page.evaluate(() => { const { image, ...m } = window.__shown; window.app.renderer.setMesh(m); });  // the same mesh, vertex colors
   const colored = await drawn();
   await page.evaluate(() => { window.app.renderer.setMesh(window.__shown); window.app.params.mesh_shaded = true; });
-  await page.evaluate(() => { window.app.params.mesh_view = 1; });
+  await page.evaluate(() => { Object.assign(window.app.params, { mesh_view: 1, mesh_margin: 0 }); });
   const over = await drawn();
+  await page.evaluate(() => { window.app.params.mesh_margin = 2; });  // the splats up to 2 voxels behind the mesh drawn: less of it shows
+  const overMargin = await drawn();
   // 'wireframe + splats' with a quad 0.1 in front of the camera, wider than the view, as the mesh: all
   // the splats behind it hidden, its diagonal alone drawn (no fill)
   await page.evaluate(() => {
@@ -143,10 +148,58 @@ await run(async (page) => {
   // measured 9.3-9.7% with the centers' depth, 3.8-3.9% with the plane depth (tile_forward: the mesh on the splats'
   // own surface, fewer of them behind it), 6.6-6.7% at 600 steps; 0.7% with the splats drawn unhidden (most are on or just in front of it)
   if (!(over.gray > 0.02)) fail(`mesh + splats, shaded: ${(100 * over.gray).toFixed(1)}% gray (the mesh)`);
+  // measured 0.68-0.71 of it (4 runs); 1 with the pre-pass at the mesh's own depth
+  if (!(overMargin.gray < 0.85 * over.gray)) fail(`mesh + splats, margin 2 voxels: ${(100 * overMargin.gray).toFixed(1)}% gray against ${(100 * over.gray).toFixed(1)}% at 0`);
   if (!(wall.drawn < 0.02)) fail(`wireframe + splats behind a quad: ${(100 * wall.drawn).toFixed(1)}% of the canvas drawn (splats not hidden, or the quad filled)`);
   if (!(without.gray < 0.5)) fail(`mesh removed (the splats): ${(100 * without.gray).toFixed(1)}% gray`);
+
+  // mesh_kind 'behind the splats' (mesh_grow.js): the same Make mesh, the solid grown from the splats and carved by
+  // the cameras' rays; its vertices behind the room's surfaces (in the walls, the boxes, the sphere: their signed
+  // distance to the free space, in voxels, below 0 at the median and over 2 for few), and over the splats from camera 0
+  // less of it shows than of the surface mesh (it hides fewer of them), both at margin 0
+  const b = await page.evaluate(async () => {
+    const app = window.app;
+    const saved = new Promise(res => { app._saveOrDownload = async (bytes, name) => res({ bytes: Array.from(bytes), name }); });
+    app.params.mesh_kind = 'behind';
+    app.saveMesh();
+    const got = await Promise.race([saved, new Promise(res => setTimeout(() => res(null), 240000))]);
+    for (let t = 0; t < 50 && app.meshState?.running; t++) await new Promise(res => setTimeout(res, 100));
+    return got && { ...got, log: app.logText().split('\n').filter(l => /^Mesh: .*behind the splats/.test(l)), shownVoxel: window.__shown?.voxel };
+  });
+  if (!b) throw new Error('nothing saved 240 s after Make mesh (behind the splats)');
+  const bm = readGlb(Uint8Array.from(b.bytes).buffer, { gltfFrame: true }), bnv = bm.positions.length / 3;
+  const bVoxel = Number(b.log.at(-1)?.match(/voxel ([\d.e-]+)/)?.[1]);
+  if (!(bVoxel > 0 && Math.abs(bm.voxel - bVoxel) < 5e-3 * bVoxel && b.shownVoxel === bm.voxel)) fail(`behind: voxel logged ${bVoxel}, .glb ${bm.voxel}, shown ${b.shownVoxel} (${b.log.join(' | ')})`);
+  if (!(bnv > 1000)) fail(`behind: ${bnv} vertices`);
+  const free = (p) => {  // signed distance to the free space (> 0 in it): inside the room, outside the boxes and the sphere
+    let d = Math.min(...[0, 1, 2].map(k => Math.min(p[k] - geo.room[0][k], geo.room[1][k] - p[k])));
+    for (const [lo, hi] of geo.boxes) {
+      const o = [0, 1, 2].map(k => Math.max(lo[k] - p[k], 0, p[k] - hi[k])), inside = Math.min(...[0, 1, 2].map(k => Math.min(p[k] - lo[k], hi[k] - p[k])));
+      d = Math.min(d, Math.hypot(...o) > 0 ? Math.hypot(...o) : -inside);
+    }
+    const [c, rad] = geo.sphere;
+    return Math.min(d, Math.hypot(p[0] - c[0], p[1] - c[1], p[2] - c[2]) - rad);
+  };
+  const freeOf = (m) => {  // the vertices' distances to the free space in voxels: [median, the share over 2 voxels in it]
+    const n = m.positions.length / 3, d = [];
+    for (let v = 0; v < n; v++) {
+      const q = [0, 1, 2].map(k => m.positions[3 * v + k]);
+      d.push(free([0, 1, 2].map(c => R[c] * q[0] + R[3 + c] * q[1] + R[6 + c] * q[2])) / m.voxel);
+    }
+    d.sort((x, y) => x - y);
+    return [d[n >> 1], d.filter(x => x > 2).length / n];
+  };
+  const [med, front] = freeOf(bm), [sMed, sFront] = freeOf(mesh);
+  if (!(med < -1 && med < sMed - 1 && front < 0.15)) fail(`behind: free-space distance median ${med.toFixed(2)} voxels, ${(100 * front).toFixed(1)}% over 2 voxels in front; the surface mesh ${sMed.toFixed(2)}, ${(100 * sFront).toFixed(1)}%`);
+  await page.evaluate(() => { Object.assign(window.app.params, { mesh_view: 1, mesh_margin: 0, mesh_shaded: true }); window.app.flyToCamera(0); });
+  await new Promise(res => setTimeout(res, 2000));
+  const overBehind = await drawn();
+  if (!(overBehind.gray < over.gray)) fail(`mesh + splats, margin 0: behind the splats ${(100 * overBehind.gray).toFixed(1)}% gray, not below the surface mesh's ${(100 * over.gray).toFixed(1)}%`);
   return `${r.name}: ${nv} vertices, ${nf} faces, ${(r.bytes.length / 1e6).toFixed(2)} MB; mesh only (shaded) covers ${(100 * withMesh.drawn).toFixed(0)}% of the view, ` +
          `textured ${(100 * textured.drawn).toFixed(0)}%, ${textured.psnr.toFixed(2)} dB to the photo vs ${colored.psnr.toFixed(2)} with vertex colors; ` +
-         `${(100 * withMesh.gray).toFixed(1)}% gray; mesh + splats ${(100 * over.gray).toFixed(1)}% gray; ` +
-         `wireframe behind a quad ${(100 * wall.drawn).toFixed(1)}% drawn; the splats ${(100 * without.gray).toFixed(1)}% gray`;
+         `${(100 * withMesh.gray).toFixed(1)}% gray; mesh + splats ${(100 * over.gray).toFixed(1)}% gray, ${(100 * overMargin.gray).toFixed(1)}% with a margin of 2 voxels; ` +
+         `wireframe behind a quad ${(100 * wall.drawn).toFixed(1)}% drawn; the splats ${(100 * without.gray).toFixed(1)}% gray; ` +
+         `behind the splats: ${bnv} vertices, free-space distance median ${med.toFixed(2)} voxels (${(100 * front).toFixed(1)}% over 2 in front; the surface ` +
+         `mesh ${sMed.toFixed(2)}, ${(100 * sFront).toFixed(1)}%), ` +
+         `mesh + splats at margin 0 ${(100 * overBehind.gray).toFixed(1)}% gray against ${(100 * over.gray).toFixed(1)}%`;
 }, { serverArgs: [ROOM] });

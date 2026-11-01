@@ -7,6 +7,7 @@
 
 import { atlas, bakeView, finishTexture, texelsOf } from './mesh_texture.js';
 import { decodeImage, mipLevels } from './mesh_image.js';
+import { SPLAT_FLOATS } from './colmap.js';
 
 // A depth view: { R (world -> camera, row-major 3x3), t, fx, fy, cx, cy, W, H,
 //                 depth: Float32Array W*H (camera z; 0 = no depth), rgb: Uint8Array RGBA rows of `pitch` bytes }
@@ -224,6 +225,17 @@ async function renderDepthView(tr, i, maxSpread, photo = false) {
 // the step lock (identity when the caller already holds it, as the rebalance does).
 export async function fuseTrainer(tr, ids, { res = 256, trunc = 3, freeWeight = 1, maxSpread = Infinity, lock = (fn) => fn(), onView = null } = {}) {
   const render = (i) => lock(() => renderDepthView(tr, i, maxSpread));
+  const grid = new Tsdf(await sampleBounds(render, ids), { res, trunc, freeWeight });
+  for (let n = 0; n < ids.length; n++) {
+    const v = await render(ids[n]);
+    if (v) grid.fuse(v);
+    await onView?.(n + 1, ids.length);
+  }
+  return grid;
+}
+
+// depthBounds of 24 of views `ids` (render(i): a depth view or null)
+async function sampleBounds(render, ids) {
   const sample = [];
   for (let n = 0; n < ids.length; n += Math.max(1, Math.floor(ids.length / 24))) {
     const v = await render(ids[n]);
@@ -231,13 +243,22 @@ export async function fuseTrainer(tr, ids, { res = 256, trunc = 3, freeWeight = 
   }
   const bounds = depthBounds(sample);
   if (!bounds) throw new Error('mesh: no rendered depth');
-  const grid = new Tsdf(bounds, { res, trunc, freeWeight });
-  for (let n = 0; n < ids.length; n++) {
-    const v = await render(ids[n]);
-    if (v) grid.fuse(v);
-    await onView?.(n + 1, ids.length);
+  return bounds;
+}
+
+// mesh_grow.js growBacking's inputs from a Trainer: its splats (from the GPU), its cameras (at their photos' size)
+// and the grid's bounds, those of its views' rendered depth (as fuseTrainer's)
+export async function backingInputs(tr, { maxSpread = Infinity } = {}) {
+  let bounds;
+  try {
+    bounds = await sampleBounds((i) => tr._withStepLock(() => renderDepthView(tr, i, maxSpread)), tr.images.map((im, i) => i));
+  } finally {
+    tr._invalidateCaches();
   }
-  return grid;
+  await tr.syncSplatsFromGpu();
+  const cameras = tr.images.map(({ center, view, camera: c }) => ({ center: Array.from(center), view: Array.from(view), fx: c.fx, fy: c.fy, cx: c.cx, cy: c.cy,
+                                                                    width: c.width, height: c.height }));
+  return { splats: { params: tr.cpuParams.slice(0, tr.count * SPLAT_FLOATS), count: tr.count }, cameras, bounds };
 }
 
 // meshToPly's .ply read back ({ positions, faces, colors }), or null when the .ply has no faces (splats)

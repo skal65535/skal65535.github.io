@@ -23,7 +23,8 @@
 "use strict";
 
 import { openVideo, sampleFrames, decodeFrames, grayOf } from './video.js';
-import { fitSize, selectFrames, zoomEvents } from './frames.js';
+import { fitSize, resizeArea, selectFrames, zoomEvents } from './frames.js';
+import { OVERLAY, staticMask, dropMasked, maskAt, packMask, unpackMask } from './overlay.js';
 import { GpuSift, SIFT_DEFAULTS } from './sift.js';
 import { GpuMatcher } from './match.js';
 import { GpuUndistort, PointColors } from './undistort.js';
@@ -46,7 +47,7 @@ const log = (text, level = '') => post({ type: 'log', text, level });
 const progress = (stage, done, total) => post({ type: 'progress', stage, done, total });
 const seconds = (t) => `${((performance.now() - t) / 1000).toFixed(1)} s`;
 const same = (a, b, keys) => a && keys.every(k => a[k] === b[k]);
-const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'jpegQuality'];  // the options the features depend on
+const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay'];  // the options the features depend on
 const perFrame = (feats) => Math.round(feats.reduce((s, f) => s + f.keypoints.length / 4, 0) / feats.length);  // mean features per frame
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const warnCapped = (capped, what) => {
@@ -75,6 +76,14 @@ async function devices() {
   return gpu;
 }
 
+// Once: the hardware decoder failed and the video is decoded in software (video.js decodeFrames)
+function noteDecoder() {
+  if (video?.decoderFallback && !video.decoderNoted) {
+    video.decoderNoted = true;
+    log(`video: the hardware decoder failed (${video.decoderFallback}), decoding in software`, 'warn');
+  }
+}
+
 // S0a pool: analysis workers (frames_worker.js), CHUNK consecutive frames per job
 const CHUNK = 48;
 let pool = null;
@@ -90,11 +99,36 @@ function analysisPool() {
 }
 
 // S0a: sharpness and motion of every sampled frame (one decode pass at <= sharpDim), the
-// analysis spread over the pool while the decoder runs
+// analysis spread over the pool while the decoder runs. With an on-screen display (overlay.js), its motion
+// again in a second pass, its corners left out (masked; DESIGN-sfm §5.1.1): they do not move, and where they
+// outnumber the scene's (thermal asphalt, a wall) the median motion is theirs, 0, and no keyframe is taken.
 async function analyze(o) {
   const keys = ['sampleFps', 'sharpDim', 'flowDim'];
   if (same(cache.analysis?.options, o, keys)) return cache.analysis;
   const t = performance.now(), order = sampleFrames(video, o.sampleFps), [w, h] = fitSize(video.width, video.height, o.sharpDim);
+  // the on-screen display's mask (overlay.js): every `every`-th frame at the grid's size
+  const [gw, gh] = fitSize(w, h, OVERLAY.gridDim), every = Math.max(1, Math.ceil(order.length / OVERLAY.maxFrames)), grid = [];
+  const { sharp, steps, times, zoom, flowH } = await analysisPass(order, w, h, o, null, (gray, i) => {
+    if (i % every === 0) grid.push(gw === w && gh === h ? gray.slice() : resizeArea(gray, w, h, gw, gh));
+  });
+  log(`frames: ${order.length} sampled at ${Math.min(o.sampleFps, video.fps).toFixed(1)} fps, ` +
+      `analyzed in ${seconds(t)} (${analysisPool().length} workers)`);
+  const t1 = performance.now(), overlay = packMask(staticMask(grid, gw, gh));
+  log(overlay.b64 ? `overlay: ${(100 * overlay.share).toFixed(1)}% of the frame masked (${overlay.regions} still regions with text or lines, ${grid.length} frames at ${gw} x ${gh}, ${seconds(t1)})`
+                  : `overlay: none (${overlay.why})`);
+  let masked = null;
+  if (overlay.b64) {
+    const t2 = performance.now(), m = await analysisPass(order, w, h, o, unpackMask(overlay));
+    masked = { steps: m.steps, zoom: m.zoom, flowH: m.flowH };
+    const path = (a) => a.reduce((p, v) => p + (Number.isFinite(v) ? v : 0), 0).toFixed(2);
+    log(`overlay: the motion without its corners, ${path(m.steps)} diagonals in all (${path(steps)} with them), in ${seconds(t2)}`);
+  }
+  return cache.analysis = { options: { ...o }, order, sharp, steps, times, zoom, flowH, overlay, masked };
+}
+
+// One decode pass of the sampled frames `order` at w x h through the pool: { sharp, steps, times, zoom, flowH } per
+// frame; mask: no corner tracked on it (frames_worker.js); onGray(gray, i): each frame's gray levels as decoded
+async function analysisPass(order, w, h, o, mask, onGray = () => {}) {
   const sharp = new Array(order.length), steps = new Array(order.length), times = new Array(order.length), zoom = new Array(order.length).fill(null), flowH = new Array(order.length).fill(null);
   const workers = analysisPool(), options = { sharpDim: o.sharpDim, flowDim: o.flowDim };
   const position = new Map(order.map((k, i) => [k, i]));  // sample -> index in order
@@ -112,11 +146,12 @@ async function analyze(o) {
       };
       wk.onerror = (e) => { failure = new Error(`frame analysis: ${e.message}`); wk.busy = null; resolve(); };
     });
-    wk.postMessage({ frames, w, h, options, overlap }, frames.map(f => f.buffer).filter((b, k) => k > 0 || !overlap));
+    wk.postMessage({ frames, w, h, options, overlap, mask }, frames.map(f => f.buffer).filter((b, k) => k > 0 || !overlap));
   };
   await decodeFrames(video, new Set(order), w, h, async (ctx, k, time) => {
     const gray = grayOf(ctx.getImageData(0, 0, w, h).data, w * h);
     times[position.get(k)] = time;
+    onGray(gray, position.get(k));
     chunk.push(gray);
     at.push(position.get(k));
     if (chunk.length === CHUNK) {
@@ -127,15 +162,18 @@ async function analyze(o) {
     }
     if (failure) throw failure;
   });
+  noteDecoder();
   if (chunk.length) await submit(last ? [last, ...chunk] : chunk, at, !!last);
   await Promise.all(workers.map(wk => wk.busy));
   if (failure) throw failure;
   const missing = order.length - times.filter(t => t !== undefined).length;
   if (missing) throw new Error(`${missing} of ${order.length} sampled frames not decoded (duplicate timestamps in the video?)`);
-  log(`frames: ${order.length} sampled at ${Math.min(o.sampleFps, video.fps).toFixed(1)} fps, ` +
-      `analyzed in ${seconds(t)} (${workers.length} workers)`);
-  return cache.analysis = { options: { ...o }, order, sharp, steps, times, zoom, flowH };
+  return { sharp, steps, times, zoom, flowH };
 }
+
+// The analysis's steps for options o: without the on-screen display's corners when it is masked (and measured so:
+// an analysis saved before has none)
+const motionOf = (a, o) => (o.overlay !== false && a.masked ? { ...a, ...a.masked } : a);
 
 // The zoom events of the analysed frames (frames.js zoomEvents; none in an analysis saved without its zoom steps)
 function zoomOf(analysis, o) {
@@ -151,6 +189,7 @@ function zoomOf(analysis, o) {
 
 // S0b keyframe selection, shown on the panel's strip
 function selection(analysis, o) {
+  analysis = cache.motion = motionOf(analysis, o);
   const zoom = cache.zoom = zoomOf(analysis, o);
   const sel = selectFrames({ sharpness: analysis.sharp, motion: analysis.steps, times: analysis.times, span: zoom.span }, o);
   post({ type: 'selection', times: analysis.times, sharpness: analysis.sharp, status: sel.status, path: sel.path, threshold: sel.threshold });
@@ -168,17 +207,26 @@ function sharpnessCsv(a, sel) {
 // S1 on video samples (decoded at w x h): per frame onFrame({ name, time, keypoints, descriptors }, { name, blob (JPEG) })
 async function extract(samples, w, h, o, onFrame) {
   const { sift } = await devices();
-  let capped = 0;
+  const ov = overlayMask(o);
+  let capped = 0, dropped = 0, total = 0;
   await decodeFrames(video, new Set(samples), w, h, async (ctx, k, time) => {
     const name = keyframeName(time);
     const gray = grayOf(ctx.getImageData(0, 0, w, h).data, w * h);
     const jpeg = { name, blob: await ctx.canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality }) };
-    const { keypoints, descriptors, capped: c } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures });
-    capped += c;
+    const f = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak ?? SESSION_DEFAULTS.siftPeak });
+    capped += f.capped;
+    total += f.keypoints.length / 4;
+    const { keypoints, descriptors, dropped: d } = ov ? dropMasked(f.keypoints, f.descriptors, ov, w, h) : f;
+    dropped += d ?? 0;
     await onFrame({ name, time, keypoints, descriptors }, jpeg);
   });
+  noteDecoder();
   warnCapped(capped, 'frame');
+  if (dropped) log(`overlay: ${dropped} of ${total} keypoints on it dropped (${(100 * dropped / total).toFixed(1)}%)`);
 }
+
+// The analysis's on-screen display mask when the option is on (overlay.js; null: none found, off, or a photo set)
+const overlayMask = (o) => (o.overlay !== false ? unpackMask(cache.analysis?.overlay) : null);
 
 // Small JPEGs of the keyframes for the page's contact sheet (src/ui/frames.js), made once per name
 const THUMB_WIDTH = 320, THUMB_DECODES = 4;
@@ -233,7 +281,7 @@ async function keyframes(o, analysis) {
   if (kept.length < 3) throw new Error(`only ${kept.length} keyframes: lower the spacing or the blur threshold`);
   if (same(cache.features?.options, o, FEATURE_KEYS) && cache.features.kept.join() === kept.join()) {
     // a fresh list: densify appends to the session's own (the JPEGs of added frames can stay)
-    return flowChains(zoomCameras({ ...cache.features, feats: cache.features.feats.slice(0, kept.length) }, sel.kept), sel.kept);
+    return videoKeyframes({ ...cache.features, feats: cache.features.feats.slice(0, kept.length) }, sel.kept);
   }
   const [w, h] = fitSize(video.width, video.height, o.maxDim);
   const t = performance.now(), feats = [], jpegs = [];
@@ -247,20 +295,24 @@ async function keyframes(o, analysis) {
   // id: a saved model is restored only over the features it was built from
   cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h };
   saveFeatures(cache.features);
-  return flowChains(zoomCameras(cache.features, sel.kept), sel.kept);
+  return videoKeyframes(cache.features, sel.kept);
 }
+
+// The keyframes' cameras (zoomCameras) and flow homographies (flowChains), picks: their analysis indices
+const videoKeyframes = (features, picks) => flowChains(zoomCameras(features, picks), picks);
 
 // The analysis's step homographies (frames.js step) chained from the first frame: per keyframe (picks: its
 // analysis index) flowH, the homography from the first frame of its chain to it in keyframe pixels, and
 // flowChain, the chain's id (a lost step starts a new one). Between two keyframes of one chain, the camera's
 // turn when it does not move (flowjoin.js). Nothing when the analysis has no homographies (saved before them).
 function flowChains(features, picks) {
-  const a = cache.analysis;
+  const a = cache.motion ?? cache.analysis;
   if (!a.flowH) return features;
   const [sw, sh] = fitSize(video.width, video.height, a.options.sharpDim), [fw] = fitSize(sw, sh, a.options.flowDim);
   const s = features.width / fw, S = [s, 0, 0, 0, s, 0, 0, 0, 1], Si = [1 / s, 0, 0, 0, 1 / s, 0, 0, 0, 1];
   const abs = new Array(a.times.length), chain = new Int32Array(a.times.length);
-  let H = [1, 0, 0, 0, 1, 0, 0, 0, 1], id = 0;
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  let H = I, id = 0;
   for (let i = 0; i < a.times.length; i++) {
     if (i > 0) {
       const h = a.flowH[i];
@@ -268,7 +320,7 @@ function flowChains(features, picks) {
         H = mul3(h, H);
         const n = Math.hypot(...H);
         H = H.map(x => x / n);
-      } else { H = [1, 0, 0, 0, 1, 0, 0, 0, 1]; id++; }
+      } else { H = I; id++; }
     }
     abs[i] = H; chain[i] = id;
   }
@@ -365,7 +417,7 @@ async function photoFeature(p, file, w, h, o, sift, ctx, canvas) {
   lap('gray');
   const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality });
   lap('jpeg');
-  const { keypoints, descriptors, capped } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures });
+  const { keypoints, descriptors, capped } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak ?? SESSION_DEFAULTS.siftPeak });
   lap('sift');
   await save(`images/${p.name}`, blob);
   return { feat: { name: p.name, time: p.time, camera: p.camera, keypoints, descriptors }, jpeg: { name: p.name, blob }, capped };
@@ -640,8 +692,17 @@ async function handOver(ds, features, o) {
     progress('undistort', images.length, ds.images.length);
   }
   colors.finish();
-  log(`hand-over: ${images.length} undistorted keyframes, ${ds.points.length} colored points in ${seconds(t)}`);
-  return { sparse: writeColmapModel(ds), images };
+  // the on-screen display's mask per camera, undistorted as its keyframes (any coverage after the resampling: masked)
+  const ov = overlayMask(o), masks = [];
+  if (ov) for (let c = 0; c < ds.cameras.length; c++) {
+    const rgba = new Uint8ClampedArray(4 * w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (maskAt(ov, x + 0.5, y + 0.5, w, h)) rgba.fill(255, 4 * (y * w + x), 4 * (y * w + x) + 4);
+    const out = await undistort.run(rgba, ds.distortedCameras[c], ds.cameras[c]), data = new Uint8Array(w * h);
+    for (let p = 0; p < w * h; p++) data[p] = out[4 * p] > 0 ? 1 : 0;
+    masks.push({ camera: c + 1, w, h, data });
+  }
+  log(`hand-over: ${images.length} undistorted keyframes, ${ds.points.length} colored points${masks.length ? `, the overlay's mask` : ''} in ${seconds(t)}`);
+  return { sparse: writeColmapModel(ds), images, masks };
 }
 
 // The cameras for the trainer from the session's current state; null when there is nothing to train
@@ -651,7 +712,7 @@ async function send() {
   if (!session.mapper.poses.some(Boolean)) return null;
   const ds = datasetFromMapper(session.mapper, { minObs: trainMinObs(o) });
   if (ds.images.length < 2 || !ds.points.length) return null;
-  const { sparse, images } = await handOver(ds, features, o);
+  const { sparse, images, masks } = await handOver(ds, features, o);
   if (store) {  // the trainer's dataset, and the distorted model of the keyframes in images/ (same points)
     const raw = datasetFromMapper(session.mapper, { pinhole: false, minObs: trainMinObs(o) });  // the same points as ds
     raw.points.forEach((p, i) => { p.rgb = ds.points[i].rgb; });
@@ -664,7 +725,7 @@ async function send() {
                     segments: new Set(model.images.map(im => im.segment)).size, focal: model.focal, points: ds.points.length,
                     seconds: (performance.now() - t0) / 1000, version: current.version,
                     distorted: ds.distorted.params, ...(ds.cameras.length > 1 ? { distortedCameras: ds.distortedCameras.map(c => c.params) } : {}) };  // the photos depend on it (undistortion)
-  post({ type: 'result', sparse, images, summary }, Object.values(sparse));
+  post({ type: 'result', sparse, images, masks, summary }, [...Object.values(sparse), ...masks.map(m => m.data.buffer)]);
   return summary;
 }
 
@@ -790,7 +851,7 @@ async function action(op, args) {
 async function flush() {
   const f = current?.features ?? cache.features;
   if (f) {
-    if (cache.analysis && cache.selection) await save('sharpness.csv', sharpnessCsv(cache.analysis, cache.selection));
+    if (cache.analysis && cache.selection) await save('sharpness.csv', sharpnessCsv(cache.motion ?? cache.analysis, cache.selection));
     for (const { name, blob } of f.jpegs) await save(`images/${name}`, blob);
     await saveFeatures(f);
   }

@@ -10,14 +10,14 @@
 //     homography, in the camera's own normalized coordinates, is a rotation within maxSpread);
 //   - centre: b at a's centre (the flow says the camera turned in place);
 //   - scale: B's speed at its start matches A's at its end (an assumption: no point is seen on both sides).
-// B is moved into A's world (loop.js transformSegment) and joins it; the keyframes between a and b get
-// a's centre and their flow rotation. The refinement after it (reconstruct.js) adjusts them to their
-// points.
+// B's segment, whole, is moved into A's world (loop.js transformSegment) and joins A's; the keyframes
+// between a and b get a's centre and their flow rotation. The refinement after it (reconstruct.js)
+// adjusts them to their points.
 "use strict";
 
 import { intrinsics, poseCenter, poseFromCenter } from './camera.js';
-import { mul3, transpose3, mulVec3, svd, det3, projectToSO3 } from './linalg.js';
-import { deg } from './util.js';
+import { mul3, transpose3, mulVec3, svd, det3, projectToSO3, invert3, rotationAngle } from './linalg.js';
+import { deg, quantile } from './util.js';
 import { transformSegment, relabel } from './loop.js';
 
 const DEFAULTS = {
@@ -28,20 +28,17 @@ const DEFAULTS = {
   log: () => {},
 };
 
-function inverse3(m) {
-  const [a, b, c, d, e, f, g, h, i] = m, A = e * i - f * h, B = f * g - d * i, C = d * h - e * g, det = a * A + b * B + c * C;
-  return [A / det, (c * h - b * i) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, (c * d - a * f) / det,
-          C / det, (b * g - a * h) / det, (a * e - b * d) / det];
-}
-
 // The rotation from keyframe a's camera to b's (b = R a, in camera coordinates) by the flow: { R, spread }
 // (R null when the homography is not a rotation within maxSpread), or null without a flow chain from a to b
+// (or with a singular homography)
 export function flowRotation(mapper, a, b, { maxSpread = DEFAULTS.maxSpread } = {}) {
   const A = mapper.images[a], B = mapper.images[b];
   if (!A.flowH || !B.flowH || A.flowChain !== B.flowChain || mapper.camOf[a] !== mapper.camOf[b]) return null;
   const [fx, fy, cx, cy] = intrinsics(mapper.cam(a));
   const K = [fx, 0, cx, 0, fy, cy, 0, 0, 1], Ki = [1 / fx, 0, -cx / fx, 0, 1 / fy, -cy / fy, 0, 0, 1];
-  let M = mul3(mul3(Ki, mul3(B.flowH, inverse3(A.flowH))), K);
+  const Ai = new Array(9);
+  if (!invert3(A.flowH, Ai)) return null;
+  let M = mul3(mul3(Ki, mul3(B.flowH, Ai)), K);
   const c = Math.cbrt(det3(M));
   M = M.map(x => x / c);
   const { S } = svd(Float64Array.from(M), 3, 3), spread = S[0] / S[2] - 1;
@@ -49,7 +46,7 @@ export function flowRotation(mapper, a, b, { maxSpread = DEFAULTS.maxSpread } = 
 }
 
 // Speed (map units per second) of a piece's registered keyframes `frames` (time order): the quantile of its
-// per-step speeds
+// per-step speeds (NaN without a step)
 function speed(mapper, frames, q) {
   const v = [];
   for (let k = 1; k < frames.length; k++) {
@@ -57,8 +54,7 @@ function speed(mapper, frames, q) {
     const Ca = poseCenter(mapper.poses[a]), Cb = poseCenter(mapper.poses[b]);
     if (dt > 0) v.push(Math.hypot(Cb[0] - Ca[0], Cb[1] - Ca[1], Cb[2] - Ca[2]) / dt);
   }
-  v.sort((x, y) => x - y);
-  return v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : 0;
+  return quantile(v, q);
 }
 
 // Joins the pieces that follow each other in time across turns in place. Returns { joins: [{ from, into,
@@ -67,16 +63,18 @@ export function joinByFlow(mapper, options = {}) {
   const o = { ...DEFAULTS, ...options, log: options.log ?? DEFAULTS.log }, time = (k) => mapper.images[k].time, stats = { joins: [], tried: 0 };
   for (let joined = true; joined;) {
     joined = false;
-    const byTime = new Map();
+    // a piece: registered keyframes following each other in time in one segment. A segment can hold
+    // several, interleaved with another's once loop closure merged some (canyon.mp4: 0..106, 226..298
+    // and 389..558 in one, 132..197 and 299..369 in the other, apart only across the turn at 101.6 s)
+    const pieces = [];
     for (let k = 0; k < mapper.n; k++) if (mapper.poses[k]) {
-      if (!byTime.has(mapper.segment[k])) byTime.set(mapper.segment[k], []);
-      byTime.get(mapper.segment[k]).push(k);
+      if (pieces.at(-1)?.seg === mapper.segment[k]) pieces.at(-1).frames.push(k);
+      else pieces.push({ seg: mapper.segment[k], frames: [k] });
     }
-    const pieces = [...byTime].map(([seg, frames]) => ({ seg, frames })).sort((p, q) => p.frames[0] - q.frames[0]);
     for (let i = 1; i < pieces.length && !joined; i++) {
       const A = pieces[i - 1], B = pieces[i], a = A.frames.at(-1), b = B.frames[0];
       if (!mapper.images[a].flowH || !mapper.images[b].flowH) continue;  // no flow (photos): nothing to join by
-      if (a > b || time(b) - time(a) > o.maxGapSeconds) continue;  // they overlap in time, or too far apart
+      if (time(b) - time(a) > o.maxGapSeconds) continue;  // too far apart
       stats.tried++;
       const rot = flowRotation(mapper, a, b, o);
       const tag = `flow join of keyframes ${a} and ${b} (${time(a).toFixed(2)}-${time(b).toFixed(2)} s)`;
@@ -95,12 +93,13 @@ export function joinByFlow(mapper, options = {}) {
         if (!rk?.R) continue;
         mapper.poses[k] = poseFromCenter(mul3(rk.R, Ra), Ca);
         mapper.segment[k] = A.seg;
+        mapper.byFlow[k] = 1;  // no points: quality.js scores it rotation only, which repair leaves
         mapper.stats.registered++;
         carried++;
       }
-      const turn = deg(Math.acos(Math.max(-1, Math.min(1, (rot.R[0] + rot.R[4] + rot.R[8] - 1) / 2))));
-      o.log(`${tag}: turned ${turn.toFixed(1)} deg in place (spread ${rot.spread.toFixed(3)}), piece ${B.seg} (${B.frames.length} keyframes) ` +
-            `joins piece ${A.seg} at scale ${s.toFixed(3)} (speeds ${vA.toPrecision(3)}, ${vB.toPrecision(3)} per s), ${carried} keyframes between placed by the flow`);
+      const turn = deg(rotationAngle(rot.R, [1, 0, 0, 0, 1, 0, 0, 0, 1]));
+      o.log(`${tag}: turned ${turn.toFixed(1)} deg in place (spread ${rot.spread.toFixed(3)}), segment ${B.seg} (its piece ${b}..${B.frames.at(-1)}) ` +
+            `joins segment ${A.seg} at scale ${s.toFixed(3)} (speeds ${vA.toPrecision(3)}, ${vB.toPrecision(3)} per s), ${carried} keyframes between placed by the flow`);
       stats.joins.push({ from: B.seg, into: A.seg, a, b, turnDeg: turn, spread: rot.spread, scale: s, carried });
       joined = true;
     }

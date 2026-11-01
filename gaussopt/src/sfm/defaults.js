@@ -8,8 +8,9 @@ export const PIPELINE_DEFAULTS = { window: 10, loops: true };
 
 export const SESSION_DEFAULTS = {
   sampleFps: 30, ...FRAME_DEFAULTS, maxDim: 1920, jpegQuality: 0.95,
-  maxFeatures: 4096, ...PIPELINE_DEFAULTS, focal: 'auto', hfovDeg: 0, sweeps: 2,
+  maxFeatures: 4096, siftPeak: 0.02 / 3, ...PIPELINE_DEFAULTS, focal: 'auto', hfovDeg: 0, sweeps: 2,  // siftPeak: sift.js SIFT_DEFAULTS.peak
   autoRepair: true,  // session.repair() once the reconstruction is done (undoable)
+  overlay: true,     // a video's on-screen display (burnt-in text, boxes, a reticle) masked: the features and the training leave it out (overlay.js)
   trainMinObs: 0,    // the trainer's points: seen by at least this many keyframes (export.js minObs); 0: 3 for a video, 2 for photos (DESIGN-sfm §13.3 P6)
 };
 

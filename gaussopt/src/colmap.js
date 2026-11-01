@@ -274,22 +274,28 @@ export function parsePlyBuffer(buffer) {
         n[field] = (type === 'float') ? dv.getFloat32(no + 4 * k, true) : dv.getInt32(no + 4 * k, true));
       nodes[i] = n;
     }
-    let leafId = 0;
-    const visit = (i) => {
-      const n = nodes[i];
-      if (!n) return;
-      if (!n.isLeaf) {
-        for (let oct = 0; oct < 8; oct++) visit(n.firstChildOrStart + oct);
-      } else if (n.countOrDepth > 0) {
-        const end = Math.min(numVertices, n.firstChildOrStart + n.countOrDepth);
-        for (let s = n.firstChildOrStart; s < end; s++) params[s * SPLAT_FLOATS + 7] = leafId;
-        leafId++;
-      }
-    };
-    visit(0);
+    assignLeafIds(params, numVertices, nodes);
     octreeData = { meta: octreeMeta, nodes };
   }
   return { count: numVertices, params, octreeData };
+}
+
+// The splats' leaf_ids from a serialized octree (LooseOctree.serializeNodes): its non-empty leaves numbered
+// in depth-first octant order, as LooseOctree.fromSerializedNodes() numbers them
+export function assignLeafIds(params, count, nodes) {
+  let leafId = 0;
+  const visit = (i) => {
+    const n = nodes[i];
+    if (!n) return;
+    if (!n.isLeaf) {
+      for (let oct = 0; oct < 8; oct++) visit(n.firstChildOrStart + oct);
+    } else if (n.countOrDepth > 0) {
+      const end = Math.min(count, n.firstChildOrStart + n.countOrDepth);
+      for (let s = n.firstChildOrStart; s < end; s++) params[s * SPLAT_FLOATS + 7] = leafId;
+      leafId++;
+    }
+  };
+  if (nodes.length) visit(0);
 }
 
 // antimatter15 .splat: 32 bytes/splat = 3f pos, 3f linear scale, rgba u8, quat u8 ((q + 1) * 128)
@@ -421,11 +427,14 @@ export async function loadColmapFromUrl(baseUrl, { onProgress, valSplit } = {}) 
 // In-memory model from the in-browser SfM (src/sfm/worker.js): sparse = { 'cameras.bin':
 // ArrayBuffer, 'images.bin', 'points3D.bin' }, images = [{ name, blob }] (undistorted JPEGs)
 // every8 held-out views by a hash of the name (DESIGN-sfm §3), not by index: keyframes inserted
-// or dropped by a repair then leave the other views' split, and PSNRs comparable.
-export function loadColmapFromMemory(sparse, images, { valSplit } = {}) {
+// or dropped by a repair then leave the other views' split, and PSNRs comparable. masks: the video's
+// on-screen display per camera ([{ camera: id, w, h, data: Uint8Array, 1 = masked }], overlay.js), as camera.mask
+// (the trainer leaves those pixels out).
+export function loadColmapFromMemory(sparse, images, { valSplit, masks = [] } = {}) {
   const ds = buildDataset(SPARSE_FILES.map(f => sparse[f.replace('sparse/', '')] ?? null), valSplit, { byHash: true });
   const blobs = new Map(images.map(im => [im.name, im.blob]));
   for (const im of ds.images) im.fileBlob = blobs.get(im.name);
+  for (const m of masks ?? []) { const cam = ds.cameras.get(m.camera); if (cam) cam.mask = { w: m.w, h: m.h, data: m.data }; }
   return { baseUrl: null, ...ds, availablePlys: [], fromSfm: true };
 }
 

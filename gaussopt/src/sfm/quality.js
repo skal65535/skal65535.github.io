@@ -138,13 +138,14 @@ export function keyframeQuality(mapper, { loops = [], checkLoops = false, viewPs
     const tv = f.twoView, dir = tv && f.parallaxDeg >= 1 ? tv.dirDeg : 0;  // direction: needs parallax
     const red = !f.registered ? 'not registered'
       : f.segment !== main ? `separate map (segment ${f.segment}), not exported`
-      : f.support < o.minSupportRel * typicalSupport ? `weak: ${f.support} points`
+      : f.support < o.minSupportRel * typicalSupport && !mapper.byFlow[f.index] ? `weak: ${f.support} points`
       : f.reprojPx > o.maxReprojPx ? `reprojection ${f.reprojPx.toFixed(2)} px`
       : f.breakRatio > breakLimit ? `scale break: baseline ${f.breakRatio.toFixed(2)} x depth`
       : tv && tv.rotDeg > rotRed ? `rotation disagrees with its matches by ${tv.rotDeg.toFixed(2)} deg`
       : dir > o.twoViewDirDeg.red ? `baseline direction disagrees with its matches by ${dir.toFixed(0)} deg`
       : null;
     const amber = red ? null
+      : mapper.byFlow[f.index] && f.support < o.weakSupportRel * typicalSupport ? `placed by the flow across a turn in place (${f.support} points): rotation only`
       : f.support < o.weakSupportRel * typicalSupport ? `few points: ${f.support}`
       : tv && tv.rotDeg > rotAmber ? `rotation off its matches by ${tv.rotDeg.toFixed(2)} deg`
       : dir > o.twoViewDirDeg.amber ? `baseline direction off its matches by ${dir.toFixed(0)} deg`

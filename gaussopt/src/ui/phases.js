@@ -1,11 +1,11 @@
-// phases.js — The phases of a project (Project · Video · Keyframes · Cameras · Train · Export; a photo
-// set: Project · Photos · Cameras · Train · Export) and
+// phases.js — The phases of a project (Project · Video · Keyframes · Cameras · Dome · Train · Export; a photo
+// set: Project · Photos · Cameras · Dome · Train · Export) and
 // their states, derived from what is loaded and running, never stored: the stepper of shell.js
 // shows them. DOM-free (tests/phases_test.js).
 "use strict";
 
-export const PHASES = ['project', 'video', 'keyframes', 'cameras', 'train', 'export'];
-const PHASE_LABELS = { project: 'Project', video: 'Video', keyframes: 'Keyframes', cameras: 'Cameras', train: 'Train', export: 'Export' };
+export const PHASES = ['project', 'video', 'keyframes', 'cameras', 'dome', 'train', 'export'];
+const PHASE_LABELS = { project: 'Project', video: 'Video', keyframes: 'Keyframes', cameras: 'Cameras', dome: 'Dome', train: 'Train', export: 'Export' };
 
 // A photo set (DESIGN-sfm §13.3 P5): one Photos phase in place of Video and Keyframes (the photos are
 // the keyframes); the stepper hides Keyframes
@@ -21,6 +21,7 @@ export const STATE_ICONS = { todo: '○', running: '●', done: '✓', stale: '�
 //              quality: { keyframes, registered, problems, version } | null, sentVersion: n | null } | null
 //   colmap:  { cams, fromSfm } | null           the trainer's cameras
 //   trainer: { step, training, psnr, gt? } | null
+//   dome:    { mode: 'auto' | 'off', running, result: { worth, farShare, fill (its name, null: a scene's) } | null } | null  the Dome step (app.js domeState)
 //   mesh:    { running, step, faces?, texture?, mb?, error? } | null  the last Make mesh (app.js meshState)
 // }
 // Returns { [phase]: { state: 'todo' | 'running' | 'done' | 'stale' | 'skipped', summary } }.
@@ -48,6 +49,16 @@ export function phaseStates(s) {
   } else {
     out.cameras = { state: 'todo', summary: '' };
   }
+
+  const d = s.dome, pct = (x) => `${(100 * x).toFixed(x < 0.1 ? 1 : 0)}%`;
+  if (d?.running) out.dome = { state: 'running', summary: 'finding the sky…' };
+  else if (d?.result) {
+    const f = d.result.farShare;  // null: a scene's dome
+    out.dome = { state: 'done', summary: f === null ? 'from the scene' : d.result.worth ? `sky ${pct(f)}${d.result.fill ? `, ${d.result.fill}` : ''}` : `no dome (sky ${pct(f)})` };
+  }
+  else if (!d || d.mode === 'off') out.dome = { state: 'skipped', summary: 'off' };  // the default (params.js dome)
+  else if (!s.colmap) out.dome = { state: 'todo', summary: 'needs cameras' };
+  else out.dome = { state: 'todo', summary: 'before training' };
 
   const tr = s.trainer;
   const trainSummary = tr && tr.step > 0 ? `step ${tr.step}${tr.psnr > 0 ? ` · ${tr.psnr.toFixed(1)} dB` : ''}` : '';
@@ -109,6 +120,15 @@ export function phaseActions(phase, s, states = phaseStates(s)) {
   const go = (primary = true) => next ? [{ id: `go:${next}`, label: `Next: ${phaseLabel(next, { photos })} →`, enabled: true, primary }] : [];
   const done = (p) => states[p].state === 'done';
   if (phase === 'project') return done('project') ? go() : [];
+  if (phase === 'dome') {
+    const d = s.dome, ready = !!tr?.gt && !d?.running && !tr?.training;
+    return [
+      ...(d?.result?.worth ? [{ id: 'domeOff', label: 'No dome', enabled: ready, title: 'train without it (the learned background of bg_lr, if any)' }] : []),
+      { id: 'dome', label: d?.result ? 'Find it again' : 'Find the sky', enabled: ready, primary: !d?.result,
+        title: 'the directions where the photos agree (no parallax): a dome behind the splats when they cover enough of the photos' },
+      ...go(!!d?.result || d?.mode === 'off'),
+    ];
+  }
   if (phase === 'train') {
     const trained = !!tr && tr.step > 0;
     return [

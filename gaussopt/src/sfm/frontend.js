@@ -101,9 +101,13 @@ export async function matchFeatures(features, matcher, { rng, loopCandidates = [
   for (let i = 0; i < n; i++) for (let j = i + 1; j <= Math.min(n - 1, i + o.window); j++) todo.push([i, j, 'seq']);
   for (const [i, j] of loopCandidates) if (j - i > o.window) todo.push([i, j, 'loop']);
   const { pairs, stats } = await matchPairs(features, matcher, todo, { rng, onProgress, ...o });
-  return { images: features.map(f => ({ name: f.name, time: f.time, ...(f.camera !== undefined ? { camera: f.camera } : {}),
-                                        ...(f.flowH ? { flowH: f.flowH, flowChain: f.flowChain } : {}), keypoints: xyOnly(f.keypoints) })), pairs, stats };
+  return { images: features.map(f => ({ ...imageRecord(f), keypoints: xyOnly(f.keypoints) })), pairs, stats };
 }
+
+// A keyframe's own fields, as the mapper and a saved session keep them (camera: its zoom stretch's;
+// flowH, flowChain: flowjoin.js)
+export const imageRecord = (f) => ({ name: f.name, time: f.time, ...(f.camera !== undefined ? { camera: f.camera } : {}),
+                                     ...(f.flowH ? { flowH: f.flowH, flowChain: f.flowChain } : {}) });
 
 // Match and verify given pairs [[i, j, type]]: one GPU batch per first frame, descriptors kept on
 // the GPU (cached by frame index) from the first batch that uses a frame to the last; each pair

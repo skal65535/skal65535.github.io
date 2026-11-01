@@ -8,7 +8,7 @@
 // and all observed points (3 each). Fixed poses still constrain the points.
 "use strict";
 
-import { expSO3, mul3, mulVec3, choleskySolve } from './linalg.js';
+import { expSO3, mul3, mulVec3, choleskySolve, invert3 } from './linalg.js';
 import { intrinsics, distortionParams, paramIndex, withFocal } from './camera.js';
 
 const INTRINSICS = ['f', 'k1', 'k2'];
@@ -258,18 +258,6 @@ export function bundleAdjust(problem, opts = {}) {
     if (!accepted || converged) { it += accepted ? 1 : 0; break; }  // no decrease even with heavy damping, or converged
   }
   return { initialCost, cost, iterations: it, rmse };
-}
-
-function invert3(A, out) {
-  const [a, b, c, d, e, f, g, h, i] = A;
-  const A0 = e * i - f * h, A1 = -(d * i - f * g), A2 = d * h - e * g;
-  const det = a * A0 + b * A1 + c * A2;
-  if (!(Math.abs(det) > 1e-300)) return false;
-  const s = 1 / det;
-  out[0] = A0 * s; out[1] = -(b * i - c * h) * s; out[2] = (b * f - c * e) * s;
-  out[3] = A1 * s; out[4] = (a * i - c * g) * s; out[5] = -(a * f - c * d) * s;
-  out[6] = A2 * s; out[7] = -(a * h - b * g) * s; out[8] = (a * e - b * d) * s;
-  return true;
 }
 
 // Reprojection error (px) of every observation of a problem, without optimizing

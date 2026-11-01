@@ -55,17 +55,40 @@ fn frustum_lim(W: f32, H: f32, fx: f32, fy: f32, cx: f32, cy: f32) -> vec2f {
   return 1.3 * vec2f(max(cx, W - cx) / fx, max(cy, H - cy) / fy);
 }
 
+// A refined lens's residual radial distortion (poses.js, DESIGN.md E19 3; TrainUniforms cam.z), what the SfM's
+// undistortion of the photos left: u = cx + fx x (1 + k1 r^2), v = cy + fy y (1 + k1 r^2), with x, y = x_c / z_c,
+// y_c / z_c and r^2 = x^2 + y^2. D: its pixel Jacobian d(u, v) / d(u, v of the pinhole) at (x, y), by columns; the
+// splat's screen covariance is (D T) Sigma (D T)^T.
+fn distort_jac(t: vec2f, k1: f32, fx: f32, fy: f32) -> mat2x2f {
+  let c = 2.0 * k1 * t.x * t.y;
+  return mat2x2f(vec2f(1.0 + k1 * (3.0 * t.x * t.x + t.y * t.y), c * fy / fx),
+                 vec2f(c * fx / fy, 1.0 + k1 * (t.x * t.x + 3.0 * t.y * t.y)));
+}
+
+// dL/dx, dL/dy, dL/dk1 through D's entries, given G = dL/dD
+fn distort_jac_grad(t: vec2f, k1: f32, fx: f32, fy: f32, G: mat2x2f) -> vec3f {
+  let a = fy / fx * G[0][1] + fx / fy * G[1][0];
+  return vec3f(k1 * (6.0 * t.x * G[0][0] + 2.0 * t.y * a + 2.0 * t.x * G[1][1]),
+               k1 * (2.0 * t.y * G[0][0] + 2.0 * t.x * a + 6.0 * t.y * G[1][1]),
+               (3.0 * t.x * t.x + t.y * t.y) * G[0][0] + 2.0 * t.x * t.y * a + (t.x * t.x + 3.0 * t.y * t.y) * G[1][1]);
+}
+
 // === _train ===
 struct TrainUniforms {
   view       : mat4x4f,
   intrinsics : vec4f, // fx, fy, cx, cy
   dims       : vec4u, // W, H, num_visible, total_splats
   lrs        : vec4f, // lr_pos, lr_scale, lr_quat, lr_color
-  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC, 2 SA), y = mc_noise | sa_temp, z = rng seed, w = Adam step (1-based)
+  opt_params : vec4f, // x = opt_method (0 Adam, 1 MC), y = mc_noise, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
   loss       : vec4f, // x = D-SSIM weight (ssim_*, tile_backward), y = DropGaussian rate (project_splats),
                       // z = its opacity factor 1 / (1 - y) (tile_forward / backward; 0 = 1), w unused
   reg        : vec4f, // monte_carlo's L1 terms, already over the splat count: x = on opacity, y = on scale (per axis); zw unused
+  expo_g     : vec4f, // the view's exposure (exposure.js): the render as expo_g.rgb c + expo_b.rgb; w = 1 while it learns
+  expo_b     : vec4f, //   (tile_backward sums its gradient)
+  cam        : vec4f, // x = 1: adam_step sums the view's pose and lens gradient (cam_reduce; poses.js); y = 1: only that,
+                      //   the splats, their Adam state and moments left as they are (a held-out camera fitted);
+                      //   z: the lens's residual k1 (distort_jac; 0: the pinhole)
 };
 
 @group(0) @binding(0) var<uniform> tu : TrainUniforms;
@@ -81,6 +104,27 @@ const SSIM_C1 : f32 = 0.0001;
 const SSIM_C2 : f32 = 0.0009;
 const SSIM_G = array<f32, 11>(0.00102838008, 0.00759875814, 0.0360007721, 0.109360690, 0.213005538, 0.266011725,
                               0.213005538, 0.109360690, 0.0360007721, 0.00759875814, 0.00102838008);
+
+// The window moments around pixel q of gt_tex (x) and hat_tex (y), the includer's bindings
+struct SsimMoments { mx: vec3f, my: vec3f, exx: vec3f, eyy: vec3f, exy: vec3f }
+fn ssim_moments(q: vec2i, W: i32, H: i32) -> SsimMoments {
+  var G = SSIM_G;
+  var m = SsimMoments(vec3f(0.0), vec3f(0.0), vec3f(0.0), vec3f(0.0), vec3f(0.0));
+  for (var dy = -SSIM_R; dy <= SSIM_R; dy++) {
+    let py = q.y + dy;
+    if (py < 0 || py >= H) { continue; }
+    for (var dx = -SSIM_R; dx <= SSIM_R; dx++) {
+      let px = q.x + dx;
+      if (px < 0 || px >= W) { continue; }
+      let g = G[dy + SSIM_R] * G[dx + SSIM_R];
+      let x = textureLoad(gt_tex,  vec2i(px, py), 0).rgb;
+      let y = textureLoad(hat_tex, vec2i(px, py), 0).rgb;
+      m.mx += g * x; m.my += g * y;
+      m.exx += g * x * x; m.eyy += g * y * y; m.exy += g * x * y;
+    }
+  }
+  return m;
+}
 
 // === _raster ===
 const kNoSplat = vec4f(-1e5, -1e5, -1.0, 0.0); // radius 0 = skip
@@ -106,6 +150,8 @@ struct WireUniforms {
   intrinsics : vec4f, // fx, fy, cx, cy
   screen     : vec4f, // W, H, znear, zfar
   fade       : vec4f, // octree vertex count, full-alpha depth, faded depth, min alpha
+  mesh       : vec4f, // x: mesh_render's margin (view z) behind its surface before a splat is hidden;
+                      // y: the octree boxes' alpha behind the splats (wireframe_render)
 };
 
 @group(0) @binding(0) var<uniform> wu : WireUniforms;
@@ -268,8 +314,41 @@ fn fs(in: VOut) -> @location(0) vec4f {
   return vec4f(in.color.rgb * a, a);
 }
 
+// The splats' depth for the overlays drawn after them (no color): the fragments of an opacity of 0.1 or more, each at
+// its splat centre's depth (the wireframes behind them are drawn faint, wireframe_render). A surface is often many
+// splats of 0.2-0.5 (the synthetic room at 600 steps: 0.5 let most boxes behind its walls through)
+@fragment
+fn fs_depth(in: VOut) {
+  if (in.color.a * exp(-0.5 * dot(in.uv, in.uv)) < 0.1) { discard; }
+}
+
+// === env_render ===
+// The background (env.js, DESIGN.md E13) in the free view: a full-screen triangle drawn under the splats and the mesh
+// (front-to-back blending: it fills what they leave), each pixel's world direction from the view's intrinsics, as
+// tile_forward's, at its size (n texels a face: ENV_N learned, more a dome). Bindings: 0 RenderUniforms (view, intrinsics,
+// screen: its first 24 floats), 1 env.
+
+// #include _env
+struct EnvView { view : mat4x4f, intrinsics : vec4f, screen : vec4f };
+@group(0) @binding(0) var<uniform>       ev  : EnvView;
+@group(0) @binding(1) var<storage, read> env : array<vec4f>;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  return vec4f(f32((i << 1u) & 2u) * 2.0 - 1.0, f32(i & 2u) * 2.0 - 1.0, 0.0, 1.0);  // (-1, -1), (3, -1), (-1, 3)
+}
+
+@fragment
+fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let ray = vec3f((pos.x - ev.intrinsics.z) / ev.intrinsics.x, (pos.y - ev.intrinsics.w) / ev.intrinsics.y, 1.0);
+  let n = u32(round(sqrt(f32(arrayLength(&env)) / 6.0)));
+  let tap = env_taps_n(transpose(mat3x3f(ev.view[0].xyz, ev.view[1].xyz, ev.view[2].xyz)) * ray, n);
+  return vec4f(env[tap.i.x].rgb * tap.w.x + env[tap.i.y].rgb * tap.w.y + env[tap.i.z].rgb * tap.w.z + env[tap.i.w].rgb * tap.w.w, 1.0);
+}
+
 // === wireframe_render ===
-// 3D line segments (octree boxes, camera frustums, WLBG split axes).
+// 3D line segments (octree boxes, camera frustums, WLBG split axes), drawn twice: in front of the depth
+// (instance 0), behind it (instance 1: the octree boxes faint).
 // Bindings: 0 WireUniforms, 1 verts (xyz, bitcast<f32>(abgr u32)).
 
 // #include _wire
@@ -281,16 +360,17 @@ struct WireOut {
 };
 
 @vertex
-fn vs(@builtin(vertex_index) vid: u32) -> WireOut {
+fn vs(@builtin(vertex_index) vid: u32, @builtin(instance_index) hidden: u32) -> WireOut {
   var out : WireOut;
   let v = verts[vid];
   let p = wire_project(v.xyz);
   out.pos   = vec4f(p.xyz, 1.0);
   out.color = unpack4x8unorm(bitcast<u32>(v.w));
-  // octree boxes (the first vertices) fade with depth, so the far ones don't clog the view
+  // octree boxes (the first vertices) fade with depth, so the far ones don't clog the view, and are faint where
+  // behind the splats (instance 1: the draw whose depth test keeps the hidden fragments)
   if (f32(vid) < wu.fade.x) {
     let f = clamp((wu.fade.z - p.w) / (wu.fade.z - wu.fade.y), 0.0, 1.0);
-    out.color.a = max(min(out.color.a, wu.fade.w), out.color.a * f);
+    out.color.a = max(min(out.color.a, wu.fade.w), out.color.a * f) * select(1.0, wu.mesh.y, hidden == 1u);
   }
   return out;
 }
@@ -304,7 +384,8 @@ fn fs(in: WireOut) -> @location(0) vec4f {
 // The mesh of DESIGN.md §9 E5 (src/mesh.js, .glb) in the free view: indexed triangles or their edges
 // (vertex buffers: 0 position, 1 color, 2 uv). Its depth is linear in view z, written per fragment exactly as
 // the splats write theirs (splats_render), so the depth test between the two is fair even on large
-// simplified faces. fs_depth: depth only (the pre-pass that hides the splats behind the surface);
+// simplified faces. fs_depth_back: depth only, wu.mesh.x behind the surface (the pre-pass that hides the
+// splats further behind); fs_depth: its own depth only (laid after the splats, so only its front faces draw);
 // fs_color: vertex colors; fs_tex: its texture; fs_shaded: gray, lit by the camera (shows the shape);
 // fs_line: wireframe, pulled slightly towards the camera so it wins against its own faces.
 // Bindings: 0 WireUniforms; fs_tex: 1 mesh_tex, 2 mesh_samp.
@@ -343,6 +424,9 @@ fn vs(@location(0) p: vec3f, @location(1) c: vec4f, @location(2) uv: vec2f) -> M
 }
 
 fn mesh_depth(z: f32) -> f32 { return clamp((z - wu.screen.z) / (wu.screen.w - wu.screen.z), 0.0, 0.9999); }
+
+@fragment
+fn fs_depth_back(in: MeshOut) -> @builtin(frag_depth) f32 { return mesh_depth(in.vpos.z + wu.mesh.x); }
 
 @fragment
 fn fs_depth(in: MeshOut) -> @builtin(frag_depth) f32 { return mesh_depth(in.vpos.z); }
@@ -560,14 +644,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let fx = tu.intrinsics.x;
   let fy = tu.intrinsics.y;
   let inv_z = 1.0 / vpos.z;
-  let u0 = fx * vpos.x * inv_z + tu.intrinsics.z;
-  let v0 = fy * vpos.y * inv_z + tu.intrinsics.w;
+  let tn = vpos.xy * inv_z;
+  let k1 = tu.cam.z;
+  let sd = 1.0 + k1 * dot(tn, tn);  // the lens's residual distortion (distort_jac)
+  let u0 = fx * tn.x * sd + tu.intrinsics.z;
+  let v0 = fy * tn.y * sd + tu.intrinsics.w;
 
   let R = quat_to_mat3(p2);
   let s = exp(clamp(p1.xyz, vec3f(-10.0), vec3f(3.0)));
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
   let lim = frustum_lim(f32(tu.dims.x), f32(tu.dims.y), fx, fy, tu.intrinsics.z, tu.intrinsics.w);
-  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);
+  let T = distort_jac(clamp(tn, -lim, lim), k1, fx, fy) * ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);
   let cov2d = T * (M * transpose(M)) * transpose(T);
 
   // 0.3 px^2 low-pass dilation (must match adam_step), conic = inverse covariance.
@@ -732,16 +819,20 @@ fn main(@builtin(workgroup_id) wgid: vec3u, @builtin(local_invocation_index) lid
 // spread = (z_q3 - z_q1) / z_med, z_q1 and z_q3 = depths (the same way) where T crosses 0.75 and 0.25: how
 // far apart along the ray the middle half of the blending weight is (a facade made of two
 // sheets = high); 0 when T stays above 0.25.
+// The color written is C + T_final env(the pixel's world direction): the background (env.js; black until learned),
+// through the view's exposure (tu.expo_g, expo_b; exposure.js).
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 out_tex, 4 pix_state,
-//           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list.
+//           5 tile_ranges ([start, count] per tile, row-major), 6 tile_list, 7 env_tex (env.js, the trainer's copy).
 
 // #include _train
+// #include _env
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       proj_splats : array<vec4f>;
 @group(0) @binding(3) var                      out_tex     : texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var<storage, read_write> pix_state   : array<vec4f>;
 @group(0) @binding(5) var<storage, read>       tile_ranges : array<vec2u>;
 @group(0) @binding(6) var<storage, read>       tile_list   : array<u32>;
+@group(0) @binding(7) var                      env_tex     : texture_2d<f32>;
 
 const BATCH : u32 = 64u;
 
@@ -849,7 +940,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   }
 
   if (in_bounds) {
-    textureStore(out_tex, vec2i(gid.xy), vec4f(C, 1.0));
+    let tap = env_taps_tex(env_tex, transpose(mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz)) * ray);
+    let bg = env_bilinear(env_tex, tap);
+    textureStore(out_tex, vec2i(gid.xy), vec4f(tu.expo_g.rgb * (C + T * bg) + tu.expo_b.rgb, 1.0));
     let spread = select(0.0, max(0.0, z_q3 - z_q1) / max(1e-6, z_med), T < 0.25);
     pix_state[gid.y * W + gid.x] = vec4f(T, z_med, bitcast<f32>(last_k), spread);
   }
@@ -877,22 +970,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let H = i32(tu.dims.y);
   let q = vec2i(gid.xy);
   if (q.x >= W || q.y >= H) { return; }
-  var G = SSIM_G;
-  var mx = vec3f(0.0); var my = vec3f(0.0);
-  var exx = vec3f(0.0); var eyy = vec3f(0.0); var exy = vec3f(0.0);
-  for (var dy = -SSIM_R; dy <= SSIM_R; dy++) {
-    let py = q.y + dy;
-    if (py < 0 || py >= H) { continue; }
-    for (var dx = -SSIM_R; dx <= SSIM_R; dx++) {
-      let px = q.x + dx;
-      if (px < 0 || px >= W) { continue; }
-      let g = G[dy + SSIM_R] * G[dx + SSIM_R];
-      let x = textureLoad(gt_tex,  vec2i(px, py), 0).rgb;
-      let y = textureLoad(hat_tex, vec2i(px, py), 0).rgb;
-      mx += g * x; my += g * y;
-      exx += g * x * x; eyy += g * y * y; exy += g * x * y;
-    }
-  }
+  let M = ssim_moments(q, W, H);
+  let mx = M.mx; let my = M.my; let exx = M.exx; let eyy = M.eyy; let exy = M.exy;
   let A1 = 2.0 * mx * my + SSIM_C1;
   let A2 = 2.0 * (exy - mx * my) + SSIM_C2;
   let B1 = mx * mx + my * my + SSIM_C1;
@@ -906,6 +985,41 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   coef[o] = vec4f(a, 0.0);
   coef[o + 1u] = vec4f(b, 0.0);
   coef[o + 2u] = vec4f(c, 0.0);
+}
+
+// === ssim_map ===
+// The held-out SSIM (evaluateValidation; rgbSsim on the GPU): per pixel q, S (see ssim_coef) summed over
+// the RGB channels, x = gt, y = hat; summed again per 16 x 16 workgroup, one f32 per workgroup (row major).
+// Bindings: 0 TrainUniforms, 1 gt_tex, 2 hat_tex, 3 ssim_sums.
+
+// #include _train
+// #include _ssim
+@group(0) @binding(1) var                      gt_tex    : texture_2d<f32>;
+@group(0) @binding(2) var                      hat_tex   : texture_2d<f32>;
+@group(0) @binding(3) var<storage, read_write> ssim_sums : array<f32>;
+
+var<workgroup> part : array<f32, 256>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) li: u32,
+        @builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  let W = i32(tu.dims.x);
+  let H = i32(tu.dims.y);
+  let q = vec2i(gid.xy);
+  var v = 0.0;
+  if (q.x < W && q.y < H) {
+    let M = ssim_moments(q, W, H);
+    let S = ((2.0 * M.mx * M.my + SSIM_C1) * (2.0 * (M.exy - M.mx * M.my) + SSIM_C2)) /
+            ((M.mx * M.mx + M.my * M.my + SSIM_C1) * ((M.exx - M.mx * M.mx) + (M.eyy - M.my * M.my) + SSIM_C2));
+    v = S.r + S.g + S.b;
+  }
+  part[li] = v;
+  workgroupBarrier();
+  for (var n = 128u; n > 0u; n >>= 1u) {
+    if (li < n) { part[li] += part[li + n]; }
+    workgroupBarrier();
+  }
+  if (li == 0u) { ssim_sums[wid.y * nwg.x + wid.x] = part[0]; }
 }
 
 // === ssim_grad ===
@@ -947,19 +1061,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Backward pass of tile_forward over the same tile lists, batches walked back-to-front
 // up to each pixel's last_k. T_i is recovered as T_{i+1} / (1 - alpha_i).
 // Per splat, accumulates the 2D grads (see header) into grads_2d and the WLBG
-// error moments into moments (S is done in adam_step). Contributions are summed
-// over the subgroup first (when the device has 'subgroups'; lines tagged @sg / @nosg
-// are selected by loadShaders()), then in workgroup memory: one global CAS per slot
-// per batch per tile.
+// error moments into moments (S is done in adam_step): nv values per hit, 10 grads (slot 9,
+// the weight, is also moments' W), R, then the 9 directional moments (moments 3..11) with DIR_MOMS:
+// only split_mode 'error' reads them (octree.js splitSplat), the trainer's other pipeline leaves
+// them out (their code alone, skipped, cost 17.2 against 14.4 ms a step at 300k splats). Contributions are summed over the subgroup first (when the device
+// has 'subgroups'; lines tagged @sg / @nosg are selected by loadShaders()), then in
+// workgroup memory: one global CAS per slot per batch per tile.
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count; with a D-SSIM weight
 // l = tu.loss.x > 0, (1 - l) * smooth-L1 + l * (1 - SSIM) / 2 instead (as 3DGS), the SSIM
 // gradient sum_q dS(q)/dy(p) read from ssim_grad_tex (ssim_coef, ssim_grad);
 // loss_acc[0..1] = 64-bit sum (lo, hi) of the per-pixel MSE in 16.16 fixed point.
+// The background (env_tex, tile_forward): the color behind the last splat is env(dir), not black, and the background's
+// gradient dL/dC T_final is summed over the tile and added to the 4 texels at the tile's center (16 pixels span at
+// most ~1.5 texels at 960 x 540), with the sum of T_final (w: how much the pixels show of it), into loss_acc after its first 4 words (a vec4f of f32 bits a texel, read by
+// env_adam: a binding of its own would be the 9th storage buffer, over WebGPU's default of 8 a stage).
+// The view's exposure (exposure.js): hat_tex is g c + b; dL/dc' is taken back to the render c (times g) for the splats
+// and the background, and while it learns (tu.expo_g.w = 1) its gradient, dL/dlog g = dL/dc' (c' - b) and dL/db = dL/dc'
+// summed over the pixels, goes after the background's in loss_acc (EXPO_AT, 8 words: log g rgb, pad, b rgb, pad).
 // Bindings: 0 TrainUniforms, 1 splats, 2 proj_splats, 3 gt_tex, 4 hat_tex,
-//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc, 9 tile_ranges, 10 tile_list,
-//           11 ssim_grad_tex.
+//           5 pix_state, 6 grads_2d, 7 moments, 8 loss_acc (+ the background's gradient), 9 tile_ranges, 10 tile_list,
+//           11 ssim_grad_tex, 12 env_tex.
 
 // #include _train
+// #include _env
 @group(0) @binding(1) var<storage, read>       splats      : array<vec4f>;
 @group(0) @binding(2) var<storage, read>       proj_splats : array<vec4f>;
 @group(0) @binding(3) var                      gt_tex      : texture_2d<f32>;
@@ -967,45 +1091,43 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 @group(0) @binding(5) var<storage, read>       pix_state   : array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> grads_2d    : array<atomic<u32>>; // 12 f32 per splat
 @group(0) @binding(7) var<storage, read_write> moments     : array<atomic<u32>>; // 12 f32 per splat
-@group(0) @binding(8) var<storage, read_write> loss_acc    : array<atomic<u32>, 4>;
+@group(0) @binding(8) var<storage, read_write> loss_acc    : array<atomic<u32>>;
 @group(0) @binding(9) var<storage, read>       tile_ranges : array<vec2u>;
 @group(0) @binding(10) var<storage, read>      tile_list   : array<u32>;
 @group(0) @binding(11) var                     ssim_grad_tex : texture_2d<f32>;
+@group(0) @binding(12) var                     env_tex     : texture_2d<f32>;
 
 const BATCH : u32 = 32u;
-const SLOTS : u32 = BATCH * 12u;
+override DIR_MOMS : bool = false;  // sum the directional moments (pipeline constant, see the header)
+const NV    : u32 = 20u;  // values per hit: 10 grads, R, 9 directional moments
+const SLOTS : u32 = BATCH * NV;
 
 var<workgroup> wg_u0v0zr     : array<vec4f, BATCH>;
 var<workgroup> wg_conic      : array<vec4f, BATCH>;
 var<workgroup> wg_rgba       : array<vec4f, BATCH>;
 var<workgroup> wg_cmask      : array<vec4f, BATCH>; // 1 where rgb is not clamped
 var<workgroup> wg_k          : array<u32, BATCH>;   // sorted slot of each batch entry
-var<workgroup> wg_grads      : array<atomic<u32>, SLOTS>;
-var<workgroup> wg_moms       : array<atomic<u32>, SLOTS>;
+var<workgroup> wg_acc        : array<atomic<u32>, SLOTS>;
 var<workgroup> wg_mse        : atomic<u32>;
 var<workgroup> wg_hits       : atomic<u32>;
 var<workgroup> wg_max_last_k : atomic<u32>;
+var<workgroup> wg_env        : array<atomic<u32>, 4>;  // the tile's background gradient (rgb) and its sum of T_final
+var<workgroup> wg_expo       : array<atomic<u32>, 6>;  // the tile's exposure gradient: log g rgb, b rgb
+const EXPO_AT : u32 = 24u * ENV_N * ENV_N;  // its words in loss_acc after the background's (add_global_env's index)
+// Only pixels with T_final over this teach the background: below it, it learned the splats' residual (a pixel the splats
+// render too red pushed it to green), colors no photo has where the views barely saw it (canyon3, below the scene)
+const ENV_MIN_T : f32 = 0.5;
 
 // #include _math
 // #include _raster
 
 // f32 atomic adds via CAS (WGSL has no pointer params to workgroup/storage
 // atomics, hence one copy per array). Tiny values are skipped.
-fn add_wg_grad(i: u32, val: f32) {
+fn add_wg(i: u32, val: f32) {
   if (abs(val) < 1e-10) { return; }
-  var old = atomicLoad(&wg_grads[i]);
+  var old = atomicLoad(&wg_acc[i]);
   loop {
-    let r = atomicCompareExchangeWeak(&wg_grads[i], old, bitcast<u32>(bitcast<f32>(old) + val));
-    if (r.exchanged) { break; }
-    old = r.old_value;
-  }
-}
-
-fn add_wg_mom(i: u32, val: f32) {
-  if (abs(val) < 1e-10) { return; }
-  var old = atomicLoad(&wg_moms[i]);
-  loop {
-    let r = atomicCompareExchangeWeak(&wg_moms[i], old, bitcast<u32>(bitcast<f32>(old) + val));
+    let r = atomicCompareExchangeWeak(&wg_acc[i], old, bitcast<u32>(bitcast<f32>(old) + val));
     if (r.exchanged) { break; }
     old = r.old_value;
   }
@@ -1016,6 +1138,36 @@ fn add_global_grad(i: u32, val: f32) {
   var old = atomicLoad(&grads_2d[i]);
   loop {
     let r = atomicCompareExchangeWeak(&grads_2d[i], old, bitcast<u32>(bitcast<f32>(old) + val));
+    if (r.exchanged) { break; }
+    old = r.old_value;
+  }
+}
+
+fn add_wg_env(i: u32, val: f32) {
+  if (abs(val) < 1e-12) { return; }
+  var old = atomicLoad(&wg_env[i]);
+  loop {
+    let r = atomicCompareExchangeWeak(&wg_env[i], old, bitcast<u32>(bitcast<f32>(old) + val));
+    if (r.exchanged) { break; }
+    old = r.old_value;
+  }
+}
+
+fn add_wg_expo(i: u32, val: f32) {
+  if (abs(val) < 1e-12) { return; }
+  var old = atomicLoad(&wg_expo[i]);
+  loop {
+    let r = atomicCompareExchangeWeak(&wg_expo[i], old, bitcast<u32>(bitcast<f32>(old) + val));
+    if (r.exchanged) { break; }
+    old = r.old_value;
+  }
+}
+
+fn add_global_env(i: u32, val: f32) {
+  if (abs(val) < 1e-12) { return; }
+  var old = atomicLoad(&loss_acc[4u + i]);
+  loop {
+    let r = atomicCompareExchangeWeak(&loss_acc[4u + i], old, bitcast<u32>(bitcast<f32>(old) + val));
     if (r.exchanged) { break; }
     old = r.old_value;
   }
@@ -1042,16 +1194,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   let in_bounds = gid.x < W && gid.y < H;
   let px = vec2f(gid.xy) + 0.5;
   let tile_c = vec2f(wgid.xy * 16u) + 8.0;
+  let learned_env = textureDimensions(env_tex).x == ENV_N;  // a dome (trainer.setDome) is fixed: no gradient
 
   if (lid == 0u) {
     atomicStore(&wg_mse, 0u);
     atomicStore(&wg_hits, 0u);
     atomicStore(&wg_max_last_k, 0u);
+    for (var c = 0u; c < 4u; c++) { atomicStore(&wg_env[c], 0u); }
+    for (var c = 0u; c < 6u; c++) { atomicStore(&wg_expo[c], 0u); }
   }
-  for (var s = lid; s < SLOTS; s += 256u) {
-    atomicStore(&wg_grads[s], 0u);
-    atomicStore(&wg_moms[s], 0u);
-  }
+  for (var s = lid; s < SLOTS; s += 256u) { atomicStore(&wg_acc[s], 0u); }
   workgroupBarrier();
 
   var dL_dC = vec3f(0.0);
@@ -1059,28 +1211,60 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   var T : f32 = 1.0;
   var last_k = 0u;
   var accum_rec = vec3f(0.0); // color behind the current splat, unattenuated by T
+  var expo = array<f32, 6>();  // this pixel's exposure gradient: log g rgb, b rgb
 
   if (in_bounds) {
-    let gt   = textureLoad(gt_tex,  vec2i(gid.xy), 0).rgb;
+    let gt4  = textureLoad(gt_tex,  vec2i(gid.xy), 0);
+    let gt   = gt4.rgb;
     let hat  = textureLoad(hat_tex, vec2i(gid.xy), 0).rgb;
-    let diff = hat - gt;
+    let diff = (hat - gt) * gt4.a;  // alpha 0: a pixel left out of the loss (a video's on-screen display, overlay.js)
     atomicAdd(&wg_mse, u32(dot(diff, diff) / 3.0 * 65536.0 + 0.5));
     let sign_d = clamp(diff * 25.0, vec3f(-1.0), vec3f(1.0));
     let lam_ssim = tu.loss.x;
     if (lam_ssim > 0.0) {
       let gs = textureLoad(ssim_grad_tex, vec2i(gid.xy), 0).rgb;
-      dL_dC = ((1.0 - lam_ssim) * sign_d - 0.5 * lam_ssim * gs) * (1.0 / f32(W * H));
+      dL_dC = ((1.0 - lam_ssim) * sign_d - 0.5 * lam_ssim * gs * gt4.a) * (1.0 / f32(W * H));
     } else {
       dL_dC = (0.8 * sign_d + 0.4 * diff) * (1.0 / f32(W * H));
     }
     err_l1 = (abs(diff.x) + abs(diff.y) + abs(diff.z)) / 3.0;
+    let dg = dL_dC * (hat - tu.expo_b.rgb);
+    expo = array<f32, 6>(dg.x, dg.y, dg.z, dL_dC.x, dL_dC.y, dL_dC.z);
+    dL_dC *= tu.expo_g.rgb;  // dL/dc, the render before the exposure
 
     let st = pix_state[gid.y * W + gid.x];
     T = st.x;
     last_k = bitcast<u32>(st.z);
     atomicMax(&wg_max_last_k, last_k);
+    let ray = vec3f((px.x - tu.intrinsics.z) / tu.intrinsics.x, (px.y - tu.intrinsics.w) / tu.intrinsics.y, 1.0);
+    let tap = env_taps_tex(env_tex, transpose(mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz)) * ray);
+    accum_rec = env_bilinear(env_tex, tap);
+    if (T > ENV_MIN_T && learned_env) {  // the pixels it dominates teach it, not the splats' residual where they nearly cover
+      let g = dL_dC * T;
+      for (var c = 0u; c < 3u; c++) { add_wg_env(c, g[c]); }
+      add_wg_env(3u, T);  // how much of the background this pixel shows
+    }
+  }
+  if (tu.expo_g.w > 0.0) {  // uniform: the subgroup sums first
+    for (var c = 0u; c < 6u; c++) { expo[c] = subgroupAdd(expo[c]); }          // @sg
+    for (var c = sg_lane; c < 6u; c += sg_size) { add_wg_expo(c, expo[c]); }   // @sg
+    for (var c = 0u; c < 6u; c++) { add_wg_expo(c, expo[c]); }                 // @nosg
   }
   workgroupBarrier();
+  if (lid == 0u && learned_env) {  // the tile's background gradient onto the texels at its center
+    let rc = vec3f((tile_c.x - tu.intrinsics.z) / tu.intrinsics.x, (tile_c.y - tu.intrinsics.w) / tu.intrinsics.y, 1.0);
+    let tap = env_taps(transpose(mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz)) * rc);
+    for (var c = 0u; c < 4u; c++) {
+      let g = bitcast<f32>(atomicLoad(&wg_env[c]));
+      add_global_env(tap.i.x * 4u + c, g * tap.w.x);
+      add_global_env(tap.i.y * 4u + c, g * tap.w.y);
+      add_global_env(tap.i.z * 4u + c, g * tap.w.z);
+      add_global_env(tap.i.w * 4u + c, g * tap.w.w);
+    }
+  }
+  if (lid == 0u && tu.expo_g.w > 0.0) {
+    for (var c = 0u; c < 6u; c++) { add_global_env(EXPO_AT + c + c / 3u, bitcast<f32>(atomicLoad(&wg_expo[c]))); }
+  }
   if (lid == 0u) {  // 64-bit add: carry into loss_acc[1] when the low word wraps
     let v = atomicLoad(&wg_mse);
     let old = atomicAdd(&loss_acc[0], v);
@@ -1088,6 +1272,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   }
 
   let tile_max_k = atomicLoad(&wg_max_last_k);
+  let dir_moms = DIR_MOMS;
+  let nv = select(11u, NV, dir_moms);
   let fx = tu.intrinsics.x;
   let fy = tu.intrinsics.y;
   let cam_to_world = transpose(mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz));
@@ -1144,8 +1330,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
                      power <= 4.5 && alpha >= 1.0 / 255.0;
         if (!hit) { continue; }                                      // @nosg
 
-        var g = array<f32, 12>();  // grads_2d slots 0..11 (10, 11 unused: 0)
-        var m = array<f32, 12>();  // moments slots 0..11 (1 = S, done in adam_step)
+        var v = array<f32, 11>();  // grads_2d 0..9, then moments 2 (R)
+        var dm = array<f32, 9>();  // moments 3..11 (dir_moms)
         if (hit) {
           T = T / max(1e-4, 1.0 - alpha); // T_i
           let weight = T * alpha;
@@ -1156,44 +1342,46 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
           accum_rec = alpha * rgba.rgb + (1.0 - alpha) * accum_rec;
 
           let dL_dpower = -dL_dalpha * alpha;
-          g[0] = dL_drgb.x;
-          g[1] = dL_drgb.y;
-          g[2] = dL_drgb.z;
-          g[3] = dL_dalpha * alpha * (1.0 - rgba.w / train_opacity_factor());  // dL/dlogit_opacity
-          g[4] = -dL_dpower * (conic.x * dx + conic.y * dy);        // dL/du0
-          g[5] = -dL_dpower * (conic.y * dx + conic.z * dy);        // dL/dv0
-          g[6] = 0.5 * dL_dpower * dx * dx;                         // dL/dconic.a
-          g[7] =       dL_dpower * dx * dy;                         // dL/dconic.b (full, b appears twice)
-          g[8] = 0.5 * dL_dpower * dy * dy;                         // dL/dconic.c
-          g[9] = weight;                                            // w_view
-          g[10] = w_err;                                            // w_err_view (unused)
+          v[0] = dL_drgb.x;
+          v[1] = dL_drgb.y;
+          v[2] = dL_drgb.z;
+          v[3] = dL_dalpha * alpha * (1.0 - rgba.w / train_opacity_factor());  // dL/dlogit_opacity
+          v[4] = -dL_dpower * (conic.x * dx + conic.y * dy);        // dL/du0
+          v[5] = -dL_dpower * (conic.y * dx + conic.z * dy);        // dL/dv0
+          v[6] = 0.5 * dL_dpower * dx * dx;                         // dL/dconic.a
+          v[7] =       dL_dpower * dx * dy;                         // dL/dconic.b (full, b appears twice)
+          v[8] = 0.5 * dL_dpower * dy * dy;                         // dL/dconic.c
+          v[9] = weight;                                            // w_view (also moments' W)
+          v[10] = w_err;                                            // moments' R
 
           // WLBG moments; delta = world-space pixel offset from the center at its depth.
-          let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
-          m[0] = weight;
-          m[2] = w_err;
-          m[3] = w_err * d.x;
-          m[4] = w_err * d.y;
-          m[5] = w_err * d.z;
-          m[6] = w_err * d.x * d.x;
-          m[7] = w_err * d.y * d.y;
-          m[8] = w_err * d.z * d.z;
-          m[9] = w_err * d.x * d.y;
-          m[10] = w_err * d.x * d.z;
-          m[11] = w_err * d.y * d.z;
+          if (dir_moms) {
+            let d = cam_to_world * vec3f(dx * u0v0zr.z / fx, dy * u0v0zr.z / fy, 0.0);
+            dm[0] = w_err * d.x;
+            dm[1] = w_err * d.y;
+            dm[2] = w_err * d.z;
+            dm[3] = w_err * d.x * d.x;
+            dm[4] = w_err * d.y * d.y;
+            dm[5] = w_err * d.z * d.z;
+            dm[6] = w_err * d.x * d.y;
+            dm[7] = w_err * d.x * d.z;
+            dm[8] = w_err * d.y * d.z;
+          }
         }
-        let gbase = i * 12u;
+        let gbase = i * nv;
+        // constant loop bounds (a bound of nv made the pass twice as slow at 300k splats)
         if (subgroupAny(hit)) {                                   // @sg
-          for (var c = 0u; c < 12u; c++) { g[c] = subgroupAdd(g[c]); }  // @sg
-          for (var c = 0u; c < 12u; c++) { m[c] = subgroupAdd(m[c]); }  // @sg
-          // one lane per slot (grads 0..11, then moments 0..11), not 24 CAS loops on lane 0  // @sg
-          for (var c = sg_lane; c < 24u; c += sg_size) {             // @sg
-            if (c < 12u) { add_wg_grad(gbase + c, g[c]); } else { add_wg_mom(gbase + c - 12u, m[c - 12u]); }  // @sg
+          for (var c = 0u; c < 11u; c++) { v[c] = subgroupAdd(v[c]); }  // @sg
+          // one lane per slot, not a CAS loop per slot on lane 0      // @sg
+          for (var c = sg_lane; c < 11u; c += sg_size) { add_wg(gbase + c, v[c]); }  // @sg
+          if (dir_moms) {                                           // @sg
+            for (var c = 0u; c < 9u; c++) { dm[c] = subgroupAdd(dm[c]); }  // @sg
+            for (var c = sg_lane; c < 9u; c += sg_size) { add_wg(gbase + 11u + c, dm[c]); }  // @sg
           }                                                          // @sg
         }                                                            // @sg
         if (hit) {                                                // @nosg
-          for (var c = 0u; c < 12u; c++) { add_wg_grad(gbase + c, g[c]); }  // @nosg
-          for (var c = 0u; c < 12u; c++) { add_wg_mom(gbase + c, m[c]); }   // @nosg
+          for (var c = 0u; c < 11u; c++) { add_wg(gbase + c, v[c]); }  // @nosg
+          if (dir_moms) { for (var c = 0u; c < 9u; c++) { add_wg(gbase + 11u + c, dm[c]); } }  // @nosg
         }                                                            // @nosg
       }
     }
@@ -1201,14 +1389,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
 
     // Flush workgroup sums to global memory and zero them for the next batch.
     if (has_hits) {
-      for (var s = lid; s < SLOTS; s += 256u) {
-        let g = bitcast<f32>(atomicExchange(&wg_grads[s], 0u));
-        let m = bitcast<f32>(atomicExchange(&wg_moms[s], 0u));
-        let j = s / 12u;
+      for (var s = lid; s < BATCH * nv; s += 256u) {  // slot c of entry j at j * nv + c
+        let c = s % nv;
+        let j = s / nv;
+        let val = bitcast<f32>(atomicExchange(&wg_acc[s], 0u));
         if (wg_u0v0zr[j].w > 0.0) {
-          let gi = bitcast<u32>(wg_conic[j].w) * 12u + s % 12u;
-          add_global_grad(gi, g);
-          add_global_mom(gi, m);
+          let gi = bitcast<u32>(wg_conic[j].w) * 12u;
+          if (c < 10u) { add_global_grad(gi + c, val); }
+          if (c == 9u) { add_global_mom(gi, val); }                  // W
+          else if (c == 10u) { add_global_mom(gi + 2u, val); }       // R
+          else if (c > 10u) { add_global_mom(gi + c - 8u, val); }
         }
       }
       if (lid == 0u) { atomicStore(&wg_hits, 0u); }
@@ -1217,22 +1407,95 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
   }
 }
 
+// === env_adam ===
+// The background's update (env.js, tile_backward's gradient in loss_acc after its first vec4): one thread a texel, Adam
+// on rgb (b1 0.9, b2 0.999, the grads clipped to [-1, 1] as adam_step's) at lr tu.reg.z x wbar / (wbar + ENV_W0), kept in
+// [0, 1]; wbar (env_m.w): the running mean of the texel's T_final sum a step. Adam's step does not shrink with the gradient,
+// so a texel seen only through nearly opaque splats walked to saturated colors no training view showed (canyon3: rainbow
+// blotches below the scene seen from off the path); scaled by how much it is seen, it stays black. The gradient is read
+// and cleared; the trainer then copies env to the texture the tile passes read.
+// Bindings: 0 TrainUniforms, 1 env, 2 loss_acc, 3 env_m, 4 env_v.
+
+// #include _train
+@group(0) @binding(1) var<storage, read_write> env      : array<vec4f>;
+@group(0) @binding(2) var<storage, read_write> loss_acc : array<vec4u>;
+@group(0) @binding(3) var<storage, read_write> env_m    : array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> env_v    : array<vec4f>;
+const ENV_W0 : f32 = 16.0;  // a texel's T_final sum a step at which it learns at half the rate
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let t = gid.x;
+  if (t >= arrayLength(&env)) { return; }
+  let raw = bitcast<vec4f>(loss_acc[t + 1u]);
+  loss_acc[t + 1u] = vec4u(0u);
+  let g = clamp(raw.rgb, vec3f(-1.0), vec3f(1.0));
+  let step = max(1.0, tu.opt_params.w);
+  let m = 0.9 * env_m[t].rgb + 0.1 * g;
+  let v = 0.999 * env_v[t].rgb + 0.001 * g * g;
+  let wbar = 0.99 * env_m[t].w + 0.01 * raw.w;
+  env_m[t] = vec4f(m, wbar);
+  env_v[t] = vec4f(v, 0.0);
+  let upd = (m / (1.0 - pow(0.9, step))) / (sqrt(v / (1.0 - pow(0.999, step))) + 1e-15);
+  let lr = tu.reg.z * wbar / (wbar + ENV_W0);
+  env[t] = vec4f(clamp(env[t].rgb - lr * upd, vec3f(0.0), vec3f(1.0)), 0.0);
+}
+
+// === cam_reduce ===
+// The view's pose and lens gradient (adam_step's cam_part, 12 floats a workgroup of 64 visible splats) summed into
+// loss_acc after the exposure's (CAM_AT, 10 words: rho, phi, log f, cx, cy, k1). One workgroup.
+// Bindings: 0 TrainUniforms, 1 cam_part, 2 loss_acc.
+
+// #include _train
+// #include _env
+@group(0) @binding(1) var<storage, read>       cam_part : array<f32>;
+@group(0) @binding(2) var<storage, read_write> loss_acc : array<f32>;
+const CAM_AT : u32 = 4u + 24u * ENV_N * ENV_N + 8u;
+var<workgroup> wg_sum : array<array<f32, 10>, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(local_invocation_index) lid: u32) {
+  var acc = array<f32, 10>();
+  for (var w = lid; w < (tu.dims.z + 63u) / 64u; w += 256u) {
+    for (var c = 0u; c < 10u; c++) { acc[c] += cam_part[w * 12u + c]; }
+  }
+  wg_sum[lid] = acc;
+  workgroupBarrier();
+  for (var h = 128u; h > 0u; h >>= 1u) {
+    if (lid < h) { for (var c = 0u; c < 10u; c++) { wg_sum[lid][c] += wg_sum[lid + h][c]; } }
+    workgroupBarrier();
+  }
+  if (lid == 0u) { for (var c = 0u; c < 10u; c++) { loss_acc[CAM_AT + c] = wg_sum[0][c]; } }
+}
+
 // === adam_step ===
-// Per-splat update, one thread per splat:
+// Per-splat update, one thread per visible splat (sorted_idx, the training sort: only those have grads):
 //   1. reads and clears grads_2d, adds w_view^2 to moments.S;
 //   2. chains the 2D grads to 3D (position incl. through the EWA Jacobian,
 //      log-scale, quaternion), Adam step (sparse: splats with no grad are
 //      skipped), clamps and shape limits;
 //   3. opt_method 1 (MC/SGLD, 3DGS-MCMC): L1 terms on opacity and scale, noise on the centers of
 //      nearly transparent splats.
-// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments.
+// While the camera learns (tu.cam.x = 1): each splat's share of the view's pose and lens gradient (poses.js), from the
+// same chain: a camera-frame increment x_c -> x_c + rho + phi x x_c turns the splat's covariance with it too, so
+// dL/drho = dL/dx_c (through u0, v0 and J), dL/dphi = x_c x dL/dx_c + the covariance's term (with A = dL/dW W^T =
+// 2 W dL/dSigma Sigma W^T: A_21 - A_12, A_02 - A_20, A_10 - A_01), dL/dlog f = dL/du0 (u0 - cx) + dL/dv0 (v0 - cy)
+// + sum dL/dJ * J, dL/dcx = dL/du0, dL/dcy = dL/dv0 (the frustum clamp's dependence on them left out), dL/dk1 = (dL/du0
+// (u0 - cx) + dL/dv0 (v0 - cy)) r^2 / (1 + k1 r^2) + sum dL/dD * dD/dk1 (distort_jac: the centre's gradient goes back
+// to the pinhole's through D^T, the covariance's through D and D's own dependence on x_c); summed over the
+// workgroup into cam_part (12 floats a workgroup), then over the workgroups by cam_reduce.
+// Bindings: 0 TrainUniforms, 1 splats, 2 grads_2d, 3 adam_m, 4 adam_v, 5 moments, 6 sorted_idx, 7 cam_part.
 
 // #include _train
+@group(0) @binding(7) var<storage, read_write> cam_part : array<f32>;
+var<private> cam_g : array<f32, 10>;          // this thread's splat's share: rho, phi, log f, cx, cy, k1
+var<workgroup> wg_cam : array<array<f32, 10>, 64>;
 @group(0) @binding(1) var<storage, read_write> splats   : array<vec4f>;
 @group(0) @binding(2) var<storage, read_write> grads_2d : array<u32>;
 @group(0) @binding(3) var<storage, read_write> adam_m   : array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> adam_v   : array<vec4f>;
 @group(0) @binding(5) var<storage, read_write> moments  : array<u32>;
+@group(0) @binding(6) var<storage, read>       sorted_idx : array<u32>;
 
 // #include _math
 
@@ -1275,9 +1538,23 @@ fn load_grad(i: u32) -> f32 {
 }
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let idx = gid.x;
-  if (idx >= tu.dims.w) { return; }
+fn main(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) lid: u32,
+        @builtin(workgroup_id) wgid: vec3u) {
+  step_splat(gid.x);
+  if (tu.cam.x > 0.0) {  // uniform: the workgroup's sum
+    wg_cam[lid] = cam_g;
+    workgroupBarrier();
+    for (var h = 32u; h > 0u; h >>= 1u) {
+      if (lid < h) { for (var c = 0u; c < 10u; c++) { wg_cam[lid][c] += wg_cam[lid + h][c]; } }
+      workgroupBarrier();
+    }
+    if (lid == 0u) { for (var c = 0u; c < 10u; c++) { cam_part[wgid.x * 12u + c] = wg_cam[0][c]; } }
+  }
+}
+
+fn step_splat(k: u32) {
+  if (k >= tu.dims.z) { return; }
+  let idx = sorted_idx[k];
 
   let gbase = idx * 12u;
   let dL_drgb = vec3f(load_grad(gbase + 0u), load_grad(gbase + 1u), load_grad(gbase + 2u));
@@ -1291,7 +1568,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   for (var c = 0u; c < 12u; c++) { grads_2d[gbase + c] = 0u; }
 
   // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S).
-  if (w_view > 1e-6) {
+  if (w_view > 1e-6 && tu.cam.y == 0.0) {
     moments[gbase + 1u] = bitcast<u32>(bitcast<f32>(moments[gbase + 1u]) + w_view * w_view);
   }
 
@@ -1314,11 +1591,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let inv_z3 = inv_z2 * inv_z;
   let W3 = mat3x3f(tu.view[0].xyz, tu.view[1].xyz, tu.view[2].xyz);
 
-  // (u0, v0) -> view-space position.
+  // (u0, v0) -> the pinhole's (through the lens's residual distortion, distort_jac) -> view-space position.
+  let tn = vpos.xy * inv_z;
+  let k1 = tu.cam.z;
+  let r2 = dot(tn, tn);
+  let dL_dpin = transpose(distort_jac(tn, k1, fx, fy)) * vec2f(dL_du0, dL_dv0);
   let dL_dvpos = vec3f(
-    dL_du0 * fx * inv_z,
-    dL_dv0 * fy * inv_z,
-    -(dL_du0 * fx * vpos.x + dL_dv0 * fy * vpos.y) * inv_z2
+    dL_dpin.x * fx * inv_z,
+    dL_dpin.y * fy * inv_z,
+    -(dL_dpin.x * fx * vpos.x + dL_dpin.y * fy * vpos.y) * inv_z2
   );
 
   // Recompute the forward covariance (must match project_splats).
@@ -1329,7 +1610,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let M = mat3x3f(R[0] * s.x, R[1] * s.y, R[2] * s.z);
   let Sigma = M * transpose(M);
   let lim = frustum_lim(f32(tu.dims.x), f32(tu.dims.y), fx, fy, tu.intrinsics.z, tu.intrinsics.w);
-  let T = ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);
+  let tcn = clamp(tn, -lim, lim);
+  let D = distort_jac(tcn, k1, fx, fy);
+  let Tp = ewa_jacobian(tu.view, vpos.xyz, fx, fy, lim);  // the pinhole's
+  let T = D * Tp;
   let cov2d = T * Sigma * transpose(T);
   let sxx = cov2d[0][0] + 0.3;
   let syy = cov2d[1][1] + 0.3;
@@ -1348,19 +1632,32 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let dL_dSigma = transpose(T) * dL_dcov2d * T;
   let dL_dM = 2.0 * dL_dSigma * M;
 
-  // cov2d also depends on the view-space position through J.
-  let dL_dJ = 2.0 * dL_dcov2d * T * Sigma * transpose(W3);
+  // cov2d also depends on the view-space position through J, and through D (distort_jac).
+  let dL_dT = 2.0 * dL_dcov2d * T * Sigma;
+  let dL_dJ = transpose(D) * dL_dT * transpose(W3);  // the pinhole's J
+  let dL_dD = distort_jac_grad(tcn, k1, fx, fy, dL_dT * transpose(Tp));  // dL/dx, dL/dy (clamped), dL/dk1
   // A clamped x/z (y/z) makes J's x (y) column independent of x (y), and halves its z term.
-  let tq = vpos.xy * inv_z;
+  let tq = tn;
   let free = vec2f(select(0.0, 1.0, abs(tq.x) <= lim.x), select(0.0, 1.0, abs(tq.y) <= lim.y));
-  let tc = clamp(tq, -lim, lim) * vpos.z;  // clamped x, y
+  let tc = tcn * vpos.z;  // clamped x, y
+  let dDf = dL_dD.xy * free;
   let dL_dvpos_cov = vec3f(
-    -fx * inv_z2 * dL_dJ[2][0] * free.x,
-    -fy * inv_z2 * dL_dJ[2][1] * free.y,
+    -fx * inv_z2 * dL_dJ[2][0] * free.x + dDf.x * inv_z,
+    -fy * inv_z2 * dL_dJ[2][1] * free.y + dDf.y * inv_z,
     -fx * inv_z2 * dL_dJ[0][0] - fy * inv_z2 * dL_dJ[1][1] +
-      inv_z3 * ((1.0 + free.x) * fx * tc.x * dL_dJ[2][0] + (1.0 + free.y) * fy * tc.y * dL_dJ[2][1])
+      inv_z3 * ((1.0 + free.x) * fx * tc.x * dL_dJ[2][0] + (1.0 + free.y) * fy * tc.y * dL_dJ[2][1]) -
+      (dDf.x * tq.x + dDf.y * tq.y) * inv_z
   );
   let dL_dpos = transpose(W3) * (dL_dvpos + dL_dvpos_cov);
+  if (tu.cam.x > 0.0) {  // the camera's share (the header)
+    let g = dL_dvpos + dL_dvpos_cov;
+    let A = 2.0 * W3 * dL_dSigma * Sigma * transpose(W3);
+    let rot = cross(vpos.xyz, g) + vec3f(A[1][2] - A[2][1], A[2][0] - A[0][2], A[0][1] - A[1][0]);
+    let J = Tp * transpose(W3);
+    let dc = dL_du0 * fx * tn.x + dL_dv0 * fy * tn.y;  // dL/du0 (u0 - cx) + dL/dv0 (v0 - cy), over 1 + k1 r^2
+    let dlogf = dc * (1.0 + k1 * r2) + dot(dL_dJ[0], J[0]) + dot(dL_dJ[1], J[1]) + dot(dL_dJ[2], J[2]);
+    cam_g = array<f32, 10>(g.x, g.y, g.z, rot.x, rot.y, rot.z, dlogf, dL_du0, dL_dv0, dc * r2 + dL_dD.z);
+  }
 
   let dL_dlog_s = vec3f(dot(R[0], dL_dM[0]) * s.x, dot(R[1], dL_dM[1]) * s.y, dot(R[2], dL_dM[2]) * s.z);
 
@@ -1375,6 +1672,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     qw * (G0.y - G1.x) + qx * (G0.z + G2.x) + qy * (G1.z + G2.y) - 2.0 * qz * (G0.x + G1.y)
   );
 
+  if (tu.cam.y > 0.0) { return; }  // the camera only: its share summed above
   let step = max(1.0, tu.opt_params.w);
   let step_u = u32(step);
   let bc = vec2f(1.0 - pow(0.9, step), 1.0 - pow(0.999, step));
@@ -1405,7 +1703,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   p2 = normalize(adam4(p2, dL_dq, &m2, &v2, vec4f(tu.lrs.z), bc));
   p3 = vec4f(adam3(p3.xyz, dL_drgb, &m3, &v3, tu.lrs.w, bc), p3.w);
 
-  // Monte-Carlo (simulated annealing: its jumps are made at the rebalances, trainer.js _anneal)
+  // Monte-Carlo
   if (u32(tu.opt_params.x + 0.5) == 1u) {
     // SGLD (3DGS-MCMC eq. 9): lambda_noise lr_pos sigmoid(-k (alpha - t)) Sigma xi, k = 100, t = 0.005:
     // the nearly transparent splats wander, the others are left to the gradient

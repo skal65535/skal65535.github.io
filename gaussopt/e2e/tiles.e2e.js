@@ -4,7 +4,9 @@
 //     (half-widths 3 sqrt(cov_xx|yy), from the conic), no more, no less;
 //   - tile_backward with subgroups vs without (the per-thread path, lines tagged @nosg): one
 //     render on two devices, same splats and target; grads_2d and the WLBG moments agree slot
-//     by slot (only the float summation order differs);
+//     by slot (only the float summation order differs); without the directional moments (split_mode
+//     'shape', the pipeline without them): moments 3..11 stay 0 and every other slot is the same; moments' W = grads_2d slot 9;
+//     the view through an exposure that learns (exposure.js): its 6 sums in loss_acc agree too;
 //   - tile_forward's depth spread (pix_state.w) on large flat splats: one near-opaque sheet,
 //     two sheets apart, and two sheets close.
 //   cd e2e && node tiles.e2e.js   (env: see harness.js)
@@ -18,6 +20,8 @@ await run(async (page) => {
     const { LooseOctree } = await import('./src/octree.js');
     const { setPose, SPLAT_FLOATS } = await import('./src/colmap.js');
     const { makeRng } = await import('./src/math.js');
+    const { Exposure } = await import('./src/exposure.js');
+    const { ENV_TEXELS } = await import('./src/env.js');
     const W = 256, H = 192;
     // a camera turned off the world axes (every moment slot non-zero)
     const [ca, sa, cb, sb] = [Math.cos(0.35), Math.sin(0.35), Math.cos(0.25), Math.sin(0.25)];
@@ -26,9 +30,9 @@ await run(async (page) => {
     const target = new Uint8Array(W * H * 4).map((_, i) => i % 4 === 3 ? 255 : 128 + 100 * Math.sin(i * 0.013 + (i % 4)));
 
     // One render of `splats` ([camera-frame xyz, logit opacity, log scales xyz, rgb dc]) on a
-    // new device; backward: also tile_backward (adam_step skipped: it would consume grads_2d).
+    // new device; backward: also tile_backward (adam_step skipped: it would consume grads_2d), dirMoments: split_mode 'error' (its pipeline sums the directional moments).
     // Returns per sorted slot proj_splats and its tile rect (proj_tiles).
-    const render = async (splats, { features = [], backward = false } = {}) => {
+    const render = async (splats, { features = [], backward = false, dirMoments = true } = {}) => {
       const device = await (await navigator.gpu.requestAdapter()).requestDevice({ requiredFeatures: features });
       const N = splats.length, params = new Float32Array(N * SPLAT_FLOATS);
       splats.forEach(([xc, op, ls, rgb], i) => params.set([...toWorld(xc), op, ...ls, 0, 1, 0, 0, 0, ...rgb, 0], i * SPLAT_FLOATS));
@@ -43,15 +47,18 @@ await run(async (page) => {
       };
       const k = tr._intrinsics(img), gt = await tr.ensureGtTexture(0);
       tr.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm);
-      tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, 0, 0, 0, 0]);
+      tr.exposure = Exposure.fromJSON({ v0: [1.1, 0.9, 1.05, 0.02, -0.01, 0] });
+      tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, 0, 0, 0, 0], true);
+      tr.params.split_mode = dirMoments ? 'error' : 'shape';
       const pass = tr._pass;
       tr._pass = function (enc, pipe, ...a) { if (pipe !== this.pipeAdam) pass.call(this, enc, pipe, ...a); };
       tr._runPasses(backward ? gt : null);
-      const [g, m, pix, proj, rects] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * 48 },
+      const [g, m, pix, proj, rects, loss] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * 48 },
                                                      { buf: tr.pixStateBuf, bytes: W * H * 16 },
                                                      { buf: tr.projSplatsBuf, bytes: tr.numVisible * 32 },
-                                                     { buf: tr.projTilesBuf, bytes: tr.numVisible * 8 }]);
-      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix,
+                                                     { buf: tr.projTilesBuf, bytes: tr.numVisible * 8 },
+                                                     { buf: tr.lossBuf, bytes: tr.lossBuf.size }]);
+      const out = { sg: device.features.has('subgroups'), visible: tr.numVisible, g: Array.from(g), m: Array.from(m), pix, expo: Array.from(loss.slice(4 + 4 * ENV_TEXELS, 12 + 4 * ENV_TEXELS)),
                     proj: Array.from(proj), rects: Array.from(new Uint32Array(rects.buffer, rects.byteOffset, rects.length)) };
       device.destroy();
       return out;
@@ -66,17 +73,19 @@ await run(async (page) => {
     }
     const a = await render(random, { features: ['subgroups'], backward: true });
     const b = await render(random, { backward: true });
-    const backward = { sgA: a.sg, sgB: b.sg, visible: a.visible, slots: [] };
+    const c0 = await render(random, { features: ['subgroups'], backward: true, dirMoments: false });
+    const backward = { sgA: a.sg, sgB: b.sg, visible: a.visible, slots: [], noDir: [], dirLeft: 0 };
     const tiles = { W, H, proj: a.proj, rects: a.rects };
-    // slot c of every splat: relative L2 difference; grads slot 11 and moments slot 1 (S) stay 0
-    for (const [name, x, y, slots] of [['grads_2d', a.g, b.g, 11], ['moments', a.m, b.m, 12]]) {
-      for (let c = 0; c < slots; c++) {
-        if (name === 'moments' && c === 1) continue;
-        let d = 0, n = 0;
-        for (let i = c; i < x.length; i += 12) { d += (x[i] - y[i]) ** 2; n += y[i] ** 2; }
-        backward.slots.push({ name: `${name}[${c}]`, norm: n, rel: Math.sqrt(d / n) });
-      }
+    // slot c of every splat: relative L2 difference; grads slots 10, 11 and moments slot 1 (S) stay 0
+    const rel = (x, cx, y, cy) => { let d = 0, n = 0; for (let i = 0; i < x.length; i += 12) { d += (x[i + cx] - y[i + cy]) ** 2; n += y[i + cy] ** 2; } return { norm: n, rel: Math.sqrt(d / n) }; };
+    for (const [name, x, y, slots] of [['grads_2d', a.g, b.g, 10], ['moments', a.m, b.m, 12]]) {
+      for (let c = 0; c < slots; c++) if (!(name === 'moments' && c === 1)) backward.slots.push({ name: `${name}[${c}]`, ...rel(x, c, y, c) });
     }
+    backward.slots.push({ name: 'moments[0] (W) vs grads_2d[9]', ...rel(a.m, 0, a.g, 9) });
+    for (const j of [0, 1, 2, 4, 5, 6]) backward.slots.push({ name: `exposure[${j}]`, norm: b.expo[j] ** 2, rel: Math.abs(a.expo[j] - b.expo[j]) / Math.abs(b.expo[j]) });
+    for (let c = 0; c < 10; c++) backward.noDir.push({ name: `grads_2d[${c}]`, ...rel(c0.g, c, a.g, c) });
+    for (const c of [0, 2]) backward.noDir.push({ name: `moments[${c}]`, ...rel(c0.m, c, a.m, c) });
+    for (let i = 0; i < c0.m.length; i++) if (i % 12 >= 3 && c0.m[i] !== 0) backward.dirLeft++;
 
     // depth spread: sheets = one splat each, 10 m wide and 1 mm thick (alpha ~ its opacity on
     // every pixel); spread over the pixels where it is measured (T_final < 0.25)
@@ -102,6 +111,8 @@ await run(async (page) => {
     if (!(s.norm > 0)) fail(`${s.name} is 0 everywhere without subgroups`);
     else if (!(s.rel < 1e-4)) fail(`${s.name}: subgroups differ by ${s.rel.toExponential(2)} (relative L2)`);
   }
+  for (const s of bw.noDir) if (!(s.norm > 0 && s.rel < 1e-4)) fail(`${s.name} without the directional moments: differs by ${s.rel.toExponential(2)}`);
+  if (bw.dirLeft) fail(`without the directional moments: ${bw.dirLeft} values of moments 3..11 are not 0`);
   // Tile rects of the random scene against the exact 3-sigma boxes: tile t's pixel centers are
   // [16 t + 0.5, 16 t + 15.5]; the kernel pads the box by 0.1 px for rounding, 0.2 here
   {
@@ -137,5 +148,5 @@ await run(async (page) => {
     if (s.measured !== r.pixels) fail(`spread ${name}: ${s.measured} / ${r.pixels} pixels measured`);
     else if (!(Math.abs(s.lo - want) < 1e-3 && Math.abs(s.hi - want) < 1e-3)) fail(`spread ${name}: [${s.lo}, ${s.hi}], expected ${want}`);
   }
-  return 'tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot; depth spread of flat sheets';
+  return 'tile rects = 3-sigma boxes; tile_backward with subgroups = without on every slot, the directional moments skipped alone; depth spread of flat sheets';
 });

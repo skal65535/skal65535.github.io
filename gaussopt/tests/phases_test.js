@@ -8,7 +8,7 @@ const quality = (version = 0) => ({ keyframes: 35, registered: 34, problems: 2, 
 
 Deno.test('phases: nothing loaded, a COLMAP dataset, a video through the stages', () => {
   assert(JSON.stringify(states({})) === JSON.stringify(
-    { project: 'todo', video: 'todo', keyframes: 'todo', cameras: 'todo', train: 'todo', export: 'todo' }));
+    { project: 'todo', video: 'todo', keyframes: 'todo', cameras: 'todo', dome: 'skipped', train: 'todo', export: 'todo' }));
 
   const colmap = states({ label: '/dataset', colmap: { cams: 152, fromSfm: false }, trainer: { step: 0, training: false, psnr: 0 } });
   assert(colmap.video === 'skipped' && colmap.keyframes === 'skipped' && colmap.cameras === 'done' && colmap.train === 'todo', JSON.stringify(colmap));
@@ -122,4 +122,29 @@ Deno.test('phases: Train starts, pauses, then leads to the mesh', () => {
   assert(labels('export', { colmap, trainer }) === '*Make mesh (.glb)');
   assert(labels('export', { colmap, trainer, mesh: { running: true, step: 900 } }) === '*Make mesh (.glb) (off)');
   assert(labels('export', { colmap, trainer, mesh: { running: false, step: 900, faces: 1000, mb: 1 } }) === '*Make mesh again');
+});
+
+// The Dome step (src/dome.js, app.js buildDome): off by default (skipped), auto: before the training
+Deno.test('phases: the Dome step', () => {
+  const colmap = { cams: 152, fromSfm: false }, trainer = { step: 0, gt: true };
+  const dome = (x) => ({ mode: 'auto', running: false, result: null, ...x });
+  const st = (x) => phaseStates(input({ label: '/dataset', colmap, trainer, dome: x })).dome;
+  assert(st(null).state === 'skipped' && st(dome({ mode: 'off' })).state === 'skipped');
+  assert(phaseStates(input({ dome: dome() })).dome.summary === 'needs cameras');
+  assert(st(dome()).state === 'todo' && st(dome({ running: true })).state === 'running');
+  const found = st(dome({ result: { worth: true, farShare: 0.138 } }));
+  assert(found.state === 'done' && found.summary === 'sky 14%', JSON.stringify(found));
+  assert(st(dome({ result: { worth: true, farShare: 0.138, fill: 'panorama' } })).summary === 'sky 14%, panorama');  // its fill
+  assert(st(dome({ result: { worth: false, farShare: 0.0018 } })).summary === 'no dome (sky 0.2%)');
+  assert(st(dome({ result: { worth: true, farShare: null } })).summary === 'from the scene');
+  // auto: Dome comes between Cameras (or the project) and Train; off: it is passed over
+  assert(nextPhase('project', input({ label: '/dataset', colmap, trainer, dome: dome() })) === 'dome');
+  assert(nextPhase('project', input({ label: '/dataset', colmap, trainer, dome: dome({ mode: 'off' }) })) === 'train');
+  const at = (x) => labels('dome', { label: '/dataset', colmap, trainer, dome: dome(x) });
+  assert(at({}) === '*Find the sky | Next: Train →', at({}));
+  assert(at({ running: true }) === '*Find the sky (off) | Next: Train →', at({ running: true }));
+  assert(at({ result: { worth: true, farShare: 0.1 } }) === 'No dome | Find it again | *Next: Train →');
+  assert(at({ result: { worth: false, farShare: 0.001 } }) === 'Find it again | *Next: Train →');
+  // not while training: the dome is made from the photos before the splats
+  assert(labels('dome', { label: '/dataset', colmap, trainer: { step: 10, gt: true, training: true }, dome: dome() }) === '*Find the sky (off) | Next: Train →');
 });

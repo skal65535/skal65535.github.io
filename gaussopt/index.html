@@ -45,29 +45,22 @@
       <div id="help-overlay">
         <div class="help-title">Keys &amp; mouse <span>(H or Esc to close)</span></div>
         <table>
-          <tr><th colspan="2">Orbit camera</th></tr>
-          <tr><td>drag</td><td>orbit around the target</td></tr>
-          <tr><td>wheel</td><td>zoom</td></tr>
-          <tr><td>← / →</td><td>pan left / right</td></tr>
-          <tr><td>↑ / ↓</td><td>pan up / down</td></tr>
-          <tr><td>Space</td><td>re-center on the scene</td></tr>
-          <tr><td>[ / ]</td><td>level: turn the picture 1° (⚙ view &gt; Level)</td></tr>
-          <tr><th colspan="2">Drone camera (F to toggle)</th></tr>
-          <tr><td>drag</td><td>stick: pitch / roll, release to self-level</td></tr>
+          <tr><th colspan="2">Camera</th></tr>
+          <tr><td>drag</td><td>look around</td></tr>
+          <tr><td>wheel / pinch</td><td>move forward / back</td></tr>
           <tr><td>↑ / ↓</td><td>fly forward / backward</td></tr>
-          <tr><td>← / →</td><td>yaw left / right</td></tr>
+          <tr><td>← / →</td><td>turn left / right</td></tr>
           <tr><td>E / Q</td><td>climb / descend (released: hold altitude)</td></tr>
           <tr><td>Space</td><td>re-center: level, brake, face the scene</td></tr>
-          <tr><td>wheel</td><td>camera tilt</td></tr>
+          <tr><td>[ / ]</td><td>level: turn the picture 1° (⚙ view &gt; Level)</td></tr>
           <tr><th colspan="2">Demo camera (G to toggle)</th></tr>
           <tr><td></td><td>slow flight along the capture path, wandering a little</td></tr>
-          <tr><td>drag / wheel / flight key</td><td>take over (drone camera)</td></tr>
+          <tr><td>drag / wheel / flight key</td><td>take over</td></tr>
           <tr><th colspan="2">Cameras</th></tr>
           <tr><td>click frustum</td><td>show its photo</td></tr>
           <tr><td>double-click</td><td>fly to that view</td></tr>
           <tr><th colspan="2">General</th></tr>
-          <tr><td>F</td><td>orbit / drone camera</td></tr>
-          <tr><td>G</td><td>orbit / demo camera</td></tr>
+          <tr><td>G</td><td>demo / drone camera</td></tr>
           <tr><td>H or ?</td><td>this help</td></tr>
           <tr><td>drop a file</td><td>video, gs/ folder, .ply / .splat / .gosnap, .gosfm</td></tr>
         </table>
@@ -96,7 +89,7 @@
         <div class="actions">
           <button class="button wide" id="BtnVideo" title="video file or photos -> keyframes -> cameras, in the browser">Open video or photos…</button>
           <label class="button" for="FolderElmt" title="a gs/ folder (sparse/ + images/): cameras, points and photos from an SfM">Open gs/ folder…</label>
-          <label class="button" for="PlyElmt" title=".ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
+          <label class="button" for="PlyElmt" title="a scene (.scene.glb), a .ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
         </div>
         <div class="gui-host" id="project-gui"></div>
         <div class="gui-host" id="project-folder"></div>
@@ -117,14 +110,24 @@
       <section data-phase="video"><p class="hint">Open a video or photos (Project, or drop them on the page).</p></section>
       <section data-phase="keyframes"><p class="hint">Open a video first.</p></section>
       <section data-phase="cameras"><p class="hint">Open a video first.</p></section>
+      <section data-phase="dome">
+        <p class="hint">What every camera sees alike, wherever it stands (no parallax: the <b>sky</b>, far away) goes onto a
+          <b>dome</b> behind the splats, made from the photos before the training and fixed while it runs; the zenith and
+          what no camera saw are filled in. The splats are left for what is near. Indoors, or with little sky: no dome.
+          Its <b>fill</b>: the sky only, or a <b>panorama</b> of all the cameras saw (the far things as billboards).</p>
+        <div class="gui-host" id="dome-gui"></div>
+        <p class="hint" id="dome-stats"></p>
+        <canvas id="dome-preview" class="dome-preview" hidden></canvas>
+      </section>
       <section data-phase="train">
         <div class="gui-host" id="gui-container"></div>
       </section>
       <section data-phase="export">
         <div class="group-title">Splats</div>
         <div class="actions">
+          <button class="button" id="BtnExportScene" title="the scene as one glTF .glb: the splats (KHR_gaussian_splatting), the octree, the cameras, their path, the sparse points, the mesh on show, the background, the leveling and the settings">Save scene (.glb)</button>
+          <button class="button" id="BtnExportPhotos" title="the dataset's photos as one .glb of images, by name (for the trainer; kept apart from the scene)">Save photos (.glb)</button>
           <button class="button" id="BtnExportPly" title="the splats as a standard 3DGS .ply, with the octree appended (other viewers ignore it)">Save .ply (+ octree)</button>
-          <button class="button" id="BtnExportOctree" title="the octree of the current splats as a .octree.json sidecar">Save .octree</button>
           <button class="button" id="BtnSnapshot" title="full training state (splats + Adam + moments + octree), resumable">Save snapshot</button>
         </div>
         <div class="gui-host" id="export-mesh"></div>

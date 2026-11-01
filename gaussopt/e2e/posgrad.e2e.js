@@ -2,7 +2,8 @@
 // the splat's world position, scales and rotation, against central differences of project_splats' output: for
 // fixed weights w, L = w . (u0, v0, a, b, c) of one splat; its gradient injected into grads_2d, adam_step run with
 // zero learning rates; Adam's first moment after one step is 0.1 g (|g| < 1, its clamp). Splats tilted and off
-// axis, seen by a camera turned off the world axes (every term of the projection's Jacobian non-zero).
+// axis, seen by a camera turned off the world axes (every term of the projection's Jacobian non-zero). And adam_step
+// runs on the visible splats only (the training sort's list): one behind the camera keeps its Adam state and grads.
 //   cd e2e && node posgrad.e2e.js   (env: see harness.js)
 import { APP, PORT, fail, urlOf, run } from './harness.js';
 import { join } from 'node:path';
@@ -65,7 +66,7 @@ await run(async (page) => {
         device.queue.writeBuffer(tr.adamMBuf, 0, new Float32Array(16));
         device.queue.writeBuffer(tr.adamVBuf, 0, new Float32Array(16));
         const enc = device.createCommandEncoder();
-        tr._pass(enc, tr.pipeAdam, [U, tr.splatsBuf, tr.grads2dBuf, tr.adamMBuf, tr.adamVBuf, tr.momentsBuf], 1);
+        tr._pass(enc, tr.pipeAdam, [U, tr.splatsBuf, tr.grads2dBuf, tr.adamMBuf, tr.adamVBuf, tr.momentsBuf, tr.sortedIdxBuf, tr.camPartBuf], 1);
         device.queue.submit([enc.finish()]);
         const [m] = await tr._readback('m', [{ buf: tr.adamMBuf, bytes: 64 }]);
         const analytic = { pos: [0, 1, 2].map(i => 10 * m[i]), scale: [4, 5, 6].map(i => 10 * m[i]) };
@@ -82,12 +83,33 @@ await run(async (page) => {
       }
       tr.destroy?.();
     }
+    // splat 0 behind the camera, splat 1 in front: grads injected for both, only splat 1 is in the sorted list
+    const two = Float32Array.from([...toWorld([0.1, 0, -3]), 0, -3, -3, -3, 0, 1, 0, 0, 0, 0.2, 0.3, 0.4, 0,
+                                   ...toWorld([0.1, 0, 3]), 0, -3, -3, -3, 0, 1, 0, 0, 0, 0.2, 0.3, 0.4, 0]);
+    const tr2 = await GaussOptTrainer.create(device, new LooseOctree({ maxLeafSize: 64 }).build(two, 2, [img]), { count: 2, params: two }, [img], { downsample: 1 });
+    const k2 = tr2._intrinsics(img), visible = tr2.updateSortingForView(img.center, img.view, k2.fxNorm, k2.fyNorm);
+    tr2._writeUniforms(img, k2, [0, 0, 0, 0, 0, 0, 0, 1, 100, 100, Math.log(1e4), 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const g = new Float32Array(24);
+    for (const b of [0, 12]) { g[b + 3] = 1e-3; g[b + 4] = 0.01; g[b + 9] = 1; }
+    device.queue.writeBuffer(tr2.grads2dBuf, 0, g);
+    const enc = device.createCommandEncoder();
+    tr2._pass(enc, tr2.pipeAdam, [tr2.trainUniformBuf, tr2.splatsBuf, tr2.grads2dBuf, tr2.adamMBuf, tr2.adamVBuf, tr2.momentsBuf, tr2.sortedIdxBuf, tr2.camPartBuf], 1);
+    device.queue.submit([enc.finish()]);
+    const [m2, g2] = await tr2._readback('m2', [{ buf: tr2.adamMBuf, bytes: 128 }, { buf: tr2.grads2dBuf, bytes: 96 }]);
+    const sorted = Array.from(tr2.sortedIdx.slice(0, visible));
+    tr2.destroy?.();
     device.destroy();
-    return out;
+    return { out, visibleOnly: { sorted, m0: Array.from(m2.slice(0, 16)), m1: Array.from(m2.slice(16, 32)), g0: Array.from(g2.slice(0, 12)), g1: Array.from(g2.slice(12, 24)) } };
   });
 
   let checked = 0;
-  for (const { s, set, radius, uv, analytic, numeric } of r) {
+  const vo = r.visibleOnly, nz = (a) => a.some(x => x !== 0);
+  console.log(`visible only: sorted list [${vo.sorted}], Adam m of splat 0 ${nz(vo.m0) ? 'changed' : 'untouched'}, of splat 1 ${nz(vo.m1) ? 'changed' : 'untouched'}`);
+  if (vo.sorted.join() !== '1') fail(`visible only: sorted list [${vo.sorted}], expected [1]`);
+  else if (nz(vo.m0) || !nz(vo.g0)) fail('visible only: adam_step updated splat 0, behind the camera (not in the sorted list)');
+  else if (!nz(vo.m1) || nz(vo.g1)) fail('visible only: adam_step did not update (and clear the grads of) splat 1, the visible one');
+  else checked++;
+  for (const { s, set, radius, uv, analytic, numeric } of r.out) {
     if (!(radius > 0)) { fail(`splat ${s}: culled (radius ${radius})`); continue; }
     for (const key of ['pos', 'scale']) {
       const a = analytic[key], n = numeric[key], scale = Math.max(...n.map(Math.abs));
@@ -100,5 +122,5 @@ await run(async (page) => {
       else checked++;
     }
   }
-  return `adam_step's gradients of the position and the log scales match central differences of project_splats (${checked} checks)`;
+  return `adam_step's gradients of the position and the log scales match central differences of project_splats (${checked - 1} checks), on the visible splats only`;
 });

@@ -1,6 +1,7 @@
 // ssim.e2e.js — The D-SSIM loss (params.ssim, kernels ssim_coef / ssim_grad, tile_backward):
 //   - ssim_grad_tex against central differences of ssimSum (src/metrics.js) at the render's
 //     8-bit values, on a textured render of random splats: borders, corners and inner pixels;
+//   - the held-out SSIM (ssim_map, summed per workgroup): its mean against rgbSsim, on the same render;
 //   - tile_backward with weight 1 on one opaque sheet: its dL/drgb (grads_2d slots 0..2) is
 //     sum_p -(1/2) G(p) / N * w(p) * SH_C0, G = ssim_grad_tex, w = 1 - T_final.
 // and DropGaussian (params.drop_rate, project_splats, tile_forward): at rate 0.5 about half the splats
@@ -42,8 +43,11 @@ await run(async (page) => {
       const pass = tr._pass;
       tr._pass = function (enc, pipe, ...a) { if (pipe !== this.pipeAdam) pass.call(this, enc, pipe, ...a); };
       tr._runPasses(gt);
-      const [g, pix, hat] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.pixStateBuf, bytes: W * H * 16 },
-                                                       { tex: tr.hatTex }]);
+      const e = device.createCommandEncoder();  // the held-out SSIM's map, as evaluateValidation
+      tr._pass(e, tr.pipeSsimMap, [tr.trainUniformBuf, gt.createView(), tr.hatTex.createView(), tr.ssimSumsBuf], W / 16, H / 16);
+      device.queue.submit([e.finish()]);
+      const [g, pix, hat, ssimSums] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.pixStateBuf, bytes: W * H * 16 },
+                                                                { tex: tr.hatTex }, { buf: tr.ssimSumsBuf, bytes: tr.ssimSumsBytes }]);
       const staging = device.createBuffer({ size: W * H * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const enc = device.createCommandEncoder();
       enc.copyTextureToBuffer({ texture: tr.ssimGradTex }, { buffer: staging, bytesPerRow: W * 16 }, [W, H]);
@@ -52,7 +56,7 @@ await run(async (page) => {
       const G = new Float32Array(staging.getMappedRange().slice(0));
       const [proj] = await tr._readback('proj', [{ buf: tr.projSplatsBuf, bytes: tr.numVisible * 32 }]);
       const drawn = Array.from({ length: tr.numVisible }, (_, k) => proj[8 * k + 3] > 0).filter(Boolean).length;
-      const out = { g: Array.from(g), pix: Array.from(pix), hat: Array.from(hat), G: Array.from(G), bpr: tr.rowPitch, drawn };
+      const out = { g: Array.from(g), pix: Array.from(pix), hat: Array.from(hat), G: Array.from(G), ssimSums: Array.from(ssimSums), bpr: tr.rowPitch, drawn };
       device.destroy();
       return out;
     };
@@ -71,7 +75,7 @@ await run(async (page) => {
     return { W, H, target: Array.from(target), tex, sheet, drawn: dropped.map(d => d.drawn), alpha };
   });
 
-  const { ssimSum } = await import('../src/metrics.js');
+  const { ssimSum, rgbSsim, ssimMean } = await import('../src/metrics.js');
   const { W, H, target, tex, sheet, drawn, alpha } = r, N = W * H;
   const plane = (src, c, bpr) => Float64Array.from({ length: N }, (_, p) => src[(p / W | 0) * bpr + (p % W) * 4 + c] / 255);
 
@@ -96,6 +100,13 @@ await run(async (page) => {
     if (!(maxG > 0.1)) fail(`ssim_grad: the samples' gradients are all near 0 (max ${maxG})`);
     if (bad.length) fail(`ssim_grad: ${bad.length} samples off, e.g.\n  ${bad.slice(0, 4).join('\n  ')}`);
   }
+  // ssim_map (the held-out SSIM, evaluateValidation): its sums' mean = rgbSsim of the same 8-bit render
+  for (const [name, out] of [['random splats', tex], ['sheet', sheet]]) {
+    const gpu = ssimMean(out.ssimSums, W, H), cpu = rgbSsim(target, out.hat, W, H, out.bpr);
+    console.log(`ssim_map, ${name}: SSIM ${gpu.toFixed(6)} (rgbSsim ${cpu.toFixed(6)})`);
+    if (!(cpu > 0.01 && cpu < 0.99)) fail(`ssim_map, ${name}: the render's SSIM ${cpu} does not test much`);
+    if (!(Math.abs(gpu - cpu) < 1e-5)) fail(`ssim_map, ${name}: SSIM ${gpu}, rgbSsim ${cpu}`);
+  }
   // tile_backward, weight 1: dL/dC(p) = -(1/2) G(p) / N, through one splat of weight 1 - T_final
   {
     const SH_C0 = 0.28209479177387814;
@@ -115,6 +126,6 @@ await run(async (page) => {
     if (!(drawn[0] > 300 && Math.abs(kept - 0.5) < 0.06)) fail(`DropGaussian 0.5: ${drawn[1]} of ${drawn[0]} drawn`);
     if (!(Math.abs(alpha[0] - 0.3) < 0.01 && Math.abs(alpha[1] - 0.6) < 0.01)) fail(`DropGaussian factor 2: alpha ${alpha[0]} -> ${alpha[1]}, expected 0.3 -> 0.6`);
   }
-  return 'ssim_grad = central differences of ssimSum; tile_backward takes it as the D-SSIM color gradient; ' +
+  return 'ssim_map = rgbSsim; ssim_grad = central differences of ssimSum; tile_backward takes it as the D-SSIM color gradient; ' +
          'DropGaussian culls about half the splats at 0.5 and scales opacities by its factor';
 });

@@ -1,7 +1,5 @@
-// The stochastic optimizers' CPU steps (DESIGN.md §5.4): monte_carlo's relocation (octree.js relocate,
-// 3DGS-MCMC) and sim_anneal's Metropolis test at the rebalances (anneal.js).
+// Monte-Carlo's CPU steps (DESIGN.md §5.4): the relocation of the dead splats (octree.js relocate, 3DGS-MCMC).
 import { LooseOctree, relocate, relocatedOpacityScale, MOMENT_FLOATS } from '../src/octree.js';
-import { annealStep, remapAnnealState } from '../src/anneal.js';
 import { SPLAT_FLOATS } from '../src/colmap.js';
 import { sigmoid, logit } from '../src/math.js';
 import { assert, assertClose, rng } from './util.js';
@@ -62,54 +60,6 @@ Deno.test('relocate as shape: each live row drawn splits into two halves within 
   assert(out.src[2] === -1 && out.src[3] === -1, 'new halves inherit a src');
 });
 
-// count splats at x = i, unit scales, identity rotations; moments W = 1, R = e[i]
-function splats(count) {
-  const p = new Float32Array(count * SPLAT_FLOATS);
-  for (let i = 0; i < count; i++) { p[i * SPLAT_FLOATS] = i; p[i * SPLAT_FLOATS + 8] = 1; }
-  return p;
-}
-function moments(e) {
-  const m = new Float32Array(e.length * MOMENT_FLOATS);
-  e.forEach((r, i) => { m[i * MOMENT_FLOATS] = 1; m[i * MOMENT_FLOATS + 2] = r; });
-  return m;
-}
-
-Deno.test('anneal: a jump is kept when its error dropped more than the others\', else undone (T ~ 0)', () => {
-  const n = 100, p = splats(n);
-  // window 1: every energy 1, no jumps before; a jump for each splat (share 1)
-  const r1 = annealStep(p, n, moments(new Array(n).fill(1)), null, { temp: 0.1, share: 1 });
-  assert(r1.proposed === n && r1.accepted === 0 && r1.rejected === 0, JSON.stringify(r1));
-  // only splats 0..9 keep their jump; window 2: every error 10% down (the training), 0..4 20% down, 5..9 5% down
-  const state = { jump: r1.state.jump.map((v, k) => (k / 3 | 0) < 10 ? v : 0), e: r1.state.e };
-  const moved = Float32Array.from(p);
-  const e2 = Array.from({ length: n }, (_, i) => i < 5 ? 0.8 : i < 10 ? 0.95 : 0.9);
-  const r2 = annealStep(p, n, moments(e2), state, { temp: 1e-9, share: 0 });
-  assert(r2.accepted === 5 && r2.rejected === 5 && r2.proposed === 0, JSON.stringify({ ...r2, state: 0 }));
-  for (let i = 0; i < 10; i++) {
-    const back = [0, 1, 2].map(c => moved[i * SPLAT_FLOATS + c] - state.jump[3 * i + c]);
-    const now = [0, 1, 2].map(c => p[i * SPLAT_FLOATS + c]);
-    assertClose(now, i < 5 ? [0, 1, 2].map(c => moved[i * SPLAT_FLOATS + c]) : back, 1e-6, `splat ${i}`);
-  }
-});
-
-Deno.test('anneal: worse jumps kept with probability exp(-de / T); unseen ones undone; the state follows the splats', () => {
-  const n = 2000, p = splats(n);
-  const r1 = annealStep(p, n, moments(new Array(n).fill(1)), null, { temp: 0.1, share: 1 });
-  // the jumped half (even i) 0.1 worse than the trend (0): kept with probability exp(-0.1 / 0.1) = 0.37
-  const state = { jump: r1.state.jump.map((v, k) => (k / 3 | 0) % 2 === 0 ? v : 0), e: r1.state.e };
-  const e2 = Array.from({ length: n }, (_, i) => i % 2 === 0 ? 1.1 : 1);
-  let seed = 7;
-  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  const r2 = annealStep(p, n, moments(e2), state, { temp: 0.1, share: 0, rand });
-  // e is normalized by its mean (1.05): de = 1.1 / 1.05 - 1 - (1 / 1.05 - 1) = 0.0952
-  const want = Math.exp(-0.1 / 1.05 / 0.1) * (n / 2);
-  assert(Math.abs(r2.accepted - want) < 4 * Math.sqrt(want), `accepted ${r2.accepted}, expected ~${want.toFixed(0)}`);
-  const unseen = annealStep(p, 2, new Float32Array(2 * MOMENT_FLOATS), r1.state, { temp: 1, share: 0 });
-  assert(unseen.accepted === 0, 'no splat seen: nothing to judge');
-  const m = remapAnnealState(r1.state, Int32Array.from([5, -1, 0]));
-  assertClose([m.e[0], m.e[1], ...m.jump.subarray(0, 6)], [r1.state.e[5], 0, ...r1.state.jump.subarray(15, 18), 0, 0, 0], 0, 'remap');
-});
-
 // 200 splats at the cap: 50 dead (opacity 0.0025), 100 with much error (they would split), 50 quiet
 function capped(seeds = 0) {
   const r = rng(5), n = 200, params = new Float32Array(n * SPLAT_FLOATS), moments = new Float32Array(n * MOMENT_FLOATS);
@@ -156,7 +106,7 @@ Deno.test('monte_carlo: a splat out of `bounds` is dead and relocated in it (the
   const p = new Float32Array(2 * SPLAT_FLOATS);
   p.set([-1, 0, 0], 0); p.set([3, 0, 0], SPLAT_FLOATS);
   const oct = new LooseOctree().build(p, 2, null);
-  const t = new GaussOptTrainer(null, oct, { count: 2, params: p }, [], { sa_temp: 0 });
+  const t = new GaussOptTrainer(null, oct, { count: 2, params: p }, [], {});
   assertClose([...t.sceneBox.center, t.sceneBox.halfSize], [1, 0, 0, 1.25 * oct.root.halfSize], 1e-6, 'sceneBox');
   assert(Math.abs(oct.root.halfSize - 0.505 * 4) < 1e-6, `root half ${oct.root.halfSize}`);
 });

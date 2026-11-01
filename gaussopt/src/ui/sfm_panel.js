@@ -16,6 +16,9 @@ import { rotationAngle } from '../sfm/linalg.js';
 import { SESSION_DEFAULTS } from '../sfm/defaults.js';
 import { DirStore } from '../project/store.js';
 import { downloadBlob } from './download.js';
+
+// the frame strip: keyframe picks bright, blurry picks red, zooms violet (other samples dim)
+const STRIP_COLORS = { kept: 'rgba(148, 163, 184, 0.9)', blurry: '#f87171', zoom: '#a78bfa' };
 import { IDENTITY4 } from '../math.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
@@ -36,6 +39,8 @@ const TIPS = {
   sampleFps: 'frames per second of the video looked at (sharpness and motion are measured on these)',
   spacing: 'a new keyframe once the image content moved this much, as a fraction of the image diagonal (smaller: more keyframes)',
   blurRel: 'a picked frame less sharp than this fraction of the picks\' median sharpness is dropped (0: keep all)',
+  overlay: 'text, boxes or a reticle burnt into every frame (an on-screen display), found as what stays still while the ' +
+           'scene moves: its keypoints dropped and its pixels left out of the training (the log says how much was found)',
   zoomRate: 'a zoom (or a lens change): the image scaling faster than this (per second) all over the frame. No keyframe ' +
             'during one, and a camera for each stretch between them, its focal found when mapping (0: no zoom detection)',
   maxDim: 'keyframes are scaled down to this long side (photos for training and SIFT)',
@@ -62,6 +67,7 @@ const TIPS = {
   '↶ Undo': 'revert the last action',
   'Features & matching (S1–S2)': 'SIFT features and which keyframe pairs are matched',
   maxFeatures: 'most SIFT features per keyframe',
+  siftPeak: 'SIFT contrast threshold (the DoG peak); lower: more features on low-contrast frames (a thermal camera)',
   window: 'each keyframe is matched to the next W ones (also the size of the bundle adjustment windows)',
   loops: 'look for loop closures: keyframes far apart in time that see the same place',
   'Camera & mapping (S2–S4)': 'intrinsics and the mapper',
@@ -170,6 +176,7 @@ export class SfmPanel {
     fr.add(o, 'spacing', 0.01, 0.2, 0.005).name('spacing (× diagonal)');
     fr.add(o, 'blurRel', 0, 1, 0.05).name('blur reject (× median)');
     fr.add(o, 'zoomRate', 0, 3, 0.1).name('zoom detection (/s)');
+    fr.add(o, 'overlay').name('mask the on-screen display');
     fr.add(o, 'maxDim', [960, 1280, 1920, 3840]).name('max size (px)');
 
     const cams = host('cameras');
@@ -202,6 +209,7 @@ export class SfmPanel {
     ];
     const fm = cams.addFolder('Features & matching (S1–S2)', { collapsed: true });
     fm.add(o, 'maxFeatures', [1024, 2048, 4096, 8192, 16384]).name('max features');
+    fm.add(o, 'siftPeak', 0.001, 0.02, 0.0001).name('SIFT contrast');
     fm.add(o, 'window', 3, 30, 1).name('window W');
     fm.add(o, 'loops').name('loop closure');
     const cam = cams.addFolder('Camera & mapping (S2–S4)', { collapsed: true });
@@ -435,7 +443,10 @@ export class SfmPanel {
   // until: 'keyframes' stops after the keyframes and their features; null runs to the cameras,
   // then into the trainer when `send`
   run(until = null, send = this.o.autoSend) {
-    if (this.running || this.busy) return;
+    if (this.running || this.busy) {  // said in the log: a click that starts nothing
+      this._log(`not started: ${this.running ? 'a run is still in the worker' : 'a request is in the worker'} (${this.state.status})`, 'warn');
+      return;
+    }
     if (!this.file && !this.photos) { this._pickFile(); return; }
     this.running = true;
     this.runUntil = until;
@@ -722,7 +733,7 @@ export class SfmPanel {
       const { sharpness, status, times } = this.frameAnalysis, max = sharpness.reduce((m, v) => Math.max(m, v), 0);
       sharpness.forEach((v, i) => {
         const x = this._x(times[i]), h = Math.max(1, 30 * v / max);
-        ctx.fillStyle = status[i] === 'kept' ? 'rgba(148, 163, 184, 0.9)' : status[i] === 'blurry' ? '#f87171' : status[i] === 'zoom' ? '#a78bfa' : 'rgba(148, 163, 184, 0.3)';
+        ctx.fillStyle = STRIP_COLORS[status[i]] ?? 'rgba(148, 163, 184, 0.3)';
         ctx.fillRect(x, 32 - h, Math.max(1, c.width / sharpness.length), h);
       });
     }
@@ -774,7 +785,7 @@ export class SfmPanel {
       this._log("photo set: floater removal by the depth of every point in each camera's view (floater_depth 'view')");
     }
     try {
-      if (await app.loadColmap(loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit }), { label: 'Video → Cameras' })) {
+      if (await app.loadColmap(loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit, masks: this.result.masks }), { label: 'Video → Cameras' })) {
         this.sent = this.result.summary;
         this.state.model = `the current model (${this.result.summary.exported} cameras)`;
         this._record({ phases: { train: { fromCameras: this.sent.version } } });
@@ -794,7 +805,7 @@ export class SfmPanel {
     const app = this.app, old = app.colmap;
     if (!this.result || !old?.fromSfm || !app.trainer) return this.send();
     try {
-      const ds = loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit });
+      const ds = loadColmapFromMemory(this.result.sparse, this.result.images, { valSplit: this.valSplit, masks: this.result.masks });
       const before = new Map(old.images.map(im => [im.name, im]));
       const common = ds.images.filter(im => before.has(im.name));
       if (common.length < 3) throw new Error(`only ${common.length} keyframes in common with the trainer's model`);

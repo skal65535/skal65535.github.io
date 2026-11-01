@@ -8,13 +8,15 @@
 import { clamp, sub, madd, normalize, viewMatToQuat, quatSlerp, viewFromQuat, viewTransform, fitIntrinsics, fitRect } from './math.js';
 import { bindGroup } from './gpu.js';
 import { mipLevels } from './mesh_image.js';
+import { meshVoxel } from './glb.js';
+import { ENV_WGSL } from './env.js';
 
 let _shaderCache = null;
 
 // `// === <name> ===` sections -> { name: code }, the `_*` ones (shared code) inserted at each
-// `// #include _<name>` line and left out
-function splitWgslSource(src) {
-  const sections = {}, out = {};
+// `// #include _<name>` line and left out; `shared`: more `_*` sections (env.js's _env)
+export function splitWgslSource(src, shared = { _env: ENV_WGSL }) {
+  const sections = { ...shared }, out = {};
   const re = /\/\/\s*===\s*([a-zA-Z0-9_]+)\s*===\s*\n/g;
   const parts = src.split(re);
   for (let i = 1; i < parts.length; i += 2) sections[parts[i]] = parts[i + 1];
@@ -150,25 +152,30 @@ export class GaussOptRenderer {
     });
     this.pipeSplats     = pipe(mods.splats_render,    'triangle-strip', BLEND_UNDER);
     this.pipeSplatsHid  = pipe(mods.splats_render,    'triangle-strip', BLEND_UNDER, { depth: depthState('less') });  // behind the mesh: hidden
-    this.pipeWire       = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER);
+    this.pipeSplatsDepth = pipe(mods.splats_render,   'triangle-strip', undefined, { depth: depthState('less', true), fs: 'fs_depth' });  // depth only, for the wires
+    this.pipeWire       = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER, { depth: depthState('less') });
+    this.pipeWireHid    = pipe(mods.wireframe_render, 'line-list',      BLEND_OVER, { depth: depthState('greater-equal') });
+    this.pipeEnv        = pipe(mods.env_render,       'triangle-list',  BLEND_UNDER);  // the background, under the splats
+    this.envBuf = null;  // setEnv(): the background's buffer (env.js), the trainer's own while it trains
     this.pipeFrustumImg = pipe(mods.frustum_image,    'triangle-strip', BLEND_OVER);
     this.pipeBlit       = pipe(mods.compare_blit,     'triangle-strip', null, { depth: null });
     const meshBuffers = [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
                          { arrayStride: 4,  attributes: [{ shaderLocation: 1, offset: 0, format: 'unorm8x4' }] },
                          { arrayStride: 8,  attributes: [{ shaderLocation: 2, offset: 0, format: 'float32x2' }] }];
     const mesh = (topology, blend, fs, depth) => pipe(mods.mesh_render, topology, blend, { fs, depth, buffers: meshBuffers });
-    this.pipeMeshDepth  = mesh('triangle-list', undefined,   'fs_depth',  depthState('less', true));  // no color written
+    this.pipeMeshDepth  = mesh('triangle-list', undefined,   'fs_depth_back', depthState('less', true));  // no color written; meshMargin behind
+    this.pipeMeshFront  = mesh('triangle-list', undefined,   'fs_depth',  depthState('less', true));  // its own depth, after the splats
     this.pipeMeshColor  = mesh('triangle-list', BLEND_UNDER, 'fs_color',  depthState('less-equal'));
     this.pipeMeshTex    = mesh('triangle-list', BLEND_UNDER, 'fs_tex',    depthState('less-equal'));
     this.pipeMeshShaded = mesh('triangle-list', BLEND_UNDER, 'fs_shaded', depthState('less-equal'));
     this.pipeMeshLine   = mesh('line-list',     BLEND_OVER,  'fs_line',   depthState('less-equal'));
     this.depthTex = null;
-    this.mesh = null;  // setMesh(): { pos, col, uv, tex, idx, idxCount, edges, edgeCount, bg: per pipeline }
+    this.mesh = null;  // setMesh(): { pos, col, uv, tex, idx, idxCount, edges, edgeCount, voxel, bg: per pipeline }
     this.meshSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' });
 
     const ubuf = (size, label) => device.createBuffer({ size, label, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.renderUniformBuf = ubuf(128, 'render_uniforms');
-    this.wireUniformBuf   = ubuf(112, 'wire_uniforms');
+    this.wireUniformBuf   = ubuf(128, 'wire_uniforms');
     this.blitUniformBuf   = ubuf(16,  'blit_uniforms');
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
 
@@ -213,7 +220,7 @@ export class GaussOptRenderer {
       pos: buf(m.positions, GPUBufferUsage.VERTEX, 'mesh_pos'), col: buf(col, GPUBufferUsage.VERTEX, 'mesh_col'),
       uv: buf(tex ? m.uvs : new Float32Array(2 * nv), GPUBufferUsage.VERTEX, 'mesh_uv'), tex,
       idx: buf(m.faces, GPUBufferUsage.INDEX, 'mesh_idx'), idxCount: m.faces.length,
-      edges: buf(Uint32Array.from(edges), GPUBufferUsage.INDEX, 'mesh_edges'), edgeCount: edges.length,
+      edges: buf(Uint32Array.from(edges), GPUBufferUsage.INDEX, 'mesh_edges'), edgeCount: edges.length, voxel: meshVoxel(m),
       bg: new Map(),
     };
   }
@@ -324,12 +331,13 @@ export class GaussOptRenderer {
   // meshMode (with setMesh's mesh): MESH_OVER: the mesh's depth first, the splats behind it hidden, then
   // the mesh blended under the rest; MESH_ONLY: the mesh alone; MESH_WIRE: its depth only (the splats
   // behind it hidden), its visible edges over the rest. meshShaded: gray lit by the camera instead of the vertex colors.
+  // meshMargin: the splats hidden only when this many of the mesh's voxels (glb.js meshVoxel) behind it.
   renderScene({
     splatsBuf, momentsBuf, sortedIdxBuf, numVisible,
     view, sceneRadius = 2.0,
     fx, fy, cx, cy, W, H,
     visuMode = 0, colorMode = 0, haze = 1.0, avgR = 0.01,
-    frustumTextures = null, meshMode = MESH_OFF, meshShaded = false,
+    frustumTextures = null, meshMode = MESH_OFF, meshShaded = false, meshMargin = 0, octreeHidden = 1,
   }) {
     const dev = this.device;
     // RenderUniforms: view, intrinsics, screen, modes, thresholds
@@ -359,11 +367,13 @@ export class GaussOptRenderer {
     const mesh = this.mesh && meshMode !== MESH_OFF;
     const drawWires  = this.wireCount > 0 && this.wireBuf;
     const drawImages = frustumTextures && frustumTextures.length > 0 && this.frustumQuadBuf;
-    if (drawWires || drawImages || mesh) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar), fade
-      const wf = new Float32Array(28);
+    if (drawWires || drawImages || mesh) {  // WireUniforms: view, intrinsics, screen (W, H, znear, zfar), fade, mesh
+      const wf = new Float32Array(32);
       wf.set(view, 0);
       wf.set([fx, fy, cx, cy, W, H, ZNEAR, ZFAR], 16);
       wf.set([this.octreeVertCount, OCTREE_FADE[0] * sceneRadius, OCTREE_FADE[1] * sceneRadius, OCTREE_FADE[2]], 24);
+      wf[28] = mesh ? meshMargin * this.mesh.voxel : 0;
+      wf[29] = octreeHidden;
       dev.queue.writeBuffer(this.wireUniformBuf, 0, wf);
     }
     if (mesh) this._drawMesh(pass, this.pipeMeshDepth);
@@ -373,7 +383,13 @@ export class GaussOptRenderer {
       pass.setBindGroup(0, this._bindGroup(p, this.renderUniformBuf, splatsBuf, momentsBuf, sortedIdxBuf));
       pass.draw(4, numVisible);
     }
+    if (mesh && meshMargin > 0) this._drawMesh(pass, this.pipeMeshFront);  // its faces within the margin of its front ones stay hidden
     if (mesh && meshMode !== MESH_WIRE) this._drawMesh(pass, meshShaded ? this.pipeMeshShaded : this.mesh.tex ? this.pipeMeshTex : this.pipeMeshColor);
+    if (this.envBuf && visuMode === 0 && colorMode === 0 && !(mesh && meshMode === MESH_ONLY)) {  // the background, in the splats' own colors only
+      pass.setPipeline(this.pipeEnv);
+      pass.setBindGroup(0, this._bindGroup(this.pipeEnv, this.renderUniformBuf, this.envBuf));
+      pass.draw(3);
+    }
     if (drawImages) {
       pass.setPipeline(this.pipeFrustumImg);
       for (const [camIdx, tex] of frustumTextures) {
@@ -388,9 +404,17 @@ export class GaussOptRenderer {
       }
     }
     if (drawWires) {
-      pass.setPipeline(this.pipeWire);
-      pass.setBindGroup(0, this._bindGroup(this.pipeWire, this.wireUniformBuf, this.wireBuf));
-      pass.draw(this.wireCount);
+      const splatDepth = this.octreeVertCount > 0 && octreeHidden < 1 && numVisible > 0 && splatsBuf && sortedIdxBuf && !(mesh && meshMode === MESH_ONLY);
+      if (splatDepth) {  // the splats' depth (with the mesh's): the boxes behind them faint
+        pass.setPipeline(this.pipeSplatsDepth);
+        pass.setBindGroup(0, this._bindGroup(this.pipeSplatsDepth, this.renderUniformBuf, splatsBuf, momentsBuf, sortedIdxBuf));
+        pass.draw(4, numVisible);
+      }
+      for (const [p, hidden] of [[this.pipeWire, 0], [this.pipeWireHid, 1]]) {
+        pass.setPipeline(p);
+        pass.setBindGroup(0, this._bindGroup(p, this.wireUniformBuf, this.wireBuf));
+        pass.draw(this.wireCount, 1, 0, hidden);
+      }
     }
     if (mesh && meshMode === MESH_WIRE) this._drawMesh(pass, this.pipeMeshLine, true);
     pass.end();
@@ -427,19 +451,36 @@ export class GaussOptRenderer {
 
 // ── Side-canvas telemetry ────────────────────────────────────────────────────
 
-// Octree / rebalance stats, `statsText`, and the train PSNR curve (blue, by sample index)
-// with held-out validation PSNR (orange points, by step).
-export function drawTelemetryPanel(canvas, history, octree, statsText = '', valHistory = []) {
+// Each sample's mean PSNR over the samples of the last `passSteps` steps (history: { step, psnr }, steps rising)
+export function passMean(history, passSteps) {
+  let lo = 0, sum = 0;
+  return history.map((h, i) => {
+    sum += h.psnr;
+    while (history[lo].step <= h.step - passSteps) sum -= history[lo++].psnr;
+    return sum / (i - lo + 1);
+  });
+}
+
+// Octree / rebalance stats, `statsText`, and the train PSNR curve (by sample index) with held-out validation PSNR
+// (orange points, by step). Each sample is one training view's PSNR, the views in a fixed round robin, so the raw
+// curve (faint) repeats how hard each view is, once a pass; the bold line is the mean over the last `passSteps` steps
+// (one pass over the training views; 0: the raw curve alone).
+export function drawTelemetryPanel(canvas, history, octree, statsText = '', valHistory = [], passSteps = 0) {
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  // its size on screen (CSS pixels; the canvas's own when not laid out), its pixels at the device's density
+  const W = canvas.clientWidth || canvas.width, H = canvas.clientHeight || canvas.height, dpr = canvas.clientWidth ? devicePixelRatio || 1 : 1;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.lineWidth = 1;
   ctx.fillStyle = '#121318';
   ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = '#2a2d3a';
   ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
 
-  ctx.font = '12px monospace';
+  ctx.font = W < 500 ? '9px monospace' : '12px monospace';  // a phone's pane: the header lines fit more
   ctx.fillStyle = '#e0e6f0';
   const s = octree ? octree.lastStats : { split: 0, cloned: 0, pruned: 0, floaters: 0, merged: 0, teleported: 0 };
   ctx.fillText(`Octree Leaves: ${octree ? octree.leaves.length : 0} | Rebalance: +${s.split} split, +${s.cloned} clone, ` +
@@ -472,11 +513,19 @@ export function drawTelemetryPanel(canvas, history, octree, statsText = '', valH
   }
   ctx.stroke();
 
-  ctx.strokeStyle = '#4af';
-  ctx.lineWidth = 1.8;
+  const xOf = (i) => padL + (i / (history.length - 1)) * pw;
+  ctx.strokeStyle = passSteps > 1 ? '#4af5' : '#4af';
+  ctx.lineWidth = passSteps > 1 ? 1 : 1.8;
   ctx.beginPath();
-  history.forEach((h, i) => ctx.lineTo(padL + (i / (history.length - 1)) * pw, yOf(h.psnr)));
+  history.forEach((h, i) => ctx.lineTo(xOf(i), yOf(h.psnr)));
   ctx.stroke();
+  if (passSteps > 1) {
+    ctx.strokeStyle = '#4af';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    passMean(history, passSteps).forEach((m, i) => ctx.lineTo(xOf(i), yOf(m)));
+    ctx.stroke();
+  }
 
   if (vals.length > 0 && s1 > s0) {
     ctx.strokeStyle = ctx.fillStyle = '#fa4';

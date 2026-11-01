@@ -1,6 +1,6 @@
 // glb.js: a mesh written as .glb (16-bit positions, byte colors) reads back within the quantization
 // step, with its faces and colors, in both index widths, and with an up vector turned to +Y.
-import { writeGlb, readGlb } from '../src/glb.js';
+import { writeGlb, readGlb, meshVoxel } from '../src/glb.js';
 import { assert } from './util.js';
 
 function mesh(nv) {
@@ -53,4 +53,16 @@ Deno.test('glb: a textured mesh keeps its uvs (16 bits) and image, without verte
   const prim = js.meshes[0].primitives[0];
   assert(prim.attributes.TEXCOORD_0 !== undefined && prim.attributes.COLOR_0 === undefined && js.materials[0].pbrMetallicRoughness.baseColorTexture.index === 0, 'attributes, material');
   assert(readGlb(writeGlb(m).buffer).uvs === null && readGlb(writeGlb(m).buffer).texture === null, 'untextured: no uvs, no texture');
+});
+
+Deno.test("glb: the TSDF voxel is kept (extras.gaussopt_voxel, with or without up); without it, meshVoxel is the bounds' longest side / 383", () => {
+  const m = mesh(1000);  // x and z span ~10, y ~3
+  for (const up of [null, [0.3, -0.9, 0.2]]) {
+    const back = readGlb(writeGlb(m, { up, voxel: 0.0369 }).buffer);
+    assert(back.voxel === 0.0369 && meshVoxel(back) === 0.0369, `up ${up}: voxel ${back.voxel}, meshVoxel ${meshVoxel(back)}`);
+  }
+  const old = readGlb(writeGlb(m, { up: [0, -1, 0] }).buffer), P = m.positions;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < P.length; i += 3) { lo = Math.min(lo, P[i]); hi = Math.max(hi, P[i]); }
+  assert(old.voxel === null && Math.abs(meshVoxel(old) - (hi - lo) / 383) < 1e-4, `no voxel: ${old.voxel}, meshVoxel ${meshVoxel(old)} vs ${(hi - lo) / 383}`);
 });

@@ -6,7 +6,7 @@
 
 import { PHASES, STATE_ICONS, phaseStates, advanceTo, phaseLabel, phaseShown, phaseActions, followRunning } from './phases.js';
 
-const DOCK_TAB = { project: 'log', video: 'timeline', keyframes: 'timeline', cameras: 'timeline', train: 'charts', export: 'log' };
+const DOCK_TAB = { project: 'log', video: 'timeline', keyframes: 'timeline', cameras: 'timeline', dome: 'log', train: 'charts', export: 'log' };
 // a photo set has no timeline (DESIGN-sfm §13.3 P5): its contact sheet is the view of the Photos phase
 const DOCK_TAB_PHOTOS = { ...DOCK_TAB, video: 'log', keyframes: 'log', cameras: 'log' };
 const DOCK_FOLDED_KEY = 'gaussopt.dockFolded';  // this browser's choice
@@ -127,7 +127,11 @@ export class Shell {
       b.title = a.title ?? '';
       b.disabled = !a.enabled;
       if (a.primary) b.className = 'primary';
-      b.addEventListener('click', () => { this._run(a.id); this.footKey = ''; this.refresh(); });
+      b.addEventListener('click', () => {
+        const sfm = this.app.sfm;  // in the log: which button, in what state (a click that starts nothing shows there)
+        this.app.log(`button: ${a.label} (${this.current}${sfm ? `; video: ${sfm.running ? 'running' : sfm.busy ? 'busy' : 'idle'}, ${sfm.state.status}` : ''})`);
+        this._run(a.id); this.footKey = ''; this.refresh();
+      });
       return b;
     }));
   }
@@ -150,6 +154,7 @@ export class Shell {
       colmap: colmap ? { cams: colmap.images.length, fromSfm: !!colmap.fromSfm } : null,
       trainer: tr ? { step: tr.stepCount, training: app.params.training, psnr: tr.lastPsnr, gt: !!app.gtAvailable } : null,
       mesh: app.meshState,
+      dome: app.domeState,
     };
   }
 
@@ -167,6 +172,8 @@ export class Shell {
       case 'train': return app._setTraining(!app.params.training);
       case 'step': return app.stepOnce();
       case 'mesh': this.show('export'); return app.saveMesh();
+      case 'dome': return app.buildDome();
+      case 'domeOff': return app.clearDome();
     }
   }
 

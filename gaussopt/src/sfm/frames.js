@@ -91,6 +91,8 @@ function pyrDown({ data, w, h }) {
 }
 
 const LK_WIN = 21, LK_LEVELS = 4, PAD = (LK_WIN >> 1) + 2;
+// The pixels around a corner its strength (3x3 sums of gradients) and its track (LK_WIN at the base level) depend on
+export const TRACK_MARGIN = PAD;
 
 // Level padded by PAD replicated pixels on each side, so LK windows can overhang the image
 // (cv2.buildOpticalFlowPyramid's border), with its Scharr derivatives (/ 32):
@@ -120,8 +122,9 @@ export function flowPyramid(g, w, h) {
 }
 
 // Shi-Tomasi corners (cv2.goodFeaturesToTrack) of a pyramid's base level: min eigenvalue of the
-// 3x3-summed structure tensor, >= quality x max, 3x3 local maxima, strongest first, `minDistance` apart
-export function goodFeatures({ w, h, S, gx, gy }, { maxCorners = 400, quality = 0.01, minDistance = 8 } = {}) {
+// 3x3-summed structure tensor, >= quality x max, 3x3 local maxima, strongest first, `minDistance` apart;
+// keep(x, y, w, h) false: no corner at that pixel, nor its strength in the max (an on-screen display's, worker.js)
+export function goodFeatures({ w, h, S, gx, gy }, { maxCorners = 400, quality = 0.01, minDistance = 8, keep = null } = {}) {
   // 3x3 box sums of the tensor products, separably (row sums, then column sums)
   const xx = new Float32Array(w * h), xy = new Float32Array(w * h), yy = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -137,7 +140,7 @@ export function goodFeatures({ w, h, S, gx, gy }, { maxCorners = 400, quality = 
     for (let x = 1; x < w - 1; x++) {
       const o = y * w + x;
       const a = xx[o - w] + xx[o] + xx[o + w], b = xy[o - w] + xy[o] + xy[o + w], c = yy[o - w] + yy[o] + yy[o + w];
-      const e = (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b);
+      const e = keep && !keep(x, y, w, h) ? 0 : (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b);
       eig[o] = e;
       if (e > best) best = e;
     }
@@ -237,18 +240,17 @@ export function analyzeFrame(gray, w, h, o = FRAME_DEFAULTS) {
   return { sharpness: sharpness(sharp, sw, sh), flow: flowPyramid(small, fw, fh) };
 }
 
-// Median displacement of corners tracked from a to b, as a fraction of the diagonal;
-// Infinity when tracking is lost (fewer than 20 corners or tracks)
-export function motion(pyrA, pyrB) { return step(pyrA, pyrB).motion; }
-
-// The step from a to b: { motion (as motion()), scale, fit, H }: the similarity (scale, rotation,
-// translation) RANSAC-fitted to the tracks, and the fraction of them it explains within 1.5 px.
+// The step from a to b: { motion, scale, fit, H }. motion: the median displacement of corners tracked from
+// a to b, as a fraction of the diagonal (Infinity when tracking is lost: fewer than 20 corners or tracks);
+// scale, fit: the similarity (scale, rotation, translation) RANSAC-fitted to the tracks, and the fraction
+// of them it explains within 1.5 px.
 // A zoom scales every track alike (fit near 1); walking or flying forward scales near points more
 // than far ones. H: the homography of the tracks (a's pixels -> b's, 1 px RANSAC), which a camera
 // turning in place follows exactly (flowjoin.js). scale, fit and H are null when tracking is lost.
-export function step(pyrA, pyrB) {
+// keep: goodFeatures's, the corners tracked only where it is true.
+export function step(pyrA, pyrB, keep = null) {
   const lost = { motion: Infinity, scale: null, fit: null, H: null };
-  const pts = goodFeatures(pyrA[0]);
+  const pts = goodFeatures(pyrA[0], { keep });
   if (pts.length < 20) return lost;
   const tracked = trackLK(pyrA, pyrB, pts), P = [], Q = [], d = [];
   tracked.forEach((q, k) => {

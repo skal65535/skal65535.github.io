@@ -143,7 +143,7 @@ export function atlas(mesh, { size = 2048, maxAngle = 60, pad = 2, smooth = 2 } 
   return { mesh: { positions, faces: outF, colors, uvs }, size, density,
            info: { charts: charts.length, single: sizes.filter(n => n === 1).length, medianFaces: sizes[sizes.length >> 1] ?? 0, vertices: nOut,
                    rects: rects.reduce((s, r) => s + (Math.ceil(r.w * density) + 2 * pad) * (Math.ceil(r.h * density) + 2 * pad), 0) / (size * size),
-                   largest: Math.max(...rects.map(r => (Math.ceil(r.w * density) + 2 * pad) * (Math.ceil(r.h * density) + 2 * pad))) / (size * size) } };
+                   largest: rects.reduce((m, r) => Math.max(m, (Math.ceil(r.w * density) + 2 * pad) * (Math.ceil(r.h * density) + 2 * pad)), 0) / (size * size) } };
 }
 
 // The texels whose centers the faces of `mesh` (with uvs, in [0, 1]) cover in a size x size image:

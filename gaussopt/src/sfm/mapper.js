@@ -66,12 +66,14 @@ export class SequentialMapper {
     this.n = input.images.length;
     this.merged = Int32Array.from(this.cameras, (_, k) => k);  // camera -> the camera it joined (scanFocalOf), itself by default
     this.focalKnown = Uint8Array.from(this.cameras, (_, k) => (k === 0 || !this.o.scanFocal ? 1 : 0));
+    this.scanNeeds = new Map();  // camera -> the correspondences its next focal scan needs (scanFocalOf)
     this.camOf = this.camerasOf(input.images);
     // adjacency: per image, [{ other, a (my keypoint indices), b (other's) }]
     this.adj = Array.from({ length: this.n }, () => []);
     this.addPairs(input.pairs.filter(p => this.o.pairTypes.includes(p.type)));
     this.kpPoint = input.images.map(im => new Int32Array(im.keypoints.length / 2).fill(-1));
     this.poses = new Array(this.n).fill(null);
+    this.byFlow = new Uint8Array(this.n);  // 1: posed by the flow across a turn in place (flowjoin.js), not by points
     this.points = [];  // { X: [3], obs: Map(image -> keypoint) } | null when deleted
     this.segment = new Int32Array(this.n).fill(-1);  // connected map id per frame (S3 merges them)
     this.nextSegmentId = 0;  // ids ever created; merges leave gaps (the live ones are in this.segment)
@@ -252,7 +254,6 @@ export class SequentialMapper {
   // camera's next scan then needs 1.5 times as many (a scan is 66 PnP RANSACs, each with a pose refinement).
   scanFocalOf(img, corr) {
     const c = this.camOf[img], base = this.cameras[c], t = this.o.pnpThreshold;
-    this.scanNeeds ??= new Map();
     if (corr.length < Math.max(this.o.scanMinCorr, this.scanNeeds.get(c) ?? 0)) return false;
     const pixels = corr.map(([kp]) => this.pixel(img, kp)), pts = corr.map(([, pid]) => this.points[pid].X);
     const score = (cam) => {
@@ -278,7 +279,7 @@ export class SequentialMapper {
     scan(meanFocal(base), 8, 24);
     scan(meanFocal(best.cam), 64, 8);
     if (best.n < this.o.minInliers) { this.scanNeeds.set(c, Math.ceil(1.5 * corr.length)); return false; }
-    const f = meanFocal(best.cam), scanned = { camera: c, frame: img, focal: f, inliers: best.n, of: corr.length };
+    const f = meanFocal(best.cam);
     let into = -1, intoScore = null;
     for (let d = 0; d < this.cameras.length; d++) {
       if (d === c || this.merged[d] !== d || !this.focalKnown[d]) continue;
@@ -298,7 +299,7 @@ export class SequentialMapper {
       this.cameras = this.cameras.map((x, k) => (k === c ? best.cam : x));
       this.o.log(`camera ${c}: focal ${f.toFixed(1)} px (x${ratio(f)}, prior ${meanFocal(base).toFixed(1)}) from frame ${img}, ${best.n}/${corr.length} 2D-3D`);
     }
-    (this.stats.focalScans ??= []).push({ ...scanned, into });
+    (this.stats.focalScans ??= []).push({ camera: c, frame: img, focal: f, inliers: best.n, of: corr.length, into });
     return true;
   }
 
@@ -662,6 +663,7 @@ export class SequentialMapper {
       }
       if (this.poses[k]) this.stats.registered--;
       this.poses[k] = null;
+      this.byFlow[k] = 0;
       this.segment[k] = -1;
     }
   }
@@ -676,6 +678,7 @@ export class SequentialMapper {
     const n = images.length, at = (arr, fill) => oldIndex.map(o => (o >= 0 ? arr[o] : fill()));
     this.poses = at(this.poses, () => null);
     this.segment = Int32Array.from(at(this.segment, () => -1));
+    this.byFlow = Uint8Array.from(at(this.byFlow, () => 0));
     this.kpPoint = oldIndex.map((o, k) => (o >= 0 ? this.kpPoint[o] : new Int32Array(images[k].keypoints.length / 2).fill(-1)));
     this.adj = oldIndex.map((o) => (o >= 0 ? this.adj[o].filter(e => toNew[e.other] >= 0).map(e => ({ ...e, other: toNew[e.other] })) : []));
     for (const P of this.points) {
@@ -693,7 +696,7 @@ export class SequentialMapper {
       merged: this.merged.slice(), focalKnown: this.focalKnown.slice(),
       images: this.images, n: this.n, nextSegmentId: this.nextSegmentId,
       poses: this.poses.map(p => p && { R: [...p.R], t: [...p.t] }),
-      segment: this.segment.slice(),
+      segment: this.segment.slice(), byFlow: this.byFlow.slice(),
       points: this.points.map(P => P && { X: [...P.X], obs: new Map(P.obs) }),
       kpPoint: this.kpPoint.map(a => a.slice()),
       adj: this.adj.map(list => list.slice()),
@@ -710,7 +713,7 @@ export class SequentialMapper {
     const obs = live.flatMap(P => [...P.obs].flat());
     return {
       json: { camera: this.camera, cameras: this.cameras, nextSegmentId: this.nextSegmentId, stats: this.stats, o: { ...this.o, log: undefined, progress: undefined },
-              merged: Array.from(this.merged), focalKnown: Array.from(this.focalKnown) },
+              merged: Array.from(this.merged), focalKnown: Array.from(this.focalKnown), byFlow: [...this.byFlow.keys()].filter(k => this.byFlow[k]) },
       poses: Float64Array.from(this.poses.flatMap(p => p ? [...p.R, ...p.t] : new Array(12).fill(NaN))),
       segment: this.segment.slice(),
       pointX: Float64Array.from(live.flatMap(P => P.X)),
@@ -730,6 +733,8 @@ export class SequentialMapper {
     this.poses = Array.from({ length: this.n }, (_, k) => Number.isNaN(poses[12 * k]) ? null
       : { R: Array.from(poses.subarray(12 * k, 12 * k + 9)), t: Array.from(poses.subarray(12 * k + 9, 12 * k + 12)) });
     this.segment = Int32Array.from(segment);
+    this.byFlow = new Uint8Array(this.n);
+    for (const k of json.byFlow ?? []) this.byFlow[k] = 1;
     this.kpPoint = this.images.map(im => new Int32Array(im.keypoints.length / 2).fill(-1));
     this.points = [];
     for (let p = 0, o = 0; p < pointObsCount.length; p++) {

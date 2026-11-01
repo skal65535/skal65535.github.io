@@ -1,11 +1,11 @@
 // drone.js — "Drone fly" free camera: a small angle-mode quadcopter model.
 //
-//   mouse drag  : stick (pitch / roll targets); release = stick centered = self-leveling
+//   drag        : look (heading and camera tilt, look(): the scene under the pointer follows it)
+//   wheel, pinch: move forward / backward along the view (move())
 //   Up / Down   : forward / backward (pitch stick)
 //   Left / Right: yaw
 //   E / Q       : climb / descend, released = altitude hold
 //   Space       : re-center (level, brake, turn the heading towards the scene center)
-//   wheel       : camera gimbal tilt
 //
 // The drone flies like a camera drone in angle mode: tilting accelerates it horizontally,
 // thrust is compensated for tilt (no altitude loss in turns), banking adds a coordinated yaw,
@@ -50,6 +50,15 @@ export class Drone {
 
   // Gimbal tilt by `delta` radians (> 0 = look further down), within the tilt range
   tilt(delta) { this.gimbal = clamp(this.gimbal + delta, GIMBAL_MIN, GIMBAL_MAX); }
+
+  // Look: the heading turned by `dYaw` radians (> 0 = left) and the camera tilted by `dTilt` (> 0 = down)
+  look(dYaw, dTilt) {
+    this.yaw = wrapPi(this.yaw + dYaw);
+    this.tilt(dTilt);
+  }
+
+  // A step of `dist` along the camera's view (< 0: back)
+  move(dist) { this.pos = madd(this.pos, this._axes(this.gimbal).f, dist); }
 
   // World-space body axes: forward f, right r, down d (OpenCV camera axes, as buildOrbitViewMatrix)
   _axes(extraPitch = 0) {

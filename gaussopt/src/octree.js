@@ -639,10 +639,9 @@ export class LooseOctree {
       splitMode      = 'error',     // 'error': along the error moments (splitSplat); 'shape': within the splat (splitByShape)
       enableSplit    = true,
       enableMerge    = true,
-      optMethod      = 'adam',  // 'adam' | 'monte_carlo' | 'sim_anneal'
+      optMethod      = 'adam',  // 'adam' | 'monte_carlo'
       relocateBy     = 'opacity',  // monte_carlo: the live splats the dead ones move onto, drawn ~ 'opacity' or 'error' (R)
       relocateMode   = 'copy',  // ... as copies in place (3DGS-MCMC) or 'shape': split within their shape (brush, relocate)
-      saTemp         = 0.15,    // current SA temperature T(t)
       seedSplats     = null,    // Float32Array of splats to append (stipple seeding)
       repairMask     = null,    // Uint8Array(count), 1: in a stuck region (regions.js RegionTracker, E7): its splits
       repairBoost    = 0,       // need R > Tu / (1 + repairBoost), and monte_carlo relocates onto it (1 + repairBoost) as often
@@ -685,13 +684,9 @@ export class LooseOctree {
         }
         if (W > 1.0 && (R / W) > 0.22 && alpha > 0.15) params[b + 3] = logit(alpha * 0.65);
       }
-      // C. Split when R > Tu (sim_anneal: also Tl < R <= Tu, with Boltzmann probability).
+      // C. Split when R > Tu.
       const Tu = repairMask?.[i] ? err.Tu / (1 + repairBoost) : err.Tu;
       let shouldSplit = R > Tu && err.Tu > 1e-4;
-      if (!shouldSplit && optMethod === 'sim_anneal' && R > err.Tl && err.Tu > 1e-4) {
-        const boltzmann = Math.exp(-(err.Tu - R) / Math.max(1e-6, saTemp * err.avgR));
-        if (Math.random() < boltzmann * 0.35) shouldSplit = true;
-      }
       if (shouldSplit && splitMinViews > 0 && !(S > 1e-8 && (W * W) / S / visitsPerView >= splitMinViews)) {
         shouldSplit = false;
         stats.splitTooFewViews = (stats.splitTooFewViews ?? 0) + 1;
@@ -721,7 +716,7 @@ export class LooseOctree {
 
 // ── reconcileAndGrow() phases ────────────────────────────────────────────────
 
-// Mean error mass over visible splats (W > 1e-3) -> hysteresis thresholds Tu / Tl
+// Mean error mass over visible splats (W > 1e-3) -> the split threshold Tu, (1 + hysteresis) times it
 function errorStats(moments, count, hysteresis) {
   let totalR = 0, activeCount = 0;
   for (let i = 0; i < count; i++) {
@@ -731,7 +726,7 @@ function errorStats(moments, count, hysteresis) {
     activeCount++;
   }
   const avgR = activeCount > 0 ? totalR / activeCount : 0;
-  return { avgR, Tu: (1 + hysteresis) * avgR, Tl: (1 - hysteresis) * avgR };
+  return { avgR, Tu: (1 + hysteresis) * avgR };
 }
 
 // Output splats of the pass, in one growable buffer (a small array per splat cost ~100 ms per

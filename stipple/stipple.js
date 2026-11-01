@@ -4,7 +4,7 @@
 //   Point                  — {x, y, c} value object.
 //   seedPoints(N, seed, frame) — initial point cloud, optionally colored from
 //                                a frame's grayscale pixels.
-//   computeVoronoi(W, H, points) — grid-accelerated Voronoi assignment.
+//   computeVoronoi(W, H, points, mask) — grid-accelerated Voronoi assignment.
 //   StipplingIterator      — CPU Lloyd + split/merge iterator. Takes a
 //                            pre-seeded point list; callers do seeding.
 "use strict";
@@ -90,7 +90,8 @@ class Cell {
 // grid so each pixel needs O(k) checks (k~1-9 cells) instead of O(sqrt(N)).
 // Packs points into Float32Arrays and uses a CSR-flattened grid to keep the
 // inner loop free of object property loads and iterator allocations.
-export function computeVoronoi(W, H, points) {
+// mask (W x H, optional): only the pixels where it is > 0 are assigned, the others stay 0.
+export function computeVoronoi(W, H, points, mask = null) {
   const N = points.length;
   const out = new Uint32Array(W * H);
   if (!N) return out;
@@ -128,6 +129,7 @@ export function computeVoronoi(W, H, points) {
     let gy0 = (Y * gs) | 0; if (gy0 >= gs) gy0 = gs - 1;
     const rowOff = y * W;
     for (let x = 0; x < W; x++) {
+      if (mask !== null && !(mask[rowOff + x] > 0)) continue;
       const X = x * inv_W;
       let gx0 = (X * gs) | 0; if (gx0 >= gs) gx0 = gs - 1;
       let best = 0, best_d2 = Infinity;
