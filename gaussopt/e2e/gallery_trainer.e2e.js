@@ -101,8 +101,7 @@ try {
   }, VIEW);
   if (T.error) return fail(T.error);
   const cams = [{ R: T.R, t: T.t, center: mv(tr3(T.R), T.t).map(x => -x) }, turned(T.R, T.t, 8, T.depth)];
-  // each camera's render, the view's pose set to it (colmap.js setPose) and put back. Its own pose too: rendered
-  // without setPose after the scene's load, its lower half came back black (2026-11-01, not looked into)
+  // each camera's render, the view's pose set to it (colmap.js setPose) and put back
   const trainer = await page.evaluate(async ({ v, cams }) => {
     const tr = window.app.trainer, img = tr.images[v], out = [];
     const { setPose } = await import(new URL('src/colmap.js', location.href).href);

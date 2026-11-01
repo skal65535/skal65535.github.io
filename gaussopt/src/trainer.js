@@ -596,7 +596,8 @@ export class GaussOptTrainer {
     if (pollStats) this._pollTileEntries();
   }
 
-  // Non-blocking read of the last render's list entry count; grows the lists on overflow.
+  // Non-blocking read of the last render's list entry count; grows the lists on overflow. binStatsPending resolves
+  // to the count (undefined if the read failed).
   _pollTileEntries() {
     this.binStatsPending = this.binStatsReadBuf.mapAsync(GPUMapMode.READ, 0, 16).then(() => {
       const total = new Uint32Array(this.binStatsReadBuf.getMappedRange(0, 16))[0];
@@ -605,6 +606,7 @@ export class GaussOptTrainer {
         if (total > this.tileListCapacity) console.warn(`[Gauss-Opt] tile lists overflowed (${total} > ${this.tileListCapacity}): growing`);
         this._allocateTileLists(Math.ceil(total * 2));
       }
+      return total;
     }).catch(() => {}).finally(() => { this.binStatsPending = null; });
   }
 
@@ -788,8 +790,16 @@ export class GaussOptTrainer {
     const img = this.images[idx];
     const k = this._intrinsics(img);
     if (this.updateSortingForView(img.center, img.view, k.fxNorm, k.fyNorm) === 0) return out;
-    this._writeUniforms(img, k);
-    this._runPasses();
+    // drawn again while its (tile, splat) entries overflowed the lists: they grow after the render that needed more,
+    // which dropped the rest (the tiles filled last empty). A training step lives with it; one render does not (a
+    // scene of a million splats just loaded: its first, 2.4M entries against 2^20, came out with its lower half black)
+    for (let tries = 0; tries < 3; tries++) {
+      await this.binStatsPending;  // its read-back buffer free: this render's count is read
+      const capacity = this.tileListCapacity;
+      this._writeUniforms(img, k);
+      this._runPasses();
+      if (!((await this.binStatsPending) > capacity)) break;
+    }
     this._lastHatKey = hatKey;
     return out;
   }
