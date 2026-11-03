@@ -26,7 +26,7 @@ import { SCORE_CSS } from './frames.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
 const STAGES = { analyze: 'analyzing frames', features: 'keyframes + SIFT', match: 'matching', register: 'mapping: registered',
-                 loopMatch: 'matching loop candidates', loops: 'closing loops', refine: 'refining windows',
+                 init: 'mapping: finding an initial pair', track: 'tracking points', loopMatch: 'matching loop candidates', loops: 'closing loops', refine: 'refining windows',
                  retriangulate: 'retriangulating', lateMerge: 'merging segments', repair: 'repairing stretches', undistort: 'undistorting' };
 const SCORE_ABGR = { green: 0xff80de4a, amber: 0xff24bffb, red: 0xff7171f8 }, SELECTED_ABGR = 0xffffffff;
 
@@ -40,6 +40,8 @@ const TIPS = {
   'Frames (S0)': 'which video frames become keyframes: sampled, scored for sharpness, picked by motion',
   sampleFps: 'frames per second of the video looked at (sharpness and motion are measured on these)',
   spacing: 'a new keyframe once the image content moved this much, as a fraction of the image diagonal (smaller: more keyframes)',
+  minRate: 'about this many keyframes a second at least, however little the image moves (0: by motion only): a camera ' +
+           'turning around a near object moves the image little while its view of the object changes fast',
   blurRel: 'a picked frame less sharp than this fraction of the picks\' median sharpness is dropped (0: keep all)',
   overlay: 'text, boxes or a reticle burnt into every frame (an on-screen display), found as what stays still while the ' +
            'scene moves: its keypoints dropped and its pixels left out of the training (the log says how much was found)',
@@ -49,6 +51,9 @@ const TIPS = {
   model: 'which cameras the trainer has: the current model, or an older one (before repairs)',
   autoSend: 'start training with the cameras as soon as they are found',
   autoRepair: 'once the cameras are found, run Repair all (one undo reverts it)',
+  track: 'follow each keyframe\'s points through every frame of the video to the next keyframes (a diamond search, then ' +
+         'sub-pixel): a point is matched across many keyframes instead of a few, which keeps the map\'s scale from drifting. ' +
+         'A third pass over the video',
   'Repair (selection on the timeline)': 'fix bad stretches of the camera path: select keyframes on the Timeline (drag, ' +
                                         'or click one), then an action. Each action can be undone',
   selection: 'the keyframes the actions apply to, and the worst problem among them',
@@ -152,9 +157,11 @@ export class SfmPanel {
     const fr = kf.addFolder('Frames (S0)');
     fr.add(o, 'sampleFps', 1, 60, 1).name('sample fps');
     fr.add(o, 'spacing', 0.01, 0.2, 0.005).name('spacing (× diagonal)');
+    fr.add(o, 'minRate', 0, 10, 0.5).name('keyframes / s at least');
     fr.add(o, 'blurRel', 0, 1, 0.05).name('blur reject (× median)');
     fr.add(o, 'zoomRate', 0, 3, 0.1).name('zoom detection (/s)');
     fr.add(o, 'overlay').name('mask the on-screen display');
+    fr.add(o, 'track').name('track points through the frames');
     fr.add(o, 'maxDim', [960, 1280, 1920, 3840]).name('max size (px)');
 
     const cams = host('cameras');
@@ -380,8 +387,8 @@ export class SfmPanel {
 
   // The Keyframes phase of the manifest (null before the keyframes exist)
   keyframesRecord() {
-    const { sampleFps, spacing, blurRel, zoomRate, maxDim, maxFeatures } = this.o;
-    return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, blurRel, zoomRate, maxDim, maxFeatures } } } } : null;
+    const { sampleFps, spacing, minRate, blurRel, zoomRate, maxDim, maxFeatures } = this.o;
+    return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, minRate, blurRel, zoomRate, maxDim, maxFeatures } } } } : null;
   }
 
   // The options the controls set, for project.json (app.js settings())

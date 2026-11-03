@@ -14,9 +14,11 @@ import { defaultCamera, withFocal, meanFocal } from './camera.js';
 
 // blurWindow: picks a pick's sharpness is compared with (it centred); blur is a dip among its
 // neighbours, while sharpness also follows the texture of the scene, which changes slowly.
-// zoom*: zoomEvents (zoomRate 0: no zoom detection)
+// zoom*: zoomEvents (zoomRate 0: no zoom detection).
+// minRate: spacings a second the path grows by at least (0: motion only): a camera turning around a near object moves
+// the image little while its view of the object changes fast (DESIGN-sfm §5.1)
 export const FRAME_DEFAULTS = { spacing: 0.05, keepFps: 2, blurRel: 0.35, blurWindow: 11, sharpDim: 1000, flowDim: 640,
-                                zoomRate: 0.9, zoomFit: 0.85, zoomMin: 1.15, zoomGap: 0.3 };
+                                zoomRate: 0.9, zoomFit: 0.85, zoomMin: 1.15, zoomGap: 0.3, minRate: 4 };
 
 // Size of an image scaled to fit `maxDim` (never enlarged)
 export function fitSize(w, h, maxDim) {
@@ -74,7 +76,7 @@ export function sharpness(g, w, h) {
 // ── Pyramidal Lucas-Kanade ─────────────────────────────────────────────────────
 
 // Gaussian pyramid level: 5-tap [1 4 6 4 1] / 16 blur, then every other pixel (cv2.pyrDown)
-function pyrDown({ data, w, h }) {
+export function pyrDown({ data, w, h }) {
   const W = (w + 1) >> 1, H = (h + 1) >> 1, tmp = new Float32Array(W * h), out = new Float32Array(W * H);
   const cl = (v, n) => v < 0 ? -v : v >= n ? 2 * n - 2 - v : v;
   for (let y = 0; y < h; y++) {
@@ -361,7 +363,7 @@ export function zoomEvents(steps, times, options = {}) {
 }
 
 // Keyframe choice from per-candidate sharpness and motion (motion[i]: from candidate i - 1 to i,
-// motion[0] unused). times: candidate timestamps in seconds (keepFps mode). span (zoomEvents,
+// motion[0] unused). times: candidate timestamps in seconds (keepFps mode, minRate). span (zoomEvents,
 // optional): candidates at -1 are inside a zoom event, never picked.
 // Returns { kept: [index], status: ['kept' | 'blurry' | 'window' | 'zoom'], path (spacing units),
 // threshold (the median of the picks' blur thresholds), thresholds: Map(pick -> its threshold) }
@@ -378,7 +380,8 @@ export function selectFrames({ sharpness: scores, motion: steps, times, span = n
     // equal spacing along the camera path; the sharpest candidate of each segment's central
     // half is picked, so neighbouring picks stay 0.5-1.5 x spacing apart
     path = [0];
-    for (let i = 1; i < n; i++) path.push(path[i - 1] + Math.min(steps[i], o.spacing) / o.spacing);
+    const dt = (i) => (times ? times[i] - times[i - 1] : 0);
+    for (let i = 1; i < n; i++) path.push(path[i - 1] + Math.max(Math.min(steps[i], o.spacing) / o.spacing, o.minRate * dt(i)));
     path.forEach((t, i) => add(Math.floor(t + 0.5), i));
     for (const [k, b] of bins) {
       const mid = b.filter(i => Math.abs(path[i] - k) <= 0.25);

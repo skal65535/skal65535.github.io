@@ -22,7 +22,7 @@ import { deg, quantile } from './util.js';
 
 const DEFAULTS = {
   maxGapSeconds: 3,    // the most time between a and b
-  maxSpread: 0.05,     // the homography's singular values within this of each other (a rotation: 0)
+  maxSpread: 0.1,      // the homography's singular values within this of each other (a rotation: 0)
   speedSeconds: 3,     // each piece's speed over this much of it next to the gap
   speedQuantile: 0.75, // of its per-step speeds (the steps of the turn itself barely move)
   log: () => {},

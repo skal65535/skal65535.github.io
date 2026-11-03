@@ -154,6 +154,7 @@ const params = {
 
   // Camera
   fov: 70.,
+  fov_photos: true,  // fly-by on the path and photo camera: the photos' field of view (off once the fov is set)
   radius: 2.5,
   theta: -91.,
   phi: 30.0,
@@ -226,7 +227,9 @@ const GUI_init = () => {
   render.gui.add(params, 'dome_only')                      .name('dome only');
 
   const camF = render.gui.addFolder('camera', { collapsed: true });
-  camF.add(params, 'fov',    10., 150., 1.)                .name('fov').listen();
+  camF.add(params, 'fov',    10., 150., 1.)                .name('fov').listen()
+      .onChange(() => { params.fov_photos = false; GUI_get('fov_photos')?.updateDisplay(); });
+  camF.add(params, 'fov_photos')                           .name("photos' fov");
   camF.add(params, 'auto_rotate')                          .name('auto rotate');
 
   render.gui.add(render, 'txt_info')                       .name('total splats')   .listen().disable();
@@ -1286,10 +1289,10 @@ function current_camera(dt) {
 
 function compute_frame_params(dt = 0) {
   const aspect = canvas.width / canvas.height;
-  if (render.scene && params.mode == 'photo camera') {  // the whole photo inside the canvas
+  if (render.scene && params.mode == 'photo camera' && params.fov_photos) {  // the whole photo inside the canvas
     params.fov = photo_fov(photo_camera(render.scene), aspect);
   }
-  if (render.scene && params.mode == 'fly-by' && render.flight?.where) {  // on the path: the photos' field of view
+  if (render.scene && params.mode == 'fly-by' && params.fov_photos && render.flight?.where) {  // on the path: the photos' field of view
     const { lo, hi, u } = render.flight.where(), cam = (k) => upright_camera(render.scene.cameras[render.scene.path[k]]);
     params.fov = photo_fov(cam(lo), aspect) * (1 - u) + photo_fov(cam(hi), aspect) * u;
   }
@@ -1616,7 +1619,7 @@ async function show_scene(r, entry) {
   render.cv_view = new Float32Array(first.view);
   render.cam_center = [...first.center];
   render.view = from_opencv(render.cv_view);
-  params.fov = photo_fov(first, canvas.width / canvas.height);
+  if (params.fov_photos) params.fov = photo_fov(first, canvas.width / canvas.height);
   set_mode(kModes.includes(params.mode) ? params.mode : 'fly-by');
   document.getElementById('scene-info').innerHTML =
     `<b>${entry.title}</b>: ${ply.count.toLocaleString()} splats, ${sc.cameras.length} photo cameras, ` +

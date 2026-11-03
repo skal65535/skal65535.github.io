@@ -147,6 +147,17 @@ Deno.test('frame selection: one sharpest pick per spacing, blurry picks dropped 
   assert(byTime.kept.length === 20 && byTime.kept.every(i => byTime.kept.filter(j => Math.floor(j / 5) === Math.floor(i / 5)).length === 1), 'one per 0.5 s');
 });
 
+Deno.test('frame selection: the path grows by minRate spacings a second at least', () => {
+  // 30 fps, the image moving 1/10 spacing a frame (3 spacings a second) for 10 s, then 3 spacings a frame for 2 s
+  const n = 360, times = Array.from({ length: n }, (_, i) => i / 30), sharp = times.map(() => 100);
+  const steps = times.map((_, i) => (i === 0 ? 0 : i < 300 ? 0.005 : 0.15));
+  const count = (o, lo, hi) => selectFrames({ sharpness: sharp, motion: steps, times }, { spacing: 0.05, ...o }).kept.filter(i => i >= lo && i < hi).length;
+  assert(Math.abs(count({ minRate: 0 }, 0, 300) - 30) <= 1, `by motion: ${count({ minRate: 0 }, 0, 300)} in 10 s`);
+  assert(Math.abs(count({}, 0, 300) - 40) <= 1, `the default floor: ${count({}, 0, 300)} in 10 s`);
+  // the floor never removes a keyframe: a fast stretch keeps one a frame (a step counts one spacing at most)
+  assert(count({}, 300, 360) >= 59, `fast: ${count({}, 300, 360)} in 2 s`);
+});
+
 Deno.test('frame selection: a dull stretch is kept, a blur dip inside it is dropped (local threshold)', () => {
   // 40 segments of 5 frames; the first half 8x less textured, segment 10 blurred
   const n = 200, r = makeRng(7);

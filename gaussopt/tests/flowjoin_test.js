@@ -8,7 +8,7 @@ import { flowRotation, joinByFlow } from '../src/sfm/flowjoin.js';
 import { umeyama } from '../src/sfm/align.js';
 import { poseCenter } from '../src/sfm/camera.js';
 import { compareModels } from '../src/sfm/compare.js';
-import { mul3, transpose3 } from '../src/sfm/linalg.js';
+import { mul3, transpose3, rotationAngle } from '../src/sfm/linalg.js';
 import { assert } from './util.js';
 import { SfmSession } from '../src/sfm/session.js';
 import { tablePairSource } from './session_util.js';
@@ -72,7 +72,18 @@ Deno.test('flow rotation: a rotation homography gives its rotation, a homography
   const H = scene.input.images[b].flowH, [fx, , cx] = scene.truth.camera.params;
   scene.input.images[b].flowH = mul3([1, 0, 0.3 * fx, 0, 1, 0, 0, 0, 1 + 0.3 * cx / fx], H);
   const moved = flowRotation(mapper, a, b);
-  assert(moved && moved.R === null && moved.spread > 0.05, `spread ${moved?.spread}`);
+  assert(moved && moved.R === null && moved.spread > 0.1, `spread ${moved?.spread}`);
+});
+
+Deno.test('flow rotation: a turn in place seen with a focal 3% off is still a rotation', () => {
+  // the SfM's focal is an estimate: the homography in its normalized coordinates is then a rotation only
+  // nearly (spread 0.054 over this 180 deg turn)
+  const scene = turnInPlace(), mapper = new SequentialMapper(scene.input, {});
+  mapper.camera = { ...scene.truth.camera, params: scene.truth.camera.params.map((p, i) => i < 2 ? 1.03 * p : p) };
+  const [a, b] = [10, 30], R = mul3(scene.truth.images[b].R, transpose3(scene.truth.images[a].R));
+  const rot = flowRotation(mapper, a, b);
+  const err = rot?.R ? rotationAngle(rot.R, R) * 180 / Math.PI : NaN;
+  assert(rot?.R && err < 2, `spread ${rot?.spread}, rotation off by ${err} deg`);
 });
 
 Deno.test('flow join: the keyframes it places are rotation only, not weak, and repair leaves them', async () => {

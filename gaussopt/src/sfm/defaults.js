@@ -15,6 +15,7 @@ export const SESSION_DEFAULTS = {
   maxFeatures: 4096, siftPeak: 0.02 / 3, ...PIPELINE_DEFAULTS, focal: 'auto', hfovDeg: 0, sweeps: 2,  // siftPeak: sift.js SIFT_DEFAULTS.peak
   autoRepair: true,  // session.repair() once the reconstruction is done (undoable)
   overlay: true,     // a video's on-screen display (burnt-in text, boxes, a reticle) masked: the features and the training leave it out (overlay.js)
+  track: true,       // a video's keyframe keypoints tracked through every sampled frame: longer tracks, the matches of keyframes farther apart (track.js)
   trainMinObs: 0,    // the trainer's points: seen by at least this many keyframes (export.js minObs); 0: 3 for a video, 2 for photos (DESIGN-sfm §13.3 P6)
 };
 

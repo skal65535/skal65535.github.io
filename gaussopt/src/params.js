@@ -116,6 +116,8 @@ export const TIPS = {
   rebalance_every_cap: 'steps between two rebalances once the splat count is at max splats (0: K); also one at each opacity reset',
   enable_rebalance: 'grow and prune splats at each rebalance (off: their number stays fixed)',
   remove_floaters: 'at each rebalance, remove floaters: splats in front of the cameras, single-view billboards, isolated leaves',
+  floater_few_views: 'floaters include the splats seen from few views with much error (off: what passes by in a movie stays)',
+  decay_occluders: 'at each rebalance, a splat with much error loses a third of its opacity (off: kept as it is)',
   floater_depth: 'which splats count as too near a camera (closer than 0.65 x this depth). observed: the depth of the ' +
                  'points the camera sees (the default, best at 30k steps on 4 of 5 test scenes). view: of all points ' +
                  'in its view, also those only other cameras saw (better early in training on gare-st-lazare)',
@@ -131,6 +133,8 @@ export const TIPS = {
   max_splat_angle: 'largest splat size, as a fraction of its depth in the training view (no huge splats; 0: none, the default)',
   drop_rate: 'DropGaussian: the share of splats left out of each training render, the others more opaque by ' +
              '1 / (1 - rate) (0: off; 0.25 helps on sparse photo sets, DESIGN.md E3)',
+  robust_loss: 'tau of the robust loss: a pixel whose error e is large counts 1 / (1 + (e / tau)^2), so what one frame ' +
+               'shows and the others contradict (a movie\'s debris, a flash) is not chased (0: off)',
   split_min_views: 'growth splits or clones only the splats seen from at least this many views (N_eff = W^2 / S): ' +
                    'detail fitted to a single photo does not multiply (0: any)',
   split_mode: 'E9: how a splat splits: \'error\' (two children along its error moments, or a clone at the error centroid) or ' +
@@ -190,10 +194,10 @@ const isOtherUrlParam = k => k === 'video' || k === 'photos' || k === 'nosg' || 
 export const SNAPSHOT_PARAMS = [
   'opt_method', 'mc_noise', 'mc_opacity_reg', 'mc_scale_reg', 'mc_relocate', 'mc_relocate_mode',
   'max_leaf_size', 'beta', 'rebalance_every', 'rebalance_every_cap',
-  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_depth', 'floater_spare',
+  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_few_views', 'decay_occluders', 'floater_depth', 'floater_spare',
   'max_splats', 'cap_lease', 'train_steps', 'consolidate_frac', 'polish', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count', 'region_repair', 'region_res',
   'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'ssim', 'bg_lr', 'exposure_lr', 'exposure_from', 'pose_lr', 'lens_lr', 'pose_from', 'pose_prior', 'pose_refit', 'pose_refit_iters',
-  'drop_rate', 'split_min_views', 'split_mode',
+  'drop_rate', 'robust_loss', 'split_min_views', 'split_mode',
   'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset', 'opacity_reset_until',
 ];
 

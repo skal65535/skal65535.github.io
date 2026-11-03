@@ -316,11 +316,14 @@ export class GaussOptApp {
     growF.add(P, 'stipple_count', [500, 1000, 2000, 5000, 10000]).name('stipple seeds / K');
     growF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
     growF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
+    growF.add(P, 'robust_loss', 0, 0.5, 0.01).name('robust loss tau (0: off)');
+    growF.add(P, 'decay_occluders').name('decay high-error splats');
     growF.add(P, 'max_splat_angle', 0, 0.2, 0.005).name('max splat angle (0: none)');
     growF.add(P, 'max_anisotropy', 0, 50, 1).name('max anisotropy (0: none)');
 
     const floatF = gui.addFolder('Floaters', { collapsed: true });
     floatF.add(P, 'remove_floaters').name('octree floater kill');
+    floatF.add(P, 'floater_few_views').name('few-view floaters');
     floatF.add(P, 'floater_depth', ['observed', 'view']).name('near-camera carve depth');
     floatF.add(P, 'floater_spare', 0, 0.05, 0.001).name('spare near SfM points');
 
@@ -1573,7 +1576,7 @@ export class GaussOptApp {
   _logRebalance() {
     const st = this._loggedStats = this.octree.lastStats;
     const tr = this.trainer;
-    const extra = (st.seeded ? `, +${st.seeded} stipple` : '') + (st.teleported ? `, ${st.teleported} relocated (MC)` : '') + (st.trimmed ? `, ${st.trimmed} trimmed to the budget` : '') +
+    const extra = (st.seeded ? `, +${st.seeded} stipple` : '') + (st.teleported ? `, ${st.teleported} relocated (MC)` : '') + (st.relocateDropped ? ` (${st.relocateDropped} dropped: their copies too faint)` : '') + (st.trimmed ? `, ${st.trimmed} trimmed to the budget` : '') +
                   (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '');
     this.log(`Rebalance @ step ${tr.stepCount}: +${st.split} split, +${st.cloned} clone, ` +
              `-${st.pruned} prune, -${st.floaters} floaters${st.floaterRules ? ` (near ${st.floaterRules[0]}, few views ${st.floaterRules[1]}, empty ${st.floaterRules[2]})` : ''}, -${st.merged} merge${extra} -> ${tr.count} splats, ` +

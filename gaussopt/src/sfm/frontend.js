@@ -102,7 +102,7 @@ export async function matchFeatures(features, matcher, { rng, loopCandidates = [
   for (let i = 0; i < n; i++) for (let j = i + 1; j <= Math.min(n - 1, i + o.window); j++) todo.push([i, j, 'seq']);
   for (const [i, j] of loopCandidates) if (j - i > o.window) todo.push([i, j, 'loop']);
   const { pairs, stats } = await matchPairs(features, matcher, todo, { rng, onProgress, ...o });
-  return { images: features.map(f => ({ ...imageRecord(f), keypoints: xyOnly(f.keypoints) })), pairs, stats };
+  return { images: features.map(f => ({ ...imageRecord(f), keypoints: mapperKeypoints(f) })), pairs, stats };
 }
 
 // A keyframe's own fields, as the mapper and a saved session keep them (camera: its zoom stretch's;
@@ -172,3 +172,13 @@ export const xyOnly = (kp4) => {
   for (let k = 0; k < kp4.length / 4; k++) { out[2 * k] = kp4[4 * k]; out[2 * k + 1] = kp4[4 * k + 1]; }
   return out;
 };
+
+// A keyframe's keypoints for the mapper: [x, y] of its SIFT ones, then those the tracks added (track.js; no descriptor)
+export function mapperKeypoints(f) {
+  const xy = xyOnly(f.keypoints);
+  if (!f.tracked?.length) return xy;
+  const out = new Float32Array(xy.length + f.tracked.length);
+  out.set(xy);
+  out.set(f.tracked, xy.length);
+  return out;
+}

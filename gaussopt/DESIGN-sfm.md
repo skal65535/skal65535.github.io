@@ -100,6 +100,7 @@ Each stage is restartable from its inputs, which is what makes interactive repai
 * Decode with WebCodecs `VideoDecoder`; demux by `mp4.js` (MP4 / MOV sample tables). Fragmented MP4 and compact sample sizes (`stz2`) are rejected with a remux hint (`ffmpeg -i in.mp4 -c copy out.mp4`). Decoding starts one GOP before the first wanted frame (open GOPs reference it).
 * Port of `video2splat.py --spacing`: sharpness (Laplacian variance, reject < 0.35 × median) and keep one frame every `spacing` × image diagonal of optical-flow path, computed in JS at low resolution by a pool of workers.
 * The path length is the **raw** median LK displacement (`frames.js`), as in the Python version; no homography is removed. A parallax-based path (flow after a fitted homography, so pure yaw in place adds no keyframes) was planned and is not implemented (R4).
+* **A floor in time** (`minRate`, 4 by default, §5.1.2): the path grows by at least `minRate` spacings a second, so a video gets about 4 keyframes a second however little its image moves. `sfm_minRate=0` selects by motion only, as `video2splat.py`.
 * **Hardware decoder fallback** (`video.js` `decodeFrames`): the decoder prefers hardware; when it fails while decoding, the same call goes on with the software decoder (and the next calls use it), the frames already delivered not delivered again, and the log says so once. A ViewSec thermal camera's H.264 (640 x 480, High, yuvj420p, an edit list) fails in Chrome's hardware decoder on macOS at its 5th sample ('Decoding error.'), the software decoder reads all 3562 frames (`e2e/decode.e2e.js`; with `sfm_hfovDeg=48`, `viewsec4.mp4` maps 291 / 471 keyframes, focal 762 px against 719 from the 48 deg, 26.71 dB held out after 5000 steps, `photo_runs/logs/train__vs4_fov.log`).
 * Keyframes can be **inserted later** at any timestamp (§6.3): the video stays available, which COLMAP never had.
 * **Zooms** (`frames.js` `step`, `zoomEvents`): the same LK tracks give each step a similarity (scale, rotation, translation, 2-point RANSAC, 1.5 px at 640 px) and the fraction of the tracks it explains. A zoom or lens change scales every track alike; walking or flying forward scales near points more than far ones. A step is a zoom when its scale changes faster than `zoomRate` (0.9 per second, log scale) with a fit of at least 0.85; the steps either side faster than 2/3 of that (or lost) join it, over slower ones for up to 0.3 s, and an event of less than ×1.15 in all is dropped. No keyframe is taken during an event, and each stretch between events gets its own camera: the one with the most keyframes is camera 0, self-calibrated (§5.3); the others' focals are scanned when mapping (§5.3). The image scale across an event is only the prior of that scan, since walking during the event scales the image too. `sfm_zoomRate=0` turns detection off.
@@ -115,14 +116,51 @@ Each stage is restartable from its inputs, which is what makes interactive repai
 * **SIFT on a thermal video** (`sfm_siftPeak`, the DoG contrast threshold, default 0.02/3, `sift.js`): with the keyframes spread over the video, `test-parking.mov` gives about 275 features a frame and 43 inliers a pair, and no pair reaches the 100 inliers an initial pair needs (§5.3, `mapper.js` `initializeWith`): 0 / 473 registered (at 48 deg). 0.02/6: 482 a frame, 4 initial pairs, 177 / 473 registered (120 cameras in the model); 0.02/12: 681, 156 / 473 (122). One run each; the default is unchanged (not measured on the other videos). Dropping the SIFT keypoints within 8 px of the mask too: 113 / 473; within 16 px: 0 (the initial pair is at the threshold either way). The gallery's `test-parking` (`sfm_hfovDeg=48&sfm_siftPeak=0.0033333`, `ds=1`, 10000 steps; `photo_runs/logs/train__gallery_test-parking2.log`): 120 cameras over 0-15.4 s (before the masked motion: 19 over 10.3-14.1 s), 26.99 dB on 16 held-out views; the rest of the video, 15.4-53 s (a parking row, then indoors), is not in the model.
 * **Not done:** an overlay that moves (a tracking box) is not still and is not found.
 
+#### 5.1.2 Keyframes a second at least (`minRate`)
+A camera turning around a near object moves the image little, while its view of the object changes fast: the median LK displacement is set by the background, so the path, and the keyframes, go slowly where the near object needs them most. On `gare-st-lazare.mp4` (127 s at 29.8 fps, walking around a statue twice, `ds=2`, 1M splats, 15000 steps; one run each, other runs sharing the machine):
+* **The failure without it** (392 keyframes, path 19.53 diagonals): the statue stretches get keyframes 0.3-1.4 s apart. The angle a step turns around what the frame sees (centre step over the median depth of the frame's points, `viewsteps.js` in the experiments) is 3.3-4.5° there, 0.7-1.2° elsewhere; the image's own motion does not show it (p90 / median of the corner displacement 1.4 there, 1.2-1.3 elsewhere). The sequential mapper gets the stretch wrong: at 11-20.5 s the camera centre jumps up to 21.5 x the run's median step and doubles back (164°, 169° between consecutive steps). The views of the first pass (14.6-22.9 s) fit 15.54 dB (training) and 14.20 (held out).
+* **With 4 a second** (591 keyframes, path 29.48): the same stretch is smooth (under 20° between consecutive steps); 19.85 / 19.03 dB there; the second pass (113-124 s) 18.12 / 17.00 against 17.76 / 17.35. In all, held out 19.10 dB against 18.09 (19.57 against 18.61 with each held-out camera fitted, over 69 and 53 views: the hold-out is by name, §3, so the sets differ).
+* **Costs, measured there:** 51% more keyframes; the SfM 1147 s against 1070 s in all (the reconstruct 450 s against 311, matching 28.6 s against 25.7; the tracking pass, through every frame, does not grow: 369 s against 426); 214312 points against 131666; features and JPEGs in the session grow with the keyframes. Training: the same 15000 steps over more views, each seen fewer times (2189 s against 2231). On a video already above the floor nothing changes (a 51.7 s 60 fps clip: 584 keyframes either way).
+* **Costs, not measured:** a camera standing still or panning slowly in place gets 4 keyframes a second with no parallax (the mapper registers them; whether they cost accuracy is not measured); long slow videos grow the most; the floor was measured at 4 only, on this one video.
+* **What the floor does not fix:** the splat budget. Trained alone (the map's other points kept, its other views left out), the first pass's views fit 26.63 dB (training) and 22.41 (held out) against 19.71 / 19.03 in the whole video; the second pass's 26.92 / 22.86 against 18.13 / 17.74. The statue in the whole scene is limited by the splats it gets far more than by its poses.
+* **Rejected: keyframes added after the reconstruct.** Every step turning more than 3° (as above) split by keyframes inserted with `session.insert` (§6.3), two rounds before the repair: +125 and +67 keyframes (584), the SfM 2669 s, held out 18.57 dB (18.91 fitted). The angles come from the poses, and where the mapper got the stretch wrong they are wrong too: only 6 frames went into 11-20 s, they registered against the wrong neighbours, the zigzag stayed (74-124° between steps), and the first pass got worse (13.38 / 11.80 dB). The second pass, mapped right, improved (19.15 / 18.80). Keyframes have to be there before the mapping.
+
 ### 5.2 S1 — Features
 * SIFT in WGSL following the SiftGPU structure: Gaussian pyramid, DoG extrema with subpixel refinement, edge rejection, orientation histogram, 4×4×8 descriptor, RootSIFT normalisation, top-$K$ by response ($K$ = 4096 default).
 * Validated against COLMAP's SIFT on the same frames: repeatability and match counts on sequential pairs, not bitwise equality.
 * At most 65536 candidate / oriented keypoints per frame on the GPU; past that, which ones are kept depends on the GPU's append order, and the worker warns.
 
+#### 5.2.1 Points tracked through every frame (`track.js`)
+SIFT matches fall off fast with the keyframe gap as the view turns: on a 24 s handheld video circling a table (53
+keyframes), 402 verified matches a pair at gap 1, 101 at gap 3, 23 at gap 8, and 63% of the points seen by 2
+keyframes only. The scale is handed from keyframe to keyframe by those few points, and drifts: 1.2-1.6 x around the
+circle, past what loop verification (4 px) accepts, so no loop closed. The video is sampled at 30 fps anyway (S0):
+each keyframe's keypoints are followed through every sampled frame to the next keyframes (option `track`, a third
+decode pass at the keyframes' size):
+* a step: a diamond search (large then small diamond) coarse to fine over 3 Gaussian levels, zero-mean SAD on 9 x 9 /
+  7 x 7 patches, from the motion predicted (the point's last step); then translational Lucas-Kanade at full size
+  (15 x 15) for the sub-pixel position;
+* lost: tracked back from where it was found by the motion predicted, more than 1 px from where it was (a lookalike, a
+  grating's other period); or off its predicted motion by more than 5 px beyond the frame's median (an occlusion, a
+  person moving: the median is the camera's shake). Measured on that video, the steps between consecutive keyframes
+  over 4 px from the SIFT pair's epipolar line: 4.8% (median 0.55 px), 7.3% without the backward check, 6.7% without
+  the motion's; 7590 tracks through 3 keyframes or more. A threshold on the SAD or on the normalized correlation
+  changed nothing but lost tracks, and is not used. In the page, the pass takes 339 s for the 3792 frames of a 1080 x 1920 video with 392 keyframes, decoding and reading back included;
+* at a keyframe a track takes the SIFT keypoint within 1.5 px (and its position), else its own position becomes a
+  keypoint of that keyframe, without a descriptor (the mapper needs positions only; `mapperKeypoints`: the SIFT ones
+  first, so descriptor matching and the saved features' `kp/`, `desc/` keep their indices; the added ones are saved as
+  `trk/`); the keypoints no track took start new tracks;
+* every two keyframes of a track up to 20 apart get a match (the loop stage takes the pairs farther apart);
+  `mergeTrackPairs` puts them with the SIFT matches of the same pair and verifies the pair again (the same F check).
+  A repair re-matches its pairs with SIFT only.
+
+Known limit: a point whose window straddles an occlusion edge is dragged a little each frame, under every check; the
+F check and the mapper's 4 px are its backstop.
+
 ### 5.3 S2 — Sequential Mapping
 * **Matching:** keyframe $k$ against $k-1 \dots k-W$ on the GPU: brute-force nearest neighbour on f16 (a batched matrix product), ratio test 0.8, mutual check. No 16384 cap. ~$N \cdot W$ pairs total.
 * **Initialisation:** first pair with median parallax above a threshold; relative pose (`relativePose`: 8-point F RANSAC on the undistorted normalized rays, threshold = pixels / $f$, so F is the essential matrix; cheirality) and homography. If the homography explains > 80% of the F inliers (rotation only, or a flat scene), move to a later pair. Triangulate.
+* **Initial pair search** (`mapper.js` `initialize`): the median angle asked goes 3°, then 1.5° (`initAngles`, each once), after every segment grown. A pair without a relative pose, or that a homography explains, is skipped for the rest of the run: neither depends on the angle asked nor on the frames mapped. The panel shows the search ('finding an initial pair', pairs tried / candidates). On a shaky movie clip of a CG scene with things moving across it (51.7 s, 652 keyframes; the tracked points' matches put about 6550 pairs over the 100 matches an initial pair needs, 97% of them explained by a homography), each search took about 60 s, and five of them (two segments of 9 and 12 frames found, then 3°, 1.5° and 1.5° again for nothing) were 305 s of the 306 s the reconstruction took; growing the segments took under a second.
 * **Per new keyframe:**
   1. Locate against the window's 3D points (P3P + LO-RANSAC, then pose-only refinement).
   2. Triangulate new tracks with window keyframes: viewing angle ≥ 1.5°, positive depth, reprojection error < 4 px.
@@ -150,7 +188,7 @@ Each stage is restartable from its inputs, which is what makes interactive repai
 
 #### 5.4.1 Join by optical flow across a turn in place (`flowjoin.js`)
 * **The case:** a camera turning without moving triangulates nothing new, so the map cannot follow it. The keyframes after the turn start a segment that shares no point with the one before, and loop closure cannot merge them. long-garden.mp4, a 38 s drone flight, does a yaw in place at 33.4–35.4 s. Its last 4.5 s became a separate map, left out of the export (207 of 273 keyframes exported).
-* **The flow:** the frame analysis (S0, `frames.js` `step`) already tracks corners between consecutive sampled frames. It also fits a homography to those tracks (RANSAC, 1 px). The worker chains them from the first frame into `flowH` per keyframe, in keyframe pixels, with a new `flowChain` after a lost step. A camera turning in place moves every track by $K R K^{-1}$. Between two keyframes of one chain, $K^{-1} H_b H_a^{-1} K$ (determinant 1) is a rotation when its singular values agree within `maxSpread` (0.05), and $R$ is its projection on SO(3).
+* **The flow:** the frame analysis (S0, `frames.js` `step`) already tracks corners between consecutive sampled frames. It also fits a homography to those tracks (RANSAC, 1 px). The worker chains them from the first frame into `flowH` per keyframe, in keyframe pixels, with a new `flowChain` after a lost step. A camera turning in place moves every track by $K R K^{-1}$. Between two keyframes of one chain, $K^{-1} H_b H_a^{-1} K$ (determinant 1) is a rotation when its singular values agree within `maxSpread` (0.1: a focal 3% off spreads a 180° turn by 0.054, a moving camera by far more), and $R$ is its projection on SO(3).
 * **The join** (after loop closure, before the refinement sweeps), for a segment B that starts at most 3 s after segment A ends:
   * **rotation:** B's first keyframe $b$ is A's last $a$ turned by the flow;
   * **centre:** $b$ sits at $a$'s centre;
@@ -380,6 +418,7 @@ gaussopt/
 │   ├── sift.js / sift.wgsl    # S1: GPU SIFT
 │   ├── match.js / match.wgsl  # GPU brute-force matching (tiled), COLMAP's ratio / distance / cross check
 │   ├── frontend.js        # Window + loop pairs matched on the GPU, F verification
+│   ├── track.js           # Keyframe keypoints tracked through every frame (§5.2.1): diamond search, Lucas-Kanade, matches of keyframes far apart
 │   ├── verify_worker.js   # F verification of matched pairs, in frontend.js's pool of workers
 │   ├── loopdetect.js      # Loop candidates by appearance (vocabulary, TF-IDF) and by geometry
 │   ├── export.js          # One segment -> COLMAP *.bin (PINHOLE, undistorted keypoints), trainer point filter

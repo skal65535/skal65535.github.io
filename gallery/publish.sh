@@ -11,6 +11,7 @@ set -e
 SCENES=${1:?SCENES_DIR}; DEST=${2:?DEST}
 WEB=${0:A:h:h}
 STAGE=$(mktemp -d -t gallery)
+trap 'rm -rf $STAGE' EXIT  # the staged copy goes once copied, or when a step fails
 mkdir -p $STAGE/scenes
 sed -e "s#'\.\./common/#'./common/#g" -e "s#\"\.\./common/#\"./common/#g" -e "s#'\.\./gaussopt/src/#'./gaussopt/src/#g" $WEB/gallery/index.html > $STAGE/index.html
 # the page's modules and the app, as committed

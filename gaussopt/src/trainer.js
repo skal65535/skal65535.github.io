@@ -773,7 +773,7 @@ export class GaussOptTrainer {
       P.lr_pos * R * warmup * posDecay, P.lr_scale * warmup, P.lr_quat * warmup, P.lr_color,  // lrs
       optMethod, mcTerms ? P.mc_noise : 0, Math.random(), this.adamStepCount,  // opt_params
       ...shapeLimits(P, R), P.lr_opacity,                                                       // limits
-      P.ssim, P.drop_rate, P.drop_rate > 0 ? 1 / (1 - P.drop_rate) : 0, 0,                     // loss
+      P.ssim, P.drop_rate, P.drop_rate > 0 ? 1 / (1 - P.drop_rate) : 0, P.robust_loss || 0,   // loss
       ...(mcTerms ? [P.mc_opacity_reg / this.count, P.mc_scale_reg / (3 * this.count)] : [0, 0]), P.bg_lr || 0, 0,  // reg (z: env_adam's lr)
     ], learnExpo, learnCam);
     this.device.queue.writeBuffer(this.lossBuf, 0, new Uint32Array(4));
@@ -1234,6 +1234,8 @@ export class GaussOptTrainer {
         pruneOpacity:   P.prune_opacity,
         hysteresis:     P.hysteresis,
         enableFloaters: P.remove_floaters,
+        floaterFewViews: P.floater_few_views,
+        decayOccluders: P.decay_occluders,
         floaterDepth:   P.floater_depth,
         floaterSpare:   P.floater_spare > 0 && this.points3D && !this.points3D.fallback
                           ? { positions: this.points3D.positions, count: this.points3D.count, radius: P.floater_spare * this.octree.sceneRadius }

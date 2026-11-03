@@ -18,6 +18,8 @@ export const TRAIN_DEFAULTS = {
   enable_split:    true,
   enable_merge:    true,
   remove_floaters: true,
+  floater_few_views: true,     // floater rule 2: seen from few views with much error (off: a movie's passing things stay)
+  decay_occluders: true,       // a splat of much error loses opacity at each rebalance (densify.js)
   floater_depth:   'observed',  // near-camera carve depth: 'observed' | 'view' (octree.js nearCameraCone)
   floater_spare:   0.01,        // x sceneRadius: splats this near an SfM point are not carved (0: off; DESIGN.md §5)
   max_splats:      300000,
@@ -59,6 +61,7 @@ export const TRAIN_DEFAULTS = {
   pose_refit:      0,      // every N steps (with pose_lr), each training camera refitted with the splats frozen (0 = never)
   pose_refit_iters: 20,    // ... its steps a view
   drop_rate:       0,      // DropGaussian: share of splats skipped in each training render (0 = off)
+  robust_loss:     0,      // tau: a pixel's gradient weighted 1 / (1 + (e / tau)^2), e its mean abs error (0 = off; tile_backward)
   split_min_views: 0,      // growth splits only splats seen from at least this many views (N_eff; 0 = any)
   split_mode:      'shape', // how a splat splits: 'shape' (within its own shape, as brush; DESIGN.md E9) or 'error' (along its error moments, §5.1)
   opacity_reset:   3000,   // clamp all opacities to 0.01 every N steps (0 = off)

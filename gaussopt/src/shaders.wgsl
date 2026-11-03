@@ -87,7 +87,7 @@ struct TrainUniforms {
   opt_params : vec4f, // x = opt_method (0 Adam, 1 MC), y = mc_noise, z = rng seed, w = Adam step (1-based)
   limits     : vec4f, // x = max splat angle (scale / depth), y = max world scale, z = log(max anisotropy), w = lr_opacity
   loss       : vec4f, // x = D-SSIM weight (ssim_*, tile_backward), y = DropGaussian rate (project_splats),
-                      // z = its opacity factor 1 / (1 - y) (tile_forward / backward; 0 = 1), w unused
+                      // z = its opacity factor 1 / (1 - y) (tile_forward / backward; 0 = 1), w = robust loss tau (0: off)
   reg        : vec4f, // monte_carlo's L1 terms, already over the splat count: x = on opacity, y = on scale (per axis); zw unused
   expo_g     : vec4f, // the view's exposure (exposure.js): the render as expo_g.rgb c + expo_b.rgb; w = 1 while it learns
   expo_b     : vec4f, //   (tile_backward sums its gradient)
@@ -1102,6 +1102,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 // Loss: 0.8 * smooth-L1 + 0.2 * L2 per channel, normalized by pixel count; with a D-SSIM weight
 // l = tu.loss.x > 0, (1 - l) * smooth-L1 + l * (1 - SSIM) / 2 instead (as 3DGS), the SSIM
 // gradient sum_q dS(q)/dy(p) read from ssim_grad_tex (ssim_coef, ssim_grad);
+// Robust loss (tu.loss.w = tau > 0): a pixel's gradient and its error in the moments (err_l1: the splits' R) weighted
+// 1 / (1 + (e / tau)^2), e its mean absolute error: what one frame shows and the others contradict is not chased.
 // loss_acc[0..1] = 64-bit sum (lo, hi) of the per-pixel MSE in 16.16 fixed point.
 // The background (env_tex, tile_forward): the color behind the last splat is env(dir), not black, and the background's
 // gradient dL/dC T_final is summed over the tile and added to the 4 texels at the tile's center (16 pixels span at
@@ -1260,6 +1262,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
       dL_dC = (0.8 * sign_d + 0.4 * diff) * (1.0 / f32(W * H));
     }
     err_l1 = (abs(diff.x) + abs(diff.y) + abs(diff.z)) / 3.0;
+    let tau = tu.loss.w;
+    if (tau > 0.0) {
+      let w_rob = 1.0 / (1.0 + (err_l1 / tau) * (err_l1 / tau));
+      dL_dC *= w_rob;
+      err_l1 *= w_rob;
+    }
     let dg = dL_dC * (hat - tu.expo_b.rgb);
     expo = array<f32, 6>(dg.x, dg.y, dg.z, dL_dC.x, dL_dC.y, dL_dC.z);
     dL_dC *= tu.expo_g.rgb;  // dL/dc, the render before the exposure

@@ -2,8 +2,8 @@
 // the splats' leaf ids, and octree-culled vs exhaustive sorts keeping the same splats.
 import { LooseOctree, splatExtents } from '../src/octree.js';
 import { nearCameraCone } from '../src/densify.js';
-import { SPLAT_FLOATS, exportPlyBuffer, parsePlyBuffer } from '../src/colmap.js';
-import { makeRng, projectPinhole } from '../src/math.js';
+import { SPLAT_FLOATS, exportPlyBuffer, parsePlyBuffer, exportSplatBuffer, parseSplatBuffer } from '../src/colmap.js';
+import { makeRng, projectPinhole, sigmoid } from '../src/math.js';
 import { expSO3, mul3 } from '../src/sfm/linalg.js';
 import { assert } from './util.js';
 
@@ -19,6 +19,27 @@ function clusteredSplats(n, rng) {
   }
   return p;
 }
+
+// splats/ converts a dropped .ply to the antimatter15 .splat it renders (exportSplatBuffer)
+Deno.test('.splat round trip: positions, scales, opacity, color and rotation within the format\'s u8 steps', () => {
+  const n = 200, p = clusteredSplats(n, makeRng(2)), rng = makeRng(3);
+  for (let i = 0; i < n; i++) for (let k = 8; k < 15; k++) p[i * SPLAT_FLOATS + k] = 2 * rng() - 1;
+  const { count, params: q } = parseSplatBuffer(exportSplatBuffer(p, n));
+  assert(count === n, `${count} splats`);
+  for (let i = 0; i < n; i++) {
+    const b = i * SPLAT_FLOATS, qn = Math.hypot(p[b + 8], p[b + 9], p[b + 10], p[b + 11]);
+    for (let k = 0; k < 3; k++) {
+      assert(q[b + k] === p[b + k], `splat ${i}: position ${k}`);
+      assert(Math.abs(q[b + 4 + k] - p[b + 4 + k]) < 1e-5, `splat ${i}: log scale ${k} ${q[b + 4 + k]} for ${p[b + 4 + k]}`);
+    }
+    assert(Math.abs(sigmoid(q[b + 3]) - sigmoid(p[b + 3])) <= 0.5 / 255 + 1e-6, `splat ${i}: opacity`);
+    for (let k = 0; k < 4; k++) assert(Math.abs(q[b + 8 + k] - p[b + 8 + k] / qn) <= 1 / 128, `splat ${i}: rotation ${k}`);
+    for (let k = 12; k < 15; k++) {
+      const rgb = (dc) => Math.min(1, Math.max(0, 0.5 + 0.28209479177387814 * dc));
+      assert(Math.abs(rgb(q[b + k]) - rgb(p[b + k])) <= 0.5 / 255 + 1e-6, `splat ${i}: color ${k - 12}`);
+    }
+  }
+});
 
 Deno.test('.ply octree round trip: leaf ids, max depth, leaf size, looseness', () => {
   const n = 3000, p = clusteredSplats(n, makeRng(1));

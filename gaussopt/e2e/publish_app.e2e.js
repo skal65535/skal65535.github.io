@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { APP, PORT, clip, fail, galleryShown, run } from './harness.js';
 
-const SCENE = process.env.GALLERY_SCENE ?? 'canyon3-bg';
+const SCENE = process.env.GALLERY_SCENE ?? 'canyon3';
 const WEB = dirname(APP), scenes = join(WEB, 'gallery', 'scenes');
 const tmp = mkdtempSync(join(tmpdir(), 'publish_app-')), src = join(tmp, 'scenes'), out = join(tmp, 'site');
 mkdirSync(join(src, SCENE), { recursive: true });

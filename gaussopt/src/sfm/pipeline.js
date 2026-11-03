@@ -5,6 +5,7 @@
 "use strict";
 
 import { matchFeatures, matchPairs } from './frontend.js';
+import { mergeTrackPairs } from './track.js';
 import { buildVocabulary, bagOfWords, loopCandidates, geometricCandidates } from './loopdetect.js';
 import { SfmSession, withNames } from './session.js';
 import { defaultCamera } from './camera.js';
@@ -13,7 +14,8 @@ import { PIPELINE_DEFAULTS } from './defaults.js';
 import { seconds } from './util.js';
 
 // features: [{ name, keypoints, descriptors }] in time order, all `width` x `height`.
-// mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); log(line), progress(stage, done, total).
+// mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); log(line), progress(stage, done, total);
+// trackPairs: the matches of the keypoints tracked through the video (track.js, the features' indices).
 // Returns { session (session.js, for repairs), mapper, model, stats, input, matched }.
 export async function reconstructFromFeatures(features, width, height, matcher, options = {}) {
   const o = { ...PIPELINE_DEFAULTS, log: () => {}, progress: () => {}, ...options };
@@ -31,6 +33,11 @@ export async function reconstructFromFeatures(features, width, height, matcher, 
   log(`matching: ${ms.matched} pairs, ${ms.verified} verified (loops ${ms.loopsVerified}/${ms.loopsTried}), ` +
       `${Math.round(ms.inliers / Math.max(1, ms.verified))} inliers per pair in ${seconds(tm)} (GPU matching ${(ms.gpuMs / 1000).toFixed(1)} s, verification ${(ms.verifyMs / 1000).toFixed(1)} s of CPU ` +
       `${ms.workers ? `on ${ms.workers} workers, done ${(ms.waitMs / 1000).toFixed(1)} s after the GPU` : 'inline'})`);
+  if (o.trackPairs?.length) {
+    const t = performance.now(), { pairs, stats } = mergeTrackPairs(matched.pairs, matched.images, o.trackPairs, { seed: o.seed ?? 1 });
+    matched.pairs = pairs;
+    log(`tracks: ${stats.pairs} pairs with their matches, ${stats.added} matches more than SIFT's, in ${seconds(t)}`);
+  }
 
   // a camera per lens when given (o.cameras, the features' `camera` index: photo sets, DESIGN-sfm §13 P8)
   const input = { camera: o.camera ?? o.cameras?.[0] ?? defaultCamera('OPENCV', width, height), ...(o.cameras ? { cameras: o.cameras } : {}),

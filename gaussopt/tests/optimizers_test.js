@@ -48,6 +48,44 @@ Deno.test('relocate: the dead go onto live rows, drawn by opacity or by error, a
   assert(relocate(rows([0.5, 0.5]), 2, new Float32Array(2 * MOMENT_FLOATS)) === 0, 'moved with no error anywhere');
 });
 
+Deno.test('relocate: a row gets no more copies than keep them over minOpacity, the draws past it dropped', () => {
+  // row 0 (o 0.1): 1 - 0.9^(1/6) = 0.0174 >= 0.016, 1 - 0.9^(1/7) < 0.016: 5 copies at most; row 1 (o 0.03): none
+  const out = rows([0.1, 0.03]);
+  const moved = relocate(out, 20, null, null, 0, 'copy', 0.016);
+  assert(moved === 5 && out.n === 7, `${moved} moved, ${out.n} rows`);
+  for (let k = 0; k < out.n; k++) assert(sigmoid(out.row(k)[3]) >= 0.016, `row ${k}: opacity ${sigmoid(out.row(k)[3])}`);
+  assertClose(sigmoid(out.row(1)[3]), 0.03, 1e-6, 'row 1 copied');
+  // reconcileAndGrow: twice its prune threshold; those dropped are pruned
+  const n = 40, params = new Float32Array(n * SPLAT_FLOATS), moments = new Float32Array(n * MOMENT_FLOATS);
+  for (let i = 0; i < n; i++) {  // 30 dead, 10 live at o 0.05: 1 - 0.95^(1/4) >= 0.016 > 1 - 0.95^(1/5), 3 copies each at most
+    params.set([i * 0.1, 0, 0, logit(i < 30 ? 0.001 : 0.05), Math.log(0.05), Math.log(0.05), Math.log(0.05), 0, 1, 0, 0, 0, 0.1, 0.2, 0.3, 0], i * SPLAT_FLOATS);
+    moments[i * MOMENT_FLOATS] = 10; moments[i * MOMENT_FLOATS + 1] = 10;
+  }
+  const r = reconcileAndGrow(new LooseOctree({ maxLeafSize: 64 }).build(params, n, null), params, n, moments, null,
+    { maxSplats: n, pruneOpacity: 0.008, enableFloaters: false, enableMerge: false, enableSplit: false, optMethod: 'monte_carlo' });
+  assert(r.stats.teleported <= 30 && r.stats.teleported + r.stats.relocateDropped === 30 && r.stats.pruned === r.stats.relocateDropped,
+         JSON.stringify(r.stats));
+  for (let i = 0; i < r.count; i++) assert(sigmoid(r.params[i * SPLAT_FLOATS + 3]) >= 0.016, `splat ${i}: opacity ${sigmoid(r.params[i * SPLAT_FLOATS + 3])}`);
+});
+
+Deno.test('rebalance: floaterFewViews off keeps the splats seen from few views, decayOccluders off the opacity of those of much error', () => {
+  // splat a (x 0): seen by many (N_eff 10), much error (R / W 0.5): its opacity x 0.65; splat b (x 1): N_eff 1, much
+  // error, in a leaf 5 cameras see: floater rule 2
+  const run = (opts) => {
+    const params = new Float32Array(2 * SPLAT_FLOATS), moments = new Float32Array(2 * MOMENT_FLOATS);
+    for (let i = 0; i < 2; i++) params.set([i, 0, 0, logit(0.5), Math.log(0.05), Math.log(0.05), Math.log(0.05), 0, 1, 0, 0, 0, 0.1, 0.2, 0.3, 0], i * SPLAT_FLOATS);
+    const oct = new LooseOctree({ maxLeafSize: 64 }).build(params, 2, null);
+    for (const l of oct.leaves) { l.numCameras = 5; l.state = 0; }
+    for (let i = 0; i < 2; i++) moments.set(params[i * SPLAT_FLOATS] === 0 ? [10, 10, 5] : [2, 4, 1], i * MOMENT_FLOATS);
+    const r = reconcileAndGrow(oct, params, 2, moments, null, { maxSplats: 10, enableSplit: false, enableMerge: false, ...opts });
+    const op = (x) => { for (let i = 0; i < r.count; i++) if (r.params[i * SPLAT_FLOATS] === x) return sigmoid(r.params[i * SPLAT_FLOATS + 3]); return null; };
+    return { a: op(0), b: op(1), floaters: r.stats.floaters };
+  };
+  const on = run({}), off = run({ floaterFewViews: false, decayOccluders: false });
+  assert(on.b === null && on.floaters === 1 && Math.abs(on.a - 0.325) < 1e-4, `by default: ${JSON.stringify(on)}`);
+  assert(Math.abs(off.b - 0.5) < 1e-4 && off.floaters === 0 && Math.abs(off.a - 0.5) < 1e-4, `off: ${JSON.stringify(off)}`);
+});
+
 Deno.test('relocate as shape: each live row drawn splits into two halves within its shape (brush), once while rows remain', () => {
   const out = rows([0.8, 0.6]);
   for (let k = 0; k < 2; k++) out.buf[k * SPLAT_FLOATS + 8] = 1;  // identity rotations

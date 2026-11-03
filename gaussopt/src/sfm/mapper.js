@@ -55,7 +55,7 @@ const DEFAULTS = {
   initOrder: 'time',       // initial pair: 'time' (first frames first) | 'strongest' (most matches first)
   baIterations: 10,
   log: () => {},
-  progress: () => {},       // (stage, done, total): 'register' while growing, 'refine' per window
+  progress: () => {},       // (stage, done, total): 'init' over the candidate pairs, 'register' while growing, 'refine' per window
 };
 
 // Copy of a mapper's mutable state, or of a snapshot of it (features and pair matches are shared,
@@ -95,7 +95,10 @@ export class SequentialMapper {
     this.points = [];  // { X: [3], obs: Map(image -> keypoint) } | null when deleted
     this.segment = new Int32Array(this.n).fill(-1);  // connected map id per frame (S3 merges them)
     this.nextSegmentId = 0;  // ids ever created; merges leave gaps (the live ones are in this.segment)
-    this.stats = { registered: 0, focalInit: NaN, segments: [] };  // registered: frames with a pose now
+    this.stats = { registered: 0, focalInit: NaN, segments: [], initTried: 0 };  // registered: frames with a pose now; initTried: initial pairs' relative poses
+    // pairs no initial pair comes from, whatever the angle asked or the frames mapped: no relative pose, or a homography
+    // explains it (rotation only, a plane); initializeWith skips them (a pair added or reindexed is a new one)
+    this.noInit = new WeakSet();
   }
 
   // camera 0 (the only one, or the reference of several: the worker puts the largest group first)
@@ -162,12 +165,15 @@ export class SequentialMapper {
       if (this.focalKnown[this.camOf[k]]) withKnown.add(k); else unknown = true;
     }
     for (const set of unknown ? [withKnown, allowed] : [allowed]) {
-      for (const minAngle of [this.o.initMinAngleDeg, this.o.initMinAngleDeg / 2, this.o.minAngleDeg]) {
+      for (const minAngle of this.initAngles()) {
         if (this.initializeWith(minAngle, set)) return true;
       }
     }
     return false;
   }
+
+  // The median triangulation angles an initial pair needs, tried in turn (each once: the defaults' half is minAngleDeg)
+  initAngles() { return [...new Set([this.o.initMinAngleDeg, this.o.initMinAngleDeg / 2, this.o.minAngleDeg])]; }
 
   // Candidate pairs [i, e] (i < e.other) in the order initializeWith tries them: time order (the
   // first frame, then its nearest partner), or the most matches first ('strongest', photo sets)
@@ -182,13 +188,17 @@ export class SequentialMapper {
 
   initializeWith(minAngleDeg, allowed = null) {
     const ok = (k) => !this.poses[k] && (!allowed || allowed.has(k));
-    for (const [i, e] of this.initialPairs(ok)) {
-      if (e.a.length < 100) continue;
+    const pairs = this.initialPairs(ok);
+    for (let q = 0; q < pairs.length; q++) {
+      const [i, e] = pairs[q];
+      if (q % 64 === 0) this.o.progress('init', q, pairs.length);
+      if (e.a.length < 100 || this.noInit.has(e)) continue;
       const [x1, x2] = this.pairPixels(i, e);
+      this.stats.initTried++;
       const rel = relativePose(x1, x2, this.cam(i), { rng: this.rng, threshold: 2, minInliers: 100, camera2: this.cam(e.other) });
-      if (!rel) continue;
+      if (!rel) { this.noInit.add(e); continue; }
       const H = ransacHomography(x1, x2, { rng: this.rng, threshold: 4 });
-      if (H && H.numInliers > 0.8 * rel.F.numInliers) continue;  // rotation only / planar: no reliable depth
+      if (H && H.numInliers > 0.8 * rel.F.numInliers) { this.noInit.add(e); continue; }  // rotation only / planar: no reliable depth
       const P1 = { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, P2 = { R: rel.R, t: rel.t };
       const C2 = poseCenter(P2);
       const cand = [];

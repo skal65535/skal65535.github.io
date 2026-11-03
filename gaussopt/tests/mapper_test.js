@@ -157,6 +157,22 @@ Deno.test('mapper, synthetic two lenses: a camera per lens', () => {
 });
 
 // regrowSegments with no segment at all (no pair initializes) ends with nothing registered instead of throwing
+// A camera turning in place (a shaky shot): no pair gives an initial pair. Each pair's relative pose is computed once
+// however many angles and segments are tried, the angles are tried once each, and the search reports its progress
+Deno.test('mapper: an initial pair search over pairs that only rotate tries each pair once, with its progress', () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 1, spin: { at: 0, frames: 12, deg: 40 } });
+  const seen = [];
+  const mapper = new SequentialMapper(scene.input, { progress: (stage, done, total) => { if (stage === 'init') seen.push([done, total]); } });
+  const model = mapper.run();
+  const pairs = mapper.adj.flatMap((list, i) => list.filter(e => e.other > i));
+  const strong = pairs.filter(e => e.a.length >= 100).length;
+  assert(model.images.length === 0 && strong >= 20, `${model.images.length} registered, ${strong} pairs of 100 matches`);
+  assert(mapper.stats.initTried === strong, `${mapper.stats.initTried} relative poses for ${strong} pairs`);
+  const angles = mapper.initAngles();
+  assert(angles.length === new Set(angles).size && angles.length === 2, `angles ${angles}`);
+  assert(seen.length >= angles.length && seen.every(([d, t]) => t === pairs.length && d < t), `progress ${JSON.stringify(seen)}`);
+});
+
 Deno.test('mapper: regrowSegments with no segment registers nothing, does not throw', () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 6 });
   const mapper = new SequentialMapper({ ...scene.input, pairs: [] }, { regrowSegments: true });

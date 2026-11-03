@@ -36,7 +36,8 @@ import { readExif, jpegSize } from './exif.js';
 import { planPhotos, planMore, photoCameras, photoMapping, baseMapping } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
-import { xyOnly } from './frontend.js';
+import { xyOnly, mapperKeypoints } from './frontend.js';
+import { PointTracker } from './track.js';
 import { seconds } from './util.js';
 import { hashString } from '../math.js';
 import { storeFrom } from '../project/store.js';
@@ -45,7 +46,7 @@ const post = (msg, transfer = []) => self.postMessage(msg, transfer);
 const log = (text, level = '') => post({ type: 'log', text, level });
 const progress = (stage, done, total) => post({ type: 'progress', stage, done, total });
 const same = (a, b, keys) => a && keys.every(k => a[k] === b[k]);
-const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay'];  // the options the features depend on
+const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay', 'track'];  // the options the features depend on
 const perFrame = (feats) => Math.round(feats.reduce((s, f) => s + f.keypoints.length / 4, 0) / feats.length);  // mean features per frame
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const warnCapped = (capped, what) => {
@@ -275,7 +276,7 @@ async function keyframes(o, analysis) {
   const sel = selection(analysis, o), kept = sel.kept.map(i => analysis.order[i]);
   const blurry = sel.status.filter(s => s === 'blurry').length;
   log(`keyframes: ${kept.length} kept (${blurry} blurry dropped, median threshold ${sel.threshold.toFixed(1)}` +
-      (sel.path ? `; path ${(sel.path.at(-1) * o.spacing).toFixed(2)} diagonals)` : ')'));
+      (sel.path ? `; path ${(sel.path.at(-1) * o.spacing).toFixed(2)} diagonals${o.minRate ? `, at least ${o.minRate} spacings a second` : ''})` : ')'));
   if (kept.length < 3) throw new Error(`only ${kept.length} keyframes: lower the spacing or the blur threshold`);
   if (same(cache.features?.options, o, FEATURE_KEYS) && cache.features.kept.join() === kept.join()) {
     // a fresh list: densify appends to the session's own (the JPEGs of added frames can stay)
@@ -290,10 +291,35 @@ async function keyframes(o, analysis) {
     await save(`images/${jpeg.name}`, jpeg.blob);
   });
   log(`features: ${feats.length} keyframes at ${w} x ${h}, ${perFrame(feats)} per frame in ${seconds(t)}`);
+  const trackPairs = o.track ? await trackPoints(analysis, sel.kept, feats, w, h, o) : null;
   // id: a saved model is restored only over the features it was built from
-  cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h };
+  cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h, trackPairs };
   saveFeatures(cache.features);
   return videoKeyframes(cache.features, sel.kept);
+}
+
+// The keyframes' keypoints tracked through every sampled frame between the first and the last (track.js, DESIGN-sfm
+// §5.2.1; a third decode pass, at the keyframes' size): sets each keyframe's `tracked` (the keypoints added to it),
+// returns the tracks' pairs. picks: the keyframes' analysis indices.
+async function trackPoints(analysis, picks, feats, w, h, o) {
+  const t = performance.now(), ov = overlayMask(o), tracker = new PointTracker(w, h);
+  const keyframeOf = new Map(picks.map((i, k) => [analysis.order[i], k]));
+  const wanted = new Set(analysis.order.slice(picks[0], picks.at(-1) + 1));
+  const keep = ov ? (x, y) => !maskAt(ov, x, y, w, h) : null;
+  let done = 0;
+  await decodeFrames(video, wanted, w, h, async (ctx, sample) => {
+    tracker.frame(grayOf(ctx.getImageData(0, 0, w, h).data, w * h));
+    const k = keyframeOf.get(sample);
+    if (k !== undefined) tracker.keyframe(k, feats[k].keypoints, keep);
+    progress('track', ++done, wanted.size);
+  });
+  noteDecoder();
+  const { added, pairs, tracks } = tracker.result(), lost = tracker.stats.lost;
+  feats.forEach((f, k) => { f.tracked = added.get(k) ?? new Float32Array(0); });
+  const long = tracks.reduce((s, c, v) => s + (v >= 3 ? c : 0), 0), more = feats.reduce((s, f) => s + f.tracked.length / 2, 0);
+  log(`tracks: ${done} frames, ${tracks.reduce((s, c) => s + c, 0)} tracks (${long} through 3 keyframes or more), ${Math.round(more / feats.length)} ` +
+      `keypoints added a keyframe, ${pairs.length} pairs; lost ${JSON.stringify(lost)} in ${seconds(t)}`);
+  return pairs;
 }
 
 // The keyframes' cameras (zoomCameras) and flow homographies (flowChains), picks: their analysis indices
@@ -503,7 +529,15 @@ async function opfs(name, blob = null) {
 // frames): written once per keyframe set, and after a densify
 function featuresProject(f) {
   const { analysis } = cache, parts = {};
-  for (const x of f.feats) { parts[`kp/${x.name}`] = x.keypoints; parts[`desc/${x.name}`] = x.descriptors; }
+  for (const x of f.feats) {
+    parts[`kp/${x.name}`] = x.keypoints; parts[`desc/${x.name}`] = x.descriptors;
+    if (x.tracked?.length) parts[`trk/${x.name}`] = x.tracked;
+  }
+  // the tracks' pairs: [i, j, matches] per pair, their matches one after the other
+  if (f.trackPairs?.length) {
+    parts['track/pairs'] = Uint32Array.from(f.trackPairs.flatMap(p => [p.i, p.j, p.matches.length]));
+    parts['track/matches'] = Uint32Array.from(f.trackPairs.flatMap(p => [...p.matches]));
+  }
   for (const j of f.jpegs) parts[`jpeg/${j.name}`] = j.blob;
   const source = video ? { name: video.file.name, duration: video.duration } : cache.source ?? null;
   // a photo set has no frame analysis (S0): its plan stands in for the source
@@ -565,10 +599,17 @@ async function restoreFrom(fp, mp) {
   cache.source = fp.json.video;
   cache.photoPlan = fp.json.photos ?? null;
   for (const { name, time } of f.frames) {
-    feats.push({ name, time, keypoints: await fp.get(`kp/${name}`), descriptors: await fp.get(`desc/${name}`) });
+    feats.push({ name, time, keypoints: await fp.get(`kp/${name}`), descriptors: await fp.get(`desc/${name}`),
+                 ...(fp.keys.includes(`trk/${name}`) ? { tracked: await fp.get(`trk/${name}`) } : {}) });
     if (fp.keys.includes(`jpeg/${name}`)) jpegs.push({ name, blob: new Blob([await (await fp.get(`jpeg/${name}`)).arrayBuffer()], { type: 'image/jpeg' }) });
   }
-  cache.features = { options: f.options, id: f.id, kept: f.kept, feats, jpegs, width: f.width, height: f.height };
+  let trackPairs = null;
+  if (fp.keys.includes('track/pairs')) {
+    const ij = await fp.get('track/pairs'), m = await fp.get('track/matches');
+    trackPairs = [];
+    for (let q = 0, at = 0; q < ij.length; q += 3) { trackPairs.push({ i: ij[q], j: ij[q + 1], matches: m.slice(at, at + ij[q + 2]) }); at += ij[q + 2]; }
+  }
+  cache.features = { options: f.options, id: f.id, kept: f.kept, feats, jpegs, width: f.width, height: f.height, trackPairs };
   post({ type: 'keyframes', count: feats.length });
   await postThumbs(cache.features);
   if (!mp) return false;
@@ -579,7 +620,7 @@ async function restoreFrom(fp, mp) {
   const byName = new Map(feats.map(x => [x.name, x]));
   const keypoints = (n) => {
     if (!byName.has(n)) throw new Error(`keyframe ${n} of the model has no saved features`);
-    return xyOnly(byName.get(n).keypoints);
+    return mapperKeypoints(byName.get(n));
   };
   const session = SfmSession.fromState({ json: mp.json.session, arrays }, keypoints,
                                        { pairSource: featurePairSource(feats, matcher), log: (s) => log(`  ${s}`), progress });
@@ -690,7 +731,7 @@ async function run(options) {
   const cameras = photos ? photoCameras(photos.plan, features.width, features.height) : zoomPriors(features);
   if (!photos && cameras) mapping.scanFocal = true;
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
-    { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}) });
+    { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}), ...(features.trackPairs ? { trackPairs: features.trackPairs } : {}) });
   current = { session, features, o, version: 0 };  // version: bumped by every action and undo
   // repair: each stretch of keyframes scored below green re-matched, kept where the scores improve (session.repair);
   // not for photos (P4)

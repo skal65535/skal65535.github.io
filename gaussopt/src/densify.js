@@ -17,6 +17,8 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
     pruneOpacity   = 0.008,
     hysteresis     = 0.35,
     enableFloaters = true,
+    floaterFewViews = true,       // floater rule 2 (seen from few views, much error); off: kept (a movie's passing things)
+    decayOccluders = true,        // a splat of much error loses opacity (x 0.65); off: kept as it is
     floaterDepth   = 'observed',  // nearCameraCone's depth
     floaterSpare   = null,        // nearCameraCone's spare: { positions, count, radius } (the SfM points)
     splitMinViews  = 0,           // > 0: no split / clone of a splat seen from fewer views (N_eff / visitsPerView)
@@ -62,13 +64,13 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
     }
     // B. Floaters (removed, or teleported); high-error occluders lose opacity
     if (enableFloaters) {
-      const rule = isFloater(params, b, alpha, leaf, W, S, R, nearCamera);
+      const rule = isFloater(params, b, alpha, leaf, W, S, R, nearCamera, floaterFewViews);
       if (rule) {
         stats.floaterRules[rule - 1]++;
         if (!teleport()) stats.floaters++;
         continue;
       }
-      if (W > 1.0 && (R / W) > 0.22 && alpha > 0.15) params[b + 3] = logit(alpha * 0.65);
+      if (decayOccluders && W > 1.0 && (R / W) > 0.22 && alpha > 0.15) params[b + 3] = logit(alpha * 0.65);
     }
     // C. Split when R > Tu.
     const Tu = repairMask?.[i] ? err.Tu / (1 + repairBoost) : err.Tu;
@@ -88,7 +90,9 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
 
   // monte_carlo: the dead become the seeds first, the others copies of live splats, within the cap
   const toCopy = Math.max(0, Math.min(dead - nSeeds, maxSplats - out.n - nSeeds));
-  if (toCopy > 0) stats.teleported = relocate(out, toCopy, relocateBy === 'error' ? moments : null, repairMask, repairBoost, relocateMode);
+  // the copies stay at twice the prune threshold at least (relocate's minOpacity): the draws past it are dropped
+  if (toCopy > 0) stats.teleported = relocate(out, toCopy, relocateBy === 'error' ? moments : null, repairMask, repairBoost, relocateMode, 2 * pruneOpacity);
+  stats.relocateDropped = toCopy - stats.teleported;
   stats.pruned += Math.max(0, dead - nSeeds) - stats.teleported;
   if (enableMerge) stats.merged = mergeOverlaps(out);
   stats.trimmed = trimToCap(out, maxSplats, keepScore ?? moments, keepScore ? 1 : MOMENT_FLOATS);
@@ -169,7 +173,9 @@ class KeptSplats {
 // mask (by input splat, E7's stuck regions): those rows drawn (1 + boost) times as often.
 // mode 'shape' (brush): each of n distinct rows drawn splits into two halves within its shape (splitRowByShape);
 // a row is drawn again only when there are fewer rows than n.
-export function relocate(out, n, moments = null, mask = null, boost = 0, mode = 'copy') {
+// minOpacity (mode 'copy'): a row gets no more copies than keep o' >= minOpacity; a draw past that is dropped
+// (the dead it would have moved are pruned), else many dead give copies under the prune threshold, dead in turn.
+export function relocate(out, n, moments = null, mask = null, boost = 0, mode = 'copy', minOpacity = 0) {
   const rows = [], cdf = [];
   let acc = 0;
   for (let k = 0; k < out.n; k++) {
@@ -192,8 +198,15 @@ export function relocate(out, n, moments = null, mask = null, boost = 0, mode = 
     for (let j = 0; j < n; j++) splitRowByShape(out, order[j % order.length]);
     return n;
   }
+  // the most copies of row k: 1 - (1 - o)^(1/N) >= minOpacity
+  const most = (k) => minOpacity > 0 ? Math.floor(Math.log1p(-sigmoid(out.buf[k * SPLAT_FLOATS + 3])) / Math.log1p(-minOpacity)) : Infinity;
   const picks = new Map();
-  for (let j = 0; j < n; j++) { const k = draw(); picks.set(k, (picks.get(k) ?? 0) + 1); }
+  let moved = 0;
+  for (let j = 0; j < n; j++) {
+    const k = draw(), c = picks.get(k) ?? 0;
+    if (c + 2 > most(k)) continue;
+    picks.set(k, c + 1); moved++;
+  }
   for (const [k, j] of picks) {
     const N = j + 1, row = out.row(k), [o, ds] = relocatedOpacityScale(sigmoid(row[3]), N);
     row[3] = logit(o);
@@ -203,7 +216,7 @@ export function relocate(out, n, moments = null, mask = null, boost = 0, mode = 
       out.buf.copyWithin(r * SPLAT_FLOATS, k * SPLAT_FLOATS, (k + 1) * SPLAT_FLOATS);
     }
   }
-  return n;
+  return moved;
 }
 
 // relocate's opacity and scale factor for one splat of opacity o split into N
@@ -302,10 +315,10 @@ function nearPoints(positions, count, r) {
 // cells; faint splats in isolated leaves.
 // The rule that removes the splat: 1 in a camera's near cone, 2 seen from too few directions for
 // its error, 3 faint in an empty leaf; 0 for none
-function isFloater(params, b, alpha, leaf, W, S, R, nearCamera) {
+function isFloater(params, b, alpha, leaf, W, S, R, nearCamera, fewViews = true) {
   const nEff = S > 1e-8 ? (W * W) / S : 1.0;
   if (nearCamera(params[b], params[b + 1], params[b + 2])) return 1;
-  if (leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) return 2;
+  if (fewViews && leaf && leaf.numCameras >= 4 && W > 0.5 && nEff < 1.45 && (R / W) > 0.12) return 2;
   if (leaf && leaf.state === 3 && alpha < 0.25) return 3;
   return 0;
 }
