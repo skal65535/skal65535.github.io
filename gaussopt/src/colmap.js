@@ -2,7 +2,7 @@
 //             and 3DGS .ply / .splat checkpoint import & export (.ply may embed the Loose Octree).
 "use strict";
 
-import { logit, quatToMat3, mat3ToQuat, makeViewMatrix, projectPinhole, hashString } from './math.js';
+import { sigmoid, logit, quatToMat3, mat3ToQuat, makeViewMatrix, projectPinhole, hashString } from './math.js';
 import { CAMERA_MODELS, intrinsics, distortionParams, poseCenter } from './sfm/camera.js';
 
 const SH_C0 = 0.28209479177387814;
@@ -392,6 +392,27 @@ export function exportPlyBuffer(params, count, octree = null) {
     for (const [, type, field] of PLY_OCTREE_PROPS) {
       if (type === 'float') dv.setFloat32(o, n[field], true); else dv.setInt32(o, n[field], true);
       o += 4;
+    }
+  }
+  return out;
+}
+
+// antimatter15 .splat export, for viewers (e.g. splats/) that only read that format.
+export function exportSplatBuffer(params, count) {
+  const out = new ArrayBuffer(count * SPLAT_BYTES);
+  const f32 = new Float32Array(out);
+  const u8  = new Uint8Array(out);
+  for (let i = 0; i < count; i++) {
+    const b = i * SPLAT_FLOATS, fo = i * 8, uo = i * SPLAT_BYTES;
+    for (let k = 0; k < 3; k++) {
+      f32[fo + k]     = params[b + k];
+      f32[fo + 3 + k] = Math.exp(params[b + 4 + k]);
+      u8[uo + 24 + k] = Math.round(sh0ToRgb01(params[b + 12 + k]) * 255);
+    }
+    u8[uo + 27] = Math.round(sigmoid(params[b + 3]) * 255);
+    const qn = Math.hypot(params[b + 8], params[b + 9], params[b + 10], params[b + 11]) || 1;
+    for (let k = 0; k < 4; k++) {
+      u8[uo + 28 + k] = Math.min(255, Math.max(0, Math.round((params[b + 8 + k] / qn + 1) * 128)));
     }
   }
   return out;
