@@ -16,6 +16,9 @@ export const SESSION_DEFAULTS = {
   autoRepair: true,  // session.repair() once the reconstruction is done (undoable)
   overlay: true,     // a video's on-screen display (burnt-in text, boxes, a reticle) masked: the features and the training leave it out (overlay.js)
   track: true,       // a video's keyframe keypoints tracked through every sampled frame: longer tracks, the matches of keyframes farther apart (track.js)
+  baPrecision: 'f64', // the mapper's window BAs: 'f64' or 'gpu' (mapper.js baPrecision)
+  baGpuMinObs: 0,    // mapper.js baGpuMinObs (0: the mapper's)
+  baShadow: '',      // mapper.js baShadow ('gpu', 'f64'): each window BA also solved so on a copy, measured against the map's
   trainMinObs: 0,    // the trainer's points: seen by at least this many keyframes (export.js minObs); 0: 3 for a video, 2 for photos (DESIGN-sfm §13.3 P6)
 };
 

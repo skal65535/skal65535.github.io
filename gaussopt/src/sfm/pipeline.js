@@ -8,6 +8,7 @@ import { matchFeatures, matchPairs } from './frontend.js';
 import { mergeTrackPairs } from './track.js';
 import { buildVocabulary, bagOfWords, loopCandidates, geometricCandidates } from './loopdetect.js';
 import { SfmSession, withNames } from './session.js';
+import { timingsLine, shadowWindowLines } from './reconstruct.js';
 import { defaultCamera } from './camera.js';
 import { makeRng } from '../math.js';
 import { PIPELINE_DEFAULTS } from './defaults.js';
@@ -56,6 +57,8 @@ export async function reconstructFromFeatures(features, width, height, matcher, 
   const { mapper, model, stats } = await session.reconstruct({ proposeLoops });
   log(`reconstruct: ${model.images.length}/${features.length} registered, ${stats.numSegments} segment(s), ` +
       `focal ${model.focal.toFixed(1)} px in ${seconds(t2)}`);
+  log(`  time: ${timingsLine(stats)}`);
+  for (const line of shadowWindowLines(stats.time)) log(`  window ${line}`);
   return { session, mapper, model, stats, input, matched };
 }
 

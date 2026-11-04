@@ -9,10 +9,10 @@ import { assert, SLOW, DUMP, HAS_REF, loadInput, assessColmap } from './util.js'
 
 const BASE = { numFrames: 30, maxFeatures: 1000, numGround: 8000, numBoxes: 8, numFar: 1000 };
 
-function mapSynthetic(options, mapperOptions = {}) {
+async function mapSynthetic(options, mapperOptions = {}) {
   const scene = makeSyntheticScene({ ...BASE, ...options });
   const mapper = new SequentialMapper(scene.input, mapperOptions);
-  const model = mapper.run();
+  const model = await mapper.run();
   return { scene, mapper, model, m: compareModels(model, scene.truth.model), l: compareLocal(model, scene.truth.model) };
 }
 
@@ -25,8 +25,8 @@ const CASES = {
 };
 
 for (const [name, options] of Object.entries(CASES)) {
-  Deno.test(`mapper, synthetic: ${name}`, () => {
-    const { scene, mapper, m, l } = mapSynthetic(options);
+  Deno.test(`mapper, synthetic: ${name}`, async () => {
+    const { scene, mapper, m, l } = await mapSynthetic(options);
     const tag = `${name}: RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg, focal ${(100 * m.focalErr).toFixed(2)}%`;
     assert(m.numCommon === scene.truth.images.length && mapper.nextSegmentId === 1, `${tag}: ${m.numCommon} registered, ${mapper.nextSegmentId} segments`);
     const fails = checkThresholds(m, 'truth');  // DESIGN-sfm §8.3 against ground truth
@@ -39,8 +39,8 @@ for (const [name, options] of Object.entries(CASES)) {
 // unobservable from F. The mapper must say so and fall back, and a given HFOV must work.
 const NADIR = { path: 'line', pitchDeg: 85, length: 60, numGround: 30000, numFar: 0 };
 
-Deno.test('mapper, synthetic nadir pass: unobservable focal is detected and falls back', () => {
-  const { scene, mapper, m } = mapSynthetic(NADIR);
+Deno.test('mapper, synthetic nadir pass: unobservable focal is detected and falls back', async () => {
+  const { scene, mapper, m } = await mapSynthetic(NADIR);
   assert(mapper.stats.focalSource === 'fallback', `focal source ${mapper.stats.focalSource}, sharpness ${mapper.stats.focalSharpness}`);
   assert(m.numCommon === scene.truth.images.length, `${m.numCommon} registered`);
 });
@@ -57,9 +57,9 @@ Deno.test('mapper, synthetic nadir pass in portrait: the fallback HFOV is across
 
 // Rotations stay looser over near-flat ground: small rotations and translations are nearly
 // interchangeable there (bas-relief ambiguity).
-Deno.test('mapper, synthetic nadir pass with the HFOV given', () => {
+Deno.test('mapper, synthetic nadir pass with the HFOV given', async () => {
   const hfovDeg = 2 * Math.atan(960 / 1230) * 180 / Math.PI;
-  const { m } = mapSynthetic(NADIR, { hfovDeg });
+  const { m } = await mapSynthetic(NADIR, { hfovDeg });
   const tag = `RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg, focal ${(100 * m.focalErr).toFixed(2)}%`;
   assert(m.focalErr < 0.01 && m.rmsCenterRel < 0.005 && m.medianRotDeg < 1.5, tag);
 });
@@ -90,10 +90,10 @@ function thinLink({ wrong = 0 } = {}) {
 }
 
 for (const [relativeRegistration, wrong] of [[false, 0], [true, 0], [true, 25]]) {
-  Deno.test(`mapper, synthetic thin link, relativeRegistration ${relativeRegistration}, ${wrong} wrong matches`, () => {
+  Deno.test(`mapper, synthetic thin link, relativeRegistration ${relativeRegistration}, ${wrong} wrong matches`, async () => {
     const scene = thinLink({ wrong });
     const mapper = new SequentialMapper(scene.input, { relativeRegistration });
-    const model = mapper.run(), m = compareModels(model, scene.truth.model);
+    const model = await mapper.run(), m = compareModels(model, scene.truth.model);
     const tag = `${m.numCommon} registered, ${mapper.nextSegmentId} segments, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
     if (!relativeRegistration) {  // the case registerRelative exists for
       assert(mapper.nextSegmentId === 2, `without registerRelative the map should split: ${tag}`);
@@ -107,13 +107,13 @@ for (const [relativeRegistration, wrong] of [[false, 0], [true, 0], [true, 25]])
 
 // regrowSegments: a map split in two (the thin link mapped without registerRelative) becomes one
 // once the smaller segment's frames are offered to the larger one, registerRelative on
-Deno.test('mapper, synthetic thin link: regrowSegments joins the two segments', () => {
+Deno.test('mapper, synthetic thin link: regrowSegments joins the two segments', async () => {
   const scene = thinLink();
   const mapper = new SequentialMapper(scene.input, { relativeRegistration: false });
-  mapper.run();
+  await mapper.run();
   assert(new Set(mapper.segment).size === 2, `two segments first: ${[...new Set(mapper.segment)]}`);
   mapper.o.relativeRegistration = true;
-  mapper.regrowSegments();
+  await mapper.regrowSegments();
   const m = compareModels(mapper.model(), scene.truth.model);
   const tag = `${m.numCommon} registered, segments ${[...new Set(mapper.segment)]}, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
   assert(m.numCommon === 12 && new Set(mapper.segment).size === 1, tag);
@@ -125,7 +125,7 @@ Deno.test('mapper, synthetic thin link: regrowSegments joins the two segments', 
 Deno.test({ name: 'mapper, jardin5 (SFM_DUMP): every consistent COLMAP piece within the colmap thresholds', ignore: !SLOW || !DUMP || !HAS_REF, fn: async () => {
   const input = await loadInput();
   const mapper = new SequentialMapper(input, {});
-  const model = mapper.run();
+  const model = await mapper.run();
   const { ref, defects, local, fails } = await assessColmap(model, input);
   console.log(`  ${model.images.length}/${input.images.length} registered in ${mapper.nextSegmentId} segments, focal ${model.focal.toFixed(1)} vs ${ref.focal.toFixed(1)}, ` +
               `COLMAP defects excluded: ${defects.badFrames.size} frames, ${defects.breaks.size} breaks; local rotation ${local.medianRelRotDeg.toFixed(3)} deg`);
@@ -144,10 +144,10 @@ function twoLenses() {
     cameraOf: (k) => (k % 3 === 2 ? 1 : 0), priorFocals: [1230 * 0.97, 700 * 0.97] });
 }
 
-Deno.test('mapper, synthetic two lenses: a camera per lens', () => {
+Deno.test('mapper, synthetic two lenses: a camera per lens', async () => {
   const scene = twoLenses();
   const mapper = new SequentialMapper(scene.input, { refine: ['f', 'k1', 'k2'] });
-  const model = mapper.run(), m = compareModels(model, scene.truth.model);
+  const model = await mapper.run(), m = compareModels(model, scene.truth.model);
   const focals = mapper.cameras.map(c => c.params[0]), err = focals.map((f, k) => f / scene.truth.cameras[k].params[0] - 1);
   const tag = `${m.numCommon} registered, ${mapper.nextSegmentId} segments, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg, focals ${focals.map(f => f.toFixed(1))}`;
   assert(m.numCommon === 30 && mapper.nextSegmentId === 1, tag);
@@ -159,11 +159,11 @@ Deno.test('mapper, synthetic two lenses: a camera per lens', () => {
 // regrowSegments with no segment at all (no pair initializes) ends with nothing registered instead of throwing
 // A camera turning in place (a shaky shot): no pair gives an initial pair. Each pair's relative pose is computed once
 // however many angles and segments are tried, the angles are tried once each, and the search reports its progress
-Deno.test('mapper: an initial pair search over pairs that only rotate tries each pair once, with its progress', () => {
+Deno.test('mapper: an initial pair search over pairs that only rotate tries each pair once, with its progress', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 1, spin: { at: 0, frames: 12, deg: 40 } });
   const seen = [];
   const mapper = new SequentialMapper(scene.input, { progress: (stage, done, total) => { if (stage === 'init') seen.push([done, total]); } });
-  const model = mapper.run();
+  const model = await mapper.run();
   const pairs = mapper.adj.flatMap((list, i) => list.filter(e => e.other > i));
   const strong = pairs.filter(e => e.a.length >= 100).length;
   assert(model.images.length === 0 && strong >= 20, `${model.images.length} registered, ${strong} pairs of 100 matches`);
@@ -173,22 +173,22 @@ Deno.test('mapper: an initial pair search over pairs that only rotate tries each
   assert(seen.length >= angles.length && seen.every(([d, t]) => t === pairs.length && d < t), `progress ${JSON.stringify(seen)}`);
 });
 
-Deno.test('mapper: regrowSegments with no segment registers nothing, does not throw', () => {
+Deno.test('mapper: regrowSegments with no segment registers nothing, does not throw', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 6 });
   const mapper = new SequentialMapper({ ...scene.input, pairs: [] }, { regrowSegments: true });
-  const model = mapper.run();
+  const model = await mapper.run();
   assert(model.images.length === 0 && mapper.nextSegmentId === 0, `${model.images.length} registered`);
 });
 
 // After the regrow, the largest segment retries the frames still unregistered (a frame registered
 // by a regrow that was undone is not lost): one segment and a frame taken out of it
-Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the largest segment', () => {
+Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the largest segment', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 12, turns: 0.5, overlap: 11 });
   const mapper = new SequentialMapper(scene.input, { relativeRegistration: true });
-  mapper.run();
+  await mapper.run();
   assert(mapper.poses.every(Boolean), 'all registered first');
   mapper.unregister([6]);
-  mapper.regrowSegments();
+  await mapper.regrowSegments();
   const m = compareModels(mapper.model(), scene.truth.model);
   assert(!!mapper.poses[6] && m.numCommon === 12, `frame 6 ${mapper.poses[6] ? 'back' : 'still out'}, ${m.numCommon} registered`);
   assert(checkThresholds(m, 'truth').length === 0, checkThresholds(m, 'truth').join(', '));
@@ -197,23 +197,23 @@ Deno.test('mapper: regrowSegments ends with the unregistered frames tried on the
 // The final sweeps fit the lens to the whole sequence, not to its last windows. A forward flight whose
 // last 9 of 30 frames are seen through k1 = 0.1, mapped as one camera: the lens of the other 21 (k1 = 0)
 // wins (refined window by window, k1 ends near 0.06).
-Deno.test('reconstruct, synthetic: the lens is fitted to the whole sequence, not its last windows', () => {
+Deno.test('reconstruct, synthetic: the lens is fitted to the whole sequence, not its last windows', async () => {
   const scene = makeSyntheticScene({ ...BASE, path: 'line', pitchDeg: 45,
     cameras: [[1230, 1230, 960, 540, 0, 0, 0, 0], [1230, 1230, 960, 540, 0.1, 0, 0, 0]], cameraOf: (k) => (k >= 21 ? 1 : 0) });
   const { camera, images, pairs } = scene.input;
-  const { mapper } = reconstruct({ camera, images: images.map(({ camera, ...im }) => im), pairs }, { sweeps: 2 });
+  const { mapper } = await reconstruct({ camera, images: images.map(({ camera, ...im }) => im), pairs }, { sweeps: 2 });
   const k1 = mapper.camera.params[4];
   assert(mapper.poses.every(Boolean) && Math.abs(k1) < 0.03, `${mapper.poses.filter(Boolean).length} registered, k1 ${k1.toFixed(4)}`);
 });
 
 // A lens with 3 photos, its prior ratio 7% off (as a phone ultrawide's EXIF, DESIGN-sfm §13 P8): kept
 // while mapping (fewer than minCameraFrames), fitted to the whole map in the final sweeps (minCameraFramesSweeps)
-Deno.test('reconstruct, synthetic: a lens with 3 photos is fitted in the final sweeps', () => {
+Deno.test('reconstruct, synthetic: a lens with 3 photos is fitted in the final sweeps', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 30, turns: 0.6, overlap: 8,
     cameras: [[1230, 1230, 960, 540, 0.005, -0.002, 0, 0], [700, 700, 960, 540, -0.03, 0.004, 0, 0]],
     cameraOf: (k) => ([5, 15, 25].includes(k) ? 1 : 0), priorFocals: [1230 * 0.97, 700 * 0.97 * 1.07] });
   // a photo set's window spans every photo (worker.js run): a window BA sees the lens's 3 photos together
-  const { mapper } = reconstruct(scene.input, { sweeps: 2, refine: ['f', 'k1', 'k2'], window: 29 });
+  const { mapper } = await reconstruct(scene.input, { sweeps: 2, refine: ['f', 'k1', 'k2'], window: 29 });
   const err = mapper.cameras.map((c, k) => c.params[0] / scene.truth.cameras[k].params[0] - 1);
   const reg = mapper.poses.filter(Boolean).length;
   assert(reg === 30 && Math.abs(err[0]) < 0.01 && Math.abs(err[1]) < 0.02, `${reg} registered, focal errors ${err.map(e => (100 * e).toFixed(2))}%`);
@@ -231,10 +231,10 @@ function zoomedOrbit() {
     cameraOf: (k) => (k < 12 ? 0 : k < 18 ? 1 : 2), priorFocals: [1230, 1230 * 1.84, 1230 * 0.5] });
 }
 
-Deno.test('mapper, synthetic zooms: a scanned focal per zoom, a camera back at an earlier focal joins it', () => {
+Deno.test('mapper, synthetic zooms: a scanned focal per zoom, a camera back at an earlier focal joins it', async () => {
   const scene = zoomedOrbit();
   const mapper = new SequentialMapper(scene.input, { scanFocal: true });
-  const model = mapper.run(), m = compareModels(model, scene.truth.model);
+  const model = await mapper.run(), m = compareModels(model, scene.truth.model);
   const err = (k) => mapper.cameras[k].params[0] / scene.truth.cameras[k].params[0] - 1;
   const tag = `${m.numCommon} registered, ${mapper.nextSegmentId} segments, cameras of frames ${[...new Set(mapper.camOf)]}, ` +
               `focal errors ${[0, 1].map(k => (100 * err(k)).toFixed(2))}%, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;

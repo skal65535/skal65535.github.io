@@ -10,8 +10,9 @@
 
 import { expSO3, mul3, mulVec3, choleskySolve, invert3 } from './linalg.js';
 import { intrinsics, distortionParams, paramIndex, withFocal } from './camera.js';
+import { median } from './util.js';
 
-const INTRINSICS = ['f', 'k1', 'k2'];
+export const INTRINSICS = ['f', 'k1', 'k2'];
 
 // Projection of camera-space point q with Jacobians: out.uv, out.dq (2 x 3, d(uv)/dq) and
 // out.dk (2 x 3, d(uv)/d[f, k1, k2], with fy = f * fy/fx)
@@ -80,7 +81,18 @@ const rho = (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / 
 // opts: { refine: ['f', 'k1'], refineCameras: [bool] per camera model (default: all of them),
 // lossScale: 2 (px, of the Huber loss), maxIterations: 30, fixPoints: false }; stops when an accepted step lowers the cost by
 // less than 1e-7 (relative)
-// Returns { initialCost, cost, iterations, rmse (px, of the non-robust residuals) }.
+// Returns { initialCost, cost, iterations, rmse (px, of the non-robust residuals), profile }. profile: the problem's
+// size (obs, freeObs: those of free poses, points, free poses) and where the time went, in ms (linearize, normal: the
+// pose blocks of J^T w J, schur, cholesky, back: back-substitution, cost: the cost evaluations; solves, evals: counts).
+// The frame ba_gpu.js solves a window in: { c: the points' median, s: their median distance to it }
+export function normalizeFrame(points) {
+  const n = points.length / 3;
+  if (!n) return { c: [0, 0, 0], s: 1 };
+  const c = [0, 1, 2].map(k => median(Array.from({ length: n }, (_, p) => points[3 * p + k])));
+  const s = median(Array.from({ length: n }, (_, p) => Math.hypot(points[3 * p] - c[0], points[3 * p + 1] - c[1], points[3 * p + 2] - c[2]))) || 1;
+  return { c, s };
+}
+
 export function bundleAdjust(problem, opts = {}) {
   const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false } = opts;
   const { poses, free, points, obsCam, obsPoint, obsUV } = problem;
@@ -92,9 +104,14 @@ export function bundleAdjust(problem, opts = {}) {
   const kIdx = INTRINSICS.map((name, k) => [name, k]).filter(([name]) => refine.includes(name) && slot(name) >= 0).map(([, k]) => k);
   const ni = kIdx.length;
   const numObs = obsCam.length, numPoints = points.length / 3;
+  const profile = { obs: numObs, freeObs: 0, points: numPoints, free: 0, solves: 0, evals: 0,
+                    linearize: 0, normal: 0, schur: 0, cholesky: 0, back: 0, cost: 0 };
+  const now = () => performance.now();
   const camBlock = new Int32Array(poses.length).fill(-1);
   let nc = 0;
   for (let c = 0; c < poses.length; c++) if (free[c]) camBlock[c] = nc++;
+  profile.free = nc;
+  for (let o = 0; o < numObs; o++) if (free[obsCam[o]]) profile.freeObs++;
   // the intrinsics blocks: one per refined camera model that some pose of the problem uses
   const used = new Set(poseCam), intrBlock = new Int32Array(cams.length).fill(-1);
   let nm = 0;
@@ -116,6 +133,8 @@ export function bundleAdjust(problem, opts = {}) {
   const pointOf = (X, p) => [X[3 * p], X[3 * p + 1], X[3 * p + 2]];
 
   const evalCost = (C, P, X) => {
+    const t = now();
+    profile.evals++;
     let cost = 0, sq = 0, n = 0;
     const r = [0, 0], junk = new Float64Array(18);  // Jacobians are not needed here
     for (let o = 0; o < numObs; o++) {
@@ -126,90 +145,147 @@ export function bundleAdjust(problem, opts = {}) {
       const s = r[0] * r[0] + r[1] * r[1];
       cost += rho(s, lossScale)[0]; sq += s; n++;
     }
+    profile.cost += now() - t;
     return { cost, rmse: Math.sqrt(sq / Math.max(1, n)) };
   };
 
   const linearizeAll = () => {
+    const t = now();
     for (let o = 0; o < numObs; o++) {
       if (!linearize(camOfObs(o), poses[obsCam[o]], pointOf(points, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1],
                      tmp, res, 2 * o, Jc, 12 * o, Jp, 6 * o)) { wgt[o] = 0; continue; }
       wgt[o] = rho(res[2 * o] ** 2 + res[2 * o + 1] ** 2, lossScale)[1];
       for (let k = 0; k < ni; k++) { Ji[2 * ni * o + k] = tmp.dk[kIdx[k]]; Ji[2 * ni * o + ni + k] = tmp.dk[3 + kIdx[k]]; }
     }
+    profile.linearize += now() - t;
   };
 
-  // The non-point parameter blocks of observation o: [offset in the reduced system, size, J, J offset]
-  const blocksOf = (o) => {
-    const out = [];
-    if (camBlock[obsCam[o]] >= 0) out.push([6 * camBlock[obsCam[o]], 6, Jc, 12 * o]);
-    if (ni && intrOfObs(o) >= 0) out.push([iOff + ni * intrOfObs(o), ni, Ji, 2 * ni * o]);
-    return out;
-  };
+  // The non-point parameter blocks of each observation: offC (its pose's), offI (its intrinsics'), the offset in the
+  // reduced system, -1 if fixed; and of each point (slots), the distinct ones of its observations in the order they
+  // meet them: slotOff, slotSize, slotW (its W rows in wBuf, 3 per parameter); obsSlotC, obsSlotI: the observation's
+  // slots. Built once: the solves only fill buffers.
+  const offC = new Int32Array(numObs), offI = new Int32Array(numObs);
+  for (let o = 0; o < numObs; o++) {
+    offC[o] = camBlock[obsCam[o]] >= 0 ? 6 * camBlock[obsCam[o]] : -1;
+    offI[o] = ni && intrOfObs(o) >= 0 ? iOff + ni * intrOfObs(o) : -1;
+  }
+  const slotStart = new Int32Array(numPoints + 1), obsSlotC = new Int32Array(numObs).fill(-1), obsSlotI = new Int32Array(numObs).fill(-1);
+  const offs = [], sizes = [];
+  let maxW = 0;
+  for (let p = 0; p < numPoints; p++) {
+    const first = slotStart[p] = offs.length;
+    const slotOf = (off, size) => {
+      for (let s = first; s < offs.length; s++) if (offs[s] === off) return s;
+      offs.push(off); sizes.push(size);
+      return offs.length - 1;
+    };
+    for (let k = ptStart[p]; k < ptStart[p + 1]; k++) {
+      const o = ptObs[k];
+      if (offC[o] >= 0) obsSlotC[o] = slotOf(offC[o], 6);
+      if (offI[o] >= 0) obsSlotI[o] = slotOf(offI[o], ni);
+    }
+    let w = 0;
+    for (let s = first; s < offs.length; s++) w += 3 * sizes[s];
+    maxW = Math.max(maxW, w);
+  }
+  const numSlots = slotStart[numPoints] = offs.length;
+  const slotOff = Int32Array.from(offs), slotSize = Int32Array.from(sizes), slotW = new Int32Array(numSlots + 1);
+  for (let s = 0; s < numSlots; s++) slotW[s + 1] = slotW[s] + 3 * slotSize[s];
+  const wBuf = new Float64Array(slotW[numSlots]), wvBuf = new Float64Array(maxW);
+  const ptVinv = new Float64Array(9 * numPoints), ptGp = new Float64Array(3 * numPoints), ptOk = new Uint8Array(numPoints);
 
   // Damped normal equations reduced on the poses + intrinsics: { dCam (m), dPts (3 n) } or null
   const solve = (lambda) => {
+    profile.solves++;
+    let t = now();
     const S = new Float64Array(m * m), g = new Float64Array(m), dPts = new Float64Array(3 * numPoints);
-    for (let o = 0; o < numObs; o++) {  // J^T w J and J^T w r of the pose / intrinsics blocks
+    // J^T w J and J^T w r of the pose / intrinsics blocks: block a (offset oa, size na, rows A at ao) with block b.
+    // S's lower triangle only: choleskySolve reads no other (the blocks do not overlap: oa > ob, or the same block)
+    const addS = (w, oa, na, A, ao, ob, nb, B, bo) => {
+      if (oa < ob) return;
+      for (let i = 0; i < na; i++) for (let j = 0, nj = oa === ob ? i + 1 : nb; j < nj; j++)
+        S[(oa + i) * m + ob + j] += w * (A[ao + i] * B[bo + j] + A[ao + na + i] * B[bo + nb + j]);
+    };
+    const addG = (w, o, oa, na, A, ao) => {
+      for (let i = 0; i < na; i++) g[oa + i] += w * (A[ao + i] * res[2 * o] + A[ao + na + i] * res[2 * o + 1]);
+    };
+    for (let o = 0; o < numObs; o++) {
       const w = wgt[o];
       if (!w) continue;
-      const blocks = blocksOf(o);
-      for (const [oa, na, A, ao] of blocks) {
-        for (const [ob, nb, B, bo] of blocks) {
-          for (let i = 0; i < na; i++) for (let j = 0; j < nb; j++)
-            S[(oa + i) * m + ob + j] += w * (A[ao + i] * B[bo + j] + A[ao + na + i] * B[bo + nb + j]);
-        }
-        for (let i = 0; i < na; i++) g[oa + i] += w * (A[ao + i] * res[2 * o] + A[ao + na + i] * res[2 * o + 1]);
+      const oc = offC[o], oi = offI[o], co = 12 * o, io = 2 * ni * o;
+      if (oc >= 0) {
+        addS(w, oc, 6, Jc, co, oc, 6, Jc, co);
+        if (oi >= 0) addS(w, oc, 6, Jc, co, oi, ni, Ji, io);
+        addG(w, o, oc, 6, Jc, co);
+      }
+      if (oi >= 0) {
+        if (oc >= 0) addS(w, oi, ni, Ji, io, oc, 6, Jc, co);
+        addS(w, oi, ni, Ji, io, oi, ni, Ji, io);
+        addG(w, o, oi, ni, Ji, io);
       }
     }
     for (let i = 0; i < m; i++) S[i * m + i] += lambda * Math.max(S[i * m + i], 1e-6);
+    profile.normal += now() - t; t = now();
     // Schur complement over the points: S -= W V^-1 W^T, g -= W V^-1 gp
-    const perPoint = new Array(numPoints);
     const V = new Float64Array(9), gp = new Float64Array(3), Vinv = new Float64Array(9);
+    // W rows of slot s += w * A^T Jp over the observation's rows
+    const addW = (w, s, A, ao, jo) => {
+      const size = slotSize[s], base = slotW[s];
+      for (let i = 0; i < size; i++) for (let j = 0; j < 3; j++)
+        wBuf[base + 3 * i + j] += w * (A[ao + i] * Jp[jo + j] + A[ao + size + i] * Jp[jo + 3 + j]);
+    };
+    ptOk.fill(0);
     for (let p = 0; p < (fixPoints ? 0 : numPoints); p++) {
       V.fill(0); gp.fill(0);
-      const W = new Map();  // reduced-system offset -> { size, M (size x 3) }
+      const s0 = slotStart[p], s1 = slotStart[p + 1], w0 = slotW[s0];
+      wBuf.fill(0, w0, slotW[s1]);
       for (let k = ptStart[p]; k < ptStart[p + 1]; k++) {
         const o = ptObs[k], w = wgt[o];
         if (!w) continue;
-        const J = Jp.subarray(6 * o, 6 * o + 6);
+        const jo = 6 * o;
         for (let i = 0; i < 3; i++) {
-          for (let j = 0; j < 3; j++) V[3 * i + j] += w * (J[i] * J[j] + J[3 + i] * J[3 + j]);
-          gp[i] += w * (J[i] * res[2 * o] + J[3 + i] * res[2 * o + 1]);
+          for (let j = 0; j < 3; j++) V[3 * i + j] += w * (Jp[jo + i] * Jp[jo + j] + Jp[jo + 3 + i] * Jp[jo + 3 + j]);
+          gp[i] += w * (Jp[jo + i] * res[2 * o] + Jp[jo + 3 + i] * res[2 * o + 1]);
         }
-        for (const [off, size, A, ao] of blocksOf(o)) {
-          let e = W.get(off);
-          if (!e) W.set(off, e = { size, M: new Float64Array(3 * size) });
-          for (let i = 0; i < size; i++) for (let j = 0; j < 3; j++)
-            e.M[3 * i + j] += w * (A[ao + i] * J[j] + A[ao + size + i] * J[3 + j]);
-        }
+        if (obsSlotC[o] >= 0) addW(w, obsSlotC[o], Jc, 12 * o, jo);
+        if (obsSlotI[o] >= 0) addW(w, obsSlotI[o], Ji, 2 * ni * o, jo);
       }
       for (let i = 0; i < 3; i++) V[4 * i] += lambda * Math.max(V[4 * i], 1e-9);
       if (!invert3(V, Vinv)) continue;
-      const list = [...W.entries()];
-      perPoint[p] = { list, Vinv: Float64Array.from(Vinv), gp: Float64Array.from(gp) };
-      const WV = list.map(([, { size, M }]) => {
-        const r = new Float64Array(3 * size);
+      ptOk[p] = 1;
+      ptVinv.set(Vinv, 9 * p); ptGp.set(gp, 3 * p);
+      for (let s = s0; s < s1; s++) {  // W V^-1, in wvBuf at the slot's place
+        const size = slotSize[s], M = slotW[s], r = M - w0;
         for (let i = 0; i < size; i++) for (let j = 0; j < 3; j++)
-          r[3 * i + j] = M[3 * i] * Vinv[j] + M[3 * i + 1] * Vinv[3 + j] + M[3 * i + 2] * Vinv[6 + j];
-        return r;
-      });
-      list.forEach(([oa, { size: na }], a) => {
-        const A = WV[a];
-        for (const [ob, { size: nb, M: B }] of list) {
-          for (let i = 0; i < na; i++) for (let j = 0; j < nb; j++)
-            S[(oa + i) * m + ob + j] -= A[3 * i] * B[3 * j] + A[3 * i + 1] * B[3 * j + 1] + A[3 * i + 2] * B[3 * j + 2];
+          wvBuf[r + 3 * i + j] = wBuf[M + 3 * i] * Vinv[j] + wBuf[M + 3 * i + 1] * Vinv[3 + j] + wBuf[M + 3 * i + 2] * Vinv[6 + j];
+      }
+      for (let a = s0; a < s1; a++) {
+        const oa = slotOff[a], na = slotSize[a], A = slotW[a] - w0;
+        for (let b = s0; b < s1; b++) {
+          const ob = slotOff[b], nb = slotSize[b], B = slotW[b];
+          if (oa < ob) continue;  // the lower triangle (addS)
+          for (let i = 0; i < na; i++) for (let j = 0, nj = oa === ob ? i + 1 : nb; j < nj; j++)
+            S[(oa + i) * m + ob + j] -= wvBuf[A + 3 * i] * wBuf[B + 3 * j] + wvBuf[A + 3 * i + 1] * wBuf[B + 3 * j + 1] + wvBuf[A + 3 * i + 2] * wBuf[B + 3 * j + 2];
         }
-        for (let i = 0; i < na; i++) g[oa + i] -= A[3 * i] * gp[0] + A[3 * i + 1] * gp[1] + A[3 * i + 2] * gp[2];
-      });
+        for (let i = 0; i < na; i++) g[oa + i] -= wvBuf[A + 3 * i] * gp[0] + wvBuf[A + 3 * i + 1] * gp[1] + wvBuf[A + 3 * i + 2] * gp[2];
+      }
     }
+    profile.schur += now() - t; t = now();
     const dCam = m ? choleskySolve(S, g.map(x => -x), m) : new Float64Array(0);
+    profile.cholesky += now() - t; t = now();
     if (!dCam) return null;
-    perPoint.forEach((d, p) => {  // back-substitution: dX = -V^-1 (gp + W^T dCam)
-      const rhs = Float64Array.from(d.gp);
-      for (const [off, { size, M }] of d.list)
-        for (let i = 0; i < size; i++) for (let j = 0; j < 3; j++) rhs[j] += M[3 * i + j] * dCam[off + i];
-      for (let j = 0; j < 3; j++) dPts[3 * p + j] = -(d.Vinv[3 * j] * rhs[0] + d.Vinv[3 * j + 1] * rhs[1] + d.Vinv[3 * j + 2] * rhs[2]);
-    });
+    const rhs = new Float64Array(3);
+    for (let p = 0; p < numPoints; p++) {  // back-substitution: dX = -V^-1 (gp + W^T dCam)
+      if (!ptOk[p]) continue;
+      rhs.set(ptGp.subarray(3 * p, 3 * p + 3));
+      for (let s = slotStart[p]; s < slotStart[p + 1]; s++) {
+        const off = slotOff[s], M = slotW[s];
+        for (let i = 0; i < slotSize[s]; i++) for (let j = 0; j < 3; j++) rhs[j] += wBuf[M + 3 * i + j] * dCam[off + i];
+      }
+      const Vi = 9 * p;
+      for (let j = 0; j < 3; j++) dPts[3 * p + j] = -(ptVinv[Vi + 3 * j] * rhs[0] + ptVinv[Vi + 3 * j + 1] * rhs[1] + ptVinv[Vi + 3 * j + 2] * rhs[2]);
+    }
+    profile.back += now() - t;
     return { dCam, dPts };
   };
 
@@ -257,7 +333,7 @@ export function bundleAdjust(problem, opts = {}) {
     }
     if (!accepted || converged) { it += accepted ? 1 : 0; break; }  // no decrease even with heavy damping, or converged
   }
-  return { initialCost, cost, iterations: it, rmse };
+  return { initialCost, cost, iterations: it, rmse, profile };
 }
 
 // Reprojection error (px) of every observation of a problem, without optimizing

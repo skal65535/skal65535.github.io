@@ -89,30 +89,42 @@ export function nullVector(A, m, n) {
   return Array.from({ length: n }, (_, i) => V[i * n + n - 1]);
 }
 
-// Solve A x = b for symmetric positive-definite n x n A. Returns null if A is not SPD.
-export function choleskySolve(A, b, n) {
-  const L = new Float64Array(n * n);
+// Cholesky factor L (lower, n x n at lo) of the SPD n x n A at ao, its lower triangle read; false if A is not SPD
+export function choleskyFactor(A, ao, L, lo, n) {
   for (let j = 0; j < n; j++) {
-    let d = A[j * n + j];
-    for (let k = 0; k < j; k++) d -= L[j * n + k] ** 2;
-    if (!(d > 0)) return null;
+    let d = A[ao + j * n + j];
+    for (let k = 0; k < j; k++) d -= L[lo + j * n + k] ** 2;
+    if (!(d > 0)) return false;
     const ljj = Math.sqrt(d);
-    L[j * n + j] = ljj;
+    L[lo + j * n + j] = ljj;
     for (let i = j + 1; i < n; i++) {
-      let s = A[i * n + j];
-      for (let k = 0; k < j; k++) s -= L[i * n + k] * L[j * n + k];
-      L[i * n + j] = s / ljj;
+      let s = A[ao + i * n + j];
+      for (let k = 0; k < j; k++) s -= L[lo + i * n + k] * L[lo + j * n + k];
+      L[lo + i * n + j] = s / ljj;
     }
   }
-  const x = Float64Array.from(b);
+  return true;
+}
+
+// x[xo..] = (L L^T)^-1 b[bo..] for the factor L at lo (x may be b)
+function choleskyFactorSolve(L, lo, n, b, bo, x, xo) {
   for (let i = 0; i < n; i++) {  // L y = b
-    for (let k = 0; k < i; k++) x[i] -= L[i * n + k] * x[k];
-    x[i] /= L[i * n + i];
+    let s = b[bo + i];
+    for (let k = 0; k < i; k++) s -= L[lo + i * n + k] * x[xo + k];
+    x[xo + i] = s / L[lo + i * n + i];
   }
   for (let i = n - 1; i >= 0; i--) {  // L^T x = y
-    for (let k = i + 1; k < n; k++) x[i] -= L[k * n + i] * x[k];
-    x[i] /= L[i * n + i];
+    let s = x[xo + i];
+    for (let k = i + 1; k < n; k++) s -= L[lo + k * n + i] * x[xo + k];
+    x[xo + i] = s / L[lo + i * n + i];
   }
+}
+
+// Solve A x = b for symmetric positive-definite n x n A (its lower triangle read). Returns null if A is not SPD
+export function choleskySolve(A, b, n) {
+  const L = new Float64Array(n * n), x = new Float64Array(n);
+  if (!choleskyFactor(A, 0, L, 0, n)) return null;
+  choleskyFactorSolve(L, 0, n, b, 0, x, 0);
   return x;
 }
 

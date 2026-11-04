@@ -7,10 +7,10 @@ import { project, makeCamera, imageFromNormalized } from '../src/sfm/camera.js';
 import { assert, assertClose } from './util.js';
 
 // a barrel lens, and a pincushion one, whose PINHOLE camera is cropped (pinholeOf)
-for (const k1 of [-0.08, 0.15]) Deno.test(`exported COLMAP model parses back with colmap.js and reprojects as PINHOLE (k1 = ${k1})`, () => {
+for (const k1 of [-0.08, 0.15]) Deno.test(`exported COLMAP model parses back with colmap.js and reprojects as PINHOLE (k1 = ${k1})`, async () => {
   const scene = makeSyntheticScene({ numFrames: 20, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500,
                                      params: [1100, 1100, 960, 540, k1, 0.01, 0, 0] });
-  const { mapper } = reconstruct(scene.input, { sweeps: 1 });
+  const { mapper } = await reconstruct(scene.input, { sweeps: 1 });
   const ds = datasetFromMapper(mapper);
   const files = writeColmapModel(ds);
   const cameras = parseCamerasBin(files['cameras.bin']);
@@ -36,10 +36,10 @@ for (const k1 of [-0.08, 0.15]) Deno.test(`exported COLMAP model parses back wit
   assert(n > 1000 && err / n < 1.5, `${n} observations, mean pinhole reprojection ${(err / n).toFixed(3)} px`);
 });
 
-Deno.test('the distorted model (pinhole: false) keeps the SfM camera and the detected pixels', () => {
+Deno.test('the distorted model (pinhole: false) keeps the SfM camera and the detected pixels', async () => {
   const scene = makeSyntheticScene({ numFrames: 20, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500,
                                      params: [1100, 1100, 960, 540, -0.08, 0.01, 0, 0] });
-  const { mapper } = reconstruct(scene.input, { sweeps: 1 });
+  const { mapper } = await reconstruct(scene.input, { sweeps: 1 });
   const ds = datasetFromMapper(mapper, { pinhole: false }), gs = datasetFromMapper(mapper);
   const files = writeColmapModel(ds);
   const cameras = parseCamerasBin(files['cameras.bin']);
@@ -60,11 +60,11 @@ Deno.test('the distorted model (pinhole: false) keeps the SfM camera and the det
 
 // A camera per lens (DESIGN-sfm §13 P8): two PINHOLE cameras, each image on its lens's, and the
 // undistorted keypoints reproject through their own image's camera
-Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproject through it', () => {
+Deno.test('two lenses: a PINHOLE camera each, images on theirs, keypoints reproject through it', async () => {
   const scene = makeSyntheticScene({ numFrames: 24, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500, turns: 0.6, overlap: 6,
     cameras: [[1100, 1100, 960, 540, -0.08, 0.01, 0, 0], [700, 700, 960, 540, -0.03, 0.004, 0, 0]],
     cameraOf: (k) => (k % 3 === 2 ? 1 : 0), priorFocals: [1070, 680] });
-  const { mapper } = reconstruct(scene.input, { sweeps: 1, refine: ['f', 'k1', 'k2'] });
+  const { mapper } = await reconstruct(scene.input, { sweeps: 1, refine: ['f', 'k1', 'k2'] });
   const ds = datasetFromMapper(mapper);
   const files = writeColmapModel(ds);
   const cameras = parseCamerasBin(files['cameras.bin']);

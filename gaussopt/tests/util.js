@@ -3,7 +3,8 @@
 
 import { makeRng, cross, normalize, makeViewMatrix } from '../src/math.js';
 import { gaussian } from '../src/sfm/synth.js';
-import { expSO3 } from '../src/sfm/linalg.js';
+import { expSO3, mul3 } from '../src/sfm/linalg.js';
+import { poseFromCenter, poseCenter } from '../src/sfm/camera.js';
 import { loadDump, denoReader } from '../src/sfm/dump.js';
 import { exists, colmapModelDir, assessAgainstColmap } from '../tools/common.js';
 
@@ -50,3 +51,30 @@ export function lookAt(c, f, up = [0, -1, 0]) {
 }
 export const randomRotation = (r) => expSO3([0, 1, 2].map(() => gaussian(r)));
 export const randomMatrix = (r, n) => Float64Array.from({ length: n }, () => gaussian(r));
+
+// BA problem from a synthetic scene, with perturbed poses / points / focal
+export function problemFrom(scene, r, { poseNoise = 0.01, pointNoise = 0.05, focalScale = 1.03, outliers = 0 } = {}) {
+  const { truth, input } = scene;
+  const used = new Map();
+  const obsCam = [], obsPoint = [], obsUV = [];
+  truth.images.forEach((im, c) => {
+    im.pointIds.forEach((pid, k) => {
+      if (!used.has(pid)) used.set(pid, used.size);
+      obsCam.push(c); obsPoint.push(used.get(pid));
+      const out = r() < outliers;
+      obsUV.push(out ? 1920 * r() : input.images[c].keypoints[2 * k], out ? 1080 * r() : input.images[c].keypoints[2 * k + 1]);
+    });
+  });
+  const points = new Float64Array(3 * used.size);
+  for (const [pid, i] of used) truth.points[pid].forEach((x, k) => { points[3 * i + k] = x + pointNoise * gaussian(r); });
+  const poses = truth.images.map(im => ({ R: [...im.R], t: [...im.t] }));
+  // rotate and shift the free poses
+  for (let c = 2; c < poses.length; c++) {
+    const dR = expSO3([0, 1, 2].map(() => poseNoise * gaussian(r)));
+    poses[c] = poseFromCenter(mul3(dR, truth.images[c].R), poseCenter(truth.images[c]).map(x => x + 10 * poseNoise * gaussian(r)));
+  }
+  const camera = { ...truth.camera, params: [...truth.camera.params] };
+  camera.params[0] *= focalScale; camera.params[1] *= focalScale;
+  const free = Uint8Array.from(poses, (_, c) => (c < 2 ? 0 : 1));  // two fixed poses fix the gauge
+  return { camera, poses, free, points, obsCam: Int32Array.from(obsCam), obsPoint: Int32Array.from(obsPoint), obsUV: Float64Array.from(obsUV) };
+}

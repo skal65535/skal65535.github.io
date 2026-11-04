@@ -14,7 +14,8 @@ import { makeRng, dist } from '../math.js';
 import { normalizedFromImage, project, poseCenter, meanFocal, withFocal, focalFromHfov } from './camera.js';
 import { ransacFundamental, ransacHomography, relativePose, triangulate, triangulationAngle, depthIn, ransacPnP } from './geometry.js';
 import { estimateFocal } from './focal.js';
-import { bundleAdjust } from './ba.js';
+import { bundleAdjust, reprojectionErrors, normalizeFrame } from './ba.js';
+import { GpuBundleAdjuster } from './ba_gpu.js';
 import { median, deg, matchedPixels } from './util.js';
 import { mul3, mulVec3, rotationAngle } from './linalg.js';
 import { compose, inverse, apply, fromPose, toPose } from './sim3.js';
@@ -54,6 +55,15 @@ const DEFAULTS = {
   initMinAngleDeg: 3,      // median triangulation angle of the initial pair
   initOrder: 'time',       // initial pair: 'time' (first frames first) | 'strongest' (most matches first)
   baIterations: 10,
+  // the window BAs (localBA): 'f64' (ba.js), or 'gpu': the GPU solver (ba_gpu.js) for a window worth it (gpuFriendly),
+  // ba.js otherwise, and ba.js from the start where the GPU solve fails (illReason, an error) or there is no WebGPU
+  baPrecision: 'f64',
+  baIllPivot: 1e-4,        // 'gpu': a pose pivot under it (the gauge fixed) fails the GPU solve
+  baIllRmse: true,         // and so does its RMSE up
+  baGpuMinObs: 2000,       // 'gpu': fewer observations to ba.js (gpuFriendly)
+  baGpu: null,             // the GPU solver (a GpuBundleAdjuster or its promise; null: GpuBundleAdjuster.shared())
+  baShadow: '',            // solvers ('gpu', 'f64', or both) each window BA also runs on a copy, from the same start, the map
+                           // following baPrecision's: their poses against the map's (time.shadow; a solver without the drift it causes)
   log: () => {},
   progress: () => {},       // (stage, done, total): 'init' over the candidate pairs, 'register' while growing, 'refine' per window
 };
@@ -77,6 +87,8 @@ export function copySnapshot(s) {
 export class SequentialMapper {
   constructor(input, options = {}) {
     this.o = { ...DEFAULTS, ...options };
+    for (const s of [this.o.baPrecision, ...(this.o.baShadow || '').split(',').filter(Boolean)])
+      if (s !== 'f64' && s !== 'gpu') throw new Error(`no window BA solver '${s}' (baPrecision, baShadow: f64, gpu)`);
     this.rng = makeRng(this.o.seed);
     this.cameras = (input.cameras ?? [input.camera]).map(c => ({ ...c, params: [...c.params] }));
     this.priors = this.cameras.map(c => meanFocal(c));  // the input focals: their ratios place the other cameras (calibrateFocal)
@@ -96,6 +108,7 @@ export class SequentialMapper {
     this.segment = new Int32Array(this.n).fill(-1);  // connected map id per frame (S3 merges them)
     this.nextSegmentId = 0;  // ids ever created; merges leave gaps (the live ones are in this.segment)
     this.stats = { registered: 0, focalInit: NaN, segments: [], initTried: 0 };  // registered: frames with a pose now; initTried: initial pairs' relative poses
+    this.resetTime();
     // pairs no initial pair comes from, whatever the angle asked or the frames mapped: no relative pose, or a homography
     // explains it (rotation only, a plane); initializeWith skips them (a pair added or reindexed is a new one)
     this.noInit = new WeakSet();
@@ -157,7 +170,7 @@ export class SequentialMapper {
   // First pair (both unregistered, both in `allowed` when given) with enough parallax, trying
   // looser angles when nothing qualifies. Starts a new segment.
   // Frames of a camera whose focal is still unknown (scanFocal) start one only when no other pair can.
-  initialize(allowed = null) {
+  async initialize(allowed = null) {
     const withKnown = new Set();
     let unknown = false;
     for (let k = 0; k < this.n; k++) {
@@ -166,7 +179,7 @@ export class SequentialMapper {
     }
     for (const set of unknown ? [withKnown, allowed] : [allowed]) {
       for (const minAngle of this.initAngles()) {
-        if (this.initializeWith(minAngle, set)) return true;
+        if (await this.initializeWith(minAngle, set)) return true;
       }
     }
     return false;
@@ -186,7 +199,7 @@ export class SequentialMapper {
     return this.o.initOrder === 'strongest' ? pairs.sort((p, q) => q[1].a.length - p[1].a.length) : pairs;
   }
 
-  initializeWith(minAngleDeg, allowed = null) {
+  async initializeWith(minAngleDeg, allowed = null) {
     const ok = (k) => !this.poses[k] && (!allowed || allowed.has(k));
     const pairs = this.initialPairs(ok);
     for (let q = 0; q < pairs.length; q++) {
@@ -219,7 +232,7 @@ export class SequentialMapper {
       let created = 0;
       for (const { m, X } of kept) created += this.addPoint(X, [[i, e.a[m]], [e.other, e.b[m]]]) >= 0;
       this.o.log(`segment ${seg}: init frames ${i}-${e.other}, ${rel.F.numInliers} F inliers, ${created} points, median angle ${med.toFixed(1)} deg`);
-      this.localBA(e.other, { refineIntrinsics: false, iterations: 20 });
+      await this.localBA(e.other, { refineIntrinsics: false, iterations: 20 });
       return true;
     }
     return false;
@@ -447,7 +460,8 @@ export class SequentialMapper {
 
   // ── window BA ─────────────────────────────────────────────────────────────
   // Free: the `window` registered frames nearest in time to `center`; fixed: other observers.
-  localBA(center, { refineIntrinsics = false, iterations = this.o.baIterations, frames = null, minCameraFrames = this.o.minCameraFrames } = {}) {
+  async localBA(center, { refineIntrinsics = false, iterations = this.o.baIterations, frames = null, minCameraFrames = this.o.minCameraFrames } = {}) {
+    const t0 = performance.now();
     const reg = [];
     for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === this.segment[center]) reg.push(k);
     const freeSet = new Set(frames ?? reg.sort((a, b) => Math.abs(a - center) - Math.abs(b - center)).slice(0, this.o.window));
@@ -471,12 +485,98 @@ export class SequentialMapper {
       points: Float64Array.from(ptList.flatMap(pid => this.points[pid].X)),
       obsCam: Int32Array.from(obsCam), obsPoint: Int32Array.from(obsPoint), obsUV: Float64Array.from(obsUV),
     };
-    const out = bundleAdjust(prob, { refine: refineIntrinsics ? this.o.refine : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations });
+    const opts = { refine: refineIntrinsics ? this.o.refine : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations };
+    const modes = (this.o.baShadow || '').split(',').filter(Boolean), gpu = this.o.baPrecision === 'gpu';
+    const solver = gpu || modes.includes('gpu') ? await this.gpuSolver() : null, onGpu = gpu && !!solver && this.gpuFriendly(prob);
+    if (gpu) { const r = (this.time.route ??= { gpu: 0, cpu: 0 }); r[onGpu ? 'gpu' : 'cpu']++; }
+    const ts = performance.now(), shadows = [];
+    for (const mode of modes) {
+      if (mode === 'gpu' && !solver) continue;
+      const copy = { ...prob, cameras: prob.cameras.map(c => ({ ...c, params: [...c.params] })), poses: prob.poses.slice(), points: prob.points.slice() };
+      const r = mode === 'gpu' ? await solver.bundleAdjust(copy, opts).catch(() => null) : bundleAdjust(copy, opts);
+      if (!r) { shadows.length = 0; break; }  // the GPU's failed: no shadow of this window (the modes' lists stay aligned)
+      shadows.push({ mode, copy, r });
+    }
+    let shadowMs = performance.now() - ts;
+    const t1 = performance.now();
+    const start = onGpu ? { cameras: prob.cameras, poses: prob.poses.slice(), points: prob.points.slice() } : null;
+    let error = '', out = onGpu ? await solver.bundleAdjust(prob, opts).catch((e) => { error = e.message; return null; }) : bundleAdjust(prob, opts);
+    const reason = error ? 'GPU error' : onGpu ? this.illReason(out.cond) : '';
+    if (reason) {  // solved again by ba.js, from the start
+      Object.assign(prob, start);
+      if (error) this.o.log(`window BA: the GPU solve failed (${error}), solved by ba.js${solver.lost ? '; its device lost, the GPU off from here' : ''}`);
+      if (solver.lost) this._gpu = null;
+      out = { ...bundleAdjust(prob, opts), cond: out?.cond ?? null };
+      (this.time.fallback ??= []).push({ stage: this._stage ?? '', first: Math.min(...camList.filter((_, c) => free[c])), cond: out.cond, reason });
+    }
+    const ms = performance.now() - t1;
+    this.time.solve += ms;
+    this.time.windows.push({ ...out.profile, ms });
+    if (shadows.length) {
+      const t = performance.now();
+      this._shadowStats(prob, shadows, { iterations: out.iterations, initialCost: out.initialCost, cond: out.cond, fallback: !!reason,
+                                         center, frames: camList.filter((_, c) => free[c]), stage: this._stage ?? '' });
+      shadowMs += performance.now() - t;
+      this.time.shadowMs += shadowMs;
+    }
     this.cameras = prob.cameras;  // a camera for all its frames, whatever this window made of it
     camList.forEach((img, c) => { if (free[c]) this.poses[img] = prob.poses[c]; });
     ptList.forEach((pid, li) => { this.points[pid].X = Array.from(prob.points.subarray(3 * li, 3 * li + 3)); });
     this.filter(ptList);
+    this.time.baCalls++;
+    this.time.ba += performance.now() - t0 - shadowMs;
     return out;
+  }
+
+  // time.shadow[mode]: per window, its free poses' largest rotation (deg) and centre (fraction of the points' median
+  // distance to their median) from the map's solve, and both reprojection RMSEs (px, f64)
+  _shadowStats(prob, shadows, { iterations, initialCost, cond, fallback, center, frames, stage }) {
+    const n = prob.points.length / 3, { s: scale } = normalizeFrame(prob.points);
+    const rmse = (q) => { const e = Array.from(reprojectionErrors(q)).filter(Number.isFinite); return Math.sqrt(e.reduce((a, x) => a + x * x, 0) / Math.max(1, e.length)); };
+    const ref = rmse(prob);
+    for (const { mode, copy, r } of shadows) {
+      let rot = 0, cen = 0;
+      prob.poses.forEach((pose, k) => {
+        if (!prob.free[k]) return;
+        rot = Math.max(rot, deg(rotationAngle(copy.poses[k].R, pose.R)));
+        cen = Math.max(cen, dist(poseCenter(copy.poses[k]), poseCenter(pose)) / scale);
+      });
+      ((this.time.shadow ??= {})[mode] ??= []).push({ rot, cen, rmse: rmse(copy), ref, focal: copy.cameras[0].params[0] / prob.cameras[0].params[0] - 1,
+        center, first: Math.min(...frames), last: Math.max(...frames), free: frames.length, obs: prob.obsCam.length, points: n, stage,
+        iterations, shadowIterations: r.iterations, start: Math.sqrt(initialCost / Math.max(1, prob.obsCam.length)), cond, fallback });
+    }
+  }
+
+  // ms: ba, the window BAs (localBA) in all, solve their bundleAdjust, baCalls their count; focal, init: calibrateFocal,
+  // initialize outside their window BAs, focalBA, initBA within them; shadowMs: the shadow solves (baShadow), apart from
+  // all of these; windows: each window BA's bundleAdjust profile (ba.js) with its ms
+  resetTime() {
+    this.time = { ba: 0, solve: 0, baCalls: 0, focal: 0, init: 0, focalBA: 0, initBA: 0, shadowMs: 0, windows: [] };
+  }
+
+  // Why the GPU's solve of a window fails, from its conditioning (cond), or '': f32 lost it (a result not finite), a direction
+  // the window leaves free (a pivot under baIllPivot, the gauge fixed), or its RMSE up (baIllRmse)
+  illReason(cond) {
+    if (!cond) return '';
+    if (!Number.isFinite(cond.rmse)) return 'not finite';
+    if (!cond.gaugeFree && cond.minPivot < this.o.baIllPivot) return 'pivot';
+    if (this.o.baIllRmse && cond.rmse > cond.rmse0) return 'RMSE up';
+    return '';
+  }
+
+  // Whether a window BA is worth the GPU solver: baGpuMinObs observations (fewer, the round trips make it slower than
+  // ba.js: in Chrome on an M-series GPU, e2e/ba_gpu_bench.e2e.js, 743 observations 1.32x ba.js's time, 3231 0.81x)
+  gpuFriendly(prob) { return prob.obsCam.length >= this.o.baGpuMinObs; }
+
+  // The GPU solver (baGpu, or the realm's), made once; null where there is none (its windows then on ba.js, said once)
+  async gpuSolver() {
+    if (this._gpu === undefined) {
+      this._gpu = await Promise.resolve(this.o.baGpu ?? GpuBundleAdjuster.shared()).catch((e) => {
+        this.o.log(`no GPU solver (${e?.message ?? e}): the window BAs on ba.js`);
+        return null;
+      });
+    }
+    return this._gpu;
   }
 
   // Per camera, whether its intrinsics may be refined: one camera always; several, once a camera
@@ -503,25 +603,32 @@ export class SequentialMapper {
     }
   }
 
-  run() {
-    this.calibrateFocal();
-    while (this.initialize()) {
+  async run() {
+    // key's time outside its window BAs, key + 'BA' within them
+    const timed = async (key, fn) => {
+      const t = performance.now(), ba = this.time.ba, r = await fn(), inBA = this.time.ba - ba;
+      this.time[key] += performance.now() - t - inBA;
+      this.time[`${key}BA`] += inBA;
+      return r;
+    };
+    await timed('focal', () => this.calibrateFocal());
+    while (await timed('init', () => this.initialize())) {
       const seg = this.nextSegmentId - 1;
       this.stats.registered += 2;
-      const size = 2 + this.grow(seg);
+      const size = 2 + await this.grow(seg);
       const frames = [];
       for (let k = 0; k < this.n; k++) if (this.segment[k] === seg) frames.push(k);
       this.stats.segments.push({ id: seg, size, first: frames[0], last: frames.at(-1) });
       this.o.log(`segment ${seg}: ${size} frames (${frames[0]}..${frames.at(-1)})`);
     }
-    if (this.o.regrowSegments) this.regrowSegments();
+    if (this.o.regrowSegments) await this.regrowSegments();
     return this.model();
   }
 
   // Photo sets: which segment grows first decides what can join it (a small segment can hold
   // frames through which the others would have joined). So each smaller segment, the larger first, is taken apart and its frames (and the
   // unregistered ones) offered to the largest segment; kept when that loses no frame, undone otherwise.
-  regrowSegments() {
+  async regrowSegments() {
     for (let merged = true; merged;) {
       merged = false;
       const sizes = new Map();
@@ -533,7 +640,7 @@ export class SequentialMapper {
         const snap = this.snapshot();
         this.unregister(frames);
         const free = new Set([...this.segment.keys()].filter(k => !this.poses[k]));
-        const added = this.grow(big, free);
+        const added = await this.grow(big, free);
         if (added >= size) {
           this.o.log(`segment ${seg} (${size} frames) regrown into segment ${big}: ${added} frames added`);
           merged = true;
@@ -546,7 +653,7 @@ export class SequentialMapper {
     // registered by a regrow that was undone is not lost
     const big = this.largestSegment(), free = new Set([...this.segment.keys()].filter(k => !this.poses[k]));
     if (big >= 0 && free.size) {
-      const added = this.grow(big, free);
+      const added = await this.grow(big, free);
       if (added) this.o.log(`segment ${big}: ${added} unregistered frames added after the regrow`);
     }
   }
@@ -554,7 +661,7 @@ export class SequentialMapper {
   // Register frames into segment `seg`, the one with the most 2D-3D matches first, each followed
   // by triangulation and a window BA (intrinsics free while few frames are registered in all).
   // candidates: Set of frame indices (default: every frame). Returns the number registered.
-  grow(seg, candidates = null) {
+  async grow(seg, candidates = null) {
     const failed = new Map(), relFailed = new Map();  // per frame: PnP failures, registerRelative failures
     let added = 0;
     for (;;) {
@@ -574,7 +681,7 @@ export class SequentialMapper {
       added++;
       this.o.progress('register', registered, this.n);
       this.triangulateNew(best);
-      this.localBA(best, { refineIntrinsics: registered >= 6 && registered <= this.o.refineIntrinsicsUntil });
+      await this.localBA(best, { refineIntrinsics: registered >= 6 && registered <= this.o.refineIntrinsicsUntil });
       if (registered % 50 === 0) this.o.log(`registered ${registered}/${this.n}, ${this.numPoints()} points, f ${this.camera.params[0].toFixed(1)}`);
     }
     return added;
@@ -601,7 +708,7 @@ export class SequentialMapper {
   // the last window's estimate, fitted to its frames. One more sweep with them fixed then fits
   // every other window to that camera (without it, a window keeps the poses and points it made for
   // its own estimate).
-  refine({ sweeps = 2, refineIntrinsics = true, extra = 5 } = {}) {
+  async refine({ sweeps = 2, refineIntrinsics = true, extra = 5 } = {}) {
     const W = this.o.window, half = Math.max(1, W >> 1);
     const segs = [...new Set(Array.from(this.segment).filter(s => s >= 0))];
     const sizes = segs.map(seg => this.poses.filter((P, k) => P && this.segment[k] === seg).length);
@@ -615,11 +722,11 @@ export class SequentialMapper {
         for (let start = (sw % 2) * half; start < reg.length; start += W) {
           const core = reg.slice(start, start + W);
           if (!core.length) continue;
-          this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], iterations: 10 });
+          await this.localBA(core[0], { frames: [...core, ...this.partners(core, { extra, minGap: W })], iterations: 10 });
           this.o.progress('refine', ++done, total);
         }
       }
-      if (refineIntrinsics && sw < sweeps) this.fitIntrinsics({ minCameraFrames: this.o.minCameraFramesSweeps });
+      if (refineIntrinsics && sw < sweeps) await this.fitIntrinsics({ minCameraFrames: this.o.minCameraFramesSweeps });
     }
   }
 
@@ -627,7 +734,7 @@ export class SequentialMapper {
   // maxFrames per camera of the largest segment, evenly spaced in time, with the intrinsics; the other
   // frames observe as fixed (the sweep after it moves them to the new intrinsics). Refined window by
   // window instead, the lens would be whatever the last windows made of it.
-  fitIntrinsics({ minCameraFrames = this.o.minCameraFrames, maxFrames = 60, iterations = 10 } = {}) {
+  async fitIntrinsics({ minCameraFrames = this.o.minCameraFrames, maxFrames = 60, iterations = 10 } = {}) {
     const seg = this.largestSegment();
     const byCam = this.cameras.map(() => []);
     for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === seg) byCam[this.camOf[k]].push(k);

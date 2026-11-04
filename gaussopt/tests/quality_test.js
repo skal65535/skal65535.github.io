@@ -11,9 +11,9 @@ import { tablePairSource } from './session_util.js';
 
 // The synthetic orbit mapped once, each test given it clean (mapper.snapshot / restore)
 let base = null;
-function cleanMap() {
+async function cleanMap() {
   if (!base) {
-    const { mapper, stats } = reconstruct(makeSyntheticScene(ORBIT).input, {});
+    const { mapper, stats } = await reconstruct(makeSyntheticScene(ORBIT).input, {});
     base = { mapper, stats, keep: mapper.snapshot() };
   }
   base.mapper.restore(base.keep);
@@ -21,8 +21,8 @@ function cleanMap() {
   return base;
 }
 
-Deno.test('quality: a clean map is green; a damaged pose is red, with its reason', () => {
-  const { mapper, stats } = cleanMap();
+Deno.test('quality: a clean map is green; a damaged pose is red, with its reason', async () => {
+  const { mapper, stats } = await cleanMap();
   const q = keyframeQuality(mapper, { loops: stats.loops.loops });
   assert(q.counts.green === 50 && q.loops.length > 0 && !q.loops.some(l => l.suspect), `clean: ${JSON.stringify(q.counts)}`);
   const k = 20, p = mapper.poses[k];
@@ -36,8 +36,8 @@ Deno.test('quality: a clean map is green; a damaged pose is red, with its reason
   assert(bare.score === 'red' && /weak/.test(bare.reason), `no points: ${bare.score} ${bare.reason}`);
 });
 
-Deno.test('quality: loops checked on the map are not suspect; a loop frame moved off the map is', () => {
-  const { mapper, stats } = cleanMap();
+Deno.test('quality: loops checked on the map are not suspect; a loop frame moved off the map is', async () => {
+  const { mapper, stats } = await cleanMap();
   const loops = stats.loops.loops, q = keyframeQuality(mapper, { loops, checkLoops: true });
   const checked = q.loops.filter(l => l.reloc);
   assert(checked.length >= 0.8 * loops.length && !q.loops.some(l => l.suspect),

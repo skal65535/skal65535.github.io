@@ -10,7 +10,7 @@ const name = (k) => `p${String(k + 1).padStart(2, '0')}`;
 
 // Two halves joined by a pair of 10 matches (5-6): mapped without registerRelative, the map splits
 // and the second half is one piece apart, its link 5-6 named
-Deno.test('coverage: a split map names the piece apart and its link', () => {
+Deno.test('coverage: a split map names the piece apart and its link', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 12, turns: 0.5, overlap: 11, minLoopMatches: 1 });
   const pairs = [];
   for (const p of scene.input.pairs) {
@@ -18,7 +18,7 @@ Deno.test('coverage: a split map names the piece apart and its link', () => {
     else if (p.i === 5 && p.j === 6) pairs.push({ ...p, matches: p.matches.slice(0, 20) });
   }
   const mapper = new SequentialMapper({ ...scene.input, pairs }, { relativeRegistration: false });
-  mapper.run();
+  await mapper.run();
   const c = coverage(mapper), advice = coverageAdvice(c, name);
   assert(c.inMain === 6 && c.apart.length === 1 && c.apart[0].photos.length === 6, `${c.inMain} in main, apart ${JSON.stringify(c.apart)}`);
   const { link } = c.apart[0];
@@ -30,11 +30,11 @@ Deno.test('coverage: a split map names the piece apart and its link', () => {
 
 // A full turn in 10 photos (about 40 deg apart), pair 3-4 unmatched: the map holds through 2-4 and 3-5,
 // and the step 3-4 is reported with its turn
-Deno.test('coverage: an unmatched step past maxTurnDeg is a gap', () => {
+Deno.test('coverage: an unmatched step past maxTurnDeg is a gap', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 10, turns: 1, overlap: 9 });
   const pairs = scene.input.pairs.filter(p => !(p.i === 3 && p.j === 4));
   const mapper = new SequentialMapper({ ...scene.input, pairs }, { relativeRegistration: true });
-  mapper.run();
+  await mapper.run();
   const c = coverage(mapper), advice = coverageAdvice(c, name);
   assert(c.inMain === 10, `${c.inMain} in main`);
   assert(c.gaps.length === 1 && c.gaps[0].a === 3 && c.gaps[0].b === 4 && c.gaps[0].matches === 0, JSON.stringify(c.gaps));
@@ -45,11 +45,11 @@ Deno.test('coverage: an unmatched step past maxTurnDeg is a gap', () => {
 });
 
 // Two unmatched steps past maxTurnDeg, maxGaps 1: the worse one is listed, the other counted
-Deno.test('coverage: the advice lists the worst gaps first, maxGaps of them', () => {
+Deno.test('coverage: the advice lists the worst gaps first, maxGaps of them', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 10, turns: 1, overlap: 9 });
   const pairs = scene.input.pairs.filter(p => !(p.i === 3 && p.j === 4) && !(p.i === 1 && p.j === 2));  // turns 48 and 42 deg
   const mapper = new SequentialMapper({ ...scene.input, pairs }, { relativeRegistration: true });
-  mapper.run();
+  await mapper.run();
   const c = coverage(mapper);
   assert(c.inMain === 10 && c.gaps.length === 2, `${c.inMain} in main, gaps ${JSON.stringify(c.gaps)}`);
   const worst = [...c.gaps].sort((a, b) => b.turnDeg - a.turnDeg)[0];  // both step < maxStep here: the turn decides
@@ -61,11 +61,11 @@ Deno.test('coverage: the advice lists the worst gaps first, maxGaps of them', ()
 });
 
 // Nothing placed: one sentence, the strongest pair and what a start needs
-Deno.test('coverage: with no map, the advice names the strongest pair', () => {
+Deno.test('coverage: with no map, the advice names the strongest pair', async () => {
   const scene = makeSyntheticScene({ ...BASE, numFrames: 6 });
   const pairs = scene.input.pairs.map(p => ({ ...p, matches: p.matches.slice(0, 2 * (p.i === 1 && p.j === 2 ? 60 : 20)) }));
   const mapper = new SequentialMapper({ ...scene.input, pairs });
-  mapper.run();
+  await mapper.run();
   const c = coverage(mapper), advice = coverageAdvice(c, name);
   assert(c.inMain === 0 && advice.length === 1 && advice[0].includes('the strongest pair, p02–p03, has 60 matches (a start needs 100'), advice.join('\n'));
 });

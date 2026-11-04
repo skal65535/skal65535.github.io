@@ -19,7 +19,7 @@ Deno.test('adaptive RANSAC keeps sampling when the all-inlier probability underf
 
 const scene = makeSyntheticScene({ numFrames: 16, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500 });
 const mapper = new SequentialMapper(scene.input, {});
-mapper.run();
+await mapper.run();
 
 Deno.test('trainer points: >= 3 observations, each within 2 px', () => {
   const all = datasetFromMapper(mapper, { minObs: 2, maxReprojPx: Infinity, minAngleDeg: 0 });

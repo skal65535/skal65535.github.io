@@ -73,11 +73,15 @@ export class SfmSession {
   // S2..S4 from scratch. proposeLoops(mapper) (optional): more verified pairs [{ i, j, type,
   // matches }] once the sequential map exists (geometric loop candidates, pipeline.js).
   async reconstruct({ proposeLoops = null } = {}) {
-    const state = mapSequential(this._input(), this._options());
+    const state = await mapSequential(this._input(), this._options());
     this.mapper = state.mapper;
-    if (proposeLoops && this.loopsOn) this._setPairs(withNames(await proposeLoops(this.mapper), this.images));
+    if (proposeLoops && this.loopsOn) {
+      const t = performance.now();
+      this._setPairs(withNames(await proposeLoops(this.mapper), this.images));
+      state.timings.loopMatch = performance.now() - t;
+    }
     this.afterSequential = { snapshot: this.mapper.snapshot(), images: this.images };
-    const res = finish(this._input(), state, this._options());
+    const res = await finish(this._input(), state, this._options());
     this.loops = this._loopsByName(res.stats.loops);
     return res;
   }
@@ -197,7 +201,7 @@ export class SfmSession {
   }
 
   // Window BA over the range, its time neighbours and its covisible frames, then new tracks
-  _adjust(range, { intrinsics = false, margin = this.window >> 1 } = {}) {
+  async _adjust(range, { intrinsics = false, margin = this.window >> 1 } = {}) {
     const m = this.mapper;
     const lo = Math.max(0, range[0] - margin), hi = Math.min(m.n - 1, range.at(-1) + margin);
     const core = [];
@@ -206,7 +210,7 @@ export class SfmSession {
     const segs = new Set(core.map(k => m.segment[k]));
     for (const seg of segs) {
       const frames = core.filter(k => m.segment[k] === seg);
-      m.localBA(frames[0], { frames: [...frames, ...m.partners(frames, { minGap: this.window })], refineIntrinsics: intrinsics, iterations: 20 });
+      await m.localBA(frames[0], { frames: [...frames, ...m.partners(frames, { minGap: this.window })], refineIntrinsics: intrinsics, iterations: 20 });
       for (const k of frames) m.triangulateNew(k);
     }
   }
@@ -239,22 +243,22 @@ export class SfmSession {
 
   // S3 + S4 on the current state: loop closure over all pairs (the pose graph moves the whole
   // segment), then the refinement sweeps and retriangulation that clean up after it
-  _closeAndRefine() {
-    const res = finish(this._input(), { mapper: this.mapper, timings: {} }, this._options());
+  async _closeAndRefine() {
+    const res = await finish(this._input(), { mapper: this.mapper, timings: {} }, this._options());
     this.loops = this._loopsByName(res.stats.loops);
   }
 
   // ── actions (DESIGN-sfm §6.3) ────────────────────────────────────────────────
 
   refine(names, { intrinsics = false } = {}) {
-    return this._action('refine', { names, intrinsics }, () => {
-      this._adjust(this._indices(names), { intrinsics, margin: 0 });
+    return this._action('refine', { names, intrinsics }, async () => {
+      await this._adjust(this._indices(names), { intrinsics, margin: 0 });
       return { frames: names };
     });
   }
 
   drop(names) {
-    return this._action('drop', { names }, () => {
+    return this._action('drop', { names }, async () => {
       const gone = new Set(names), old = this._indices(names);
       const keep = this.images.map((_, k) => k).filter(k => !gone.has(this.images[k].name));
       this.images = keep.map(k => this.images[k]);
@@ -263,7 +267,7 @@ export class SfmSession {
       this.mapper.reindex(this.images, keep);
       // re-adjust around each dropped stretch (its position in the new list)
       const around = [...new Set(old.map(o => keep.findIndex(k => k > o)).map(k => (k < 0 ? this.images.length - 1 : k)))];
-      for (const k of around) this._adjust([k]);
+      for (const k of around) await this._adjust([k]);
       return { frames: [...new Set(around.flatMap(k => [k - 1, k].filter(x => x >= 0)))].map(k => this.images[k].name), dropped: names.length };
     });
   }
@@ -277,8 +281,8 @@ export class SfmSession {
       const seg = this._segmentAround(range);
       if (seg < 0) throw new Error('retry: no registered keyframe next to the range (use redo)');
       this.mapper.unregister(range);
-      const registered = this.mapper.grow(seg, new Set(range));
-      this._adjust(range);
+      const registered = await this.mapper.grow(seg, new Set(range));
+      await this._adjust(range);
       return { frames: names, registered, pairs: found.length };
     });
   }
@@ -323,13 +327,13 @@ export class SfmSession {
   // A weak link inside the range splits it: new maps are started until no pair is left, all are
   // merged by loop closure, and what is still unregistered is registered into its neighbours' map
   redo(names) {
-    return this._action('redo', { names }, () => {
+    return this._action('redo', { names }, async () => {
       const range = this._indices(names), m = this.mapper;
       m.unregister(range);
       const left = new Set(range);
       let maps = 0;
-      while (left.size >= 2 && m.initialize(left)) {
-        m.grow(m.nextSegmentId - 1, left);
+      while (left.size >= 2 && await m.initialize(left)) {
+        await m.grow(m.nextSegmentId - 1, left);
         for (const k of [...left]) if (m.poses[k]) left.delete(k);
         maps++;
       }
@@ -337,9 +341,9 @@ export class SfmSession {
       const stats = this._merge();
       if (left.size) {
         const seg = this._segmentAround([...left]);
-        if (seg >= 0) m.grow(seg, left);
+        if (seg >= 0) await m.grow(seg, left);
       }
-      this._adjust(range);
+      await this._adjust(range);
       const registered = range.filter(k => m.poses[k]).length;
       return { frames: names, registered, maps, merges: stats.merges, segment: m.segment[range[0]] };
     });
@@ -359,15 +363,15 @@ export class SfmSession {
       this.mapper.addPairs(this._indexed(found));
       const seg = this._segmentAround(added);
       if (seg < 0) throw new Error('insert: the new keyframes match no registered keyframe');
-      let registered = this.mapper.grow(seg, new Set(added));
+      let registered = await this.mapper.grow(seg, new Set(added));
       // photo sets (regrowSegments on): a photo added between two pieces lets the smaller join
       if (this.mapper.o.regrowSegments) {
         const before = this.mapper.poses.filter(Boolean).length;
-        this.mapper.regrowSegments();
+        await this.mapper.regrowSegments();
         registered = added.filter(k => this.mapper.poses[k]).length;
         this.log(`insert: ${this.mapper.poses.filter(Boolean).length - before} more keyframes after regrowing the segments`);
       }
-      this._adjust(added);
+      await this._adjust(added);
       return { frames: images.map(im => im.name), registered, pairs: found.length };
     });
   }
@@ -380,13 +384,13 @@ export class SfmSession {
       const found = await this._match([[lo, hi, 'user-loop']], { match: { maxRatio } });
       if (!found.length) throw new Error(`force loop: ${lo} and ${hi} do not share enough verified matches`);
       this._setPairs(found);
-      this._closeAndRefine();
+      await this._closeAndRefine();
       const used = this.loops.some(l => key(l.a, l.b) === key(lo, hi));
       const range = this._indices([lo, hi]);
       if (!used && this.mapper.segment[range[0]] === this.mapper.segment[range[1]]) {
         throw new Error(`force loop: ${found[0].matches.length / 2} matches, but no consistent 3D transform between the two views`);
       }
-      for (const k of range) this._adjust([k]);
+      for (const k of range) await this._adjust([k]);
       return { frames: [lo, hi], matches: found[0].matches.length / 2 };
     });
   }
@@ -402,7 +406,7 @@ export class SfmSession {
         // a copy: restore() hands its arrays to the live mapper, and afterSequential stays the replay
         // point (undo keeps a reference to it)
         this.mapper.restore(copySnapshot(this.afterSequential.snapshot));
-        this._closeAndRefine();
+        await this._closeAndRefine();
         this.log('reject loop: loop closure and refinement replayed from the sequential map (later repairs are not kept)');
       } else {
         await this.reconstruct();

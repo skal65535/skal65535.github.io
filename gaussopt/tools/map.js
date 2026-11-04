@@ -26,7 +26,7 @@ if (limit) {
   input.pairs = input.pairs.filter(p => p.j < limit);
 }
 const t0 = performance.now();
-const { mapper, model, stats } = reconstruct(input, {
+const { mapper, model, stats } = await reconstruct(input, {
   loops: !noLoops, sweeps: noLoops ? 0 : 2, retriangulate: !noLoops,
   ...(window ? { window: Number(window) } : {}),
   log: (s) => { if (!json) console.log(`  ${s}`); },

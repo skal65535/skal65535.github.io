@@ -28,24 +28,24 @@ function turnInPlace() {
   return scene;
 }
 
-Deno.test('flow join: the pieces before and after a turn in place, apart without it, one map with it', () => {
+Deno.test('flow join: the pieces before and after a turn in place, apart without it, one map with it', async () => {
   const scene = turnInPlace();
-  const run = (flowJoin) => {
-    const { model, stats } = reconstruct(scene.input, { loops: false, flowJoin });  // no loop closure: the flow alone joins them
+  const run = async (flowJoin) => {
+    const { model, stats } = await reconstruct(scene.input, { loops: false, flowJoin });  // no loop closure: the flow alone joins them
     return { stats, m: compareModels(model, scene.truth.model) };
   };
   const tag = ({ stats, m }) => `${stats.numSegments} segments, ${m.numCommon} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
-  const apart = run(false), joined = run(true);
+  const apart = await run(false), joined = await run(true);
   assert(apart.stats.numSegments === 2, `without the join: ${tag(apart)}`);
   assert(joined.stats.numSegments === 1 && joined.stats.flowJoin.joins.length === 1, `with it: ${tag(joined)}`);
   assert(joined.m.numCommon === scene.input.images.length && joined.m.rmsCenterRel < 0.005 && joined.m.medianRotDeg < 0.5, `with it: ${tag(joined)}`);
 });
 
-Deno.test('flow join: a segment holding pieces on both sides of another\'s, the turn between them joined', () => {
+Deno.test('flow join: a segment holding pieces on both sides of another\'s, the turn between them joined', async () => {
   // the two pieces of the turn, each moved onto the truth; the last frames of the later one handed to the
   // earlier one's segment (as a loop merge of a stretch seen again would): the segments interleave in time,
   // then the later one is moved off by a similarity for the join to undo
-  const scene = turnInPlace(), { mapper } = mapSequential(scene.input, {});
+  const scene = turnInPlace(), { mapper } = await mapSequential(scene.input, {});
   const segs = [...new Set(mapper.segment.filter((s, k) => mapper.poses[k]))];
   assert(segs.length === 2, `segments ${segs}`);
   for (const seg of segs) {
