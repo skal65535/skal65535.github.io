@@ -35,6 +35,17 @@ for (const [name, options] of Object.entries(CASES)) {
   });
 }
 
+// A lens of gare2's tangential distortion (COLMAP's p2 there: -0.020), its focal observed by F: k2, p1, p2 refined in every
+// window find it; with f and k1 refined over the first 50 frames only (the old policy), the path is 1.5% and 3.4 deg off
+Deno.test('reconstruct, synthetic tangential lens: the intrinsics, p1 and p2 among them, refined in every window', async () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 60, params: [1230, 1230, 960, 540, -0.004, 0.002, 0.003, -0.02] });
+  const { mapper, model } = await reconstruct(scene.input, {});
+  const m = compareModels(model, scene.truth.model), [, , , , , , p1, p2] = mapper.camera.params;
+  const tag = `RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg, focal ${(100 * m.focalErr).toFixed(2)}%, p1 ${p1}, p2 ${p2}`;
+  assert(mapper.stats.focalSource === 'calibrated' && m.numCommon === 60, `${mapper.stats.focalSource}, ${m.numCommon} registered`);
+  assert(m.rmsCenterRel < 0.001 && m.medianRotDeg < 0.05 && m.focalErr < 0.002 && Math.abs(p2 + 0.02) < 5e-4 && Math.abs(p1 - 0.003) < 5e-4, tag);
+});
+
 // Critical motion: translation without rotation (a nadir mapping pass) leaves the focal
 // unobservable from F. The mapper must say so and fall back, and a given HFOV must work.
 const NADIR = { path: 'line', pitchDeg: 85, length: 60, numGround: 30000, numFar: 0 };

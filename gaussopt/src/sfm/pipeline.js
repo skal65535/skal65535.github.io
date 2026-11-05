@@ -8,7 +8,7 @@ import { matchFeatures, matchPairs } from './frontend.js';
 import { mergeTrackPairs } from './track.js';
 import { buildVocabulary, bagOfWords, loopCandidates, geometricCandidates } from './loopdetect.js';
 import { SfmSession, withNames } from './session.js';
-import { timingsLine, shadowWindowLines } from './reconstruct.js';
+import { timingsLine } from './reconstruct.js';
 import { defaultCamera } from './camera.js';
 import { makeRng } from '../math.js';
 import { PIPELINE_DEFAULTS } from './defaults.js';
@@ -16,7 +16,8 @@ import { seconds } from './util.js';
 
 // features: [{ name, keypoints, descriptors }] in time order, all `width` x `height`.
 // mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); log(line), progress(stage, done, total);
-// trackPairs: the matches of the keypoints tracked through the video (track.js, the features' indices).
+// trackPairs: the matches of the keypoints tracked through the video (track.js, the features' indices); seq: the
+// sequential pairs already matched (frontend.js adaptFeatures), the loop candidates then matched alone.
 // Returns { session (session.js, for repairs), mapper, model, stats, input, matched }.
 export async function reconstructFromFeatures(features, width, height, matcher, options = {}) {
   const o = { ...PIPELINE_DEFAULTS, log: () => {}, progress: () => {}, ...options };
@@ -28,7 +29,7 @@ export async function reconstructFromFeatures(features, width, height, matcher, 
     log(`loop detection: ${candidates.length} candidate pairs in ${seconds(t1)}`);
   }
   const tm = performance.now();
-  const matched = await matchFeatures(features, matcher, { rng, window: o.window, loopCandidates: candidates,
+  const matched = await matchFeatures(features, matcher, { rng, window: o.window, loopCandidates: candidates, seq: o.seq,
                                                           onProgress: (d, n) => o.progress('match', d, n) });
   const ms = matched.stats;
   log(`matching: ${ms.matched} pairs, ${ms.verified} verified (loops ${ms.loopsVerified}/${ms.loopsTried}), ` +
@@ -58,7 +59,6 @@ export async function reconstructFromFeatures(features, width, height, matcher, 
   log(`reconstruct: ${model.images.length}/${features.length} registered, ${stats.numSegments} segment(s), ` +
       `focal ${model.focal.toFixed(1)} px in ${seconds(t2)}`);
   log(`  time: ${timingsLine(stats)}`);
-  for (const line of shadowWindowLines(stats.time)) log(`  window ${line}`);
   return { session, mapper, model, stats, input, matched };
 }
 

@@ -14,12 +14,20 @@ import { makeRng, dist } from '../math.js';
 import { normalizedFromImage, project, poseCenter, meanFocal, withFocal, focalFromHfov } from './camera.js';
 import { ransacFundamental, ransacHomography, relativePose, triangulate, triangulationAngle, depthIn, ransacPnP } from './geometry.js';
 import { estimateFocal } from './focal.js';
-import { bundleAdjust, reprojectionErrors, normalizeFrame } from './ba.js';
+import { bundleAdjust } from './ba.js';
 import { GpuBundleAdjuster } from './ba_gpu.js';
 import { median, deg, matchedPixels } from './util.js';
 import { mul3, mulVec3, rotationAngle } from './linalg.js';
 import { compose, inverse, apply, fromPose, toPose } from './sim3.js';
 import { WINDOW } from './defaults.js';
+
+// p, or STALLED thrown once ms have passed (the GPU's solves: one that never ends falls back as an error does)
+const STALLED = new Error('stalled');
+function watchdog(p, ms) {
+  let timer;
+  const stall = new Promise((_, reject) => { timer = setTimeout(() => reject(STALLED), ms); });
+  return Promise.race([p, stall]).finally(() => clearTimeout(timer));
+}
 
 const DEFAULTS = {
   seed: 1,
@@ -33,8 +41,14 @@ const DEFAULTS = {
   fallbackFocal: null,     // pixels, instead of fallbackHfovDeg (a photo set's EXIF focal); override both with hfovDeg / focal
   maxFocalGap: 8,          // focal calibration: widest frame gap tried per frame
   maxFocalPairs: 200,      // and number of frames sampled
-  refineIntrinsicsUntil: 50,
-  refine: ['f', 'k1'],
+  // the intrinsics refined in each window BA while mapping (frames 6..refineIntrinsicsUntil registered, null: all), and
+  // their terms: on gare2 (COLMAP's matches) the lens fixed from its first 50 frames left the path 25% off COLMAP's at
+  // the ends, f and k1 alone as far off, p1, p2 too without k2 6.5% at p90: all of them, in every window, 0.35% median,
+  // 1.2% p90. refineUnobserved: those of them refined when F does not observe the focal (it is given, the fallback or the
+  // prior): over flat ground seen from above, k2, p1, p2 moved it 3.65% off (mapper_test's nadir pass; 0.23% with f, k1)
+  refineIntrinsicsUntil: null,
+  refine: ['f', 'k1', 'k2', 'p1', 'p2'],
+  refineUnobserved: ['f', 'k1'],
   minCameraFrames: 5,      // several cameras: while mapping, one's intrinsics are refined once it has this many registered frames (P8.3)
   minCameraFramesSweeps: 2, // and in the final sweeps (refine()) from this many: a lens with a few photos is fitted to the
                             // whole map instead of keeping its EXIF ratio (DESIGN-sfm §13 P8)
@@ -55,15 +69,13 @@ const DEFAULTS = {
   initMinAngleDeg: 3,      // median triangulation angle of the initial pair
   initOrder: 'time',       // initial pair: 'time' (first frames first) | 'strongest' (most matches first)
   baIterations: 10,
-  // the window BAs (localBA): 'f64' (ba.js), or 'gpu': the GPU solver (ba_gpu.js) for a window worth it (gpuFriendly),
-  // ba.js otherwise, and ba.js from the start where the GPU solve fails (illReason, an error) or there is no WebGPU
-  baPrecision: 'f64',
-  baIllPivot: 1e-4,        // 'gpu': a pose pivot under it (the gauge fixed) fails the GPU solve
+  // the window BAs (localBA): the GPU solver (ba_gpu.js) for a window worth it (gpuFriendly), ba.js otherwise, and ba.js
+  // from the start where the GPU solve fails (illReason, an error) or there is no WebGPU
+  baIllPivot: 1e-4,        // a pose pivot under it (the gauge fixed) fails the GPU solve
   baIllRmse: true,         // and so does its RMSE up
-  baGpuMinObs: 2000,       // 'gpu': fewer observations to ba.js (gpuFriendly)
+  baGpuMinObs: 2000,       // fewer observations to ba.js (gpuFriendly)
   baGpu: null,             // the GPU solver (a GpuBundleAdjuster or its promise; null: GpuBundleAdjuster.shared())
-  baShadow: '',            // solvers ('gpu', 'f64', or both) each window BA also runs on a copy, from the same start, the map
-                           // following baPrecision's: their poses against the map's (time.shadow; a solver without the drift it causes)
+  baGpuTimeoutMs: 120000,  // a GPU solve, or the solver's making, not done by then: stalled, the GPU off from there
   log: () => {},
   progress: () => {},       // (stage, done, total): 'init' over the candidate pairs, 'register' while growing, 'refine' per window
 };
@@ -80,15 +92,13 @@ export function copySnapshot(s) {
     points: s.points.map(P => P && { X: [...P.X], obs: new Map(P.obs) }),
     kpPoint: s.kpPoint.map(a => a.slice()),
     adj: s.adj.map(list => list.slice()),
-    stats: structuredClone(s.stats), o: { ...s.o, refine: [...s.o.refine] },
+    stats: structuredClone(s.stats), o: { ...s.o, refine: [...s.o.refine], refineUnobserved: [...s.o.refineUnobserved] },
   };
 }
 
 export class SequentialMapper {
   constructor(input, options = {}) {
     this.o = { ...DEFAULTS, ...options };
-    for (const s of [this.o.baPrecision, ...(this.o.baShadow || '').split(',').filter(Boolean)])
-      if (s !== 'f64' && s !== 'gpu') throw new Error(`no window BA solver '${s}' (baPrecision, baShadow: f64, gpu)`);
     this.rng = makeRng(this.o.seed);
     this.cameras = (input.cameras ?? [input.camera]).map(c => ({ ...c, params: [...c.params] }));
     this.priors = this.cameras.map(c => meanFocal(c));  // the input focals: their ratios place the other cameras (calibrateFocal)
@@ -485,73 +495,41 @@ export class SequentialMapper {
       points: Float64Array.from(ptList.flatMap(pid => this.points[pid].X)),
       obsCam: Int32Array.from(obsCam), obsPoint: Int32Array.from(obsPoint), obsUV: Float64Array.from(obsUV),
     };
-    const opts = { refine: refineIntrinsics ? this.o.refine : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations };
-    const modes = (this.o.baShadow || '').split(',').filter(Boolean), gpu = this.o.baPrecision === 'gpu';
-    const solver = gpu || modes.includes('gpu') ? await this.gpuSolver() : null, onGpu = gpu && !!solver && this.gpuFriendly(prob);
-    if (gpu) { const r = (this.time.route ??= { gpu: 0, cpu: 0 }); r[onGpu ? 'gpu' : 'cpu']++; }
-    const ts = performance.now(), shadows = [];
-    for (const mode of modes) {
-      if (mode === 'gpu' && !solver) continue;
-      const copy = { ...prob, cameras: prob.cameras.map(c => ({ ...c, params: [...c.params] })), poses: prob.poses.slice(), points: prob.points.slice() };
-      const r = mode === 'gpu' ? await solver.bundleAdjust(copy, opts).catch(() => null) : bundleAdjust(copy, opts);
-      if (!r) { shadows.length = 0; break; }  // the GPU's failed: no shadow of this window (the modes' lists stay aligned)
-      shadows.push({ mode, copy, r });
-    }
-    let shadowMs = performance.now() - ts;
+    const opts = { refine: refineIntrinsics ? this.refineTerms() : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations };
+    const solver = this.gpuFriendly(prob) ? await this.gpuSolver() : null;
+    this.time.route[solver ? 'gpu' : 'cpu']++;
     const t1 = performance.now();
-    const start = onGpu ? { cameras: prob.cameras, poses: prob.poses.slice(), points: prob.points.slice() } : null;
-    let error = '', out = onGpu ? await solver.bundleAdjust(prob, opts).catch((e) => { error = e.message; return null; }) : bundleAdjust(prob, opts);
-    const reason = error ? 'GPU error' : onGpu ? this.illReason(out.cond) : '';
-    if (reason) {  // solved again by ba.js, from the start
+    const start = solver && { cameras: prob.cameras, poses: prob.poses.slice(), points: prob.points.slice() };
+    let error = '', stalled = false;
+    let out = solver ? await watchdog(solver.bundleAdjust(prob, opts), this.o.baGpuTimeoutMs).catch((e) => { error = e.message; stalled = e === STALLED; return null; })
+                     : bundleAdjust(prob, opts);
+    const reason = error ? 'GPU error' : solver ? this.illReason(out.cond) : '';
+    if (reason) {  // solved again by ba.js, from the start (a stalled solve, should it end, writes to the arrays prob had)
       Object.assign(prob, start);
-      if (error) this.o.log(`window BA: the GPU solve failed (${error}), solved by ba.js${solver.lost ? '; its device lost, the GPU off from here' : ''}`);
-      if (solver.lost) this._gpu = null;
-      out = { ...bundleAdjust(prob, opts), cond: out?.cond ?? null };
-      (this.time.fallback ??= []).push({ stage: this._stage ?? '', first: Math.min(...camList.filter((_, c) => free[c])), cond: out.cond, reason });
+      const off = solver.lost || stalled;
+      if (error) this.o.log(`window BA: the GPU solve failed (${error}), solved by ba.js${off ? `; ${stalled ? 'stalled' : 'its device lost'}, the GPU off from here` : ''}`);
+      if (off) this._gpu = null;
+      out = bundleAdjust(prob, opts);
+      this.time.fallback.push(reason);
     }
     const ms = performance.now() - t1;
     this.time.solve += ms;
     this.time.windows.push({ ...out.profile, ms });
-    if (shadows.length) {
-      const t = performance.now();
-      this._shadowStats(prob, shadows, { iterations: out.iterations, initialCost: out.initialCost, cond: out.cond, fallback: !!reason,
-                                         center, frames: camList.filter((_, c) => free[c]), stage: this._stage ?? '' });
-      shadowMs += performance.now() - t;
-      this.time.shadowMs += shadowMs;
-    }
     this.cameras = prob.cameras;  // a camera for all its frames, whatever this window made of it
     camList.forEach((img, c) => { if (free[c]) this.poses[img] = prob.poses[c]; });
     ptList.forEach((pid, li) => { this.points[pid].X = Array.from(prob.points.subarray(3 * li, 3 * li + 3)); });
     this.filter(ptList);
     this.time.baCalls++;
-    this.time.ba += performance.now() - t0 - shadowMs;
+    this.time.ba += performance.now() - t0;
     return out;
   }
 
-  // time.shadow[mode]: per window, its free poses' largest rotation (deg) and centre (fraction of the points' median
-  // distance to their median) from the map's solve, and both reprojection RMSEs (px, f64)
-  _shadowStats(prob, shadows, { iterations, initialCost, cond, fallback, center, frames, stage }) {
-    const n = prob.points.length / 3, { s: scale } = normalizeFrame(prob.points);
-    const rmse = (q) => { const e = Array.from(reprojectionErrors(q)).filter(Number.isFinite); return Math.sqrt(e.reduce((a, x) => a + x * x, 0) / Math.max(1, e.length)); };
-    const ref = rmse(prob);
-    for (const { mode, copy, r } of shadows) {
-      let rot = 0, cen = 0;
-      prob.poses.forEach((pose, k) => {
-        if (!prob.free[k]) return;
-        rot = Math.max(rot, deg(rotationAngle(copy.poses[k].R, pose.R)));
-        cen = Math.max(cen, dist(poseCenter(copy.poses[k]), poseCenter(pose)) / scale);
-      });
-      ((this.time.shadow ??= {})[mode] ??= []).push({ rot, cen, rmse: rmse(copy), ref, focal: copy.cameras[0].params[0] / prob.cameras[0].params[0] - 1,
-        center, first: Math.min(...frames), last: Math.max(...frames), free: frames.length, obs: prob.obsCam.length, points: n, stage,
-        iterations, shadowIterations: r.iterations, start: Math.sqrt(initialCost / Math.max(1, prob.obsCam.length)), cond, fallback });
-    }
-  }
-
   // ms: ba, the window BAs (localBA) in all, solve their bundleAdjust, baCalls their count; focal, init: calibrateFocal,
-  // initialize outside their window BAs, focalBA, initBA within them; shadowMs: the shadow solves (baShadow), apart from
-  // all of these; windows: each window BA's bundleAdjust profile (ba.js) with its ms
+  // initialize outside their window BAs, focalBA, initBA within them; windows: each window BA's bundleAdjust profile
+  // with its ms; route: the window BAs solved on the GPU and on ba.js (a fallback counted on the GPU); fallback: why
+  // each GPU solve redone by ba.js was (illReason, 'GPU error')
   resetTime() {
-    this.time = { ba: 0, solve: 0, baCalls: 0, focal: 0, init: 0, focalBA: 0, initBA: 0, shadowMs: 0, windows: [] };
+    this.time = { ba: 0, solve: 0, baCalls: 0, focal: 0, init: 0, focalBA: 0, initBA: 0, windows: [], route: { gpu: 0, cpu: 0 }, fallback: [] };
   }
 
   // Why the GPU's solve of a window fails, from its conditioning (cond), or '': f32 lost it (a result not finite), a direction
@@ -564,6 +542,12 @@ export class SequentialMapper {
     return '';
   }
 
+  // The intrinsics a window BA refines (refine, refineUnobserved)
+  refineTerms() {
+    const { refine, refineUnobserved } = this.o;
+    return this.stats.focalSource === 'calibrated' ? refine : refine.filter(t => refineUnobserved.includes(t));
+  }
+
   // Whether a window BA is worth the GPU solver: baGpuMinObs observations (fewer, the round trips make it slower than
   // ba.js: in Chrome on an M-series GPU, e2e/ba_gpu_bench.e2e.js, 743 observations 1.32x ba.js's time, 3231 0.81x)
   gpuFriendly(prob) { return prob.obsCam.length >= this.o.baGpuMinObs; }
@@ -571,7 +555,7 @@ export class SequentialMapper {
   // The GPU solver (baGpu, or the realm's), made once; null where there is none (its windows then on ba.js, said once)
   async gpuSolver() {
     if (this._gpu === undefined) {
-      this._gpu = await Promise.resolve(this.o.baGpu ?? GpuBundleAdjuster.shared()).catch((e) => {
+      this._gpu = await watchdog(Promise.resolve(this.o.baGpu ?? GpuBundleAdjuster.shared()), this.o.baGpuTimeoutMs).catch((e) => {
         this.o.log(`no GPU solver (${e?.message ?? e}): the window BAs on ba.js`);
         return null;
       });
@@ -681,7 +665,7 @@ export class SequentialMapper {
       added++;
       this.o.progress('register', registered, this.n);
       this.triangulateNew(best);
-      await this.localBA(best, { refineIntrinsics: registered >= 6 && registered <= this.o.refineIntrinsicsUntil });
+      await this.localBA(best, { refineIntrinsics: registered >= 6 && registered <= (this.o.refineIntrinsicsUntil ?? Infinity) });
       if (registered % 50 === 0) this.o.log(`registered ${registered}/${this.n}, ${this.numPoints()} points, f ${this.camera.params[0].toFixed(1)}`);
     }
     return added;

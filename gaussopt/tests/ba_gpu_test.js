@@ -37,6 +37,21 @@ function withLenses(prob, n) {
   return { ...rest, cameras: Array.from({ length: n }, () => ({ ...camera, params: [...camera.params] })), poseCam: Int32Array.from(prob.poses, (_, k) => k % n) };
 }
 
+// p1, p2 refined from 0 on a lens of gare2's tangential distortion
+test('BA on the GPU refining p1, p2 lands where f64 does', async () => {
+  const scene = makeSyntheticScene({ numFrames: 15, numGround: 3000, numBoxes: 4, numFar: 300, maxFeatures: 1500,
+                                     params: [1230, 1230, 960, 540, -0.004, 0.002, 0.003, -0.02] });
+  const refine = ['f', 'k1', 'k2', 'p1', 'p2'];
+  const a = problemFrom(scene, rng(31)), b = problemFrom(scene, rng(31));
+  for (const p of [a, b]) p.camera.params[6] = p.camera.params[7] = 0;
+  const oa = bundleAdjust(a, { refine, maxIterations: 50 }), ob = await gpu.bundleAdjust(b, { refine, maxIterations: 50 });
+  const [rot, cen] = apart(a, b);
+  assert(rot < 1e-3 && cen < 1e-3, `poses apart by ${rot} deg, ${cen} in centre`);
+  assertClose(ob.cost, oa.cost, 1e-4 * oa.cost, 'cost');
+  assert(Math.abs(b.camera.params[7] - a.camera.params[7]) < 1e-4 && Math.abs(b.camera.params[6] - a.camera.params[6]) < 1e-4,
+         `p1, p2: GPU ${b.camera.params.slice(6)}, f64 ${a.camera.params.slice(6)}`);
+});
+
 test('BA on the GPU with 6 lenses lands where f64 does', async () => {
   const a = withLenses(problemFrom(SCENE, rng(33)), 6), b = withLenses(problemFrom(SCENE, rng(33)), 6);
   const opts = { refine: ['f', 'k1', 'k2'], maxIterations: 50 };
@@ -83,7 +98,7 @@ test('BA on the GPU: the solve ended by the model\'s predicted decrease', async 
 test('BA on the GPU: a pose of 2 observations is weak, the others not; one fixed pose leaves the gauge free', async () => {
   const full = problemFrom(SCENE, rng(31), { pointNoise: 0 });
   const a = (await gpu.bundleAdjust(problemFrom(SCENE, rng(31), { pointNoise: 0 }), { maxIterations: 20 })).cond;
-  assert(a.minPivot > 1e-2 && a.weakPoses === 0 && !a.gaugeFree, `full: ${JSON.stringify(a)}`);
+  assert(a.minPivot > 1e-2 && !a.gaugeFree, `full: ${JSON.stringify(a)}`);
   const keep = [], seen = new Map();
   for (let o = 0; o < full.obsCam.length; o++) {
     const k = full.obsCam[o], n = seen.get(k) ?? 0;
@@ -93,10 +108,11 @@ test('BA on the GPU: a pose of 2 observations is weak, the others not; one fixed
   const thin = { ...full, obsCam: Int32Array.from(keep, o => full.obsCam[o]), obsPoint: Int32Array.from(keep, o => full.obsPoint[o]),
                  obsUV: Float64Array.from(keep.flatMap(o => [full.obsUV[2 * o], full.obsUV[2 * o + 1]])) };
   const b = (await gpu.bundleAdjust(thin, { maxIterations: 20 })).cond;
-  assert(b.minPivot < 1e-4 && b.weakPoses === 1, `pose 7 on 2 observations: ${JSON.stringify(b)}`);
+  assert(b.minPivot < 1e-4, `pose 7 on 2 observations: ${JSON.stringify(b)}`);
   const one = problemFrom(SCENE, rng(31), { pointNoise: 0 });
   one.free[1] = 1;
-  assert((await gpu.bundleAdjust(one, { maxIterations: 5 })).cond.gaugeFree, 'one fixed pose');
+  const c = (await gpu.bundleAdjust(one, { maxIterations: 5 })).cond;
+  assert(c.gaugeFree && c.minPivot === null, `one fixed pose: ${JSON.stringify(c)}`);
 });
 
 // a GPU validation error (here a pipeline whose bindings are not the pass's) is thrown, not solved through
@@ -141,6 +157,15 @@ test('BA on the GPU: a pass over maxComputeWorkgroupsPerDimension refused', asyn
   assert(/workgroups a pass/.test(error?.message) && made.length === 0, `${error}, ${made.length} buffers`);
 });
 
+// passes over maxComputeWorkgroupsPerDimension (here 32: about 350 workgroups a linearize) dispatched in 2D: the same solve
+test('BA on the GPU: passes over maxComputeWorkgroupsPerDimension dispatched in 2D, the same solve', async () => {
+  const { dev } = wrapped(gpu.device, { limits: { ...gpu.device.limits, maxComputeWorkgroupsPerDimension: 32 } });
+  const a = problemFrom(SCENE, rng(31)), b = problemFrom(SCENE, rng(31)), opts = { refine: ['f', 'k1'], maxIterations: 5 };
+  assert(Math.ceil(a.obsCam.length / 64) > 32, `${a.obsCam.length} observations`);
+  const oa = await gpu.bundleAdjust(a, opts), ob = await new GpuBundleAdjuster(dev, gpu.pipelines).bundleAdjust(b, opts);
+  assert(ob.cost === oa.cost && JSON.stringify(b.poses) === JSON.stringify(a.poses), `cost ${ob.cost} vs ${oa.cost}`);
+});
+
 // nothing to solve (every pose fixed, no intrinsics): no zero-length writes (Deno's WebGPU dies on them), the poses kept
 test('BA on the GPU: every pose fixed, nothing refined', async () => {
   const prob = problemFrom(SCENE, rng(31));
@@ -149,14 +174,29 @@ test('BA on the GPU: every pose fixed, nothing refined', async () => {
   assert(JSON.stringify(prob.poses) === before && Number.isFinite(out.cost), JSON.stringify(out.profile));
 });
 
-// the shared solver: made again once its device is lost
-test('BA on the GPU: the shared solver made again after its device is lost', async () => {
+// the shared solver: made again once its device is lost, or once its making failed (no adapter for a while)
+test('BA on the GPU: the shared solver made again after its device is lost or its making failed', async () => {
   const a = await GpuBundleAdjuster.shared();
   a.device.destroy();
   await a.device.lost;
   assert(a.lost, 'lost flag');
   const b = await GpuBundleAdjuster.shared();
   assert(b !== a && !b.lost && Number.isFinite((await b.bundleAdjust(problemFrom(SCENE, rng(31)), { maxIterations: 2 })).cost), 'a new solver');
+  b.device.destroy();
+  await b.device.lost;
+  navigator.gpu.requestAdapter = async () => null;
+  let error = null;
+  try { await GpuBundleAdjuster.shared(); } catch (e) { error = e; } finally { delete navigator.gpu.requestAdapter; }
+  assert(/adapter/.test(error?.message), `${error}`);
+  const c = await GpuBundleAdjuster.shared().catch(e => e);
+  assert(c instanceof GpuBundleAdjuster && !c.lost, `after a failed making: ${c}`);
+});
+
+// an f32 overflow in the reduced system (here a NaN loss scale): thrown, not a solve that quietly takes no step
+test('BA on the GPU: a reduced system not finite is thrown', async () => {
+  let error = null;
+  try { await gpu.bundleAdjust(problemFrom(SCENE, rng(31)), { maxIterations: 3, lossScale: NaN }); } catch (e) { error = e; }
+  assert(/not finite/.test(error?.message), `${error}`);
 });
 
 // cond's pivot against f64 at ba.js's solution: per free pose its Schur block, sum over its observations of

@@ -2,6 +2,7 @@
 // performance on real frames against COLMAP's verified matches.
 import { GpuSift } from '../src/sfm/sift.js';
 import { GpuMatcher } from '../src/sfm/match.js';
+import { trimFeatures } from '../src/sfm/frontend.js';
 import { ransacFundamental } from '../src/sfm/geometry.js';
 import { loadDump, denoReader } from '../src/sfm/dump.js';
 import { readPGM } from '../tools/pgm.js';
@@ -46,6 +47,19 @@ Deno.test({ name: 'SIFT is deterministic and rotation invariant (90 deg, synthet
     good += Math.hypot(xb - (h - ya), yb - xa) < 2;  // continuous coordinates: (x, y) -> (h - y, x)
   }
   assert(m.length / 2 > 150 && good / (m.length / 2) > 0.95, `${m.length / 2} matches, ${good} at the rotated position`);
+} });
+
+// A dense extraction (more keypoints, a lower peak) trimmed (frontend.js trimFeatures) is the extraction itself: capped
+// by maxFeatures, and limited by the peak (no cap reached)
+Deno.test({ name: 'SIFT: a dense extraction trimmed is the default one, by the cap and by the peak', ignore: !hasGPU, fn: async () => {
+  const w = 640, h = 480, img = texture(w, h, 7), sift = await GpuSift.create();
+  const dense = await sift.extract(img, w, h, { maxFeatures: 100000, peak: 0.02 / 6 });
+  for (const maxFeatures of [300, 100000]) {
+    const a = await sift.extract(img, w, h, { maxFeatures }), t = trimFeatures(dense, maxFeatures, 0.02 / 3);
+    assert(a.keypoints.length < dense.keypoints.length, `${a.keypoints.length / 4} of ${dense.keypoints.length / 4}`);
+    const same = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
+    assert(same(t.keypoints, a.keypoints) && same(t.descriptors, a.descriptors), `maxFeatures ${maxFeatures}: ${t.keypoints.length / 4} vs ${a.keypoints.length / 4}`);
+  }
 } });
 
 const PGM = env('SFM_PGM'), DUMP = env('SFM_DESC_DUMP');

@@ -18,7 +18,6 @@ const split = ({ loops = true, sweeps = 2, retriangulate = true, flowJoin = true
 export async function mapSequential(input, options) {
   const t = performance.now();
   const mapper = new SequentialMapper(input, { ...split(options).mapperOptions, pairTypes: ['seq'] });
-  mapper._stage = 'map';
   await mapper.run();
   return { mapper, timings: { map: performance.now() - t, 'map.ba': mapper.time.ba } };
 }
@@ -30,7 +29,6 @@ export async function finish(input, { mapper, timings }, options) {
   // timings[name]: a stage's ms, timings[name + '.ba']: of which in window BAs
   const stage = async (name, fn) => {
     mapperOptions.progress?.(name, 0, 0);
-    mapper._stage = name;  // the shadow stats' tag
     const t = performance.now(), ba = mapper.time.ba, r = await fn();
     timings[name] = (timings[name] ?? 0) + performance.now() - t;
     timings[`${name}.ba`] = (timings[`${name}.ba`] ?? 0) + mapper.time.ba - ba;
@@ -62,8 +60,8 @@ export async function finish(input, { mapper, timings }, options) {
 }
 
 // A copy of mapper.time the mapper's later window BAs leave as it is
-const reasons = (fallback) => Object.entries(Object.groupBy(fallback, x => x.reason)).map(([k, v]) => `${v.length} ${k}`).join(', ');
-const copyTime = (t) => ({ ...t, windows: t.windows.slice(), ...(t.fallback ? { fallback: t.fallback.slice() } : {}), ...(t.route ? { route: { ...t.route } } : {}), ...(t.shadow ? { shadow: Object.fromEntries(Object.entries(t.shadow).map(([k, v]) => [k, v.slice()])) } : {}) });
+const reasons = (fallback) => Object.entries(Object.groupBy(fallback, x => x)).map(([k, v]) => `${v.length} ${k}`).join(', ');
+const copyTime = (t) => ({ ...t, windows: t.windows.slice(), fallback: t.fallback.slice(), route: { ...t.route } });
 
 // The reconstruction's time by stage, in s (stats: finish's): 'map 812.3 s (BA 700.1 s, 433 windows, ...), loops ...'
 export function timingsLine({ timings, time }) {
@@ -72,33 +70,7 @@ export function timingsLine({ timings, time }) {
   const parts = [`map ${s(timings.map)} (BA ${s(timings['map.ba'])}; outside it, initial pairs ${s(time.init)}, focal ${s(time.focal)})`];
   for (const name of ['loopMatch', 'loops', 'flowJoin', 'refine', 'retriangulate', 'lateMerge'])
     if (timings[name] !== undefined) parts.push(`${name} ${s(timings[name])}${ba(name)}`);
-  return `${parts.join(', ')}; BA in all ${s(time.ba)} over ${time.baCalls} windows, ${s(time.solve)} of it solving` + (time.route ? `, ${time.route.gpu} on the GPU solver, ${time.route.cpu} on the CPU's` : '') + (time.fallback ? `, ${time.fallback.length} failed on the GPU, redone by ba.js (${reasons(time.fallback)})` : '') + (time.shadowMs ? `, shadow solves ${s(time.shadowMs)} more` : '') + shadowLine(time.shadow) + windowsLine(time.windows);
-}
-
-// a shadow solve off the map's: by more than 0.01 deg, or a reprojection RMSE 0.1% above
-const bad = (x) => x.rot > 0.01 || x.rmse / x.ref > 1.001;
-
-// The shadow solves (mapper.js baShadow): per mode, the windows' largest pose differences and RMSE ratio, median and max
-function shadowLine(shadow) {
-  if (!shadow) return '';
-  const q = (v, f) => { v = v.slice().sort((a, b) => a - b); return `${f(v[v.length >> 1])} (max ${f(v.at(-1))})`; };
-  return Object.entries(shadow).map(([mode, w]) => `; ${mode} against the map's BA over ${w.length} windows: rotation ${q(w.map(x => x.rot), x => x.toExponential(1))} deg, ` +
-    `centre ${q(w.map(x => 100 * x.cen), x => x.toExponential(1))}%, RMSE x ${q(w.map(x => x.rmse / x.ref), x => x.toFixed(5))}, focal ${q(w.map(x => 100 * Math.abs(x.focal)), x => x.toExponential(1))}%` +
-    `, ${w.filter(bad).length} off (rotation > 0.01 deg or RMSE x > 1.001)` + w.filter(bad).sort((a, b) => b.rmse / b.ref - a.rmse / a.ref).slice(0, 8).map(x =>
-      ` [${x.stage} frames ${x.first}..${x.last} (${x.free} free), ${x.obs} obs, ${x.points} points, start ${x.start.toFixed(2)} px, RMSE ${x.ref.toFixed(3)} -> ${x.rmse.toFixed(3)} px, ` +
-      `rotation ${x.rot.toFixed(3)} deg, iterations ${x.iterations} (${mode} ${x.shadowIterations})]`).join('')).join('');
-}
-
-// One line per shadowed window (mapper.js baShadow): the map solve's conditioning (ba_gpu.js cond), whether it was redone
-// by ba.js (its GPU solve failed), and each shadow's difference from it
-export function shadowWindowLines(time) {
-  const modes = Object.entries(time.shadow ?? {});
-  if (!modes.length) return [];
-  return modes[0][1].map((x, k) => {
-    const c = x.cond, head = `${x.stage} ${x.first}..${x.last} (${x.free} free) ${x.obs} obs` +
-      (c ? ` pivot ${c.minPivot.toExponential(1)}${c.gaugeFree ? ' (gauge free)' : ''} weak ${c.weakPoses} conv ${+c.converged} rmse ${c.rmse0.toFixed(3)} -> ${c.rmse.toFixed(3)}` : '') + (x.fallback ? ' REDONE' : '');
-    return `${head} | ` + modes.map(([mode, w]) => `${mode}: rot ${w[k].rot.toExponential(1)} cen ${(100 * w[k].cen).toExponential(1)}% rmse x ${(w[k].rmse / w[k].ref).toFixed(4)}${bad(w[k]) ? ' OFF' : ''}`).join(', ');
-  });
+  return `${parts.join(', ')}; BA in all ${s(time.ba)} over ${time.baCalls} windows, ${s(time.solve)} of it solving, ${time.route.gpu} on the GPU solver, ${time.route.cpu} on the CPU's` + (time.fallback.length ? `, ${time.fallback.length} failed on the GPU, redone by ba.js (${reasons(time.fallback)})` : '') + windowsLine(time.windows);
 }
 
 // The window BAs' sizes (median and max) and their solve time by part

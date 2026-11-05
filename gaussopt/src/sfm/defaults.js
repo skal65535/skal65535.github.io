@@ -16,14 +16,16 @@ export const SESSION_DEFAULTS = {
   autoRepair: true,  // session.repair() once the reconstruction is done (undoable)
   overlay: true,     // a video's on-screen display (burnt-in text, boxes, a reticle) masked: the features and the training leave it out (overlay.js)
   track: true,       // a video's keyframe keypoints tracked through every sampled frame: longer tracks, the matches of keyframes farther apart (track.js)
-  baPrecision: 'f64', // the mapper's window BAs: 'f64' or 'gpu' (mapper.js baPrecision)
-  baGpuMinObs: 0,    // mapper.js baGpuMinObs (0: the mapper's)
-  baShadow: '',      // mapper.js baShadow ('gpu', 'f64'): each window BA also solved so on a copy, measured against the map's
+  // a video's keyframes extracted with up to denseFeatures at densePeak, kept so where a link between keyframes is weak
+  // (the sequential pairs' inliers across it under minLink of their median), trimmed to maxFeatures at siftPeak elsewhere
+  // (frontend.js adaptFeatures)
+  adaptFeatures: true, denseFeatures: 10000, densePeak: 0.02 / 6, minLink: 0.1,
   trainMinObs: 0,    // the trainer's points: seen by at least this many keyframes (export.js minObs); 0: 3 for a video, 2 for photos (DESIGN-sfm §13.3 P6)
 };
 
 // Mapping a photo set (DESIGN-sfm §13.3 P3): every pair matched (the window spans the set), a frame
 // placed from one neighbour when PnP has none left, initial pairs by match count, smaller segments
 // regrown into the largest (without it a set can stay split), and k2 refined (with f, k1 only, the
-// rotations of a wide lens drift from COLMAP's)
-export const PHOTO_MAPPING = { relativeRegistration: true, initOrder: 'strongest', regrowSegments: true, refine: ['f', 'k1', 'k2'] };
+// rotations of a wide lens drift from COLMAP's), whatever the focal's source, while the first 50 photos register
+export const PHOTO_MAPPING = { relativeRegistration: true, initOrder: 'strongest', regrowSegments: true, refine: ['f', 'k1', 'k2'],
+                               refineUnobserved: ['f', 'k1', 'k2'], refineIntrinsicsUntil: 50 };

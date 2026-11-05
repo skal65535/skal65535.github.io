@@ -1,12 +1,12 @@
 // ba_gpu.wgsl — The GPU passes of ba_gpu.js's bundle adjustment: per observation its linearization and the candidate's
 // cost, per point its block inverse, its Schur rows and its back-substitution, and the reduced camera system's terms
 // summed by chunks (a workgroup each, no atomics). A block of the reduced system is a free pose's (6) or a refined
-// lens's intrinsics (ni <= 3, padded to 6); an observation has two halves, its pose's and its lens's Jacobian rows.
+// lens's intrinsics (ni <= 5, padded to 6); an observation has two halves, its pose's and its lens's Jacobian rows.
 
 struct Params {
   loss: f32, lambda: f32, nObs: u32, nPts: u32,
-  ni: u32, k0: u32, k1: u32, k2: u32,  // the refined intrinsics: [f, k1, k2] indices
-  fixPoints: u32, _a: u32, _b: u32, _c: u32,
+  ni: u32, fixPoints: u32, nChunks: u32, nGChunks: u32,  // nChunks, nGChunks: the system's and the gradient's
+  k: vec4u, k4: u32, _c: u32, _d: u32, _e: u32,  // the refined intrinsics: their indices in [f, k1, k2, p1, p2]
 }
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> lens: array<vec4f>;      // 2 per lens: fx fy cx cy, k1 k2 p1 p2
@@ -33,6 +33,9 @@ struct Params {
 @group(0) @binding(21) var<storage, read_write> C: array<f32>;    // per 256 observations: cost, squares, count, -
 @group(0) @binding(22) var<storage, read_write> PP: array<f32>;   // per 256 points: their gp^T V^-1 gp = |L^-1 gp|^2
 
+// a workgroup's index in a pass dispatched in 2D (ba_gpu.js: x at most maxComputeWorkgroupsPerDimension)
+fn group(wid: vec3u, nw: vec3u) -> u32 { return wid.x + wid.y * nw.x; }
+
 fn apply(R0: vec4f, R1: vec4f, R2: vec4f, X: vec3f) -> vec3f { return vec3f(dot(R0.xyz, X) + R0.w, dot(R1.xyz, X) + R1.w, dot(R2.xyz, X) + R2.w); }
 fn distort(k: vec4f, x: f32, y: f32) -> vec2f {
   let rr = x * x + y * y; let rad = 1.0 + k.x * rr + k.y * rr * rr;
@@ -45,8 +48,8 @@ fn jp(o: u32, row: u32) -> vec3f { let k = 36u * o + 28u + 3u * row; return vec3
 fn wRow(o: u32, h: u32, i: u32) -> vec3f { return J[36u * o + 2u] * (jh(o, h, 0u, i) * jp(o, 0u) + jh(o, h, 1u, i) * jp(o, 1u)); }
 fn yRow(o: u32, h: u32, i: u32) -> vec3f { let k = 36u * o + 18u * h + 3u * i; return vec3f(Y[k], Y[k + 1u], Y[k + 2u]); }
 
-@compute @workgroup_size(64) fn linearize(@builtin(global_invocation_id) gid: vec3u) {
-  let o = gid.x;
+@compute @workgroup_size(64) fn linearize(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let o = 64u * group(wid, nw) + lid;
   if (o >= P.nObs) { return; }
   let ob = obs[o]; let b = 36u * o; let l = bitcast<u32>(poses[4u * ob.x + 3u].x);
   let q = apply(poses[4u * ob.x], poses[4u * ob.x + 1u], poses[4u * ob.x + 2u], pts[ob.y].xyz);
@@ -64,16 +67,17 @@ fn yRow(o: u32, h: u32, i: u32) -> vec3f { let k = 36u * o + 18u * h + 3u * i; r
   let c0 = cross(q, d0); let c1 = cross(q, d1);
   let R0 = poses[4u * ob.x].xyz; let R1 = poses[4u * ob.x + 1u].xyz; let R2 = poses[4u * ob.x + 2u].xyz;
   let p0 = d0.x * R0 + d0.y * R1 + d0.z * R2; let p1 = d1.x * R0 + d1.y * R1 + d1.z * R2;
-  // d(uv)/d[f, k1, k2] (fy keeps its ratio to fx)
-  var dk = array<f32, 6>(d.x, f.x * x * rr, f.x * x * rr * rr, (f.y / f.x) * d.y, f.y * y * rr, f.y * y * rr * rr);
-  var ki = array<u32, 3>(P.k0, P.k1, P.k2);
+  // d(uv)/d[f, k1, k2, p1, p2] (fy keeps its ratio to fx)
+  var dk = array<f32, 10>(d.x, f.x * x * rr, f.x * x * rr * rr, f.x * 2.0 * x * y, f.x * (rr + 2.0 * x * x),
+                          (f.y / f.x) * d.y, f.y * y * rr, f.y * y * rr * rr, f.y * (rr + 2.0 * y * y), f.y * 2.0 * x * y);
+  var ki = array<u32, 5>(P.k.x, P.k.y, P.k.z, P.k.w, P.k4);
   for (var i = 0u; i < 3u; i++) {
     J[b + 4u + i] = c0[i]; J[b + 7u + i] = d0[i]; J[b + 10u + i] = c1[i]; J[b + 13u + i] = d1[i];
     J[b + 28u + i] = p0[i]; J[b + 31u + i] = p1[i];
   }
   for (var i = 0u; i < 6u; i++) {
     let used = i < P.ni;
-    J[b + 16u + i] = select(0.0, dk[ki[min(i, 2u)]], used); J[b + 22u + i] = select(0.0, dk[3u + ki[min(i, 2u)]], used);
+    J[b + 16u + i] = select(0.0, dk[ki[min(i, 4u)]], used); J[b + 22u + i] = select(0.0, dk[5u + ki[min(i, 4u)]], used);
   }
 }
 
@@ -98,8 +102,8 @@ fn factorOf(p: u32) -> array<f32, 6> { let v = 16u * p; return array<f32, 6>(Vi[
 // per point: V = sum w Jp^T Jp damped, its Cholesky factor L (none when V is not positive or the points fixed: the point
 // left as it is), gp, L^-1 gp, and L^-1 W^T of its halves (the Schur terms Gram products of them: V^-1 never formed, its
 // f32 adjugate garbage for a far point's near-singular V)
-@compute @workgroup_size(64) fn points(@builtin(global_invocation_id) gid: vec3u) {
-  let p = gid.x;
+@compute @workgroup_size(64) fn points(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let p = 64u * group(wid, nw) + lid;
   if (p >= P.nPts) { return; }
   var V = mat3x3f(); var g = vec3f();
   for (var k = ptStart[p]; k < ptStart[p + 1u]; k++) {
@@ -134,8 +138,10 @@ fn factorOf(p: u32) -> array<f32, 6> { let v = 16u * p; return array<f32, 6>(Vi[
 // are one observation's, minus (L^-1 W_a^T)^T L^-1 W_b^T (= W_a V^-1 W_b^T); and when a is b, the J^T w J diagonal (its
 // damping's)
 var<workgroup> sh: array<f32, 2688>;  // 64 x 42
-@compute @workgroup_size(64) fn system(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_index) lid: u32) {
-  let c = chunks[wid.x];
+@compute @workgroup_size(64) fn system(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let gi = group(wid, nw);
+  if (gi >= P.nChunks) { return; }
+  let c = chunks[gi];
   var acc: array<f32, 42>;
   for (var k = c.x + lid; k < c.y; k += 64u) {
     let t = terms[k]; let oa = t.x >> 1u; let ha = t.x & 1u; let ob = t.y >> 1u; let hb = t.y & 1u;
@@ -152,12 +158,14 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
   }
   for (var i = 0u; i < 42u; i++) { sh[42u * lid + i] = acc[i]; }
   workgroupBarrier();
-  if (lid < 42u) { var s = 0.0; for (var k = 0u; k < 64u; k++) { s += sh[42u * k + lid]; } S[42u * wid.x + lid] = s; }
+  if (lid < 42u) { var s = 0.0; for (var k = 0u; k < 64u; k++) { s += sh[42u * k + lid]; } S[42u * gi + lid] = s; }
 }
 
 // per chunk of halves: their block's gradient, sum of J_h^T w r - (L^-1 W_h^T)^T L^-1 gp (= W_h V^-1 gp)
-@compute @workgroup_size(64) fn gradient(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_index) lid: u32) {
-  let c = gChunks[wid.x];
+@compute @workgroup_size(64) fn gradient(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let gi = group(wid, nw);
+  if (gi >= P.nGChunks) { return; }
+  let c = gChunks[gi];
   var acc: array<f32, 6>;
   for (var k = c.x + lid; k < c.y; k += 64u) {
     let hh = gTerms[k]; let o = hh >> 1u; let h = hh & 1u; let w = J[36u * o + 2u];
@@ -166,12 +174,12 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
   }
   for (var i = 0u; i < 6u; i++) { sh[6u * lid + i] = acc[i]; }
   workgroupBarrier();
-  if (lid < 6u) { var s = 0.0; for (var k = 0u; k < 64u; k++) { s += sh[6u * k + lid]; } G[6u * wid.x + lid] = s; }
+  if (lid < 6u) { var s = 0.0; for (var k = 0u; k < 64u; k++) { s += sh[6u * k + lid]; } G[6u * gi + lid] = s; }
 }
 
 // per point: dX = -V^-1 (gp + W^T dx) = -L^-T (L^-1 gp + L^-1 W^T dx), the candidate X + dX (X itself without L)
-@compute @workgroup_size(64) fn back(@builtin(global_invocation_id) gid: vec3u) {
-  let p = gid.x;
+@compute @workgroup_size(64) fn back(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let p = 64u * group(wid, nw) + lid;
   if (p >= P.nPts) { return; }
   let v = 16u * p;
   if (Vi[v + 9u] == 0.0) { ptsCand[p] = pts[p]; return; }
@@ -190,9 +198,10 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
 // per observation at the candidate: the Huber cost (behind the camera: rho(1e6)) and its squared residual, by 256
 var<workgroup> shc: array<vec4f, 256>;
 fn rho(s: f32) -> f32 { return select(2.0 * P.loss * sqrt(s) - P.loss * P.loss, s, s <= P.loss * P.loss); }
-@compute @workgroup_size(256) fn cost(@builtin(global_invocation_id) gid: vec3u, @builtin(workgroup_id) wid: vec3u,
-                                      @builtin(local_invocation_index) lid: u32) {
-  let o = gid.x;
+@compute @workgroup_size(256) fn cost(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let gi = group(wid, nw);
+  if (256u * gi >= P.nObs) { return; }  // a 2D dispatch's padding (the whole workgroup: no barrier skipped by some)
+  let o = 256u * gi + lid;
   var e = vec4f();
   if (o < P.nObs) {
     let ob = obs[o]; let l = bitcast<u32>(posesCand[4u * ob.x + 3u].x);
@@ -208,18 +217,20 @@ fn rho(s: f32) -> f32 { return select(2.0 * P.loss * sqrt(s) - P.loss * P.loss, 
     workgroupBarrier();
     if (lid < n) { shc[lid] += shc[lid + n]; }
   }
-  if (lid == 0u) { C[4u * wid.x] = shc[0].x; C[4u * wid.x + 1u] = shc[0].y; C[4u * wid.x + 2u] = shc[0].z; }
+  if (lid == 0u) { C[4u * gi] = shc[0].x; C[4u * gi + 1u] = shc[0].y; C[4u * gi + 2u] = shc[0].z; }
 }
 
 // per 256 points: the sum of their gp^T V^-1 gp, the decrease the points alone predict
-@compute @workgroup_size(256) fn pointPred(@builtin(global_invocation_id) gid: vec3u, @builtin(workgroup_id) wid: vec3u,
-                                           @builtin(local_invocation_index) lid: u32) {
+@compute @workgroup_size(256) fn pointPred(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
+  let gi = group(wid, nw);
+  if (256u * gi >= P.nPts) { return; }
+  let p = 256u * gi + lid;
   var y = vec3f();
-  if (gid.x < P.nPts) { y = vec3f(Vi[16u * gid.x + 6u], Vi[16u * gid.x + 7u], Vi[16u * gid.x + 8u]); }
+  if (p < P.nPts) { y = vec3f(Vi[16u * p + 6u], Vi[16u * p + 7u], Vi[16u * p + 8u]); }
   shc[lid] = vec4f(dot(y, y), 0.0, 0.0, 0.0);
   for (var n = 128u; n > 0u; n >>= 1u) {
     workgroupBarrier();
     if (lid < n) { shc[lid] += shc[lid + n]; }
   }
-  if (lid == 0u) { PP[wid.x] = shc[0].x; }
+  if (lid == 0u) { PP[gi] = shc[0].x; }
 }

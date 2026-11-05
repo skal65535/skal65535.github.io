@@ -34,16 +34,36 @@ Deno.test('BA Jacobians match central finite differences', () => {
       (e) => { const p = [...CAM.params]; p[0] += e; p[1] = p[0] * CAM.params[1] / CAM.params[0]; return p; },
       (e) => { const p = [...CAM.params]; p[4] += e; return p; },
       (e) => { const p = [...CAM.params]; p[5] += e; return p; },
+      (e) => { const p = [...CAM.params]; p[6] += e; return p; },
+      (e) => { const p = [...CAM.params]; p[7] += e; return p; },
     ];
     intr.forEach((mk, k) => {
       const d = fd(e => res({ ...CAM, params: mk(e) }, pose, X));
-      assertClose([lin.Jintr[k], lin.Jintr[3 + k]], d, 1e-4 * (1 + Math.abs(d[0]) + Math.abs(d[1])), `intrinsic ${k}`);
+      assertClose([lin.Jintr[k], lin.Jintr[intr.length + k]], d, 1e-4 * (1 + Math.abs(d[0]) + Math.abs(d[1])), `intrinsic ${k}`);
     });
   }
 });
 
 
 const SCENE = makeSyntheticScene({ numFrames: 15, numGround: 3000, numBoxes: 4, numFar: 300, maxFeatures: 1500 });
+
+// a lens of gare2's tangential distortion (COLMAP's p2 there: -0.020; without it, its own model refit to 2.9 px from 1.16)
+const TANGENTIAL = makeSyntheticScene({ numFrames: 15, numGround: 3000, numBoxes: 4, numFar: 300, maxFeatures: 1500,
+                                               params: [1230, 1230, 960, 540, -0.004, 0.002, 0.003, -0.02] });
+
+// p1, p2 refined from 0: found, the residuals at the noise floor (0.5 px); without them the fit stays off
+Deno.test('BA refines the tangential terms p1, p2', () => {
+  const run = (refine) => {
+    const prob = problemFrom(TANGENTIAL, rng(31));
+    prob.camera.params[6] = prob.camera.params[7] = 0;
+    bundleAdjust(prob, { refine, maxIterations: 50 });
+    const e = Array.from(reprojectionErrors(prob)).filter(Number.isFinite);
+    return { cam: prob.camera.params, rmse: Math.sqrt(e.reduce((a, x) => a + x * x, 0) / e.length) };
+  };
+  const a = run(['f', 'k1', 'k2', 'p1', 'p2']), b = run(['f', 'k1', 'k2']);
+  assert(Math.abs(a.cam[7] + 0.02) < 1e-3 && Math.abs(a.cam[6] - 0.003) < 1e-3 && a.rmse < 0.8, `p1 ${a.cam[6]}, p2 ${a.cam[7]}, RMSE ${a.rmse}`);
+  assert(b.rmse > 2 * a.rmse, `without p1, p2: RMSE ${b.rmse} (with ${a.rmse})`);
+});
 
 Deno.test('BA converges from perturbed poses, points and focal to the noise floor', () => {
   const r = rng(31);

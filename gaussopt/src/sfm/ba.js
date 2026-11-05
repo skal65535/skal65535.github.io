@@ -3,8 +3,8 @@
 // the reduced camera system is dense and solved by Cholesky.
 //
 // Parameters: free camera poses (camera-frame update q' = exp(dw) q + dt: 6 each), the intrinsics
-// of each camera model shared by its poses (any of 'f', 'k1', 'k2'; fy keeps its ratio to fx,
-// principal point and tangential terms stay fixed; a model per lens and zoom, DESIGN-sfm §13 P8),
+// of each camera model shared by its poses (any of 'f', 'k1', 'k2', 'p1', 'p2'; fy keeps its ratio to fx, the principal
+// point stays fixed; a model per lens and zoom, DESIGN-sfm §13 P8),
 // and all observed points (3 each). Fixed poses still constrain the points.
 "use strict";
 
@@ -12,10 +12,11 @@ import { expSO3, mul3, mulVec3, choleskySolve, invert3 } from './linalg.js';
 import { intrinsics, distortionParams, paramIndex, withFocal } from './camera.js';
 import { median } from './util.js';
 
-export const INTRINSICS = ['f', 'k1', 'k2'];
+export const INTRINSICS = ['f', 'k1', 'k2', 'p1', 'p2'];
+const NI = INTRINSICS.length;
 
 // Projection of camera-space point q with Jacobians: out.uv, out.dq (2 x 3, d(uv)/dq) and
-// out.dk (2 x 3, d(uv)/d[f, k1, k2], with fy = f * fy/fx)
+// out.dk (2 x NI, d(uv)/d[f, k1, k2, p1, p2], with fy = f * fy/fx)
 function projectCameraPoint(cam, q, out) {
   const [fx, fy, cx, cy] = intrinsics(cam), [k1, k2, p1, p2] = distortionParams(cam);
   const iz = 1 / q[2], x = q[0] * iz, y = q[1] * iz;
@@ -34,12 +35,14 @@ function projectCameraPoint(cam, q, out) {
   dq[0] = a00 * iz; dq[1] = a01 * iz; dq[2] = -(a00 * x + a01 * y) * iz;
   dq[3] = a10 * iz; dq[4] = a11 * iz; dq[5] = -(a10 * x + a11 * y) * iz;
   const dk = out.dk;
-  dk[0] = xd;               dk[3] = (fy / fx) * yd;
-  dk[1] = fx * x * r2;      dk[4] = fy * y * r2;
-  dk[2] = fx * x * r2 * r2; dk[5] = fy * y * r2 * r2;
+  dk[0] = xd;                     dk[5] = (fy / fx) * yd;
+  dk[1] = fx * x * r2;            dk[6] = fy * y * r2;
+  dk[2] = fx * x * r2 * r2;       dk[7] = fy * y * r2 * r2;
+  dk[3] = fx * 2 * x * y;         dk[8] = fy * (r2 + 2 * y * y);
+  dk[4] = fx * (r2 + 2 * x * x);  dk[9] = fy * 2 * x * y;
 }
 
-const scratch = () => ({ uv: new Float64Array(2), dq: new Float64Array(6), dk: new Float64Array(6) });
+const scratch = () => ({ uv: new Float64Array(2), dq: new Float64Array(6), dk: new Float64Array(2 * NI) });
 
 // One observation: residual into r[ro..ro+1], pose Jacobian (2 x 6, row-major) into Jc[co..],
 // point Jacobian (2 x 3) into Jp[po..]; tmp.dk holds the intrinsics Jacobian. Returns false when
@@ -61,7 +64,7 @@ function linearize(cam, pose, X, u, v, tmp, r, ro, Jc, co, Jp, po) {
 }
 
 // Residual and Jacobians of one observation as bundleAdjust sees them, for tests:
-// { r: [2], Jpose: 2x6 (dw, dt), Jpoint: 2x3, Jintr: 2x3 (f, k1, k2) }
+// { r: [2], Jpose: 2x6 (dw, dt), Jpoint: 2x3, Jintr: 2 x NI (INTRINSICS) }
 export function linearizeObservation(camera, pose, X, uv) {
   const tmp = scratch(), r = [0, 0], Jpose = new Array(12), Jpoint = new Array(6);
   linearize(camera, pose, X, uv[0], uv[1], tmp, r, 0, Jpose, 0, Jpoint, 0);
@@ -155,7 +158,7 @@ export function bundleAdjust(problem, opts = {}) {
       if (!linearize(camOfObs(o), poses[obsCam[o]], pointOf(points, obsPoint[o]), obsUV[2 * o], obsUV[2 * o + 1],
                      tmp, res, 2 * o, Jc, 12 * o, Jp, 6 * o)) { wgt[o] = 0; continue; }
       wgt[o] = rho(res[2 * o] ** 2 + res[2 * o + 1] ** 2, lossScale)[1];
-      for (let k = 0; k < ni; k++) { Ji[2 * ni * o + k] = tmp.dk[kIdx[k]]; Ji[2 * ni * o + ni + k] = tmp.dk[3 + kIdx[k]]; }
+      for (let k = 0; k < ni; k++) { Ji[2 * ni * o + k] = tmp.dk[kIdx[k]]; Ji[2 * ni * o + ni + k] = tmp.dk[NI + kIdx[k]]; }
     }
     profile.linearize += now() - t;
   };

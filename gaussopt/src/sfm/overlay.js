@@ -136,13 +136,13 @@ export function maskAt(ov, x, y, W, H) {
 
 // SIFT keypoints ([x, y, scale, orientation] per keypoint, pixel centers at +0.5) of a W x H frame outside the
 // mask, with their descriptors (128 bytes each): { keypoints, descriptors, dropped }
-export function dropMasked(keypoints, descriptors, ov, W, H) {
+export function dropMasked(keypoints, descriptors, ov, W, H, responses = null) {
   const n = keypoints.length / 4, keep = [];
   for (let i = 0; i < n; i++) if (!maskAt(ov, keypoints[4 * i] - 0.5, keypoints[4 * i + 1] - 0.5, W, H)) keep.push(i);
-  if (keep.length === n) return { keypoints, descriptors, dropped: 0 };
+  if (keep.length === n) return { keypoints, descriptors, responses, dropped: 0 };
   const kp = new Float32Array(4 * keep.length), de = new Uint8Array(128 * keep.length);
   keep.forEach((i, j) => { kp.set(keypoints.subarray(4 * i, 4 * i + 4), 4 * j); de.set(descriptors.subarray(128 * i, 128 * i + 128), 128 * j); });
-  return { keypoints: kp, descriptors: de, dropped: n - keep.length };
+  return { keypoints: kp, descriptors: de, responses: responses && Float32Array.from(keep, i => responses[i]), dropped: n - keep.length };
 }
 
 // The mask for a saved analysis (JSON: base64) and back; unpackMask memoizes the bytes on the packed object

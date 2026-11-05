@@ -18,11 +18,13 @@ const U = globalThis.GPUBufferUsage;
 let shared = null;
 
 export class GpuBundleAdjuster {
-  // One per realm (a worker, a test run), made on first use, again once its device is lost; rejects where WebGPU is not there
+  // One per realm (a worker, a test run), made on first use, again once its device is lost or its making failed; rejects
+  // where WebGPU is not there
   static shared() {
     if (!shared) {
       const made = shared = GpuBundleAdjuster.create();
-      made.then(g => g.device.lost.then(() => { if (shared === made) shared = null; }), () => {});
+      const forget = () => { if (shared === made) shared = null; };
+      made.then(g => g.device.lost.then(forget), forget);
     }
     return shared;
   }
@@ -124,10 +126,11 @@ export class GpuBundleAdjuster {
     const grad = chunked(gStart, nB);
     profile.terms = nTerms; profile.chunks = sys.n;
 
-    // a dispatch is at most maxComputeWorkgroupsPerDimension workgroups
+    // a pass of n workgroups dispatched as x by y, x at most maxComputeWorkgroupsPerDimension (a window of 4.5M observations
+    // has 101k chunks), y too
     const maxGroups = device.limits.maxComputeWorkgroupsPerDimension;
-    if (Math.max(Math.ceil(numObs / 64), sys.n, grad.n) > maxGroups)
-      throw new Error(`GpuBundleAdjuster: ${numObs} observations, ${sys.n} chunks: over ${maxGroups} workgroups a pass`);
+    if (Math.max(Math.ceil(numObs / 64), sys.n, grad.n) > maxGroups * maxGroups)
+      throw new Error(`GpuBundleAdjuster: ${numObs} observations, ${sys.n} chunks: over ${maxGroups}^2 workgroups a pass`);
 
     // ── the buffers ── (a validation error from here to the start's cost: thrown, not a solve of garbage; the buffers
     // destroyed and the error scope popped whatever happens)
@@ -157,10 +160,9 @@ export class GpuBundleAdjuster {
       for (let o = 0; o < numObs; o++) {
         obsData[4 * o] = obsCam[o]; obsData[4 * o + 1] = obsPoint[o]; uvBits[4 * o + 2] = obsUV[2 * o]; uvBits[4 * o + 3] = obsUV[2 * o + 1];
       }
-      const params = new ArrayBuffer(48), pf = new Float32Array(params), pu = new Uint32Array(params);
-      pf[0] = lossScale; pu[2] = numObs; pu[3] = numPoints; pu[4] = ni;
-      kIdx.forEach((k, j) => { pu[5 + j] = k; });
-      pu[8] = fixPoints ? 1 : 0;
+      const params = new ArrayBuffer(64), pf = new Float32Array(params), pu = new Uint32Array(params);
+      pf[0] = lossScale; pu[2] = numObs; pu[3] = numPoints; pu[4] = ni; pu[5] = fixPoints ? 1 : 0; pu[6] = sys.n; pu[7] = grad.n;
+      kIdx.forEach((k, j) => { pu[8 + j] = k; });
       const costBytes = 16 * Math.ceil(numObs / 256), ppN = Math.ceil(numPoints / 256);
       const pose0 = poseData(P), lens0 = lensData(cams);
       const B = {
@@ -177,15 +179,17 @@ export class GpuBundleAdjuster {
         linearize: group('linearize', [[0, 'params'], [1, 'lens'], [2, 'poses'], [3, 'pts'], [4, 'obs'], [5, 'J']]),
         points: group('points', [[0, 'params'], [5, 'J'], [6, 'Y'], [7, 'ptStart'], [8, 'ptObs'], [9, 'halfBlock'], [10, 'Vi']]),
         pointPred: group('pointPred', [[0, 'params'], [10, 'Vi'], [22, 'PP']]),
-        system: group('system', [[5, 'J'], [6, 'Y'], [11, 'chunks'], [12, 'terms'], [13, 'S']]),
-        gradient: group('gradient', [[4, 'obs'], [5, 'J'], [6, 'Y'], [10, 'Vi'], [14, 'gChunks'], [15, 'gTerms'], [16, 'G']]),
+        system: group('system', [[0, 'params'], [5, 'J'], [6, 'Y'], [11, 'chunks'], [12, 'terms'], [13, 'S']]),
+        gradient: group('gradient', [[0, 'params'], [4, 'obs'], [5, 'J'], [6, 'Y'], [10, 'Vi'], [14, 'gChunks'], [15, 'gTerms'], [16, 'G']]),
         back: group('back', [[0, 'params'], [3, 'pts'], [6, 'Y'], [7, 'ptStart'], [8, 'ptObs'], [9, 'halfBlock'], [10, 'Vi'], [17, 'dX'], [18, 'ptsCand']]),
         cost: group('cost', [[0, 'params'], [4, 'obs'], [18, 'ptsCand'], [19, 'posesCand'], [20, 'lensCand'], [21, 'C']]),
       };
       const pass = (enc, name, n) => {
         if (!n) return;
         const p = enc.beginComputePass();
-        p.setPipeline(pipelines[name]); p.setBindGroup(0, groups[name]); p.dispatchWorkgroups(n);
+        p.setPipeline(pipelines[name]); p.setBindGroup(0, groups[name]);
+        const x = Math.min(n, maxGroups);
+        p.dispatchWorkgroups(x, Math.ceil(n / x));
         p.end();
       };
       const read = async (dst, bytes) => {
@@ -234,6 +238,8 @@ export class GpuBundleAdjuster {
         grad.owner.forEach((k, c) => { for (let i = 0; i < size(k); i++) g[offset(k) + i] += raw[g0 + 6 * c + i]; });
         let pp = 0;
         for (let k = 0; k < ppN; k++) pp += raw[g0 + 6 * grad.n + k];
+        // an f32 overflow (a NaN, an infinity) thrown: it would fail every Cholesky, the solve then taking no step, unseen
+        if (!Number.isFinite(S.reduce((a, x) => a + x, 0) + g.reduce((a, x) => a + x, 0) + pp)) throw new Error('GpuBundleAdjuster: the reduced system is not finite');
         return { S, g, ud, pp };
       };
 
@@ -245,10 +251,9 @@ export class GpuBundleAdjuster {
       scoped = false;
       if (error) throw new Error(`GpuBundleAdjuster: ${error.message}`);
       const initialCost = cost, initialRmse = rmse;
-      let lambda = 1e-4, it = 0, converged = false;
+      let lambda = 1e-4, it = 0;
       for (; it < maxIterations; it++) {
         let accepted = false, relinearize = true;
-        converged = false;
         for (let tries = 0; tries < 10 && !accepted; tries++) {
           t = now();
           const { S, g, ud, pp } = await build(lambda, relinearize);
@@ -265,7 +270,7 @@ export class GpuBundleAdjuster {
           // the points' rounding)
           let pred = pp;
           for (let i = 0; i < m; i++) pred += dx[i] * (D[i] * dx[i] - g[i]);
-          if (!(pred >= 1e-7 * cost)) { converged = true; break; }
+          if (pred < 1e-7 * cost) break;
           t = now();
           // the candidate: q' = exp(dw) q + dt, the intrinsics stepped; dX per block, padded to 6
           const Pc = P.map((pose, k) => {
@@ -303,25 +308,26 @@ export class GpuBundleAdjuster {
           lambda = Math.max(1e-10, lambda / 3);
           accepted = true;
         }
-        if (!accepted || converged) { it += accepted ? 1 : 0; break; }
+        if (!accepted) break;  // converged, or no decrease even with heavy damping
       }
 
       // The window's conditioning at the solution, undamped: per free pose, the smallest Cholesky pivot of its
-      // block of the reduced system Jacobi-scaled; minPivot their least, weakPoses those under 1e-3; gaugeFree: fewer than
-      // 2 fixed poses (the scale free, the pivots saying nothing); converged: stopped before maxIterations
-      const S = nb ? (await build(0, true)).S : null;
-      let minPivot = 1, weakPoses = 0;
+      // block of the reduced system Jacobi-scaled; minPivot their least (null when gaugeFree: fewer than 2 fixed poses, the
+      // scale free, the pivots saying nothing)
+      const gaugeFree = numPoses - nb < 2;
+      const S = nb && !gaugeFree ? (await build(0, true)).S : null;
+      let minPivot = gaugeFree ? null : 1;
       const Ms = new Float64Array(36), Ls = new Float64Array(36);
-      for (let b = 0; b < nb; b++) {
+      for (let b = 0; S && b < nb; b++) {
         const d = Array.from({ length: 6 }, (_, i) => Math.sqrt(S[(6 * b + i) * m + 6 * b + i]));
         let piv = 0;
         if (d.every(x => x > 0)) {
           for (let i = 0; i < 6; i++) for (let j = 0; j <= i; j++) Ms[6 * i + j] = S[(6 * b + i) * m + 6 * b + j] / (d[i] * d[j]);
           if (choleskyFactor(Ms, 0, Ls, 0, 6)) { piv = Infinity; for (let i = 0; i < 6; i++) piv = Math.min(piv, Ls[7 * i] ** 2); }
         }
-        minPivot = Math.min(minPivot, piv); weakPoses += piv < 1e-3;
+        minPivot = Math.min(minPivot, piv);
       }
-      const cond = { minPivot, weakPoses, gaugeFree: numPoses - nb < 2, converged: it < maxIterations, rmse0: initialRmse, rmse };
+      const cond = { minPivot, gaugeFree, rmse0: initialRmse, rmse };
 
       // ── back to the problem's frame (fixed points as they were, not through f32) ──
       if (!fixPoints) {

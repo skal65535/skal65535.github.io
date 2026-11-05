@@ -36,17 +36,17 @@ import { readExif, jpegSize } from './exif.js';
 import { planPhotos, planMore, photoCameras, photoMapping, baseMapping } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
-import { xyOnly, mapperKeypoints } from './frontend.js';
+import { xyOnly, mapperKeypoints, adaptFeatures } from './frontend.js';
 import { PointTracker } from './track.js';
 import { seconds } from './util.js';
-import { hashString } from '../math.js';
+import { hashString, makeRng } from '../math.js';
 import { storeFrom } from '../project/store.js';
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
 const log = (text, level = '') => post({ type: 'log', text, level });
 const progress = (stage, done, total) => post({ type: 'progress', stage, done, total });
 const same = (a, b, keys) => a && keys.every(k => a[k] === b[k]);
-const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay', 'track'];  // the options the features depend on
+const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay', 'track', 'adaptFeatures', 'denseFeatures', 'densePeak', 'minLink'];  // the options the features depend on
 const perFrame = (feats) => Math.round(feats.reduce((s, f) => s + f.keypoints.length / 4, 0) / feats.length);  // mean features per frame
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const warnCapped = (capped, what) => {
@@ -203,8 +203,9 @@ function sharpnessCsv(a, sel) {
   return ['frame,time,sharpness,motion,status', ...rows].join('\n') + '\n';
 }
 
-// S1 on video samples (decoded at w x h): per frame onFrame({ name, time, keypoints, descriptors }, { name, blob (JPEG) })
-async function extract(samples, w, h, o, onFrame) {
+// S1 on video samples (decoded at w x h): per frame onFrame({ name, time, keypoints, descriptors, responses }, { name,
+// blob (JPEG) }); dense: with denseFeatures at densePeak (adaptFeatures trims them)
+async function extract(samples, w, h, o, onFrame, { dense = false } = {}) {
   const { sift } = await devices();
   const ov = overlayMask(o);
   let capped = 0, dropped = 0, total = 0;
@@ -212,12 +213,13 @@ async function extract(samples, w, h, o, onFrame) {
     const name = keyframeName(time);
     const gray = grayOf(ctx.getImageData(0, 0, w, h).data, w * h);
     const jpeg = { name, blob: await ctx.canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality }) };
-    const f = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak });
+    const f = await sift.extract(gray, w, h, dense ? { maxFeatures: Math.max(o.maxFeatures, o.denseFeatures), peak: Math.min(o.siftPeak, o.densePeak) }
+                                                  : { maxFeatures: o.maxFeatures, peak: o.siftPeak });
     capped += f.capped;
     total += f.keypoints.length / 4;
-    const { keypoints, descriptors, dropped: d } = ov ? dropMasked(f.keypoints, f.descriptors, ov, w, h) : f;
+    const { keypoints, descriptors, responses, dropped: d } = ov ? dropMasked(f.keypoints, f.descriptors, ov, w, h, f.responses) : f;
     dropped += d ?? 0;
-    await onFrame({ name, time, keypoints, descriptors }, jpeg);
+    await onFrame({ name, time, keypoints, descriptors, responses }, jpeg);
   });
   noteDecoder();
   warnCapped(capped, 'frame');
@@ -271,6 +273,10 @@ async function postPhotoThumbs() {
     labels: { focal35: p.focal35, zoom: p.labels.zoom, orientation: p.labels.orientation, lens: p.labels.lens } })) });
 }
 
+// Sorted indices as runs, for the log: [3, 4, 5, 9] -> '3-5, 9'
+const spans = (ks) => ks.reduce((out, k) => { const r = out.at(-1); if (r && k === r[1] + 1) r[1] = k; else out.push([k, k]); return out; }, [])
+  .map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(', ');
+
 // S0b + S1: keyframes (second decode pass at full size): JPEG, gray -> SIFT
 async function keyframes(o, analysis) {
   const sel = selection(analysis, o), kept = sel.kept.map(i => analysis.order[i]);
@@ -283,17 +289,29 @@ async function keyframes(o, analysis) {
     return videoKeyframes({ ...cache.features, feats: cache.features.feats.slice(0, kept.length) }, sel.kept);
   }
   const [w, h] = fitSize(video.width, video.height, o.maxDim);
-  const t = performance.now(), feats = [], jpegs = [];
+  const t = performance.now(), jpegs = [];
+  let feats = [];
   await extract(kept, w, h, o, async (f, jpeg) => {
     feats.push(f);
     jpegs.push(jpeg);
     progress('features', feats.length, kept.length);
     await save(`images/${jpeg.name}`, jpeg.blob);
-  });
+  }, { dense: o.adaptFeatures });
+  // as many features as a stretch needs (frontend.js adaptFeatures): the sequential pairs matched here, before the
+  // tracks, as the keyframes' keypoints may change
+  let seq = null;
+  if (o.adaptFeatures) {
+    const ta = performance.now(), { matcher } = await devices();
+    const a = await adaptFeatures(feats, matcher, { rng: makeRng(7919), maxFeatures: o.maxFeatures, peak: o.siftPeak, window: o.window, minLink: o.minLink,
+                                                    onProgress: (d, n) => progress('match', d, n) });
+    feats = a.feats; seq = { ...a.seq, window: o.window };
+    log(`features: ${a.weak.length ? `${a.weak.length} weak links (${spans(a.weak)}): keyframes ${spans(a.denseFrames)} with up to ${Math.max(o.maxFeatures, o.denseFeatures)}` : 'no weak link'}; ` +
+        `the sequential pairs matched in ${seconds(ta)}`);
+  }
   log(`features: ${feats.length} keyframes at ${w} x ${h}, ${perFrame(feats)} per frame in ${seconds(t)}`);
   const trackPairs = o.track ? await trackPoints(analysis, sel.kept, feats, w, h, o) : null;
   // id: a saved model is restored only over the features it was built from
-  cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h, trackPairs };
+  cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h, trackPairs, seq };
   saveFeatures(cache.features);
   return videoKeyframes(cache.features, sel.kept);
 }
@@ -731,7 +749,8 @@ async function run(options) {
   const cameras = photos ? photoCameras(photos.plan, features.width, features.height) : zoomPriors(features);
   if (!photos && cameras) mapping.scanFocal = true;
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
-    { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}), ...(features.trackPairs ? { trackPairs: features.trackPairs } : {}) });
+    { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}), ...(features.trackPairs ? { trackPairs: features.trackPairs } : {}),
+      ...(!photos && features.seq?.window === window ? { seq: features.seq } : {}) });
   current = { session, features, o, version: 0 };  // version: bumped by every action and undo
   // repair: each stretch of keyframes scored below green re-matched, kept where the scores improve (session.repair);
   // not for photos (P4)

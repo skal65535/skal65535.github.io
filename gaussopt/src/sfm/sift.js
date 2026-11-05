@@ -28,7 +28,8 @@ export class GpuSift {
 
   constructor(device, pipelines) { this.device = device; this.pipelines = pipelines; }
 
-  // gray: Uint8Array (w h). Returns { keypoints: Float32Array(4 n), descriptors: Uint8Array(128 n), capped }:
+  // gray: Uint8Array (w h). Returns { keypoints: Float32Array(4 n), descriptors: Uint8Array(128 n), responses:
+  // Float32Array(n) (their DoG responses, the strongest first: trimFeatures), capped }:
   // capped when candidates or oriented keypoints exceeded maxKeypoints (the GPU kept the first ones
   // it appended, so which ones varies between runs)
   async extract(gray, width, height, options = {}) {
@@ -119,11 +120,12 @@ export class GpuSift {
       return 0;
     }).slice(0, o.maxFeatures);
     const keypoints = new Float32Array(4 * order.length), descriptors = new Uint8Array(128 * order.length);
+    const responses = Float32Array.from(order, i => rec[8 * i + 5]);
     order.forEach((i, k) => {
       const scale = 2 ** rec[8 * i + 3];
       keypoints.set([rec[8 * i] * scale + 0.5, rec[8 * i + 1] * scale + 0.5, rec[8 * i + 4], rec[8 * i + 6]], 4 * k);
       descriptors.set(allDesc.subarray(128 * i, 128 * i + 128), 128 * k);
     });
-    return { keypoints, descriptors, capped };
+    return { keypoints, descriptors, responses, capped };
   }
 }

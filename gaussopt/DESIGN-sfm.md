@@ -46,9 +46,9 @@ Gauss-Opt trains from a COLMAP `gs/` directory produced offline by [`video2splat
 * Structure follows visual SLAM (ORB-SLAM: tracking, local BA on covisible keyframes, loop closure with Sim(3) pose graph), but **offline**: the whole video is known, so loop closure and refinement run as separate passes over the finished sequential map, with no real-time budget.
 
 ### D2. One Solver Core, Two Backends
-* Window BA (≈ 100 camera parameters, 20–30k points, ~10 LM iterations) runs in **plain JS, f64** in the worker. It is small enough for the CPU and serves as the reference implementation.
-* Large problems (global refinement, if needed) use the same Schur-complement LM in **WGSL, f32**: per-observation residual/Jacobian, per-point $3\times3$ elimination, implicit-Schur PCG for the camera system. The small reduced systems and all accumulations that need precision stay in f64 on the CPU.
-* WGSL has no f64. Mitigation: coordinates are centred and scaled per window, poses are parameterized as local increments, and the JS backend is the oracle for the WGSL one. Precedent: Wu et al., *Multicore Bundle Adjustment* (CVPR 2011) runs single precision on the GPU; COLMAP's Caspar BA defaults to f32 (`CASPAR_USE_DOUBLE OFF`).
+* Window BA (≈ 100 camera parameters, 20–30k points, ~10 LM iterations) runs the same Schur-complement LM on two backends. A window of 2000 observations or more (`baGpuMinObs`) goes to **WGSL, f32** (`ba_gpu.js`): the GPU linearizes, factors each point's $3\times3$ block and sums the reduced camera system in chunks. The CPU adds the chunks and solves that small system by Cholesky in **f64**. Smaller windows go to **plain JS, f64** (`ba.js`): there the round trips cost more than they save.
+* `ba.js` is also the fallback. It re-solves a window from its start when the GPU's result is ill-conditioned (a pose pivot under `baIllPivot`, the RMSE up, a value not finite) or the GPU fails, and it solves every window where there is no WebGPU. It is the reference the WGSL one is tested against.
+* WGSL has no f64. Mitigation: coordinates are centred and scaled per window, poses are parameterized as local increments, and the reduced system is solved in f64 on the CPU. Precedent: Wu et al., *Multicore Bundle Adjustment* (CVPR 2011) runs single precision on the GPU; COLMAP's Caspar BA defaults to f32 (`CASPAR_USE_DOUBLE OFF`).
 
 ### D3. Covisibility Windows Everywhere
 * A **window** is a seed keyframe set (temporal) **plus** the keyframes that share ≥ $m$ points with it (from loops). Local BA, refinement sweeps and user-triggered repairs (§6) all use the same window builder.
@@ -73,7 +73,7 @@ All state lives in the worker; the panel receives snapshots for display.
 
 * **`Video`:** source `File`/URL, fps, duration, resolution, decoded on demand by timestamp.
 * **`Keyframe`:** video timestamp, compressed image blob (JPEG/WebP, ~300 KB at 1080p; raw RGBA for 500 frames would be 4 GB), sharpness, keypoints (f32 $x, y$, scale, orientation), descriptors (uint8), pose $T_{cw}$ (or `null` = unregistered), segment id, per-keyframe quality (§6.1).
-* **`Camera`:** model (`OPENCV` during SfM: $f_x = f_y = f, c_x, c_y, k_1$ refined, $k_2, p_1, p_2$ held at 0; `PINHOLE` after undistortion), refine flags.
+* **`Camera`:** model (`OPENCV` during SfM: $f_x = f_y = f$, $c_x, c_y$ fixed at the centre; a video's $f, k_1, k_2, p_1, p_2$ refined in every window BA when F observes the focal, $f, k_1$ otherwise; a photo set's $f, k_1, k_2$; `PINHOLE` after undistortion), refine flags. Without $p_1, p_2$, gare2's lens ($p_2 = -0.020$ in COLMAP's fit) refits COLMAP's own model at 2.9 px RMSE instead of 1.16.
 * **`Track` / `Point`:** position, colour, observations (keyframe, keypoint index), reprojection error, reference keyframe (for Sim(3) corrections).
 * **`Edge`:** keyframe pair with match/inlier count and type: `seq`, `loop`, `user-loop`, `rejected`.
 * **`Segment`:** maximal run of keyframes in one connected map; a tracking loss starts a new segment, merged later by loop closure (§5.4).
@@ -129,6 +129,7 @@ A camera turning around a near object moves the image little, while its view of 
 * SIFT in WGSL following the SiftGPU structure: Gaussian pyramid, DoG extrema with subpixel refinement, edge rejection, orientation histogram, 4×4×8 descriptor, RootSIFT normalisation, top-$K$ by response ($K$ = 4096 default).
 * Validated against COLMAP's SIFT on the same frames: repeatability and match counts on sequential pairs, not bitwise equality.
 * At most 65536 candidate / oriented keypoints per frame on the GPU; past that, which ones are kept depends on the GPU's append order, and the worker warns.
+* **As many as a stretch needs** (`frontend.js` `adaptFeatures`, option `adaptFeatures`, on for a video): each keyframe is extracted once with up to `denseFeatures` (10000) at `densePeak` (0.02/6), and trimmed to the strongest `maxFeatures` at `siftPeak`, which is exactly the default extraction (`trimFeatures`; the responses come sorted). The sequential pairs are matched on the trimmed features. A boundary whose crossing inliers (`linkStrength`: the pairs within the window across it) are under `minLink` (0.1) of their median is weak (k | k+1), and keyframes k-2..k+3 keep their dense features (`radius` 3); only their pairs are matched again. This runs before the tracks, so no keypoint index moves, and the pipeline then matches only the loops (`seq`). Crossing strengths, offline: gare2's boundaries 40-50 at 0.01-0.03 of the median (where it broke), long-garden's 72-80 at 0.02-0.09 (where it split), jardin5's 61-72 at 0.03-0.08, table1's weakest 0.22 (none). In the browser, held out: gare2 20.49 -> 21.44 dB (keyframes 37-54 dense), long-garden 19.22 over 37 views -> 20.14 over 38 (82-94), jardin5 18.76 -> 18.83 (34 of 644), table1 none weak; table1 alone, its features and matching 0.8 s more (the same extraction time, the sequential pairs matched once).
 
 #### 5.2.1 Points tracked through every frame (`track.js`)
 SIFT matches fall off fast with the keyframe gap as the view turns: on a 24 s handheld video circling a table (53
@@ -364,7 +365,7 @@ M0 comes first because every later milestone is accepted by these tests. M1 carr
 
 ## 9. Adversarial Review & Mitigations
 
-* **"f32 BA will not converge on a 90-unit path."** Window problems are solved in f64 JS; GPU problems use per-window centring/scaling and incremental parameters; the JS backend checks the WGSL one on the same inputs.
+* **"f32 BA will not converge on a 90-unit path."** The GPU solves each window centred and scaled, with incremental parameters, and its reduced system in f64 on the CPU. A window it solves badly is redone in f64 by `ba.js`. On the pavilion, with every window also solved by `ba.js` from the same start, the median window's rotation is 2.2e-4° from f64's.
 * **"No focal prior: the whole map is wrong."** Joint estimation on the first ~50 keyframes, re-estimated in S4, user override (§6.3); M1 measures focal error against COLMAP.
 * **"Scale drift without loops."** Remains, as for any monocular method; the quality view shows it as loop residuals or path jerk. Not worse than COLMAP for a single pass without revisits.
 * **"Repetitive texture (grass, roofs) causes false loops."** Loops need PnP + Sim(3) RANSAC agreement and a pose-graph residual check; the UI shows and lets the user reject loop edges.
@@ -410,7 +411,8 @@ gaussopt/
 │   ├── sim3.js            # Similarity transforms for loop closure
 │   ├── geometry.js        # F (8-point), H, adaptive RANSAC, essential matrix, relative pose, triangulation, P3P / PnP
 │   ├── focal.js           # Focal self-calibration from F, with an observability measure (sharpness)
-│   ├── ba.js              # Robust LM bundle adjustment, Schur complement on the points (JS f64)
+│   ├── ba.js              # Robust LM bundle adjustment, Schur complement on the points (JS f64): small windows, the fallback
+│   ├── ba_gpu.js / ba_gpu.wgsl  # The same LM on the GPU (f32), its reduced camera system solved on the CPU (f64)
 │   ├── posegraph.js       # Sim(3) pose graph, LM + block-Jacobi PCG
 │   ├── mapper.js          # S2: sequential mapping, window BA, segments; S4 sweeps and extendTracks
 │   ├── loop.js            # S3: loop verification (3D-3D Sim(3)), segment merging, pose graph, track fusion

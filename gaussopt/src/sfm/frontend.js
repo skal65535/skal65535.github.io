@@ -7,6 +7,7 @@
 import { ransacFundamental } from './geometry.js';
 import { makeRng } from '../math.js';
 import { WINDOW } from './defaults.js';
+import { median } from './util.js';
 
 const FRONTEND_DEFAULTS = { window: WINDOW, maxError: 4, minInliers: 15 };
 
@@ -95,14 +96,63 @@ function verifyPool(size) {
 
 // features: [{ name, keypoints: Float32Array(4 n), descriptors: Uint8Array(128 n) }] in time order.
 // loopCandidates: [[i, j]] (i < j) to match as well. Returns { images, pairs, stats }.
-export async function matchFeatures(features, matcher, { rng, loopCandidates = [], onProgress = () => {}, ...options } = {}) {
+// seq: the sequential pairs already matched ({ pairs, stats }: adaptFeatures'), the loop candidates then matched alone
+export async function matchFeatures(features, matcher, { rng, loopCandidates = [], onProgress = () => {}, seq = null, ...options } = {}) {
   const o = { ...FRONTEND_DEFAULTS, ...options };
   const n = features.length;
-  const todo = [];
-  for (let i = 0; i < n; i++) for (let j = i + 1; j <= Math.min(n - 1, i + o.window); j++) todo.push([i, j, 'seq']);
+  const todo = seq ? [] : seqTodo(n, o.window);
   for (const [i, j] of loopCandidates) if (j - i > o.window) todo.push([i, j, 'loop']);
-  const { pairs, stats } = await matchPairs(features, matcher, todo, { rng, onProgress, ...o });
+  let { pairs, stats } = await matchPairs(features, matcher, todo, { rng, onProgress, ...o });
+  if (seq) {
+    pairs = [...seq.pairs, ...pairs].sort((a, b) => a.i - b.i || a.j - b.j);
+    for (const [k, v] of Object.entries(seq.stats)) if (k !== 'workers') stats[k] += v;
+  }
   return { images: features.map(f => ({ ...imageRecord(f), keypoints: mapperKeypoints(f) })), pairs, stats };
+}
+
+// The sequential pairs of n frames: each with the next `window`
+const seqTodo = (n, window) => {
+  const todo = [];
+  for (let i = 0; i < n; i++) for (let j = i + 1; j <= Math.min(n - 1, i + window); j++) todo.push([i, j, 'seq']);
+  return todo;
+};
+
+// A keyframe's features (sift.js extract's, the strongest first) trimmed to the strongest maxFeatures of response
+// >= peak: what an extraction with those settings gives
+export function trimFeatures(f, maxFeatures, peak) {
+  let n = Math.min(maxFeatures, f.responses.length);
+  while (n > 0 && f.responses[n - 1] < peak) n--;
+  if (n === f.responses.length) return f;
+  return { ...f, keypoints: f.keypoints.slice(0, 4 * n), descriptors: f.descriptors.slice(0, 128 * n), responses: f.responses.slice(0, n) };
+}
+
+// Per boundary k | k+1 of n frames, the inliers of the sequential pairs crossing it (i <= k < j, j - i <= window)
+export function linkStrength(pairs, n, window) {
+  const s = new Float64Array(Math.max(0, n - 1));
+  for (const p of pairs) if (p.type === 'seq' && p.j - p.i <= window) for (let k = p.i; k < p.j; k++) s[k] += p.matches.length / 2;
+  return s;
+}
+
+// Features as many as a stretch needs (DESIGN-sfm §5.2): dense, the keyframes' features (sift.js, the strongest first)
+// extracted with more of them and a lower peak; each trimmed to maxFeatures at peak (trimFeatures) and the sequential
+// pairs matched. A boundary k | k+1 whose crossing inliers (linkStrength) are under minLink of their median is weak:
+// keyframes k - radius + 1 .. k + radius get their dense features, and the pairs with one of them are matched again. On gare2
+// the boundaries of keyframes 40..50 are at 0.01-0.03 of the median, the weakest of table1's at 0.22.
+// Returns { feats, seq: { pairs, stats } (matchFeatures' seq), weak: [k], denseFrames: [k] }.
+export async function adaptFeatures(dense, matcher, { rng, maxFeatures, peak, window = WINDOW, minLink = 0.1, radius = 3, onProgress = () => {}, ...options } = {}) {
+  const n = dense.length, feats = dense.map(f => trimFeatures(f, maxFeatures, peak));
+  const todo = seqTodo(n, window), first = await matchPairs(feats, matcher, todo, { rng, onProgress, window, ...options });
+  const s = linkStrength(first.pairs, n, window), med = median(Array.from(s));
+  const weak = [...s.keys()].filter(k => s[k] < minLink * med);
+  const denseFrames = new Set();
+  for (const k of weak) for (let i = Math.max(0, k - radius + 1); i <= Math.min(n - 1, k + radius); i++) denseFrames.add(i);
+  if (!denseFrames.size) return { feats, seq: first, weak, denseFrames: [] };
+  for (const i of denseFrames) feats[i] = dense[i];
+  const again = await matchPairs(feats, matcher, todo.filter(([i, j]) => denseFrames.has(i) || denseFrames.has(j)), { rng, window, ...options });
+  const pairs = [...first.pairs.filter(p => !denseFrames.has(p.i) && !denseFrames.has(p.j)), ...again.pairs].sort((a, b) => a.i - b.i || a.j - b.j);
+  const stats = { ...first.stats };
+  for (const [k, v] of Object.entries(again.stats)) if (k !== 'workers') stats[k] += v;
+  return { feats, seq: { pairs, stats }, weak, denseFrames: [...denseFrames].sort((a, b) => a - b) };
 }
 
 // A keyframe's own fields, as the mapper and a saved session keep them (camera: its zoom stretch's;

@@ -5,7 +5,8 @@
 import { chromium } from 'playwright-core';
 import { launchSafari } from './safari.js';
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -134,13 +135,17 @@ export async function browser(pageOptions = {}) {
     }
     return { page, close, errors: async () => [...seen, ...await page.errors()].filter(e => !/favicon/.test(e)) };
   }
-  const b = await chromium.launch({ executablePath: CHROME, headless: true, args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU'] });
-  const page = await b.newPage({ viewport: { width: 1400, height: 1000 }, acceptDownloads: true, ...pageOptions });
+  // a profile of its own (an incognito context holds its blobs in 2 GB of memory, none paged to disk: canyon.mp4 and
+  // its 982 keyframes went over, their blobs then unreadable), removed at close
+  const profile = mkdtempSync(join(tmpdir(), 'gaussopt-chrome-'));
+  const b = await chromium.launchPersistentContext(profile, { executablePath: CHROME, headless: true, args: ['--enable-unsafe-webgpu', '--enable-features=WebGPU'],
+                                                             viewport: { width: 1400, height: 1000 }, acceptDownloads: true, ...pageOptions });
+  const page = b.pages()[0] ?? await b.newPage();
   const seen = [];
   page.on('pageerror', e => seen.push(`page: ${e.message}`));
   page.on('console', m => {
     if (m.type() === 'error') seen.push(`console: ${m.text()} ${m.location()?.url ?? ''}`);  // a failed load names its URL only there
     if (process.env.VERBOSE) console.log(`  [${m.type()}] ${m.text()}`);
   });
-  return { page, close: () => b.close(), errors: async () => seen.filter(e => !/favicon/.test(e)) };
+  return { page, close: async () => { await b.close(); rmSync(profile, { recursive: true, force: true }); }, errors: async () => seen.filter(e => !/favicon/.test(e)) };
 }

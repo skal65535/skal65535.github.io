@@ -41,26 +41,15 @@ Deno.test('reconstruct, synthetic: the time by stage, the BA within each and in 
   assert(ms <= total && ms > 0.9 * total, `stages ${ms.toFixed(0)} ms of ${total.toFixed(0)}`);
   assert(time.baCalls > 0 && Math.abs(ba - time.ba) < 1e-6 * time.ba + 1e-9, `BA by stage ${ba} ms, in all ${time.ba}`);
   assert(time.solve <= time.ba && time.init + time.focal <= timings.map, JSON.stringify(time));
-  // the solve's parts (ba.js profile) within each bundleAdjust and nearly all of it
+  assert(time.route.gpu + time.route.cpu === time.baCalls && time.initBA > 0 && time.init >= 0, JSON.stringify(time));
+  // the solve's parts (ba.js's profile, ba_gpu.js's) within each bundleAdjust and nearly all of it
   const parts = ['linearize', 'normal', 'schur', 'cholesky', 'back', 'cost'];
-  const partsMs = time.windows.reduce((a, w) => a + parts.reduce((b, k) => b + w[k], 0), 0);
+  const partsMs = time.windows.reduce((a, w) => a + [...parts, 'setup', 'build', 'eval'].reduce((b, k) => b + (w[k] ?? 0), 0), 0);
   assert(time.windows.length === time.baCalls && time.windows.every(w => w.obs >= w.freeObs && w.freeObs > 0 && w.free > 0 && w.solves > 0),
          `${time.windows.length} windows of ${time.baCalls}`);
   assert(partsMs <= time.solve && partsMs > 0.8 * time.solve, `the parts ${partsMs.toFixed(0)} ms of the solves' ${time.solve.toFixed(0)}`);
   const line = timingsLine(stats);
   for (const name of [...stages, ...parts]) assert(line.includes(name), `${name} not in '${line}'`);
-});
-
-// The time with shadow solves (mapper.js baShadow): theirs apart from the map's BA, whose parts still make it up; each
-// from its window's start (f64 shadowing f64: the map's poses exactly, in as many iterations)
-Deno.test('reconstruct, synthetic: shadow solves timed apart, from the window\'s start', async () => {
-  const { stats } = await reconstruct(makeSyntheticScene({ ...ORBIT, numFrames: 24 }).input, { baShadow: 'f64' });
-  const { time } = stats, parts = ['linearize', 'normal', 'schur', 'cholesky', 'back', 'cost'];
-  const partsMs = time.windows.reduce((a, w) => a + parts.reduce((b, k) => b + w[k], 0), 0);
-  assert(time.shadowMs > 0 && partsMs > 0.8 * time.solve, `the parts ${partsMs.toFixed(0)} ms of ${time.solve.toFixed(0)}, shadows ${time.shadowMs}`);
-  const w = time.shadow.f64;
-  assert(w.length === time.baCalls && w.every(x => x.rot === 0 && x.cen === 0 && x.shadowIterations === x.iterations), JSON.stringify(w.find(x => x.rot || x.shadowIterations !== x.iterations)));
-  assert(time.initBA > 0 && time.init >= 0, `the initial pairs' BA ${time.initBA} ms, outside it ${time.init}`);
 });
 
 // A reconstruction's stats are its own: the mapper's later window BAs (a session's repairs) leave them as they are
@@ -71,57 +60,55 @@ Deno.test('reconstruct, synthetic: the stats do not change with later window BAs
   assert(stats.time.windows.length === n && stats.time.ba === ba, `${n} -> ${stats.time.windows.length} windows`);
 });
 
-// baPrecision 'gpu' (mapper.js): the GPU solver (ba_gpu.js) for a window of baGpuMinObs observations, ba.js otherwise, and
-// ba.js from the start where the GPU solve fails (illReason, an error) or there is no GPU solver
-Deno.test({ name: 'reconstruct, synthetic: gpu, each window BA routed by its size, a failed GPU solve redone in f64 from its start', ignore: !hasGPU, fn: async () => {
-  const { mapper, stats } = await reconstruct(makeSyntheticScene({ ...ORBIT, numFrames: 24 }).input, { baPrecision: 'gpu', baGpuMinObs: 3000 });
-  const { gpu, cpu } = stats.time.route;
-  assert(gpu > 0 && cpu > 0, `${gpu} windows on the GPU, ${cpu} on ba.js`);
-  assert(/on the GPU solver/.test(timingsLine(stats)) && /build/.test(timingsLine(stats)), timingsLine(stats));
+// localBA's runs of one window from the same snapshot: run(options) -> [the poses (JSON), the route]; restore() takes the
+// snapshot's arrays as they are: a copy each time
+function windowRuns(mapper) {
   const snap = mapper.snapshot(), center = mapper.poses.findIndex((p, k) => p && k > 8);
-  // restore() takes the snapshot's arrays as they are: a copy each time
   const run = async (o) => {
     mapper.restore(copySnapshot(snap)); Object.assign(mapper.o, { baGpu: null, ...o }); mapper._gpu = undefined; mapper.time.route = { gpu: 0, cpu: 0 };
     await mapper.localBA(center, { iterations: 10 });
     return [JSON.stringify(mapper.poses), { ...mapper.time.route }];
   };
-  const [f64] = await run({ baPrecision: 'f64' });
-  const [kept, r1] = await run({ baPrecision: 'gpu', baGpuMinObs: 0, baIllPivot: 0 }), [redone] = await run({ baPrecision: 'gpu', baGpuMinObs: 0, baIllPivot: 2 });
-  const [small, r2] = await run({ baPrecision: 'gpu', baGpuMinObs: 1e9 });
+  return { run, again: () => mapper.localBA(center, { iterations: 10 }) };
+}
+
+// The window BAs (mapper.js localBA): the GPU solver (ba_gpu.js) for a window of baGpuMinObs observations, ba.js otherwise,
+// and ba.js from the start where the GPU's solve fails (illReason)
+Deno.test({ name: 'reconstruct, synthetic: each window BA routed by its size, an ill GPU solve redone by ba.js from its start', ignore: !hasGPU, fn: async () => {
+  const { mapper, stats } = await reconstruct(makeSyntheticScene({ ...ORBIT, numFrames: 24 }).input, { baGpuMinObs: 3000 });
+  const { gpu, cpu } = stats.time.route;
+  assert(gpu > 0 && cpu > 0, `${gpu} windows on the GPU, ${cpu} on ba.js`);
+  assert(/on the GPU solver/.test(timingsLine(stats)) && /build/.test(timingsLine(stats)), timingsLine(stats));
+  const { run } = windowRuns(mapper);
+  const [f64, r0] = await run({ baGpuMinObs: 1e9 });
+  const [kept, r1] = await run({ baGpuMinObs: 0, baIllPivot: 0 }), [redone] = await run({ baGpuMinObs: 0, baIllPivot: 2 });
+  assert(r0.cpu === 1 && r0.gpu === 0, 'under baGpuMinObs: ba.js');
   assert(r1.gpu === 1 && kept !== f64, 'a window of baGpuMinObs observations: on the GPU');
   assert(redone === f64, 'the GPU solve failing: the poses ba.js gives from the same start');
-  assert(r2.cpu === 1 && small === f64, 'under baGpuMinObs: ba.js');
-  // a GPU error: redone by ba.js from the start; no GPU solver: ba.js
-  const n = mapper.time.fallback?.length ?? 0;
-  const [broken] = await run({ baPrecision: 'gpu', baGpuMinObs: 0, baIllPivot: 0, baGpu: { bundleAdjust: async () => { throw new Error('device lost'); } } });
-  assert(broken === f64 && mapper.time.fallback.at(-1).reason === 'GPU error' && mapper.time.fallback.length === n + 1, 'a GPU error');
-  const [none, r3] = await run({ baPrecision: 'gpu', baGpuMinObs: 0, baGpu: Promise.reject(new Error('no WebGPU')) });
-  assert(none === f64 && r3.cpu === 1, 'no GPU solver');
-  // baShadow 'gpu': the GPU solve on a copy (its own: ba.js's would give the map's poses exactly), the map ba.js's
-  mapper.time.shadow = undefined;
-  const [shadowed] = await run({ baPrecision: 'f64', baShadow: 'gpu' }), sh = mapper.time.shadow?.gpu;
-  assert(shadowed === f64 && sh?.length === 1 && sh[0].rot > 0 && sh[0].rot < 0.01 && sh[0].rmse / sh[0].ref < 1.001, `the GPU shadow ${JSON.stringify(sh?.[0])}`);
-  // a GPU shadow failing: no shadow of the window, the map's solve as it is
-  mapper.time.shadow = undefined;
-  const [unshadowed] = await run({ baPrecision: 'f64', baShadow: 'f64,gpu', baGpu: { bundleAdjust: async () => { throw new Error('device lost'); } } });
-  assert(unshadowed === f64 && !mapper.time.shadow, `shadows ${JSON.stringify(mapper.time.shadow)}`);
-  // its device lost: the GPU off for the mapper's later windows
-  let calls = 0;
-  const lost = { lost: true, bundleAdjust: async () => { calls++; throw new Error('device lost'); } };
-  await run({ baPrecision: 'gpu', baGpuMinObs: 0, baGpu: lost });
-  await mapper.localBA(center, { iterations: 10 });
-  assert(calls === 1 && mapper.time.route.cpu === 1 && mapper.time.route.gpu === 1, `${calls} GPU calls, route ${JSON.stringify(mapper.time.route)}`);
 } });
 
-// the solvers a mapper takes: f64 and gpu, for the map and its shadows
-Deno.test('mapper: a solver it does not have refused', () => {
-  const input = makeSyntheticScene({ ...ORBIT, numFrames: 6 }).input;
-  for (const o of [{ baPrecision: 'ba32' }, { baShadow: 'f64,f32' }]) {
-    let error = null;
-    try { new SequentialMapper(input, o); } catch (e) { error = e; }
-    assert(/no window BA solver/.test(error?.message), `${JSON.stringify(o)}: ${error}`);
+// The GPU solver failing (fakes: no WebGPU needed): an error, none, its device lost, a solve or the solver's making that
+// never ends (baGpuTimeoutMs); each window redone by ba.js from its start, the GPU off from a loss or a stall on
+Deno.test('reconstruct, synthetic: a failing or stalled GPU solver, its windows on ba.js', async () => {
+  const { mapper } = await reconstruct(makeSyntheticScene({ ...ORBIT, numFrames: 24 }).input, { baGpuMinObs: 1e9 });
+  const { run, again } = windowRuns(mapper);
+  const [f64] = await run({ baGpuMinObs: 1e9 });
+  const n = mapper.time.fallback.length;
+  const [broken] = await run({ baGpuMinObs: 0, baIllPivot: 0, baGpu: { bundleAdjust: async () => { throw new Error('device lost'); } } });
+  assert(broken === f64 && mapper.time.fallback.at(-1) === 'GPU error' && mapper.time.fallback.length === n + 1, 'a GPU error');
+  const [none, r3] = await run({ baGpuMinObs: 0, baGpu: Promise.reject(new Error('no WebGPU')) });
+  assert(none === f64 && r3.cpu === 1, 'no GPU solver');
+  // its device lost, or a solve stalled: the GPU off for the mapper's later windows
+  for (const [what, bundleAdjust, o] of [['lost', async () => { throw new Error('device lost'); }, {}],
+                                         ['stalled', () => new Promise(() => {}), { baGpuTimeoutMs: 50 }]]) {
+    let calls = 0;
+    const [poses] = await run({ baGpuMinObs: 0, baIllPivot: 0, ...o, baGpu: { lost: what === 'lost', bundleAdjust: (...a) => { calls++; return bundleAdjust(...a); } } });
+    await again();
+    assert(poses === f64 && calls === 1 && mapper.time.route.cpu === 1 && mapper.time.route.gpu === 1, `${what}: ${calls} GPU calls, route ${JSON.stringify(mapper.time.route)}`);
   }
-  new SequentialMapper(input, { baPrecision: 'gpu', baShadow: 'f64,gpu' });
+  // the solver's making stalled: ba.js
+  const [unmade, r4] = await run({ baGpuMinObs: 0, baGpuTimeoutMs: 50, baGpu: new Promise(() => {}) });
+  assert(unmade === f64 && r4.cpu === 1, 'the GPU solver never made');
 });
 
 // illReason (mapper.js): f32 lost the solve, a direction left free, or the RMSE up; each rule on its own; gpuFriendly

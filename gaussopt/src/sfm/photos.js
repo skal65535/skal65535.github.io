@@ -120,7 +120,7 @@ export function photoCameras(plan, w, h) {
 }
 
 // The mapper options from the run's: a video's, and the start of a photo set's
-export const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}), ...(o.baPrecision ? { baPrecision: o.baPrecision } : {}), ...(o.baShadow ? { baShadow: o.baShadow } : {}), ...(o.baGpuMinObs > 0 ? { baGpuMinObs: o.baGpuMinObs } : {}) });
+export const baseMapping = (o) => ({ sweeps: o.sweeps, focal: o.focal, ...(o.hfovDeg > 0 ? { hfovDeg: o.hfovDeg } : {}) });
 
 // The mapper options of photo set `plan` (at w x h) for the run's `o`: PHOTO_MAPPING, and camera 0's EXIF focal as the
 // fallback when F does not observe the focal (P2; not as the start: it can be a few % off)
