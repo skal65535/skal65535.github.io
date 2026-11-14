@@ -152,7 +152,15 @@ Deno.test('monte_carlo: a splat out of `bounds` is dead and relocated in it (the
 });
 
 // E7, the cap lease: the budget's schedule (schedule.js splatBudget) and the consolidation's trim (densify.js)
-import { splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, rebalanceDue } from '../src/schedule.js';
+import { splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, rebalanceDue, pruneOpacityAt, TRAIN_DEFAULTS } from '../src/schedule.js';
+
+Deno.test('prune_opacity: from prune_opacity_start to prune_opacity over prune_opacity_ramp steps, then flat', () => {
+  const P = { prune_opacity_start: 0.008, prune_opacity: 0.05, prune_opacity_ramp: 30000 };
+  assertClose([0, 10000, 15000, 30000, 60000].map(s => pruneOpacityAt(P, s)), [0.008, 0.022, 0.029, 0.05, 0.05], 1e-12, 'ramp');
+  assert(pruneOpacityAt({ ...P, prune_opacity_start: 0.05 }, 0) === 0.05, 'no ramp when both ends agree');
+  assert(pruneOpacityAt({ ...P, prune_opacity_ramp: 0 }, 0) === 0.05, 'ramp 0: prune_opacity from step 0');
+  assert(pruneOpacityAt(TRAIN_DEFAULTS, 0) === TRAIN_DEFAULTS.prune_opacity_start && pruneOpacityAt(TRAIN_DEFAULTS, 1e9) === TRAIN_DEFAULTS.prune_opacity, 'the defaults ramp');
+});
 
 Deno.test('cap lease: max_splats x (1 + lease) until the consolidation, then linearly back, then max_splats', () => {
   const P = { max_splats: 1000, cap_lease: 0.5, train_steps: 10000, consolidate_frac: 0.2 };

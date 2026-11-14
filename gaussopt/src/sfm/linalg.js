@@ -107,7 +107,7 @@ export function choleskyFactor(A, ao, L, lo, n) {
 }
 
 // x[xo..] = (L L^T)^-1 b[bo..] for the factor L at lo (x may be b)
-function choleskyFactorSolve(L, lo, n, b, bo, x, xo) {
+export function choleskyFactorSolve(L, lo, n, b, bo, x, xo) {
   for (let i = 0; i < n; i++) {  // L y = b
     let s = b[bo + i];
     for (let k = 0; k < i; k++) s -= L[lo + i * n + k] * x[xo + k];
@@ -151,6 +151,9 @@ export function invert3(A, out) {
   out[6] = A2 * s; out[7] = -(a * h - b * g) * s; out[8] = (a * e - b * d) * s;
   return true;
 }
+
+// A^-1 (3x3) as a new array; null when A is singular
+export const inverse3 = (A) => { const out = new Array(9); return invert3(A, out) ? out : null; };
 
 const skew3 = ([x, y, z]) => [0, -z, y, z, 0, -x, -y, x, 0];
 

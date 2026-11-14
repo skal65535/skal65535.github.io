@@ -43,11 +43,12 @@ await run(async (page) => {
   const dir = join(projects, PROJECT), files = walk(dir);
   const n = (re) => files.filter(f => re.test(f)).length;
   console.log(`${where}: ${files.length} files (${n(/^images\//)} keyframes, ${n(/^gs\/images\//)} undistorted)`);
-  const want = ['cache/features.gosfm', 'cache/model.gosfm', 'gs/images/*.jpg', 'gs/sparse/cameras.bin', 'gs/sparse/images.bin',
+  // cache/trace.bin: the theatre's (the trace is on by default)
+  const want = ['cache/features.gosfm', 'cache/model.gosfm', 'cache/trace.bin', 'gs/images/*.jpg', 'gs/sparse/cameras.bin', 'gs/sparse/images.bin',
                 'gs/sparse/points3D.bin', 'images/*.jpg', 'project.json', 'sharpness.csv', 'sparse/0/cameras.bin',
-                'sparse/0/images.bin', 'sparse/0/points3D.bin', `splats/gaussopt_snap_${String(before.step).padStart(5, '0')}.gosnap`];
+                'sparse/0/images.bin', 'sparse/0/points3D.bin', `splats/gaussopt_snap_${String(before.step).padStart(5, '0')}.scene.glb`];
   if (JSON.stringify(shape(files)) !== JSON.stringify(want)) fail(`project files: ${JSON.stringify(shape(files))}`);
-  const served = want.map(f => f.replace(/_\d{5}\.gosnap$/, '.gosnap'));  // later snapshots have other steps
+  const served = want.map(f => f.replace(/_\d{5}\.scene\.glb$/, '.scene.glb'));  // later snapshots have other steps
   if (n(/^images\//) !== before.keyframes || n(/^gs\/images\//) !== before.cams) fail(`${n(/^images\//)} keyframes, ${n(/^gs\/images\//)} undistorted`);
   const m = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8'));
   if (m.source?.name !== video.split('/').pop() || m.phases.keyframes?.count !== before.keyframes || m.phases.cameras?.exported !== before.cams ||
@@ -101,11 +102,11 @@ await run(async (page) => {
   // the leveling in the snapshot too: one taken now, the level reset, the snapshot restored
   const snapT = await page.evaluate(async () => {
     const app = window.app, { buf } = await app._encodeSnapshot('manual');
-    const { decodeSnapshot } = await import('./src/snapshot.js');
-    const header = decodeSnapshot(buf).header.transform;
+    const { snapshotOfScene } = await import('./src/snapshot.js'), { readSceneGlb } = await import('./src/scene_glb.js');
+    const header = snapshotOfScene(readSceneGlb(buf)).header.transform;
     app.resetLevel();
     const reset = [...app.sceneTransform];
-    await app.restoreSnapshot(buf, 'e2e.gosnap', app.colmap, ++app.loadGen);
+    await app.restoreSnapshot(buf, 'e2e.scene.glb', app.colmap, ++app.loadGen);
     return { header, reset, restored: app.sceneTransform };
   });
   if (JSON.stringify(snapT.header) !== JSON.stringify(leveled.T) || JSON.stringify(snapT.reset) === JSON.stringify(leveled.T) ||
@@ -127,7 +128,7 @@ await run(async (page) => {
         e.kind === 'directory' ? walk(`${dir}${e.name}/`) : [`${dir}${e.name}`]))).flat();
       return walk('');
     });
-    const local = shape(listed).map(f => f.replace(/_\d{5}\.gosnap$/, '.gosnap'));
+    const local = shape(listed).map(f => f.replace(/_\d{5}\.scene\.glb$/, '.scene.glb'));
     console.log(`folder handle: ${listed.length} files`);
     if (JSON.stringify(local) !== JSON.stringify(served)) fail(`folder files: ${JSON.stringify(local)}`);
     await page.evaluate((name) => navigator.storage.getDirectory().then(d => d.removeEntry(name, { recursive: true })).catch(() => {}), PROJECT);
@@ -140,7 +141,7 @@ await run(async (page) => {
     await d.saveAs(path);
     const names = execFileSync('python3', ['-I', '-c', 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist()))', path]).toString().trim().split('\n');
     console.log(`zip: ${d.suggestedFilename()}, ${names.length} files, ${(statSync(path).size / 1e6).toFixed(0)} MB`);
-    if (JSON.stringify(shape(names).map(f => f.replace(/_\d{5}\.gosnap$/, '.gosnap'))) !== JSON.stringify(served)) fail(`zip files: ${JSON.stringify(shape(names))}`);
+    if (JSON.stringify(shape(names).map(f => f.replace(/_\d{5}\.scene\.glb$/, '.scene.glb'))) !== JSON.stringify(served)) fail(`zip files: ${JSON.stringify(shape(names))}`);
   }
 }, {
   serverArgs: ['--projects', projects],

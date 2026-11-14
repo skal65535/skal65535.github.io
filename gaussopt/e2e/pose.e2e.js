@@ -17,7 +17,8 @@ await run(async (page) => {
     const app = window.app, tr = app.trainer, P = app.params;
     const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
-    Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
+    Object.assign(P, { random_bg: false,  // the photos are renders behind black: training draws them so
+                       opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, pose_lr: 2e-3, pose_from: 0 });
     const views = tr.trainViews, steps = 150 * views.length;
     await photoIsRender(tr, views);
@@ -51,7 +52,7 @@ await run(async (page) => {
     const heldOut = tr.valViews.length, heldOutMoved = tr.valViews.filter(v => !names.has(tr.images[v].name) && tr.images[v].sfmPose).length;
     // a snapshot: the poses restored with it
     const before = views.map(v => tr.images[v].view.slice()), { buf } = await app._encodeSnapshot('manual');
-    await app.restoreSnapshot(buf, 'e2e.gosnap', app.colmap, ++app.loadGen);
+    await app.restoreSnapshot(buf, 'e2e.scene.glb', app.colmap, ++app.loadGen);
     const tr2 = app.trainer;
     const snapErr = Math.max(...views.map((v, i) => Math.max(...tr2.images[v].view.map((x, j) => Math.abs(x - before[i][j])))));
     return { views: views.length, steps, deg0: mean(e0, 'deg'), deg1: mean(e1, 'deg'), move0: mean(e0, 'move'), move1: mean(e1, 'move'),

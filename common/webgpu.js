@@ -26,6 +26,15 @@ export async function initGPU(canvas, { alphaMode = 'premultiplied', features = 
   return { device, adapter, context, format };
 }
 
+// queue.writeBuffer of data (an ArrayBuffer or a view) at offset, WRITE_PIECE bytes at a time. Chrome kept the transfer
+// memory of whole writes of growing sizes, in the GPU process and the page alike: 64 writes of 1 to 64 MB left 1.1 GB in
+// each; in pieces 0.19 GB in the GPU process (the 64 MB buffer written included) and 0.07-0.13 GB in the page (two runs)
+export const WRITE_PIECE = 4 * 2 ** 20;
+export function writeInPieces(queue, buffer, offset, data) {
+  const u8 = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+  for (let at = 0; at < u8.length; at += WRITE_PIECE) queue.writeBuffer(buffer, offset + at, u8, at, Math.min(WRITE_PIECE, u8.length - at));
+}
+
 export function createGPUBuffer(device, src, extraUsage = 0) {
   const buf = device.createBuffer({
     size:  (src.byteLength + 3) & ~3,

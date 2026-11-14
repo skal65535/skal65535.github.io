@@ -24,7 +24,7 @@ export async function photoIsRender(tr, views, map = (hat) => hat) {
 // Copies of the splats, Adam's m and v (and the moments with `moments`), to compare with changedCount
 export async function splatState(tr, moments = false) {
   const srcs = [{ buf: tr.splatsBuf, bytes: tr.count * 64 }, { buf: tr.adamMBuf, bytes: tr.count * 64 }, { buf: tr.adamVBuf, bytes: tr.count * 64 }];
-  if (moments) srcs.push({ buf: tr.momentsBuf, bytes: tr.count * 48 });
+  if (moments) srcs.push({ buf: tr.momentsBuf, bytes: tr.count * 64 });  // MOMENT_FLOATS (16) f32 a splat
   return (await tr._readback('state', srcs)).map(a => a.slice());
 }
 

@@ -133,3 +133,16 @@ export function grayOf(rgba, n) {
   for (let k = 0, o = 0; k < n; k++, o += 4) g[k] = (77 * rgba[o] + 150 * rgba[o + 1] + 29 * rgba[o + 2] + 128) >> 8;
   return g;
 }
+
+// SIFT's input with the dark tones lifted (g' = log(1 + 20 g) / log(21), g in [0, 1]) when `lift` is 'log', or 'video'
+// and the frame is a video's (`video`); as it is otherwise: its peak threshold is on the absolute contrast, so a
+// shadow's texture, a few levels deep, gives few features and the highlights take the budget; lifted, a shadow's
+// contrast counts about as a lit one's. Photo sets keep it as it is by default: a mixed-lens set lost cameras with it
+const LIFT_K = 20;
+const LIFT_LUT = Uint8Array.from({ length: 256 }, (_, v) => Math.round(255 * Math.log1p(LIFT_K * v / 255) / Math.log1p(LIFT_K)));
+export function liftGray(gray, lift, video = true) {
+  if (!(lift === 'log' || (lift === 'video' && video))) return gray;
+  const g = new Uint8Array(gray.length);
+  for (let k = 0; k < gray.length; k++) g[k] = LIFT_LUT[gray[k]];
+  return g;
+}

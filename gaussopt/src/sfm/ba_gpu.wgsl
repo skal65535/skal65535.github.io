@@ -1,24 +1,25 @@
 // ba_gpu.wgsl — The GPU passes of ba_gpu.js's bundle adjustment: per observation its linearization and the candidate's
 // cost, per point its block inverse, its Schur rows and its back-substitution, and the reduced camera system's terms
 // summed by chunks (a workgroup each, no atomics). A block of the reduced system is a free pose's (6) or a refined
-// lens's intrinsics (ni <= 5, padded to 6); an observation has two halves, its pose's and its lens's Jacobian rows.
+// lens's intrinsics (ni <= 5, padded to 6); an observation has two halves, its pose's and its lens's Jacobian rows. The
+// observations of a free pose or a refined lens come first (nA of them, ba_gpu.js): only they have halves (JH, Y,
+// halfBlock); every observation has its residual and point rows (JP).
 
 struct Params {
   loss: f32, lambda: f32, nObs: u32, nPts: u32,
   ni: u32, fixPoints: u32, nChunks: u32, nGChunks: u32,  // nChunks, nGChunks: the system's and the gradient's
-  k: vec4u, k4: u32, _c: u32, _d: u32, _e: u32,  // the refined intrinsics: their indices in [f, k1, k2, p1, p2]
+  k: vec4u, k4: u32, nA: u32, k5: u32, _e: u32,  // k, k4, k5: the refined intrinsics' indices in [f, k1, k2, p1, p2, fy]
 }
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> lens: array<vec4f>;      // 2 per lens: fx fy cx cy, k1 k2 p1 p2
 @group(0) @binding(2) var<storage, read> poses: array<vec4f>;     // 4 per pose: rows [R | t], (lens, -, -, -)
 @group(0) @binding(3) var<storage, read> pts: array<vec4f>;
 @group(0) @binding(4) var<storage, read> obs: array<vec4u>;       // pose, point, u, v (f32 bits)
-// per observation (36): r (2), w, -, pose rows (2 x 6), intrinsics rows (2 x 6, ni used), Jp rows (2 x 3), -
-@group(0) @binding(5) var<storage, read_write> J: array<f32>;
-@group(0) @binding(6) var<storage, read_write> Y: array<f32>;     // per observation, per half: L^-1 W^T (3 x 6, by columns)
+@group(0) @binding(5) var<storage, read_write> JP: array<f32>;    // per observation (9): r (2), w, Jp rows (2 x 3)
+@group(0) @binding(6) var<storage, read_write> Y: array<f32>;     // per observation < nA, per half: L^-1 W^T (3 x 6, by columns)
 @group(0) @binding(7) var<storage, read> ptStart: array<u32>;
 @group(0) @binding(8) var<storage, read> ptObs: array<u32>;
-@group(0) @binding(9) var<storage, read> halfBlock: array<i32>;  // per half: its block, -1 if none
+@group(0) @binding(9) var<storage, read> halfBlock: array<i32>;  // per half of an observation < nA: its block, -1 if none
 @group(0) @binding(10) var<storage, read_write> Vi: array<f32>;   // per point (16): L (6, V = L L^T), L^-1 gp (3), ok, -
 @group(0) @binding(11) var<storage, read> chunks: array<vec2u>;  // [start, end) in terms
 @group(0) @binding(12) var<storage, read> terms: array<vec2u>;   // half pairs (a, b)
@@ -32,6 +33,7 @@ struct Params {
 @group(0) @binding(20) var<storage, read> lensCand: array<vec4f>;
 @group(0) @binding(21) var<storage, read_write> C: array<f32>;    // per 256 observations: cost, squares, count, -
 @group(0) @binding(22) var<storage, read_write> PP: array<f32>;   // per 256 points: their gp^T V^-1 gp = |L^-1 gp|^2
+@group(0) @binding(23) var<storage, read_write> JH: array<f32>;   // per observation < nA (24): pose rows (2 x 6), intrinsics rows (2 x 6, ni used)
 
 // a workgroup's index in a pass dispatched in 2D (ba_gpu.js: x at most maxComputeWorkgroupsPerDimension)
 fn group(wid: vec3u, nw: vec3u) -> u32 { return wid.x + wid.y * nw.x; }
@@ -43,17 +45,23 @@ fn distort(k: vec4f, x: f32, y: f32) -> vec2f {
 }
 
 // a half's Jacobian row (0, 1) entry i, its W = w Jh^T Jp row i, its L^-1 W^T column i
-fn jh(o: u32, h: u32, row: u32, i: u32) -> f32 { return J[36u * o + 4u + 12u * h + 6u * row + i]; }
-fn jp(o: u32, row: u32) -> vec3f { let k = 36u * o + 28u + 3u * row; return vec3f(J[k], J[k + 1u], J[k + 2u]); }
-fn wRow(o: u32, h: u32, i: u32) -> vec3f { return J[36u * o + 2u] * (jh(o, h, 0u, i) * jp(o, 0u) + jh(o, h, 1u, i) * jp(o, 1u)); }
+fn jh(o: u32, h: u32, row: u32, i: u32) -> f32 { return JH[24u * o + 12u * h + 6u * row + i]; }
+fn jp(o: u32, row: u32) -> vec3f { let k = 9u * o + 3u + 3u * row; return vec3f(JP[k], JP[k + 1u], JP[k + 2u]); }
+fn wOf(o: u32) -> f32 { return JP[9u * o + 2u]; }
+fn wRow(o: u32, h: u32, i: u32) -> vec3f { return wOf(o) * (jh(o, h, 0u, i) * jp(o, 0u) + jh(o, h, 1u, i) * jp(o, 1u)); }
+fn hasHalf(o: u32, h: u32) -> bool { return o < P.nA && halfBlock[2u * o + h] >= 0; }
 fn yRow(o: u32, h: u32, i: u32) -> vec3f { let k = 36u * o + 18u * h + 3u * i; return vec3f(Y[k], Y[k + 1u], Y[k + 2u]); }
 
 @compute @workgroup_size(64) fn linearize(@builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nw: vec3u, @builtin(local_invocation_index) lid: u32) {
   let o = 64u * group(wid, nw) + lid;
   if (o >= P.nObs) { return; }
-  let ob = obs[o]; let b = 36u * o; let l = bitcast<u32>(poses[4u * ob.x + 3u].x);
+  let ob = obs[o]; let b = 9u * o; let bh = 24u * o; let l = bitcast<u32>(poses[4u * ob.x + 3u].x);
   let q = apply(poses[4u * ob.x], poses[4u * ob.x + 1u], poses[4u * ob.x + 2u], pts[ob.y].xyz);
-  if (!(q.z > 1e-9)) { J[b + 2u] = 0.0; return; }
+  if (!(q.z > 1e-9)) {  // behind the camera: no weight, its rows 0 (a kept buffer holds an earlier solve's: 0 x NaN is NaN)
+    for (var i = 0u; i < 9u; i++) { JP[b + i] = 0.0; }
+    if (o < P.nA) { for (var i = 0u; i < 24u; i++) { JH[bh + i] = 0.0; } }
+    return;
+  }
   let f = lens[2u * l]; let k = lens[2u * l + 1u];
   let iz = 1.0 / q.z; let x = q.x * iz; let y = q.y * iz; let rr = x * x + y * y;
   let rad = 1.0 + k.x * rr + k.y * rr * rr; let dr = 2.0 * k.x + 4.0 * k.y * rr;
@@ -63,21 +71,20 @@ fn yRow(o: u32, h: u32, i: u32) -> vec3f { let k = 36u * o + 18u * h + 3u * i; r
   let d0 = vec3f(a00 * iz, a01 * iz, -(a00 * x + a01 * y) * iz); let d1 = vec3f(a10 * iz, a11 * iz, -(a10 * x + a11 * y) * iz);
   let r = vec2f(f.x * d.x + f.z, f.y * d.y + f.w) - bitcast<vec2f>(ob.zw);
   let s = dot(r, r);
-  J[b] = r.x; J[b + 1u] = r.y; J[b + 2u] = select(P.loss / sqrt(s), 1.0, s <= P.loss * P.loss);
-  let c0 = cross(q, d0); let c1 = cross(q, d1);
+  JP[b] = r.x; JP[b + 1u] = r.y; JP[b + 2u] = select(P.loss / sqrt(s), 1.0, s <= P.loss * P.loss);
   let R0 = poses[4u * ob.x].xyz; let R1 = poses[4u * ob.x + 1u].xyz; let R2 = poses[4u * ob.x + 2u].xyz;
   let p0 = d0.x * R0 + d0.y * R1 + d0.z * R2; let p1 = d1.x * R0 + d1.y * R1 + d1.z * R2;
-  // d(uv)/d[f, k1, k2, p1, p2] (fy keeps its ratio to fx)
-  var dk = array<f32, 10>(d.x, f.x * x * rr, f.x * x * rr * rr, f.x * 2.0 * x * y, f.x * (rr + 2.0 * x * x),
-                          (f.y / f.x) * d.y, f.y * y * rr, f.y * y * rr * rr, f.y * (rr + 2.0 * y * y), f.y * 2.0 * x * y);
-  var ki = array<u32, 5>(P.k.x, P.k.y, P.k.z, P.k.w, P.k4);
-  for (var i = 0u; i < 3u; i++) {
-    J[b + 4u + i] = c0[i]; J[b + 7u + i] = d0[i]; J[b + 10u + i] = c1[i]; J[b + 13u + i] = d1[i];
-    J[b + 28u + i] = p0[i]; J[b + 31u + i] = p1[i];
-  }
+  for (var i = 0u; i < 3u; i++) { JP[b + 3u + i] = p0[i]; JP[b + 6u + i] = p1[i]; }
+  if (o >= P.nA) { return; }
+  let c0 = cross(q, d0); let c1 = cross(q, d1);
+  // d(uv)/d[f, k1, k2, p1, p2, fy] ('f' keeps fy's ratio to fx)
+  var dk = array<f32, 12>(d.x, f.x * x * rr, f.x * x * rr * rr, f.x * 2.0 * x * y, f.x * (rr + 2.0 * x * x), 0.0,
+                          (f.y / f.x) * d.y, f.y * y * rr, f.y * y * rr * rr, f.y * (rr + 2.0 * y * y), f.y * 2.0 * x * y, d.y);
+  var ki = array<u32, 6>(P.k.x, P.k.y, P.k.z, P.k.w, P.k4, P.k5);
+  for (var i = 0u; i < 3u; i++) { JH[bh + i] = c0[i]; JH[bh + 3u + i] = d0[i]; JH[bh + 6u + i] = c1[i]; JH[bh + 9u + i] = d1[i]; }
   for (var i = 0u; i < 6u; i++) {
     let used = i < P.ni;
-    J[b + 16u + i] = select(0.0, dk[ki[min(i, 4u)]], used); J[b + 22u + i] = select(0.0, dk[5u + ki[min(i, 4u)]], used);
+    JH[bh + 12u + i] = select(0.0, dk[ki[min(i, 5u)]], used); JH[bh + 18u + i] = select(0.0, dk[6u + ki[min(i, 5u)]], used);
   }
 }
 
@@ -107,11 +114,11 @@ fn factorOf(p: u32) -> array<f32, 6> { let v = 16u * p; return array<f32, 6>(Vi[
   if (p >= P.nPts) { return; }
   var V = mat3x3f(); var g = vec3f();
   for (var k = ptStart[p]; k < ptStart[p + 1u]; k++) {
-    let o = ptObs[k]; let w = J[36u * o + 2u];
+    let o = ptObs[k]; let w = wOf(o);
     if (w == 0.0) { continue; }
     let j0 = jp(o, 0u); let j1 = jp(o, 1u);
     V += w * (mat3x3f(j0 * j0.x, j0 * j0.y, j0 * j0.z) + mat3x3f(j1 * j1.x, j1 * j1.y, j1 * j1.z));
-    g += w * (j0 * J[36u * o] + j1 * J[36u * o + 1u]);
+    g += w * (j0 * JP[9u * o] + j1 * JP[9u * o + 1u]);
   }
   var D = mat3x3f();
   for (var i = 0; i < 3; i++) { D[i][i] = P.lambda * max(V[i][i], 1e-9); }
@@ -125,7 +132,7 @@ fn factorOf(p: u32) -> array<f32, 6> { let v = 16u * p; return array<f32, 6>(Vi[
   for (var k = ptStart[p]; k < ptStart[p + 1u]; k++) {
     let o = ptObs[k];
     for (var h = 0u; h < 2u; h++) {
-      if (halfBlock[2u * o + h] < 0) { continue; }
+      if (!hasHalf(o, h)) { continue; }
       for (var i = 0u; i < 6u; i++) {
         let y = select(vec3f(), lsolve(Lp, wRow(o, h, i)), ok); let at = 36u * o + 18u * h + 3u * i;
         Y[at] = y.x; Y[at + 1u] = y.y; Y[at + 2u] = y.z;
@@ -145,7 +152,7 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
   var acc: array<f32, 42>;
   for (var k = c.x + lid; k < c.y; k += 64u) {
     let t = terms[k]; let oa = t.x >> 1u; let ha = t.x & 1u; let ob = t.y >> 1u; let hb = t.y & 1u;
-    let same = oa == ob; let w = J[36u * oa + 2u];
+    let same = oa == ob; let w = wOf(oa);
     for (var i = 0u; i < 6u; i++) {
       let yi = yRow(oa, ha, i); let a0 = jh(oa, ha, 0u, i); let a1 = jh(oa, ha, 1u, i);
       for (var j = 0u; j < 6u; j++) {
@@ -168,9 +175,9 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
   let c = gChunks[gi];
   var acc: array<f32, 6>;
   for (var k = c.x + lid; k < c.y; k += 64u) {
-    let hh = gTerms[k]; let o = hh >> 1u; let h = hh & 1u; let w = J[36u * o + 2u];
+    let hh = gTerms[k]; let o = hh >> 1u; let h = hh & 1u; let w = wOf(o);
     let p = obs[o].y; let gy = vec3f(Vi[16u * p + 6u], Vi[16u * p + 7u], Vi[16u * p + 8u]);
-    for (var i = 0u; i < 6u; i++) { acc[i] += w * (jh(o, h, 0u, i) * J[36u * o] + jh(o, h, 1u, i) * J[36u * o + 1u]) - dot(yRow(o, h, i), gy); }
+    for (var i = 0u; i < 6u; i++) { acc[i] += w * (jh(o, h, 0u, i) * JP[9u * o] + jh(o, h, 1u, i) * JP[9u * o + 1u]) - dot(yRow(o, h, i), gy); }
   }
   for (var i = 0u; i < 6u; i++) { sh[6u * lid + i] = acc[i]; }
   workgroupBarrier();
@@ -187,9 +194,9 @@ var<workgroup> sh: array<f32, 2688>;  // 64 x 42
   for (var k = ptStart[p]; k < ptStart[p + 1u]; k++) {
     let o = ptObs[k];
     for (var h = 0u; h < 2u; h++) {
-      let blk = halfBlock[2u * o + h];
-      if (blk < 0) { continue; }
-      for (var i = 0u; i < 6u; i++) { rhs += yRow(o, h, i) * dX[6u * u32(blk) + i]; }
+      if (!hasHalf(o, h)) { continue; }
+      let blk = u32(halfBlock[2u * o + h]);
+      for (var i = 0u; i < 6u; i++) { rhs += yRow(o, h, i) * dX[6u * blk + i]; }
     }
   }
   ptsCand[p] = vec4f(pts[p].xyz - ltsolve(factorOf(p), rhs), 0.0);

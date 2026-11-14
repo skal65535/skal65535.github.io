@@ -17,7 +17,7 @@ await run(async (page) => {
   await page.goto(`http://localhost:${PORT}${urlOf(join(APP, 'DESIGN.md'))}`);  // same origin, no app (and no dataset load)
   const r = await page.evaluate(async () => {
     const { GaussOptTrainer } = await import('./src/trainer.js');
-    const { LooseOctree } = await import('./src/octree.js');
+    const { LooseOctree, MOMENT_FLOATS: M } = await import('./src/octree.js');
     const { setPose, SPLAT_FLOATS } = await import('./src/colmap.js');
     const { makeRng } = await import('./src/math.js');
     const { Exposure } = await import('./src/exposure.js');
@@ -53,7 +53,7 @@ await run(async (page) => {
       const pass = tr._pass;
       tr._pass = function (enc, pipe, ...a) { if (pipe !== this.pipeAdam) pass.call(this, enc, pipe, ...a); };
       tr._runPasses(backward ? gt : null);
-      const [g, m, pix, proj, rects, loss] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * 48 },
+      const [g, m, pix, proj, rects, loss] = await tr._readback('out', [{ buf: tr.grads2dBuf, bytes: N * 48 }, { buf: tr.momentsBuf, bytes: N * M * 4 },
                                                      { buf: tr.pixStateBuf, bytes: W * H * 16 },
                                                      { buf: tr.projSplatsBuf, bytes: tr.numVisible * 32 },
                                                      { buf: tr.projTilesBuf, bytes: tr.numVisible * 8 },
@@ -76,16 +76,22 @@ await run(async (page) => {
     const c0 = await render(random, { features: ['subgroups'], backward: true, dirMoments: false });
     const backward = { sgA: a.sg, sgB: b.sg, visible: a.visible, slots: [], noDir: [], dirLeft: 0 };
     const tiles = { W, H, proj: a.proj, rects: a.rects };
-    // slot c of every splat: relative L2 difference; grads slots 10, 11 and moments slot 1 (S) stay 0
-    const rel = (x, cx, y, cy) => { let d = 0, n = 0; for (let i = 0; i < x.length; i += 12) { d += (x[i + cx] - y[i + cy]) ** 2; n += y[i + cy] ** 2; } return { norm: n, rel: Math.sqrt(d / n) }; };
-    for (const [name, x, y, slots] of [['grads_2d', a.g, b.g, 10], ['moments', a.m, b.m, 12]]) {
-      for (let c = 0; c < slots; c++) if (!(name === 'moments' && c === 1)) backward.slots.push({ name: `${name}[${c}]`, ...rel(x, c, y, c) });
+    // slot c of every splat: relative L2 difference; grads slots 10, 11 and moments slots 1 (S) and 12..15 (the opacity
+    // gradient's help and hurt) stay 0: adam_step's, left out
+    // x's slot cx (sx floats a splat) against y's slot cy (sy floats a splat): grads_2d 12 a splat, the moments M
+    const rel = (x, sx, cx, y, sy, cy) => {
+      let d = 0, n = 0;
+      for (let i = 0, j = 0; i < x.length; i += sx, j += sy) { d += (x[i + cx] - y[j + cy]) ** 2; n += y[j + cy] ** 2; }
+      return { norm: n, rel: Math.sqrt(d / n) };
+    };
+    for (const [name, x, y, stride, slots] of [['grads_2d', a.g, b.g, 12, 10], ['moments', a.m, b.m, M, M]]) {
+      for (let c = 0; c < slots; c++) if (!(name === 'moments' && (c === 1 || c >= 12))) backward.slots.push({ name: `${name}[${c}]`, ...rel(x, stride, c, y, stride, c) });
     }
-    backward.slots.push({ name: 'moments[0] (W) vs grads_2d[9]', ...rel(a.m, 0, a.g, 9) });
+    backward.slots.push({ name: 'moments[0] (W) vs grads_2d[9]', ...rel(a.m, M, 0, a.g, 12, 9) });
     for (const j of [0, 1, 2, 4, 5, 6]) backward.slots.push({ name: `exposure[${j}]`, norm: b.expo[j] ** 2, rel: Math.abs(a.expo[j] - b.expo[j]) / Math.abs(b.expo[j]) });
-    for (let c = 0; c < 10; c++) backward.noDir.push({ name: `grads_2d[${c}]`, ...rel(c0.g, c, a.g, c) });
-    for (const c of [0, 2]) backward.noDir.push({ name: `moments[${c}]`, ...rel(c0.m, c, a.m, c) });
-    for (let i = 0; i < c0.m.length; i++) if (i % 12 >= 3 && c0.m[i] !== 0) backward.dirLeft++;
+    for (let c = 0; c < 10; c++) backward.noDir.push({ name: `grads_2d[${c}]`, ...rel(c0.g, 12, c, a.g, 12, c) });
+    for (const c of [0, 2]) backward.noDir.push({ name: `moments[${c}]`, ...rel(c0.m, M, c, a.m, M, c) });
+    for (let i = 0; i < c0.m.length; i++) if (i % M >= 3 && i % M <= 11 && c0.m[i] !== 0) backward.dirLeft++;
 
     // depth spread: sheets = one splat each, 10 m wide and 1 mm thick (alpha ~ its opacity on
     // every pixel); spread over the pixels where it is measured (T_final < 0.25)

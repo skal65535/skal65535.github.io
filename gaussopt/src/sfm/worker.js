@@ -8,13 +8,14 @@
 // the session goes to its cache/ instead, and the results to it as they are made: images/ (the
 // keyframes, as extracted), sharpness.csv, sparse/0 (the distorted model), gs/ (the trainer's
 // dataset). 'flush' writes everything the session has into a newly attached folder.
-//   in:  { type: 'open', file } | { type: 'photos', files } | { type: 'project', file } | { type: 'run', options (until: 'keyframes' stops there) }
+//   in:  { type: 'open', file } | { type: 'open', files (several videos of one place) } | { type: 'photos', files } | { type: 'project', file } | { type: 'run', options (until: 'keyframes' stops there) }
 //        | { type: 'action', op, args }
 //        | { type: 'undo' } | { type: 'send' } | { type: 'save' } | { type: 'psnr', values: [[name, dB]] }
 //        | { type: 'photoFilter', filter: { lens?, zoom?, orientation?: [values] } | null }
 //        | { type: 'store', store (describe()) | null } | { type: 'flush' } | { type: 'restoreStore' }
 //   out: { type: 'video', info } | { type: 'log', text, level } | { type: 'progress', stage, done, total }
-//        | { type: 'selection', ... } | { type: 'keyframes', count } | { type: 'thumbs', frames: [{ name, time, blob }], aspect (w / h) }
+//        | { type: 'selection', ... } | { type: 'keyframes', count } | { type: 'thumbs', frames: [{ name, time, blob }], aspect (w / h),
+//            append (true: the keyframes extracted since the last, the sheet's kept) }
 //        | { type: 'quality', quality, action }
 //        | { type: 'result', sparse, images, masks, summary }
 //        | { type: 'restored' } | { type: 'project', blob, name } | { type: 'idle', status } | { type: 'error', message }
@@ -22,31 +23,34 @@
 // Messages are handled one at a time, in order.
 "use strict";
 
-import { openVideo, sampleFrames, decodeFrames, grayOf } from './video.js';
+import { openVideo, sampleFrames, decodeFrames, grayOf, liftGray } from './video.js';
 import { fitSize, resizeArea, selectFrames, zoomEvents, flowChains, zoomCameras, zoomPriors } from './frames.js';
 import { OVERLAY, staticMask, dropMasked, maskAt, packMask, unpackMask } from './overlay.js';
-import { GpuSift, SIFT_DEFAULTS } from './sift.js';
+import { GpuSift, SIFT_DEFAULTS, rootSift } from './sift.js';
 import { GpuMatcher } from './match.js';
+import { GpuBundleAdjuster } from './ba_gpu.js';
 import { GpuUndistort, PointColors } from './undistort.js';
 import { reconstructFromFeatures, featurePairSource } from './pipeline.js';
+import { SfmTrace, encodeTrace, decodeTrace } from './trace.js';
 import { SfmSession } from './session.js';
-import { packProject, unpackProject, mergeProjects, projectPart } from './project.js';
-import { SESSION_DEFAULTS } from './defaults.js';
+import { packProject, packPieces, unpackProject, mergeProjects, projectPart } from './project.js';
+import { SESSION_DEFAULTS, FEATURE_KEYS, CAMERA_KEYS } from './defaults.js';
 import { readExif, jpegSize } from './exif.js';
 import { planPhotos, planMore, photoCameras, photoMapping, baseMapping } from './photos.js';
 import { coverage, coverageAdvice } from './coverage.js';
 import { datasetFromMapper, writeColmapModel } from './export.js';
 import { xyOnly, mapperKeypoints, adaptFeatures } from './frontend.js';
-import { PointTracker } from './track.js';
+import { PointTracker, packTrackPairs, unpackTrackPairs } from './track.js';
 import { seconds } from './util.js';
 import { hashString, makeRng } from '../math.js';
 import { storeFrom } from '../project/store.js';
 
 const post = (msg, transfer = []) => self.postMessage(msg, transfer);
 const log = (text, level = '') => post({ type: 'log', text, level });
+// debug: the GPU buffers and textures held, in the log every 10 s (the page's ?sfm_gpuLedger: the worker's ?gpuLedger)
+if (new URLSearchParams(self.location.search).has('gpuLedger')) import('./gpu_ledger.js').then(m => m.gpuLedger(log));
 const progress = (stage, done, total) => post({ type: 'progress', stage, done, total });
 const same = (a, b, keys) => a && keys.every(k => a[k] === b[k]);
-const FEATURE_KEYS = ['maxDim', 'maxFeatures', 'siftPeak', 'jpegQuality', 'overlay', 'track', 'adaptFeatures', 'denseFeatures', 'densePeak', 'minLink'];  // the options the features depend on
 const perFrame = (feats) => Math.round(feats.reduce((s, f) => s + f.keypoints.length / 4, 0) / feats.length);  // mean features per frame
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const warnCapped = (capped, what) => {
@@ -57,15 +61,37 @@ let video = null, gpu = null, current = null;  // current: { session, features, 
 const keyframeName = (time) => `t${String(Math.round(time * 1000)).padStart(7, '0')}.jpg`;  // DESIGN-sfm §3
 const cache = {};  // analysis, features: { options (that produced them), id, ... }; source: the video of a restored project
 
+// Several videos of one place (open with files): per video { video, offset, and its own CLIP_KEYS and features (one
+// video's keyframes, as keyframes() makes them) }, null: one video. Each is analysed, its keyframes picked, extracted,
+// matched in sequence and tracked as a video alone; then the keyframes are one list (clipKeyframes), a video's
+// `clip`, its times and names `offset` s on (its first frame CLIP_GAP s after the last of the one before), no sequential pair between
+// two. useClip(c): the c-th is the one decoded (video), its keys in the cache.
+let clips = null, clipAt = -1, offset = 0;
+const CLIP_GAP = 10, CLIP_KEYS = ['analysis', 'motion', 'zoom', 'selection'];
+function useClip(c) {
+  if (clipAt === c) return;
+  if (clipAt >= 0) for (const k of CLIP_KEYS) clips[clipAt][k] = cache[k];
+  for (const k of CLIP_KEYS) cache[k] = clips[c][k];
+  clipAt = c; video = clips[c].video; offset = clips[c].offset;
+}
+// a video's first and last frame times (its samples' pts: a cut may start before 0)
+const spanOf = (v) => v.samples.reduce(([lo, hi], s) => [Math.min(lo, s.pts / v.timescale), Math.max(hi, s.pts / v.timescale)], [Infinity, -Infinity]);
+// a video's key, in use or not
+const clipCache = (c, k) => (c === clipAt ? cache[k] : clips[c][k]);
+// the video whose keyframes a time (offset) is of
+const clipOfTime = (t) => clips.findLastIndex(c => c.offset <= t + 1e-6);
+
 function reset() {
   for (const k of Object.keys(cache)) delete cache[k];
+  for (const c of clips ?? []) for (const k of [...CLIP_KEYS, 'features']) delete c[k];
   thumbs.clear();
   current = null;
 }
 // reset(), and nothing open: no video, photo set or OPFS key (a failed restore() keeps them)
 function resetAll() {
   reset();
-  video = storeKey = photos = null;
+  video = storeKey = photos = clips = null;
+  clipAt = -1; offset = 0;
 }
 
 async function devices() {
@@ -191,15 +217,24 @@ function selection(analysis, o) {
   analysis = cache.motion = motionOf(analysis, o);
   const zoom = cache.zoom = zoomOf(analysis, o);
   const sel = selectFrames({ sharpness: analysis.sharp, motion: analysis.steps, times: analysis.times, span: zoom.span }, o);
-  post({ type: 'selection', times: analysis.times, sharpness: analysis.sharp, status: sel.status, path: sel.path, threshold: sel.threshold });
+  if (!clips) post({ type: 'selection', times: analysis.times, sharpness: analysis.sharp, status: sel.status, path: sel.path, threshold: sel.threshold });
   cache.selection = sel;
-  save('sharpness.csv', sharpnessCsv(analysis, sel));
+  save(sharpnessPath(), sharpnessCsv(analysis, sel));
   return sel;
 }
 
-// Every sampled frame (as video2splat.py's sharpness.csv, with times): the name it has as a keyframe
+// Several videos: their frames on the strip one after the other (selection's, the times offset)
+function postClipsSelection() {
+  const of = (k, f) => clips.flatMap((_, c) => (clipCache(c, k) ? f(clipCache(c, k), c) : []));
+  post({ type: 'selection', times: of('motion', (a, c) => a.times.map(t => t + clips[c].offset)), sharpness: of('motion', a => a.sharp),
+         status: of('selection', s => s.status), path: null, threshold: clipCache(0, 'selection')?.threshold ?? 0 });
+}
+
+// Every sampled frame (as video2splat.py's sharpness.csv, with times): the name it has as a keyframe; of several
+// videos, the c-th's in sharpness-<c>.csv but the first's
+const sharpnessPath = () => (clipAt > 0 ? `sharpness-${clipAt}.csv` : 'sharpness.csv');
 function sharpnessCsv(a, sel) {
-  const rows = a.times.map((t, i) => `${keyframeName(t)},${t.toFixed(4)},${a.sharp[i].toFixed(2)},${a.steps[i]?.toFixed(5) ?? ''},${sel.status[i]}`);
+  const rows = a.times.map((t, i) => `${keyframeName(t + offset)},${(t + offset).toFixed(4)},${a.sharp[i].toFixed(2)},${a.steps[i]?.toFixed(5) ?? ''},${sel.status[i]}`);
   return ['frame,time,sharpness,motion,status', ...rows].join('\n') + '\n';
 }
 
@@ -209,12 +244,13 @@ async function extract(samples, w, h, o, onFrame, { dense = false } = {}) {
   const { sift } = await devices();
   const ov = overlayMask(o);
   let capped = 0, dropped = 0, total = 0;
-  await decodeFrames(video, new Set(samples), w, h, async (ctx, k, time) => {
-    const name = keyframeName(time);
+  await decodeFrames(video, new Set(samples), w, h, async (ctx, k, at) => {
+    const time = at + offset, name = keyframeName(time);
     const gray = grayOf(ctx.getImageData(0, 0, w, h).data, w * h);
     const jpeg = { name, blob: await ctx.canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality }) };
-    const f = await sift.extract(gray, w, h, dense ? { maxFeatures: Math.max(o.maxFeatures, o.denseFeatures), peak: Math.min(o.siftPeak, o.densePeak) }
+    const f = await sift.extract(liftGray(gray, o.siftLift, true), w, h, dense ? { maxFeatures: Math.max(o.maxFeatures, o.denseFeatures), peak: Math.min(o.siftPeak, o.densePeak) }
                                                   : { maxFeatures: o.maxFeatures, peak: o.siftPeak });
+    if (o.rootSift) f.descriptors = rootSift(f.descriptors);
     capped += f.capped;
     total += f.keypoints.length / 4;
     const { keypoints, descriptors, responses, dropped: d } = ov ? dropMasked(f.keypoints, f.descriptors, ov, w, h, f.responses) : f;
@@ -227,7 +263,9 @@ async function extract(samples, w, h, o, onFrame, { dense = false } = {}) {
 }
 
 // The analysis's on-screen display mask when the option is on (overlay.js; null: none found, off, or a photo set)
-const overlayMask = (o) => (o.overlay !== false ? unpackMask(cache.analysis?.overlay) : null);
+const overlayMask = (o, a = cache.analysis) => (o.overlay !== false ? unpackMask(a?.overlay) : null);
+// Every video's (several: each one's), the ones found
+const overlayMasks = (o) => (clips ? clips.map((_, c) => overlayMask(o, clipCache(c, 'analysis'))) : [overlayMask(o)]).filter(Boolean);
 
 // Small JPEGs of the keyframes for the page's contact sheet (src/ui/frames.js), made once per name
 const THUMB_WIDTH = 320, THUMB_DECODES = 4;
@@ -241,6 +279,25 @@ async function thumbJpeg(bitmap, w = bitmap.width, h = bitmap.height, at = [0, 0
   bitmap.close();
   return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
 }
+// The keyframes' thumbnails as they are extracted (a run's, before the tracks and the matching): a batch at most every
+// THUMBS_MS, the first replacing the sheet; start(), then add(name, time, blob) per keyframe, end() the last batch
+const THUMBS_MS = 500;
+const liveThumbs = {
+  on: false, first: true, batch: [], at: 0,
+  start() { Object.assign(this, { on: true, first: true, batch: [], at: 0 }); },
+  async add(name, time, blob, aspect) {
+    if (!this.on) return;
+    if (!thumbs.has(name)) thumbs.set(name, await thumbJpeg(await createImageBitmap(blob, { resizeWidth: THUMB_WIDTH, resizeQuality: 'medium' })));
+    this.batch.push({ name, time, blob: thumbs.get(name) });
+    this.aspect = aspect;
+    if (performance.now() - this.at >= THUMBS_MS) this.flush();
+  },
+  flush() {
+    if (this.batch.length) post({ type: 'thumbs', frames: this.batch, aspect: this.aspect, append: !this.first });
+    Object.assign(this, { first: false, batch: [], at: performance.now() });
+  },
+  end() { if (this.on) this.flush(); this.on = false; },
+};
 async function postThumbs(features) {
   const times = new Map(features.feats.map(f => [f.name, f.time]));
   for (const { name, blob } of features.jpegs) {
@@ -277,17 +334,84 @@ async function postPhotoThumbs() {
 const spans = (ks) => ks.reduce((out, k) => { const r = out.at(-1); if (r && k === r[1] + 1) r[1] = k; else out.push([k, k]); return out; }, [])
   .map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(', ');
 
-// S0b + S1: keyframes (second decode pass at full size): JPEG, gray -> SIFT
-async function keyframes(o, analysis) {
+// S0b: the keyframes picked, as { sel, kept (their samples) }
+function picks(o, analysis) {
   const sel = selection(analysis, o), kept = sel.kept.map(i => analysis.order[i]);
   const blurry = sel.status.filter(s => s === 'blurry').length;
   log(`keyframes: ${kept.length} kept (${blurry} blurry dropped, median threshold ${sel.threshold.toFixed(1)}` +
       (sel.path ? `; path ${(sel.path.at(-1) * o.spacing).toFixed(2)} diagonals${o.minRate ? `, at least ${o.minRate} spacings a second` : ''})` : ')'));
   if (kept.length < 3) throw new Error(`only ${kept.length} keyframes: lower the spacing or the blur threshold`);
-  if (same(cache.features?.options, o, FEATURE_KEYS) && cache.features.kept.join() === kept.join()) {
+  return { sel, kept };
+}
+
+// The features `f` made with options o of the keyframes `kept`, if they are
+const sameFeatures = (f, o, kept) => same(f?.options, o, FEATURE_KEYS) && f.kept.join() === kept.join();
+
+// S0b + S1: keyframes (second decode pass at full size): JPEG, gray -> SIFT
+async function keyframes(o, analysis) {
+  const { sel, kept } = picks(o, analysis);
+  if (sameFeatures(cache.features, o, kept)) {
     // a fresh list: densify appends to the session's own (the JPEGs of added frames can stay)
     return videoKeyframes({ ...cache.features, feats: cache.features.feats.slice(0, kept.length) }, sel.kept);
   }
+  cache.features = await keyframeFeatures(o, analysis, sel, kept);
+  saveFeatures(cache.features);
+  return videoKeyframes(cache.features, sel.kept);
+}
+
+// Several videos (clips): each one's keyframes as a video's alone (its features kept per video: a re-run extracts
+// only a video whose keyframes changed), then one list, the j-th video's after the one before (joinClips)
+async function clipKeyframes(o) {
+  const parts = [];
+  for (const [c, clip] of clips.entries()) {
+    useClip(c);
+    log(`video ${c + 1} of ${clips.length}: ${video.file.name}${offset ? ` (its keyframes at ${offset.toFixed(1)} s and on)` : ''}`);
+    const analysis = await analyze(o), { sel, kept } = picks(o, analysis);
+    if (!sameFeatures(clip.features, o, kept)) clip.features = await keyframeFeatures(o, analysis, sel, kept);
+    const f = clip.features;  // its keyframes' own copies: zoomCameras and flowChains set their fields
+    parts.push(videoKeyframes({ ...f, feats: f.feats.slice(0, kept.length).map(x => ({ ...x, clip: c })) }, sel.kept));
+  }
+  postClipsSelection();
+  cache.features = joinClips(parts, o);
+  saveFeatures(cache.features);
+  return cache.features;
+}
+
+// The videos' keyframes (videoKeyframes', in order) as one list: their pairs and tracks re-indexed, their flow chains
+// apart; a video's main zoom stretch is the first's camera 0 (the same drone and lens, its focal found from all), its
+// other stretches cameras of their own (their image scale to its main one: zoomCameras)
+function joinClips(parts, o) {
+  const { width, height } = parts[0], feats = [], jpegs = [], trackPairs = [], seq = [], stats = {}, levels = [1];
+  let chain = 0;
+  for (const [c, p] of parts.entries()) {
+    if (p.width !== width || p.height !== height) throw new Error(`video ${c + 1}: keyframes of ${p.width} x ${p.height}, the first's ${width} x ${height}: open videos of one size`);
+    const base = feats.length, camera = (p.zoomLevels ?? [1]).map((r, k) => (k ? levels.push(r) - 1 : 0));
+    let chains = 0;
+    for (const f of p.feats) {
+      if (f.camera !== undefined) f.camera = camera[f.camera];
+      if (f.flowChain !== undefined) { chains = Math.max(chains, f.flowChain + 1); f.flowChain += chain; }
+      feats.push(f);
+    }
+    chain += chains;
+    jpegs.push(...p.jpegs);
+    for (const q of p.trackPairs ?? []) trackPairs.push({ ...q, i: q.i + base, j: q.j + base });
+    for (const q of p.seq?.pairs ?? []) seq.push({ ...q, i: q.i + base, j: q.j + base });
+    for (const [k, v] of Object.entries(p.seq?.stats ?? {})) stats[k] = (stats[k] ?? 0) + v;
+  }
+  if (levels.length > 1) for (const f of feats) f.camera ??= 0;
+  return { options: { ...o }, id: newId(), kept: parts.flatMap(p => p.kept), feats, jpegs, width, height,
+           trackPairs: trackPairs.length ? trackPairs : null, seq: parts.every(p => p.seq) ? { pairs: seq.sort((a, b) => a.i - b.i || a.j - b.j), stats, window: o.window } : null,
+           zoomLevels: levels.length > 1 ? levels : null, clips: clipsMeta() };
+}
+
+// What a project keeps of the videos: each one's name, duration, offset, its first and last frames' times (offset:
+// start, end) and keyframes (the analysis samples)
+const clipsMeta = () => clips.map(c => ({ name: c.video.file.name, duration: c.video.duration, offset: c.offset,
+                                          start: c.offset + spanOf(c.video)[0], end: c.offset + spanOf(c.video)[1], kept: c.features?.kept ?? null }));
+
+// S1 of the video in use: the keyframes `kept` (sel: their selection) as JPEGs and SIFT, their sequential pairs
+// (adaptFeatures) and tracks
+async function keyframeFeatures(o, analysis, sel, kept) {
   const [w, h] = fitSize(video.width, video.height, o.maxDim);
   const t = performance.now(), jpegs = [];
   let feats = [];
@@ -295,8 +419,10 @@ async function keyframes(o, analysis) {
     feats.push(f);
     jpegs.push(jpeg);
     progress('features', feats.length, kept.length);
+    await liveThumbs.add(f.name, f.time, jpeg.blob, w / h);
     await save(`images/${jpeg.name}`, jpeg.blob);
   }, { dense: o.adaptFeatures });
+  liveThumbs.flush();
   // as many features as a stretch needs (frontend.js adaptFeatures): the sequential pairs matched here, before the
   // tracks, as the keyframes' keypoints may change
   let seq = null;
@@ -311,9 +437,7 @@ async function keyframes(o, analysis) {
   log(`features: ${feats.length} keyframes at ${w} x ${h}, ${perFrame(feats)} per frame in ${seconds(t)}`);
   const trackPairs = o.track ? await trackPoints(analysis, sel.kept, feats, w, h, o) : null;
   // id: a saved model is restored only over the features it was built from
-  cache.features = { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h, trackPairs, seq };
-  saveFeatures(cache.features);
-  return videoKeyframes(cache.features, sel.kept);
+  return { options: { ...o }, id: newId(), kept, feats, jpegs, width: w, height: h, trackPairs, seq };
 }
 
 // The keyframes' keypoints tracked through every sampled frame between the first and the last (track.js, DESIGN-sfm
@@ -405,7 +529,8 @@ async function photoFeature(p, file, w, h, o, sift, ctx, canvas) {
   lap('gray');
   const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: o.jpegQuality });
   lap('jpeg');
-  const { keypoints, descriptors, capped } = await sift.extract(gray, w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak });
+  const f = await sift.extract(liftGray(gray, o.siftLift, false), w, h, { maxFeatures: o.maxFeatures, peak: o.siftPeak });
+  const { keypoints, capped } = f, descriptors = o.rootSift ? rootSift(f.descriptors) : f.descriptors;
   lap('sift');
   await save(`images/${p.name}`, blob);
   return { feat: { name: p.name, time: p.time, camera: p.camera, keypoints, descriptors }, jpeg: { name: p.name, blob }, capped };
@@ -520,11 +645,12 @@ function unaddPhotos(u) {
 let storeKey = null;  // OPFS file prefix of the open video (null: nothing saved, e.g. a dropped project)
 let store = null;     // the project folder (src/project/store.js), null: none
 
-// A file into the project folder, if any; a failure is logged, the session goes on
+// A file into the project folder, if any, said to the page (the stepper's saved marks); a failure is logged, the session goes on
 async function save(path, data) {
   if (!store) return;
   try {
     await store.write(path, data);
+    post({ type: 'saved', path, where: 'project' });
   } catch (e) {
     log(`project: could not write ${path} (${e.message})`, 'warn');
   }
@@ -535,7 +661,7 @@ async function opfs(name, blob = null) {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('gaussopt-sfm', { create: true });
     if (!blob) return await (await dir.getFileHandle(name)).getFile();
     const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
-    await w.write(blob);
+    for (const piece of Array.isArray(blob) ? blob : [blob]) await w.write(piece);  // packPieces' pieces: one after the other
     await w.close();
   } catch (e) {
     if (blob) log(`could not save ${name} in the browser storage: ${e.message}`, 'warn');
@@ -544,8 +670,9 @@ async function opfs(name, blob = null) {
 }
 
 // Analysis + keyframes (JPEGs, SIFT) of features `f` (the session's after a run: with densified
-// frames): written once per keyframe set, and after a densify
-function featuresProject(f) {
+// frames): written once per keyframe set, and after a densify. pack: packProject (a Blob), or packPieces (its
+// pieces, for a store: a container of a long video, or of several, is more than a Blob the browser can hold)
+function featuresProject(f, pack = packProject) {
   const { analysis } = cache, parts = {};
   for (const x of f.feats) {
     parts[`kp/${x.name}`] = x.keypoints; parts[`desc/${x.name}`] = x.descriptors;
@@ -553,31 +680,45 @@ function featuresProject(f) {
   }
   // the tracks' pairs: [i, j, matches] per pair, their matches one after the other
   if (f.trackPairs?.length) {
-    parts['track/pairs'] = Uint32Array.from(f.trackPairs.flatMap(p => [p.i, p.j, p.matches.length]));
-    parts['track/matches'] = Uint32Array.from(f.trackPairs.flatMap(p => [...p.matches]));
+    const { pairs, matches } = packTrackPairs(f.trackPairs);
+    parts['track/pairs'] = pairs;
+    parts['track/matches'] = matches;
   }
   for (const j of f.jpegs) parts[`jpeg/${j.name}`] = j.blob;
-  const source = video ? { name: video.file.name, duration: video.duration } : cache.source ?? null;
+  const source = video && !clips ? { name: video.file.name, duration: video.duration } : cache.source ?? null;
   // a photo set has no frame analysis (S0): its plan stands in for the source
-  const a = analysis ? (({ order, sharp, steps, times, zoom, flowH, options }) => ({ options, order, sharp, steps, times, zoom, flowH }))(analysis) : null;
-  return packProject({ video: source, analysis: a, photos: photos ? { plan: photos.plan } : cache.photoPlan ?? null,
-                       features: { options: f.options, id: f.id, kept: f.kept, width: f.width, height: f.height, frames: f.feats.map(x => ({ name: x.name, time: x.time })) } }, parts);
+  const part = (a) => a && (({ order, sharp, steps, times, zoom, flowH, options }) => ({ options, order, sharp, steps, times, zoom, flowH }))(a);
+  // several videos: each one's (videos: f.clips, a keyframe's clip)
+  const several = clips ? { videos: clipsMeta(), analyses: clips.map((_, c) => part(clipCache(c, 'analysis'))) } : f.clips ? { videos: f.clips, analyses: cache.analyses ?? null } : {};
+  return pack({ video: source, analysis: clips ? null : part(analysis), ...several, photos: photos ? { plan: photos.plan } : cache.photoPlan ?? null,
+                       features: { options: f.options, id: f.id, kept: f.kept, width: f.width, height: f.height,
+                                   frames: f.feats.map(x => ({ name: x.name, time: x.time, ...(x.clip ? { clip: x.clip } : {}) })) } }, parts);
 }
 
-const modelProject = () => {
+const modelProject = (saved = new Date().toISOString(), pack = packProject) => {
   const { json, arrays } = current.session.toState();
-  return packProject({ session: json, o: current.o, version: current.version, features: current.features.id, saved: new Date().toISOString() }, arrays);
+  return pack({ session: json, o: current.o, version: current.version, repaired: current.repaired !== false, features: current.features.id, saved }, arrays);
 };
 
-// The session's containers: in the project's cache/ with a project folder, else in OPFS per video
+// The session's containers: in the project's cache/ with a project folder, else in OPFS per video (a failure is
+// logged: the run goes on without them, some callers do not wait for them)
 async function saveFeatures(f) {
-  if (store) await save('cache/features.gosfm', featuresProject(f));
-  else if (storeKey) await opfs(`${storeKey}.features`, featuresProject(f));
+  try {
+    if (store) await save('cache/features.gosfm', featuresProject(f, packPieces));
+    else if (storeKey && await opfs(`${storeKey}.features`, featuresProject(f, packPieces)) !== null) post({ type: 'saved', path: 'cache/features.gosfm', where: 'browser' });
+  } catch (e) {
+    log(`the keyframes' features are not saved (${e.message})`, 'warn');
+  }
 }
+// with a project folder, the theatre's trace beside it, stamped with the model it ends at (restoreFrom replays it
+// for that model only: none recorded for this one, the earlier trace.bin is another's)
 async function saveModel() {
   if (!current) return;
-  if (store) await save('cache/model.gosfm', modelProject());
-  else if (storeKey) await opfs(`${storeKey}.model`, modelProject());
+  const saved = new Date().toISOString();
+  if (store) {
+    await save('cache/model.gosfm', modelProject(saved, packPieces));
+    if (current.trace) await save('cache/trace.bin', encodeTrace(current.trace.events, { model: saved, full: current.trace.full }));
+  } else if (storeKey && await opfs(`${storeKey}.model`, modelProject(saved, packPieces)) !== null) post({ type: 'saved', path: 'cache/model.gosfm', where: 'browser' });
 }
 // The saved containers [features, model] (null when missing): the project's, else this video's in OPFS
 async function loadSaved() {
@@ -586,16 +727,18 @@ async function loadSaved() {
   return storeKey ? [await opfs(`${storeKey}.features`), await opfs(`${storeKey}.model`)] : [null, null];
 }
 
-// The saved session of the opened video or photo set, if any (a failure is logged)
+// The saved session of the opened video or photo set, if any (a failure is logged): true when its model is restored
 async function restoreSaved() {
   const [fp, mp] = await loadSaved();
-  if (fp) await restore(await unpackProject(fp), mp && await unpackProject(mp)).catch(e => log(e.message, 'warn'));
+  if (!fp) return false;
+  return restore(await unpackProject(fp), mp && await unpackProject(mp)).catch(e => { log(e.message, 'warn'); return false; });
 }
 
 // What a saved features container was made from: { name, duration } of its video, or { name,
 // photos } of a photo set (no duration)
 function savedSource(json) {
   if (json.photos) return { name: `${json.photos.plan.used.length} photos`, photos: json.photos.plan.used.length, duration: 0 };
+  if (json.videos) return { name: json.videos.map(v => v.name).join(' + '), duration: json.videos.at(-1).end, videos: json.videos };
   const v = json.video, times = json.analysis?.times ?? [];
   return { name: v?.name ?? '(unknown video)', duration: v?.duration ?? times.reduce((m, t) => Math.max(m, t), 0) };
 }
@@ -616,18 +759,19 @@ async function restoreFrom(fp, mp) {
   cache.analysis = a;  // null for a photo set
   cache.source = fp.json.video;
   cache.photoPlan = fp.json.photos ?? null;
-  for (const { name, time } of f.frames) {
-    feats.push({ name, time, keypoints: await fp.get(`kp/${name}`), descriptors: await fp.get(`desc/${name}`),
+  cache.analyses = fp.json.analyses ?? null;  // several videos': kept for the project's next save when they are not open
+  for (const { name, time, clip } of f.frames) {
+    feats.push({ name, time, ...(clip ? { clip } : {}), keypoints: await fp.get(`kp/${name}`), descriptors: await fp.get(`desc/${name}`),
                  ...(fp.keys.includes(`trk/${name}`) ? { tracked: await fp.get(`trk/${name}`) } : {}) });
     if (fp.keys.includes(`jpeg/${name}`)) jpegs.push({ name, blob: new Blob([await (await fp.get(`jpeg/${name}`)).arrayBuffer()], { type: 'image/jpeg' }) });
   }
   let trackPairs = null;
   if (fp.keys.includes('track/pairs')) {
-    const ij = await fp.get('track/pairs'), m = await fp.get('track/matches');
-    trackPairs = [];
-    for (let q = 0, at = 0; q < ij.length; q += 3) { trackPairs.push({ i: ij[q], j: ij[q + 1], matches: m.slice(at, at + ij[q + 2]) }); at += ij[q + 2]; }
+    trackPairs = unpackTrackPairs(await fp.get('track/pairs'), await fp.get('track/matches'));
   }
-  cache.features = { options: f.options, id: f.id, kept: f.kept, feats, jpegs, width: f.width, height: f.height, trackPairs };
+  cache.features = { options: f.options, id: f.id, kept: f.kept, feats, jpegs, width: f.width, height: f.height, trackPairs,
+                     ...(fp.json.videos ? { clips: fp.json.videos } : {}) };
+  const own = clips && fp.json.videos && restoreClips(fp.json, cache.features);
   post({ type: 'keyframes', count: feats.length });
   await postThumbs(cache.features);
   if (!mp) return false;
@@ -640,14 +784,42 @@ async function restoreFrom(fp, mp) {
     if (!byName.has(n)) throw new Error(`keyframe ${n} of the model has no saved features`);
     return mapperKeypoints(byName.get(n));
   };
+  const trace = await savedTrace(mp.json.saved);
   const session = SfmSession.fromState({ json: mp.json.session, arrays }, keypoints,
-                                       { pairSource: featurePairSource(feats, matcher), log: (s) => log(`  ${s}`), progress });
+                                       { pairSource: featurePairSource(feats, matcher), log: (s) => log(`  ${s}`), progress, trace: trace?.hook });
   const o = { ...SESSION_DEFAULTS, ...mp.json.o };  // a model saved before an option existed: its default
-  current = { session, features: cache.features, o, version: mp.json.version };
-  if (a) selection(a, o);
+  current = { session, features: cache.features, o, version: mp.json.version, repaired: mp.json.repaired !== false, trace };  // saved before 'repaired' was: after the repair
+  if (a && !clips) selection(a, o);
+  if (own) {  // each video's selection (its zooms, for densify), on the strip one after the other
+    for (const [c, clip] of clips.entries()) if (clipCache(c, 'analysis')) { useClip(c); selection(cache.analysis, o); }
+    postClipsSelection();
+  }
   log(`restored the saved session (${mp.json.saved}): ${session.images.length} keyframes; Run all starts over`, 'ok');
   postQuality();
-  post({ type: 'restored' });
+  post({ type: 'restored', repaired: current.repaired });
+  return true;
+}
+
+// The project's videos open (the same names, in order): each one's analysis and features as clipKeyframes made them
+// (its keyframes the first of its own in f, the densified after them; its tracks re-indexed), so that densify and a
+// re-run go on from them. False when they are other videos.
+function restoreClips({ videos, analyses }, f) {
+  if (videos.length !== clips.length || videos.some((v, c) => v.name !== clips[c].video.file.name)) {
+    log(`the project is of ${videos.map(v => v.name).join(' + ')}, not the open videos: their keyframes are not restored as theirs`, 'warn');
+    return false;
+  }
+  let base = 0;
+  for (const [c, v] of videos.entries()) {
+    useClip(c);
+    cache.analysis = analyses?.[c] ?? null;
+    const n = v.kept?.length ?? 0, feats = f.feats.filter(x => (x.clip ?? 0) === c).slice(0, n), names = new Set(feats.map(x => x.name));
+    if (n && feats.length === n) {
+      const trackPairs = (f.trackPairs ?? []).filter(p => p.i >= base && p.j < base + n).map(p => ({ ...p, i: p.i - base, j: p.j - base }));
+      clips[c].features = { options: f.options, id: f.id, kept: v.kept, feats, jpegs: f.jpegs.filter(j => names.has(j.name)), width: f.width, height: f.height,
+                            trackPairs: trackPairs.length ? trackPairs : null, seq: null };
+    }
+    base += n;
+  }
   return true;
 }
 
@@ -674,10 +846,10 @@ async function handOver(ds, features, o) {
   }
   colors.finish();
   // the on-screen display's mask per camera, undistorted as its keyframes (any coverage after the resampling: masked)
-  const ov = overlayMask(o), masks = [];
-  if (ov) for (let c = 0; c < ds.cameras.length; c++) {
+  const ovs = overlayMasks(o), masks = [];  // several videos: what any of their displays covers
+  if (ovs.length) for (let c = 0; c < ds.cameras.length; c++) {
     const rgba = new Uint8ClampedArray(4 * w * h);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (maskAt(ov, x + 0.5, y + 0.5, w, h)) rgba.fill(255, 4 * (y * w + x), 4 * (y * w + x) + 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (ovs.some(ov => maskAt(ov, x + 0.5, y + 0.5, w, h))) rgba.fill(255, 4 * (y * w + x), 4 * (y * w + x) + 4);
     const out = await undistort.run(rgba, ds.distortedCameras[c], ds.cameras[c]), data = new Uint8Array(w * h);
     for (let p = 0; p < w * h; p++) data[p] = out[4 * p] > 0 ? 1 : 0;
     masks.push({ camera: c + 1, w, h, data });
@@ -731,10 +903,84 @@ function photoCoverage(all = false) {
   return { inMain: c.inMain, total: c.total, seenBy: c.seenBy, advice: coverageAdvice(c, name, all ? { maxGaps: Infinity, maxPieces: Infinity } : {}) };
 }
 
+// The mapping's trace (trace.js) for the theatre: its events to the page, a batch at most every TRACE_MS; going
+// on from `events` (a project's) when given
+const TRACE_MS = 200;
+function traceRecorder(events = null) {
+  let queue = [], timer = null;
+  const flush = () => { timer = null; if (queue.length) post({ type: 'trace', events: queue }); queue = []; };
+  const onEvent = (e) => { queue.push(e); timer ??= setTimeout(flush, TRACE_MS); };
+  return events ? SfmTrace.from(events, { onEvent }) : new SfmTrace({ onEvent });
+}
+
+// The project's trace of the model saved at `saved` (saveModel), replayed in the theatre and recording on; null when
+// there is none, it is another model's, or it cannot be read (the session restores without it)
+async function savedTrace(saved) {
+  const blob = await store?.read('cache/trace.bin').catch(() => null);
+  if (!blob) return null;
+  try {
+    const { meta, events } = decodeTrace(await blob.arrayBuffer());
+    if (meta.model !== saved) { log('cache/trace.bin: the trace of another model, not replayed', 'warn'); return null; }
+    post({ type: 'trace', replay: events });
+    return traceRecorder(events);
+  } catch (e) {
+    log(`cache/trace.bin: unreadable (${e.message}), not replayed`, 'warn');
+    return null;
+  }
+}
+
+// What the session holds, in MB: each typed array counted once (the pairs' matches are the session's and the
+// matching's, the mapper's adjacency a copy of them), the keyframe JPEGs by their blobs' sizes
+function heldLine() {
+  const { session, features } = current, seen = new Set();
+  const mb = (arrays) => { let b = 0; for (const a of arrays) if (a && !seen.has(a)) { seen.add(a); b += a.byteLength; } return (b / 2 ** 20).toFixed(0); };
+  const m = session.mapper, obs = m.points.reduce((s, P) => s + (P ? P.obs.size : 0), 0);
+  return `held: descriptors ${mb(features.feats.map(f => f.descriptors))} MB, keypoints ${mb(features.feats.map(f => f.keypoints))} MB, ` +
+    `pair matches ${mb(session.pairs.map(p => p.matches))} MB, the mapper's adjacency ${mb(m.adj.flatMap(l => l.flatMap(e => [e.a, e.b])))} MB, ` +
+    `tracks ${mb((features.trackPairs ?? []).map(p => p.matches))} MB, keyframe JPEGs ${((features.jpegs ?? []).reduce((s, j) => s + (j.blob?.size ?? 0), 0) / 2 ** 20).toFixed(0)} MB; ` +
+    `${m.points.filter(Boolean).length} points with ${obs} observations (a Map each), ${session.ops.length} undo snapshots${session.afterSequential ? ' and the sequential map\'s' : ''}`;
+}
+
+// The mapping's checkpoints (DESIGN-sfm §4): with a project folder, the session as it is every checkpointMs of the
+// mapping (mapper.js checkpoint) in cache/mapping.gosfm, stamped with its keyframes' features and the camera options;
+// a run on those keyframes with those options goes on from it (the matching and the frames registered kept)
+const pick = (o, keys) => Object.fromEntries(keys.filter(k => k in o).map(k => [k, o[k]]));
+async function saveCheckpoint(session, features, o) {
+  const t = performance.now(), { json, arrays } = session.toState();
+  await save('cache/mapping.gosfm', packPieces({ session: json, o, features: features.id, cameras: pick(o, CAMERA_KEYS), saved: new Date().toISOString() }, arrays));
+  log(`mapping checkpoint: ${session.mapper.stats.registered}/${session.images.length} registered, saved in ${((performance.now() - t) / 1000).toFixed(1)} s`);
+}
+
+// A session from the project's mapping checkpoint for these keyframes and camera options, else null
+async function mappingCheckpoint(features, o, matcher, trace) {
+  const blob = await store?.read('cache/mapping.gosfm').catch(() => null);
+  if (!blob) return null;
+  try {
+    const mp = await unpackProject(blob);
+    if (mp.json.done) return null;  // the mapping it was of went to its end
+    const want = JSON.stringify(pick(o, CAMERA_KEYS));
+    if (mp.json.features !== features.id || JSON.stringify(mp.json.cameras) !== want) {
+      log('cache/mapping.gosfm: a checkpoint of other keyframes or camera options, not resumed');
+      return null;
+    }
+    const arrays = {};
+    for (const k of mp.keys) arrays[k] = await mp.get(k);
+    const byName = new Map(features.feats.map(x => [x.name, x]));
+    const session = SfmSession.fromState({ json: mp.json.session, arrays }, (n) => mapperKeypoints(byName.get(n)),
+                                         { pairSource: featurePairSource(features.feats, matcher), log: (s) => log(`  ${s}`), progress, trace: trace?.hook });
+    log(`mapping checkpoint of ${mp.json.saved}: ${session.mapper.stats.registered}/${session.images.length} registered, the mapping goes on from it`, 'ok');
+    return session;
+  } catch (e) {
+    log(`cache/mapping.gosfm: not resumed (${e.message})`, 'warn');
+    return null;
+  }
+}
+
 async function run(options) {
   const o = { ...SESSION_DEFAULTS, ...options };
   const t0 = performance.now();
-  const features = photos ? await photoFeatures(o) : await keyframes(o, await analyze(o));
+  if (!photos) liveThumbs.start();
+  const features = await (photos ? photoFeatures(o) : clips ? clipKeyframes(o) : analyze(o).then(a => keyframes(o, a))).finally(() => liveThumbs.end());
   post({ type: 'keyframes', count: features.feats.length });
   if (photos) await postPhotoThumbs(); else await postThumbs(features);
   if (o.until === 'keyframes') {
@@ -748,16 +994,27 @@ async function run(options) {
   const window = photos ? Math.max(1, features.feats.length - 1) : o.window, loops = o.loops;
   const cameras = photos ? photoCameras(photos.plan, features.width, features.height) : zoomPriors(features);
   if (!photos && cameras) mapping.scanFocal = true;
+  post({ type: 'trace', reset: true });  // the theatre's last mapping is not this one's, recorded or not
+  const trace = o.trace ? traceRecorder() : null;
+  const resume = await mappingCheckpoint(features, o, matcher, trace);
   const { session } = await reconstructFromFeatures(features.feats, features.width, features.height, matcher,
-    { window, loops, mapping, log, progress, ...(cameras ? { cameras } : {}), ...(features.trackPairs ? { trackPairs: features.trackPairs } : {}),
-      ...(!photos && features.seq?.window === window ? { seq: features.seq } : {}) });
-  current = { session, features, o, version: 0 };  // version: bumped by every action and undo
+    { window, loops, lateLoops: o.lateLoops, mapping, log, progress, trace: trace?.hook, ...(cameras ? { cameras } : {}), ...(features.trackPairs ? { trackPairs: features.trackPairs } : {}),
+      ...(!photos && features.seq?.window === window ? { seq: features.seq } : {}),
+      ...(store ? { checkpoint: (session) => saveCheckpoint(session, features, o) } : {}), ...(resume ? { resume } : {}) });
+  if (store) await save('cache/mapping.gosfm', packProject({ done: true, features: features.id, saved: new Date().toISOString() }, {}));
+  // version: bumped by every action and undo; repaired: the run's repair done
+  current = { session, features, o, version: 0, repaired: false, trace };
   // repair: each stretch of keyframes scored below green re-matched, kept where the scores improve (session.repair);
   // not for photos (P4)
   if (!photos && o.autoRepair && session.quality().counts.green < session.images.length) {
+    await saveModel();  // the map before its repair (hours on a long video): restored, the repair goes on from it
+    trace?.record(session.mapper, 'stage', { name: 'repair' });
     const r = await session.repair();
+    trace?.record(session.mapper, 'end');
     log(`repair: ${r.kept}/${r.tried} retries kept, scores ${JSON.stringify(r.quality.counts)} (undo reverts it)`, r.quality.counts.red ? 'warn' : 'ok');
   }
+  current.repaired = true;
+  log(heldLine());
   postQuality();
   if (photos) for (const a of photoCoverage(true).advice) log(`to shoot: ${a}`, 'warn');
   await saveModel();
@@ -776,14 +1033,22 @@ async function run(options) {
 // of the gap's middle half becomes a keyframe (decoded, JPEG, SIFT), then session.insert()
 async function densify(names) {
   if (!video) throw new Error('densify: open the video too (frames are decoded from it)');
-  const { session, features, o } = current, analysis = cache.analysis;
+  const { session, features, o } = current;
   const times = names.map(n => session.images.find(im => im.name === n)?.time).filter(t => t !== undefined).sort((a, b) => a - b);
   if (times.length < 2) throw new Error('densify: select at least two keyframes');
+  if (clips) {  // several videos: the frames of one, decoded from it
+    const c = clipOfTime(times[0]);
+    if (times.some(t => clipOfTime(t) !== c)) throw new Error('densify: select keyframes of one video');
+    useClip(c);
+  }
+  const analysis = cache.analysis;
+  if (!analysis) throw new Error('densify: run the keyframes of this video first (its frames are not analysed)');
   const taken = new Set(session.images.map(im => im.name)), wanted = new Set();
   for (let k = 1; k < times.length; k++) {
     const [a, b] = [times[k - 1], times[k]], q = (b - a) / 4;
     let best = -1;
-    analysis.times.forEach((t, i) => {
+    analysis.times.forEach((at, i) => {
+      const t = at + offset;
       if (cache.zoom?.span[i] < 0) return;  // during a zoom
       if (t > a + q && t < b - q && !taken.has(keyframeName(t)) && (best < 0 || analysis.sharp[i] > analysis.sharp[best])) best = i;
     });
@@ -794,9 +1059,10 @@ async function densify(names) {
   await extract(wanted, features.width, features.height, o, async (f, jpeg) => {
     const camera = stretchCamera(f.name, session.images);
     if (camera !== undefined) f.camera = camera;
+    if (clips) f.clip = clipAt;
     features.feats.push(f);
     features.jpegs.push(jpeg);
-    added.push({ name: f.name, time: f.time, keypoints: xyOnly(f.keypoints), ...(camera !== undefined ? { camera } : {}) });
+    added.push({ name: f.name, time: f.time, keypoints: xyOnly(f.keypoints), ...(camera !== undefined ? { camera } : {}), ...(f.clip ? { clip: f.clip } : {}) });
     await save(`images/${jpeg.name}`, jpeg.blob);
   });
   log(`densify: ${added.length} keyframes added between ${names.length} selected`);
@@ -811,15 +1077,18 @@ async function densify(names) {
 function stretchCamera(name, images) {
   const z = cache.zoom;
   if (!z?.events.length) return undefined;
-  const index = new Map(cache.analysis.times.map((t, k) => [keyframeName(t), k])), span = z.span[index.get(name)];
+  const index = new Map(cache.analysis.times.map((t, k) => [keyframeName(t + offset), k])), span = z.span[index.get(name)];
   return images.find(im => im.camera !== undefined && z.span[index.get(im.name)] === span)?.camera;
 }
 
 async function action(op, args) {
   if (!current) throw new Error('run the reconstruction first');
   const t = performance.now();
+  current.trace?.record(current.session.mapper, 'stage', { name: op });
   const r = op === 'densify' ? await densify(...args) : op === 'addPhotos' ? await addPhotos(...args) : await current.session[op](...args);
+  current.trace?.record(current.session.mapper, 'end');
   current.version++;
+  if (op === 'repair') current.repaired = true;
   await saveModel();
   const changed = `${JSON.stringify(r.before)} -> ${JSON.stringify(r.after)}`;
   log(`${op}: ${r.frames?.length ?? 0} keyframes, scores ${changed} in ${seconds(t)}` +
@@ -833,7 +1102,10 @@ async function action(op, args) {
 async function flush() {
   const f = current?.features ?? cache.features;
   if (f) {
-    if (cache.analysis && cache.selection) await save('sharpness.csv', sharpnessCsv(cache.motion ?? cache.analysis, cache.selection));
+    for (const c of clips ? clips.keys() : [-1]) {
+      if (c >= 0) useClip(c);
+      if (cache.analysis && cache.selection) await save(sharpnessPath(), sharpnessCsv(cache.motion ?? cache.analysis, cache.selection));
+    }
     for (const { name, blob } of f.jpegs) await save(`images/${name}`, blob);
     await saveFeatures(f);
   }
@@ -862,12 +1134,31 @@ async function handle(data) {
     post({ type: 'video', info });
     await postPhotoThumbs();
     post({ type: 'idle', status: `${info.photos} of ${info.total} photos (${data.filter ? 'filtered' : 'all'}): Run to map them` });
+  } else if (data.type === 'open' && data.files?.length > 1) {  // several videos of one place, mapped as one
+    resetAll();
+    clips = [];
+    for (const file of data.files) {
+      const v = await openVideo(file), last = clips.at(-1);
+      if (last && (v.width !== last.video.width || v.height !== last.video.height || v.rotation !== last.video.rotation)) {
+        clips = null;
+        throw new Error(`${file.name}: ${v.width} x ${v.height}, ${data.files[0].name} ${last.video.width} x ${last.video.height}: open videos of one size`);
+      }
+      // its first frame CLIP_GAP s after the last of the one before
+      clips.push({ video: v, offset: last ? last.offset + spanOf(last.video)[1] + CLIP_GAP - spanOf(v)[0] : 0 });
+    }
+    useClip(0);
+    const { codec, width, height, fps, rotation } = video, end = clips.at(-1);
+    post({ type: 'video', info: { name: data.files.map(f => f.name).join(' + '), codec, width, height, fps, duration: end.offset + spanOf(end.video)[1], rotation,
+                                  frames: clips.reduce((s, c) => s + c.video.samples.length, 0), videos: clipsMeta() } });
+    storeKey = hashString(data.files.map(f => `${f.name}|${f.size}|${f.lastModified}`).join('|')).toString(16);
+    await restoreSaved();
   } else if (data.type === 'open') {
     resetAll();
-    video = await openVideo(data.file);
+    const file = data.file ?? data.files[0];
+    video = await openVideo(file);
     const { codec, width, height, fps, duration, rotation, samples } = video;
-    post({ type: 'video', info: { name: data.file.name, codec, width, height, fps, duration, rotation, frames: samples.length } });
-    storeKey = hashString(`${data.file.name}|${data.file.size}|${data.file.lastModified}`).toString(16);
+    post({ type: 'video', info: { name: file.name, codec, width, height, fps, duration, rotation, frames: samples.length } });
+    storeKey = hashString(`${file.name}|${file.size}|${file.lastModified}`).toString(16);
     await restoreSaved();
   } else if (data.type === 'project') {  // a dropped .gosfm: repairs work, densify and re-runs need the video
     const blob = data.file, fp = await projectPart(blob, 'features'), mp = await projectPart(blob, 'model');
@@ -878,7 +1169,7 @@ async function handle(data) {
   } else if (data.type === 'save') {
     if (!current) throw new Error('nothing to save yet');
     const project = await mergeProjects({ features: featuresProject(current.features), model: modelProject() });
-    post({ type: 'project', blob: project, name: `${(video?.file.name ?? 'session').replace(/\.[^.]+$/, '')}.gosfm` });
+    post({ type: 'project', blob: project, name: `${((clips?.[0].video ?? video)?.file.name ?? 'session').replace(/\.[^.]+$/, '')}.gosfm` });
   } else if (data.type === 'run') {
     if (!video && !photos) throw new Error('open the video or the photos (a project alone has no frames to re-run)');
     await run(data.options);
@@ -891,6 +1182,7 @@ async function handle(data) {
     if (!op) { post({ type: 'idle', status: 'nothing to undo' }); return; }
     if (op === 'insert' && photos?.added?.length) unaddPhotos(photos.added.pop());  // a photo set inserts by addPhotos only
     log(`undo: ${op}`, 'ok');
+    current.trace?.record(current.session.mapper, 'undo', { op });
     current.version++;
     await saveModel();
     postQuality({ op: 'undo', undone: op });
@@ -906,6 +1198,8 @@ async function handle(data) {
     const f = await unpackProject(fp);
     post({ type: 'video', info: { project: store.name, ...savedSource(f.json) } });
     await restore(f, mp && await unpackProject(mp));
+  } else if (data.type === 'restoreSaved') {  // a project attached to the open video or photos: its session over them
+    if (!await restoreSaved()) post({ type: 'idle', status: 'ready' });
   } else if (data.type === 'flush') {
     await flush();
   } else if (data.type === 'psnr') {
@@ -921,5 +1215,5 @@ self.onmessage = ({ data }) => {
   queue = queue.then(() => handle(data)).catch((e) => {
     if (e?.stack) log(`error at ${e.stack.split('\n').slice(1, 4).map(l => l.trim()).join(' < ')}`, 'warn');  // where, for reports
     post({ type: 'error', message: e?.message ?? String(e) });
-  });
+  }).then(() => GpuBundleAdjuster.releaseShared());  // the solver's buffers not kept between actions (the training's GPU)
 };

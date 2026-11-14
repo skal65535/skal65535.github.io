@@ -8,7 +8,9 @@ Serves `skal65535.github.io/` on http://localhost:<port>/ and mounts:
   - `POST /save?name=splat_05000.ply&dataset=/datasets/<name>` -> writes exported .ply/.splat/logs to `<dataset>/splats_gaussopt/`
   - project folders under `--projects DIR` (src/project/project.js for the layout):
     `GET /projects.json` lists them; `GET /project/<name>/<path>` reads a file (`?optional`: 204
-    instead of 404 when it is missing, `<dir>/?list`: its entries); `PUT` writes one (directories created, written to a temporary file then renamed);
+    instead of 404 when it is missing, `<dir>/?list`: its entries); `PUT` writes one (directories created, written to a temporary file then renamed;
+    `?append=<offset>`: a piece of it at that offset, into `.<name>.part` beside it, `&last=1` its last, then renamed:
+    a file too large for one request of the browser's, sent in pieces);
     `DELETE` removes one.
 Writes (POST, PUT, DELETE) are refused unless the request comes from this server's own pages
 (Origin) and names it as localhost (Host): another site open in the browser cannot write here.
@@ -133,7 +135,7 @@ def scan_plys(gs_dir: Path):
         if not r.exists():
             continue
         for pat in ["*.ply", "splats/*.ply", "splats_*/*.ply", "*.splat", "splats/*.splat",
-                    "*.gosnap", "splats_*/*.gosnap"]:
+                    "*.gosnap", "splats_*/*.gosnap", "*.scene.glb", "splats_*/*.scene.glb"]:  # .scene.glb: scenes, snapshots
             for f in sorted(r.glob(pat)):
                 if f.name.endswith(".mesh.ply"):  # src/mesh.js's meshes, not splats
                     continue
@@ -171,6 +173,24 @@ def write_body(rfile, target, length):
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def append_body(rfile, target, length, at, last):
+    """A piece of a file sent in pieces: `length` bytes of the body at offset `at` of `.<name>.part` beside `target`
+    (at 0: a new one), which becomes `target` after the last. ValueError when the piece is not the next one (the
+    part's size is not `at`) or is cut short."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(f".{target.name}.part")
+    have = part.stat().st_size if part.exists() else None
+    if at != 0 and have != at:
+        raise ValueError(f"piece at {at} of {target.name}: {have if have is not None else 'no'} bytes before it")
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if at == 0 else os.O_APPEND)
+    with os.fdopen(os.open(part, flags, 0o600), "wb") as out:  # 0600, as write_body's mkstemp
+        got = copy_body(rfile, out, length)
+    if got != length:
+        raise ValueError(f"upload cut short: {got} of {length} bytes")
+    if last:
+        os.replace(part, target)
 
 
 class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
@@ -279,8 +299,12 @@ class GaussOptHandler(http.server.SimpleHTTPRequestHandler):
         length = self._content_length()
         if length is None:
             return
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         try:
-            write_body(self.rfile, target, length)
+            if "append" in query:
+                append_body(self.rfile, target, length, int(query["append"][0]), query.get("last") == ["1"])
+            else:
+                write_body(self.rfile, target, length)
         except ValueError as e:
             self._json(400, {"ok": False, "error": str(e)})
             return

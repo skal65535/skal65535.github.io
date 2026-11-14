@@ -20,7 +20,8 @@ await run(async (page) => {
     const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
     Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
-                       enable_rebalance: false, drop_rate: 0, exposure_lr: 0.02, exposure_from: 0 });
+                       enable_rebalance: false, drop_rate: 0, exposure_lr: 0.02, exposure_from: 0,
+                       random_bg: false });  // the photos are renders behind black: training draws them so
     // the known exposures (exposure.js: c' = g (c - 1/2) + 1/2 + o), a fixed pattern, in the gauge
     const views = tr.trainViews, steps = 150 * views.length;
     const lg = views.map((_, i) => [0, 1, 2].map(c => 0.1 * Math.sin(1.7 * i + 2.3 * c + 0.5)));
@@ -77,7 +78,7 @@ await run(async (page) => {
     tr.exposure = Exposure.fromJSON(Object.fromEntries(names.map(n => [n, [1, 1, 1, 0, 0, 0]])));
     // a snapshot: the exposures restored with it (exposure.js toJSON / fromJSON)
     const before = names.map(n => tr.exposure.uniforms(n)), { buf } = await app._encodeSnapshot('manual');
-    await app.restoreSnapshot(buf, 'e2e.gosnap', app.colmap, ++app.loadGen);
+    await app.restoreSnapshot(buf, 'e2e.scene.glb', app.colmap, ++app.loadGen);
     const back = names.map(n => app.trainer.exposure.uniforms(n));
     const snapErr = Math.max(...before.flatMap((u, i) => u.map((x, j) => Math.abs(x - back[i][j]))));
     return { worst, worstOff, views: views.length, steps, learned: names.length, snapErr, chain, fresh: app.trainer !== tr,

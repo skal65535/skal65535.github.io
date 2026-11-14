@@ -26,6 +26,9 @@ import { keyframeQuality } from './quality.js';
 import { imageRecord } from './frontend.js';
 import { WINDOW } from './defaults.js';
 
+// the grows of an action: the cameras held (SequentialMapper.grow)
+const HELD = { intrinsics: false };
+
 // Key of an unordered keyframe pair by names
 export const key = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 // Pairs [{ i, j }] with the names of their keyframes as a, b
@@ -34,12 +37,12 @@ export const withNames = (pairs, images) => pairs.map(p => ({ ...p, a: images[p.
 export class SfmSession {
   // input: { camera, cameras? (one per lens), images: [{ name, keypoints, time?, camera? (index) }] (time order), pairs: [{ i, j, type, matches }] }
   // mapping: mapper / reconstruct options (focal, hfovDeg, sweeps, ...); loops: S3 on / off
-  constructor(input, { pairSource = null, mapping = {}, loops = true, window = WINDOW, seed = 1, log = () => {}, progress = () => {} } = {}) {
+  constructor(input, { pairSource = null, mapping = {}, loops = true, window = WINDOW, seed = 1, log = () => {}, progress = () => {}, trace = null } = {}) {
     this.camera = input.camera;
     this.cameras = input.cameras ?? null;
     this.images = input.images;
     this.pairs = withNames(input.pairs, input.images);
-    Object.assign(this, { pairSource, mapping, loopsOn: loops, window, seed, log, progress });
+    Object.assign(this, { pairSource, mapping, loopsOn: loops, window, seed, log, progress, trace });  // trace: the mapper's (trace.js)
     this.ops = [];
     this.loops = [];             // loop edges by name, with their residual after the pose graph
     this.twoView = new Map();    // quality.js cache: two-view poses by keyframe names, for the current camera and pairs
@@ -59,7 +62,7 @@ export class SfmSession {
   }
 
   _input() { return { camera: this.camera, ...(this.cameras ? { cameras: this.cameras } : {}), images: this.images, pairs: this._indexed() }; }
-  _options() { return { ...this.mapping, loops: this.loopsOn, seed: this.seed, log: this.log, progress: this.progress }; }
+  _options() { return { ...this.mapping, loops: this.loopsOn, seed: this.seed, log: this.log, progress: this.progress, trace: this.trace }; }
 
   _loopsByName(stats) { return withNames(stats?.loops ?? [], this.images); }
 
@@ -70,18 +73,31 @@ export class SfmSession {
     for (const k of keys) this.twoView.delete(k);
   }
 
-  // S2..S4 from scratch. proposeLoops(mapper) (optional): more verified pairs [{ i, j, type,
-  // matches }] once the sequential map exists (geometric loop candidates, pipeline.js).
-  async reconstruct({ proposeLoops = null } = {}) {
-    const state = await mapSequential(this._input(), this._options());
-    this.mapper = state.mapper;
-    if (proposeLoops && this.loopsOn) {
-      const t = performance.now();
-      this._setPairs(withNames(await proposeLoops(this.mapper), this.images));
-      state.timings.loopMatch = performance.now() - t;
+  // S2..S4 from scratch. proposeLoops(mapper, before) (optional): more verified pairs [{ i, j, type,
+  // matches }] once the sequential map exists (geometric loop candidates, pipeline.js), before null; and again after
+  // the segment merges, before: each frame's segment before them (the pairs of segments then apart).
+  // checkpoint(session) (optional): during the mapping, every checkpointMs (the mapper's), the session as it is (its
+  // toState() a checkpoint); resume: true on a session from such a state (fromState): its mapping gone on with.
+  async reconstruct({ proposeLoops = null, checkpoint = null, checkpointMs = undefined, resume = false } = {}) {
+    if (resume && !this.mapper) throw new Error('resume: no mapping to go on from');
+    const options = this._options();
+    if (checkpoint) {
+      const hook = async (mapper) => { this.mapper = mapper; await checkpoint(this); };
+      if (resume) Object.assign(this.mapper.o, { checkpoint: hook, ...(checkpointMs !== undefined ? { checkpointMs } : {}) });
+      else Object.assign(options, { checkpoint: hook, ...(checkpointMs !== undefined ? { checkpointMs } : {}) });
     }
+    const state = await mapSequential(this._input(), options, { resume: resume ? this.mapper : null });
+    this.mapper = state.mapper;
+    const propose = async (before) => {
+      const t = performance.now(), found = withNames(await proposeLoops(this.mapper, before), this.images);
+      this._setPairs(found);
+      state.timings.loopMatch = (state.timings.loopMatch ?? 0) + performance.now() - t;
+      return found;
+    };
+    if (proposeLoops && this.loopsOn) await propose(null);
     this.afterSequential = { snapshot: this.mapper.snapshot(), images: this.images };
-    const res = await finish(this._input(), state, this._options());
+    const afterMerge = proposeLoops && (async (mapper, before) => this._indexed(await propose(before)));
+    const res = await finish(this._input(), state, this._options(), { afterMerge });
     this.loops = this._loopsByName(res.stats.loops);
     return res;
   }
@@ -113,7 +129,7 @@ export class SfmSession {
   }
 
   // A session from toState(): keypoints of each keyframe come from `keypoints(name)`
-  static fromState({ json, arrays }, keypoints, { pairSource = null, log = () => {}, progress = () => {} } = {}) {
+  static fromState({ json, arrays }, keypoints, { pairSource = null, log = () => {}, progress = () => {}, trace = null } = {}) {
     const images = json.images.map(im => ({ ...im, keypoints: keypoints(im.name) }));
     const pairs = [];
     for (let p = 0, o = 0; p < arrays.pairCount.length; p++) {
@@ -122,8 +138,8 @@ export class SfmSession {
       o += n;
     }
     const s = new SfmSession({ camera: json.mapper.camera, ...(json.mapper.cameras?.length > 1 ? { cameras: json.mapper.cameras } : {}), images, pairs },
-                             { pairSource, mapping: json.mapping, loops: json.loopsOn, window: json.window, seed: json.seed, log, progress });
-    s.mapper = new SequentialMapper(s._input(), { ...json.mapping, log, progress, pairTypes: [...new Set(json.pairTypes), 'seq'] });
+                             { pairSource, mapping: json.mapping, loops: json.loopsOn, window: json.window, seed: json.seed, log, progress, trace });
+    s.mapper = new SequentialMapper(s._input(), { ...json.mapping, log, progress, trace, pairTypes: [...new Set(json.pairTypes), 'seq'] });
     s.mapper.setState({ json: json.mapper, ...arrays });
     s.loops = json.loops;
     s.rejected = new Set(json.rejected);
@@ -211,16 +227,16 @@ export class SfmSession {
     for (const seg of segs) {
       const frames = core.filter(k => m.segment[k] === seg);
       await m.localBA(frames[0], { frames: [...frames, ...m.partners(frames, { minGap: this.window })], refineIntrinsics: intrinsics, iterations: 20 });
-      for (const k of frames) m.triangulateNew(k);
+      m.triangulateAndFilter(frames);
     }
   }
 
-  // Pairs of each frame in `range` with the frames within `window` (by time), as names
+  // Pairs of each frame in `range` with the frames within `window` (by time) of its video (its clip), as names
   _neighbourTodo(range, window) {
-    const todo = new Map();
+    const todo = new Map(), clip = (k) => this.images[k].clip ?? 0;
     for (const k of range) {
       for (let j = Math.max(0, k - window); j <= Math.min(this.mapper.n - 1, k + window); j++) {
-        if (j === k) continue;
+        if (j === k || clip(j) !== clip(k)) continue;
         const [a, b] = [this.images[Math.min(j, k)].name, this.images[Math.max(j, k)].name];
         if (!this.rejected.has(key(a, b))) todo.set(key(a, b), [a, b, 'seq']);
       }
@@ -234,9 +250,9 @@ export class SfmSession {
   }
 
   // Segment merges over all pairs (Sim(3) + track fusion), the rest of the map untouched
-  _merge() {
+  async _merge() {
     const pairs = this._indexed();
-    const stats = mergeSegments(this.mapper, pairs, { rng: this.mapper.rng, log: this.log });
+    const stats = await mergeSegments(this.mapper, pairs, { rng: this.mapper.rng, log: this.log, stage: 'lateMerge' });
     this.mapper.addPairs(pairs);
     return stats;
   }
@@ -281,7 +297,7 @@ export class SfmSession {
       const seg = this._segmentAround(range);
       if (seg < 0) throw new Error('retry: no registered keyframe next to the range (use redo)');
       this.mapper.unregister(range);
-      const registered = await this.mapper.grow(seg, new Set(range));
+      const registered = await this.mapper.grow(seg, new Set(range), HELD);
       await this._adjust(range);
       return { frames: names, registered, pairs: found.length };
     });
@@ -314,12 +330,12 @@ export class SfmSession {
         const c = r.quality.counts, better = c.red < counts.red || (c.red === counts.red && c.green > counts.green);
         this.log(`repair: ${what}: ${JSON.stringify(counts)} -> ${JSON.stringify(c)}, ${better ? 'kept' : 'undone'}`);
         if (!better) { this.undo(); continue; }
+        this.ops.length = ops;  // its snapshot dropped now (a copy of the whole map): undo restores the one before the repair
         counts = c;
         kept++;
         for (const n of names) frames.add(n);
       }
       this.progress('repair', runs.length, runs.length);
-      this.ops.length = ops;  // the kept retries are one action: undo goes back to before them all
       return { frames: [...frames], tried, kept };
     });
   }
@@ -333,15 +349,15 @@ export class SfmSession {
       const left = new Set(range);
       let maps = 0;
       while (left.size >= 2 && await m.initialize(left)) {
-        await m.grow(m.nextSegmentId - 1, left);
+        await m.grow(m.nextSegmentId - 1, left, HELD);
         for (const k of [...left]) if (m.poses[k]) left.delete(k);
         maps++;
       }
       if (!maps) throw new Error('redo: no keyframe pair of the range has the parallax to start a map (select a longer range)');
-      const stats = this._merge();
+      const stats = await this._merge();
       if (left.size) {
         const seg = this._segmentAround([...left]);
-        if (seg >= 0) await m.grow(seg, left);
+        if (seg >= 0) await m.grow(seg, left, HELD);
       }
       await this._adjust(range);
       const registered = range.filter(k => m.poses[k]).length;
@@ -363,7 +379,7 @@ export class SfmSession {
       this.mapper.addPairs(this._indexed(found));
       const seg = this._segmentAround(added);
       if (seg < 0) throw new Error('insert: the new keyframes match no registered keyframe');
-      let registered = await this.mapper.grow(seg, new Set(added));
+      let registered = await this.mapper.grow(seg, new Set(added), HELD);
       // photo sets (regrowSegments on): a photo added between two pieces lets the smaller join
       if (this.mapper.o.regrowSegments) {
         const before = this.mapper.poses.filter(Boolean).length;

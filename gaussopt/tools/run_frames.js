@@ -2,7 +2,7 @@
 // GPU SIFT -> loop candidates by appearance -> GPU matching (sequential window + loops) ->
 // verification -> reconstruction, with geometric loop candidates once the sequential map exists.
 //   deno run --allow-read --allow-write tools/run_frames.js PGM_DIR [--ref MODEL] [--features N]
-//            [--window N] [--no-loops] [--limit N] [--export OUT_DIR] [--loop-ref DUMP_DIR]
+//            [--window N] [--no-loops] [--no-late-loops] [--limit N] [--export OUT_DIR] [--loop-ref DUMP_DIR]
 // PGM_DIR: frames converted by tools/gray.py (name order = time order). --ref and --export work as
 // in tools/map.js; --loop-ref reports how many of a COLMAP dump's verified loop pairs we found.
 "use strict";
@@ -14,10 +14,10 @@ import { datasetFromMapper } from '../src/sfm/export.js';
 import { readPGM } from './pgm.js';
 import { cli, assessAgainstColmap, writeDataset, formatTimings, printAssessment } from './common.js';
 
-const c = cli('run_frames.js PGM_DIR [--ref MODEL] [--features N] [--window N] [--no-loops] [--limit N] [--export OUT_DIR] [--loop-ref DUMP_DIR]');
+const c = cli('run_frames.js PGM_DIR [--ref MODEL] [--features N] [--window N] [--no-loops] [--no-late-loops] [--limit N] [--export OUT_DIR] [--loop-ref DUMP_DIR]');
 const ref = c.option('--ref'), maxFeatures = Number(c.option('--features', 4096)), window = Number(c.option('--window', 10));
 const limit = Number(c.option('--limit', 0)), exportDir = c.option('--export'), loopRef = c.option('--loop-ref');
-const noLoops = c.flag('--no-loops');
+const noLoops = c.flag('--no-loops'), noLateLoops = c.flag('--no-late-loops');
 const [dir] = c.done(1);
 const seconds = (t) => `${((performance.now() - t) / 1000).toFixed(1)} s`;
 
@@ -36,7 +36,7 @@ console.log(`features: ${feats.length} frames, ${Math.round(feats.reduce((s, f) 
 
 const t1 = performance.now();
 const { mapper, model, stats, input, matched } = await reconstructFromFeatures(feats, size[0], size[1], matcher,
-  { window, loops: !noLoops, log: (s) => console.log(s) });
+  { window, loops: !noLoops, lateLoops: !noLateLoops, log: (s) => console.log(s) });
 console.log(`  (${formatTimings(stats.timings)}, ${seconds(t1)} after the features)`);
 if (loopRef) {
   const meta = JSON.parse(await Deno.readTextFile(`${loopRef}/dump.json`));

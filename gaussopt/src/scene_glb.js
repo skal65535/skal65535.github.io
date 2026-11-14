@@ -7,7 +7,10 @@
 //   the path         an animation of a camera node through the views in path order (0.5 s a view);
 //   the points       the SfM's sparse points, a point primitive (COLOR_0 linear; _SRGB: the colors as they were);
 //   the background   env.js's cube map as rgb bytes, a buffer view named in extras (n texels a face: ENV_N learned, more a
-//                    dome, src/dome.js; sky: the dome's share of the photos' pixels).
+//                    dome, src/dome.js; sky: the dome's share of the photos' pixels);
+//   the training     optional (a snapshot: training goes on from it, snapshot.js): the trainer's state as buffer views named
+//                    in extras.gaussopt.training (the splats as trained, raw, and the optimizer's), its counters and settings;
+//                    other viewers ignore it.
 // Everything under one root node whose matrix is the scene's leveling: the world's up (the cameras' up through the
 // Level transform, math.js upFromTransform) turned to glTF's +Y, so any viewer shows it upright; the data below it
 // stays in the scene's own frame (COLMAP's, as trained), read back as written. The rest is JSON in the root's
@@ -19,7 +22,7 @@ import { GlbWriter, addMesh, parseGlb, readAccessor, viewBytes, readMeshNode, ro
 import { SPLAT_FLOATS, assignLeafIds, sh0ToRgb01 } from './colmap.js';
 import { sigmoid, mat3ToQuat, upFromTransform, parseTransform, makeViewMatrix } from './math.js';
 
-export const SCENE_FORMAT = 'gaussopt-scene/1', PHOTOS_FORMAT = 'gaussopt-photos/1';
+export const SCENE_FORMAT = 'gaussopt-scene/1', PHOTOS_FORMAT = 'gaussopt-photos/1', TRAINING_FORMAT = 'gaussopt-training/1';
 const KHR = 'KHR_gaussian_splatting', PATH_STEP = 0.5;
 const srgbToLinear = (c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 
@@ -29,9 +32,10 @@ const srgbToLinear = (c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 
 //   points: { positions: Float32Array 3N, colors: Uint8Array 3N (sRGB) } | null,
 //   transform (16, row-major, the Level transform), upEstimate (the cameras' up),
 //   mesh: glb.js's mesh ({ positions, faces, colors?, uvs?, texture?, voxel? }) | null, env: { n, rgb: Uint8Array } | null,
-//   extras: more JSON for extras.gaussopt (settings, step, ...) }
+//   extras: more JSON for extras.gaussopt (settings, step, ...),
+//   training: { header (JSON), blobs: { name: Float32Array | Uint32Array } } | null: a snapshot's (snapshot.js) }
 export function writeSceneGlb({ count, params, octree = null, cameras = [], path = null, points = null, transform = null,
-                                upEstimate = [0, -1, 0], mesh = null, env = null, extras = {} }) {
+                                upEstimate = [0, -1, 0], mesh = null, env = null, extras = {}, training = null }) {
   const T = parseTransform(transform), up = upFromTransform(T, upEstimate);
   const w = new GlbWriter(), json = {
     asset: { version: '2.0', generator: 'Gauss-Opt scene_glb.js' },
@@ -119,6 +123,8 @@ export function writeSceneGlb({ count, params, octree = null, cameras = [], path
     ...(octree && { octree: { ...octree.toJSON(), leafIndices: undefined } }),
     ...(env && { env: { n: env.n, bufferView: w.view(env.rgb), ...(env.sky !== undefined && { sky: env.sky }) } }),
     ...extras,
+    ...(training && { training: { ...training.header, format: TRAINING_FORMAT, blobs: Object.fromEntries(Object.entries(training.blobs).filter(([, a]) => a)
+      .map(([name, a]) => [name, { bufferView: w.view(a), type: a instanceof Uint32Array ? 'u32' : 'f32' }])) } }),
   } };
   return w.finish(json);
 }
@@ -161,7 +167,19 @@ export function readSceneGlb(buffer) {
   });
   const env = info.env ? { n: info.env.n, rgb: viewBytes(g, info.env.bufferView).slice(), ...(info.env.sky !== undefined && { sky: info.env.sky }) } : null;
   return { count, params, octree: info.octree ?? null, cameras, path: info.path ?? null, points, mesh, env,
-           transform: parseTransform(info.transform), upEstimate: info.upEstimate, up: info.up, info };
+           transform: parseTransform(info.transform), upEstimate: info.upEstimate, up: info.up, info, training: readTraining(g, info.training) };
+}
+
+// A scene's training state: { header (its JSON, the blobs' table out), blobs: { name: a copy, Float32Array or Uint32Array } } | null
+function readTraining(g, t) {
+  if (!t) return null;
+  if (t.format !== TRAINING_FORMAT) throw new Error(`the scene's training state is ${t.format}, not ${TRAINING_FORMAT}`);
+  const { blobs: table = {}, ...header } = t, blobs = {};
+  for (const [name, { bufferView, type }] of Object.entries(table)) {
+    const bytes = viewBytes(g, bufferView).slice();
+    blobs[name] = type === 'u32' ? new Uint32Array(bytes.buffer) : new Float32Array(bytes.buffer);
+  }
+  return { header, blobs };
 }
 
 // The root node of a .glb's default scene (a scene's: extras.gaussopt holds its JSON) | undefined

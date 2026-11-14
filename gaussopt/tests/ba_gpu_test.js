@@ -1,10 +1,10 @@
 // ba_gpu_test.js — The GPU bundle adjustment (src/sfm/ba_gpu.js) against ba.js from the same start, and its conditioning.
 import { bundleAdjust, reprojectionErrors, linearizeObservation } from '../src/sfm/ba.js';
-import { GpuBundleAdjuster } from '../src/sfm/ba_gpu.js';
+import { GpuBundleAdjuster, pad16 } from '../src/sfm/ba_gpu.js';
 import { poseCenter } from '../src/sfm/camera.js';
 import { rotationAngle, choleskyFactor, invert3 } from '../src/sfm/linalg.js';
 import { makeSyntheticScene } from '../src/sfm/synth.js';
-import { assert, assertClose, rng, problemFrom, hasGPU } from './util.js';
+import { assert, assertClose, rng, problemFrom, hasGPU, fyOff } from './util.js';
 
 const SCENE = makeSyntheticScene({ numFrames: 15, numGround: 3000, numBoxes: 4, numFar: 300, maxFeatures: 1500 });
 const gpu = hasGPU ? await GpuBundleAdjuster.create() : null;
@@ -30,6 +30,37 @@ for (const [name, refine] of [['poses, points, f and k1', ['f', 'k1']], ['poses 
     assertClose(b.camera.params[0], a.camera.params[0], 0.01, 'focal');
   });
 }
+
+test('BA on the GPU, its reduced system by conjugate gradients (denseMax 0), lands where its dense Cholesky does', async () => {
+  const a = problemFrom(SCENE, rng(31)), b = problemFrom(SCENE, rng(31)), beats = [];
+  const oa = await gpu.bundleAdjust(a, { refine: ['f', 'k1'], maxIterations: 50 });
+  const ob = await gpu.bundleAdjust(b, { refine: ['f', 'k1'], maxIterations: 50, denseMax: 0, cgTol: 1e-8, alive: () => beats.push(1) });  // solved as exactly as the Cholesky
+  const [rot, cen] = apart(a, b);
+  assert(ob.profile.cg > 0 && !oa.profile.cg, `${ob.profile.cg} conjugate gradient iterations`);
+  assert(rot < 1e-4 && cen < 1e-4, `poses apart by ${rot} deg, ${cen} in centre`);
+  assertClose(ob.cost, oa.cost, 1e-5 * oa.cost, 'cost');
+  assertClose(b.camera.params[0], a.camera.params[0], 0.01, 'focal');
+  assert(ob.cond.minPivot === oa.cond.minPivot || Math.abs(ob.cond.minPivot - oa.cond.minPivot) < 1e-6, `min pivot ${ob.cond.minPivot} vs ${oa.cond.minPivot}`);
+  assert(beats.length >= 2 * ob.profile.solves, `${beats.length} heartbeats for ${ob.profile.solves} solves`);
+});
+
+// A solve on the CPU is followed by a heartbeat before anything is awaited (the next readback's comes later): a solve
+// long enough is not taken for a stalled GPU
+test('BA on the GPU: a heartbeat right after each solve of its reduced system', async () => {
+  const { ReducedSystem } = await import('../src/sfm/rcs.js');
+  const solve = ReducedSystem.prototype.solve;
+  let solves = 0, after = 0, pending = false;
+  ReducedSystem.prototype.solve = function (b) {
+    const x = solve.call(this, b);
+    solves++; pending = true;
+    queueMicrotask(() => { pending = false; });  // gone at the first await
+    return x;
+  };
+  try {
+    await gpu.bundleAdjust(problemFrom(SCENE, rng(31)), { refine: ['f'], maxIterations: 20, alive: () => { if (pending) after++; pending = false; } });
+  } finally { ReducedSystem.prototype.solve = solve; }
+  assert(solves > 0 && after === solves, `${solves} solves, ${after} with a heartbeat before the next await`);
+});
 
 // the problem with n lenses: pose k on lens k % n, each starting at the problem's camera
 function withLenses(prob, n) {
@@ -241,5 +272,102 @@ test('BA on the GPU: its conditioning as f64 gives it, near points and far point
     bundleAdjust(a, opts);
     const ref = f64Pivot(a), { cond } = await gpu.bundleAdjust(problemFrom(scene, rng(31), { pointNoise: 0 }), opts);
     assert(Math.abs(cond.minPivot / ref - 1) < 0.05, `${name}: pivot ${cond.minPivot}, f64 ${ref}`);
+  }
+});
+
+// the buffers kept from one solve to the next: a second solve (a smaller window, in the first one's larger buffers)
+// makes none and lands where a new solver does; a solve beside another makes its own, destroyed at its end
+test('BA on the GPU: the buffers kept between solves, the same solve in them', async () => {
+  const small = makeSyntheticScene({ numFrames: 8, numGround: 800, numBoxes: 2, numFar: 100, maxFeatures: 600 });
+  const { dev, made } = wrapped(gpu.device), solver = new GpuBundleAdjuster(dev, gpu.pipelines), opts = { refine: ['f', 'k1'], maxIterations: 5 };
+  await solver.bundleAdjust(problemFrom(SCENE, rng(31)), opts);
+  const first = made.length, a = problemFrom(small, rng(33)), b = problemFrom(small, rng(33));
+  const oa = await solver.bundleAdjust(a, opts), ob = await new GpuBundleAdjuster(gpu.device, gpu.pipelines).bundleAdjust(b, opts);
+  assert(made.length === first && first > 0, `${made.length - first} buffers made by the second solve (${first} by the first)`);
+  assert(made.every(x => !x.destroyed), 'a kept buffer destroyed');
+  assert(oa.cost === ob.cost && JSON.stringify(a.poses) === JSON.stringify(b.poses), `cost ${oa.cost} vs ${ob.cost}`);
+  const [c, d] = [problemFrom(small, rng(34)), problemFrom(small, rng(34))], [oc, od] = await Promise.all([solver.bundleAdjust(c, opts), solver.bundleAdjust(d, opts)]);
+  const own = made.slice(first);
+  assert(own.length > 0 && own.every(x => x.destroyed), `the solve beside: ${own.length} buffers, ${own.filter(x => !x.destroyed).length} left`);
+  assert(oc.cost === od.cost && JSON.stringify(c.poses) === JSON.stringify(d.poses), `side by side: cost ${oc.cost} vs ${od.cost}`);
+  solver.release();
+  assert(solver.pool.size === 0 && made.every(x => x.destroyed), 'released');
+});
+
+// the realm's solver's buffers dropped once it solves nothing (the worker after each action)
+test('BA on the GPU: releaseShared drops the shared solver\'s buffers', async () => {
+  const s = await GpuBundleAdjuster.shared();
+  await s.bundleAdjust(problemFrom(SCENE, rng(31)), { maxIterations: 2 });
+  assert(s.pool.size > 0, 'nothing kept');
+  await GpuBundleAdjuster.releaseShared();
+  assert(s.pool.size === 0, `${s.pool.size} kept`);
+  assert(Number.isFinite((await s.bundleAdjust(problemFrom(SCENE, rng(31)), { maxIterations: 2 })).cost), 'a solve after');
+});
+
+// a window of most frames fixed (the mapper's large ones: 3.7M of 4.15M observations by fixed frames): where f64 lands,
+// the pose and lens rows on the GPU for the free frames' observations only (under 200 bytes an observation made: 417 before, 4500 of the 22500 by free frames)
+test('BA on the GPU: most frames fixed, the same solve, the fixed frames\' observations without pose rows', async () => {
+  const fixedMost = (p) => { p.free = Uint8Array.from(p.poses, (_, k) => +(k >= p.poses.length - 3)); return p; };
+  const a = fixedMost(problemFrom(SCENE, rng(37))), b = fixedMost(problemFrom(SCENE, rng(37)));
+  const { dev, made } = wrapped(gpu.device), opts = { maxIterations: 50 };
+  const oa = bundleAdjust(a, opts), ob = await new GpuBundleAdjuster(dev, gpu.pipelines).bundleAdjust(b, opts);
+  const [rot, cen] = apart(a, b);  // 1.1e-4 deg apart in the J layout before as in this one: f32's, in this window
+  assert(rot < 3e-4 && cen < 1e-4, `poses apart by ${rot} deg, ${cen} in centre`);
+  assertClose(ob.cost, oa.cost, 1e-5 * oa.cost, 'cost');
+  const bytes = made.reduce((s, x) => s + x.size, 0), n = b.obsCam.length;
+  assert(ob.profile.freeObs < 0.3 * n && bytes < 200 * n, `${(bytes / n).toFixed(0)} bytes an observation, ${ob.profile.freeObs} of ${n} by free frames`);
+});
+
+// a solve its caller gave up (a read-back that never comes back) does not keep the buffers from the next solves once
+// the solver is idle: the next solve keeps its own, and lands where a new solver does
+test('BA on the GPU: after a stalled solve, idle gives the next solve the kept buffers', async () => {
+  let stall = true;
+  const { dev, made } = wrapped(gpu.device);
+  const stalling = new Proxy(dev, { get: (d, k) => k !== 'createBuffer' ? d[k] : (desc) => {
+    const b = d.createBuffer(desc);
+    if (stall && desc.usage & GPUBufferUsage.MAP_READ) b.mapAsync = () => new Promise(() => {});
+    return b;
+  } });
+  const solver = new GpuBundleAdjuster(stalling, gpu.pipelines);
+  solver.bundleAdjust(problemFrom(SCENE, rng(31)), { maxIterations: 2 }).catch(() => {});  // never ends
+  await new Promise(r => setTimeout(r, 200));
+  stall = false;
+  solver.idle();
+  const first = made.length, a = problemFrom(SCENE, rng(32)), b = problemFrom(SCENE, rng(32));
+  const oa = await solver.bundleAdjust(a, { maxIterations: 5 }), ob = await gpu.bundleAdjust(b, { maxIterations: 5 });
+  const own = made.slice(first);
+  assert(own.length > 0 && own.every(x => !x.destroyed) && solver.pool.size > 0 && solver.solving === null,
+         `the next solve: ${own.length} buffers, ${own.filter(x => x.destroyed).length} destroyed, ${solver.pool.size} kept`);
+  assert(oa.cost === ob.cost && JSON.stringify(a.poses) === JSON.stringify(b.poses), `cost ${oa.cost} vs ${ob.cost}`);
+});
+
+// sizes rounded by arithmetic: from 2^31 bytes on, & ~15 wrapped (a buffer of 16 bytes made for 1.75e9)
+test('BA on the GPU: pad16 past 2^31 bytes', () => {
+  assert(pad16(2 ** 31 + 1) === 2 ** 31 + 16 && pad16(1.25 * 1.4e9) === 1.75e9 && pad16(0) === 16 && pad16(17) === 32, 'pad16');
+});
+
+// every pose fixed, the lens refined: every observation with its lens half only
+test('BA on the GPU: every pose fixed, the lens refined, where f64 lands', async () => {
+  const a = problemFrom(SCENE, rng(38)), b = problemFrom(SCENE, rng(38)), opts = { refine: ['f', 'k1'], maxIterations: 50 };
+  a.free.fill(0); b.free.fill(0);
+  const oa = bundleAdjust(a, opts), ob = await gpu.bundleAdjust(b, opts);
+  assertClose(ob.cost, oa.cost, 1e-5 * oa.cost, 'cost');
+  assertClose(b.camera.params[0], a.camera.params[0], 0.01, 'focal');
+});
+
+// fy apart from fx (refine 'fy', the sixth intrinsic): where ba.js lands
+test('BA on the GPU lands where f64 does: fy apart from fx', async () => {
+  const refine = ['f', 'k1', 'k2', 'p1', 'p2', 'fy'], a = fyOff(rng(31)), b = fyOff(rng(31));
+  const oa = bundleAdjust(a, { refine, maxIterations: 50 }), ob = await gpu.bundleAdjust(b, { refine, maxIterations: 50 });
+  assertClose(ob.cost, oa.cost, 1e-5 * oa.cost, 'cost');
+  assert(Math.abs(b.camera.params[1] - a.camera.params[1]) < 0.05 && Math.abs(b.camera.params[1] / 1230 - 1) < 1e-3, `fy ${b.camera.params[1]}, f64 ${a.camera.params[1]}`);
+});
+
+// what the GPU solver does not have: refused, not solved otherwise
+test('BA on the GPU refuses fixedPoints and another loss than Huber', async () => {
+  for (const opts of [{ fixedPoints: new Uint8Array(1) }, { loss: 'softl1' }]) {
+    let threw = false;
+    try { await gpu.bundleAdjust(problemFrom(SCENE, rng(31)), opts); } catch { threw = true; }
+    assert(threw, JSON.stringify(Object.keys(opts)));
   }
 });

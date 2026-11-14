@@ -7,7 +7,7 @@
 import { dirname } from 'node:path';
 import { APP, PORT, changed, fail, galleryShown, pixels, run } from './harness.js';
 
-const SCENE = process.env.GALLERY_SCENE ?? 'canyon3-bg';
+const SCENE = process.env.GALLERY_SCENE ?? 'canyon3-max2-dome';
 const url = (q = '') => `http://localhost:${PORT}/gallery/index.html?scene=${SCENE}&mode=orbit${q}`;
 
 await run(async (page) => {

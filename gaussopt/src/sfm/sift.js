@@ -20,6 +20,20 @@ function gaussianWeights(sigma) {
   return { r, w: w.map(x => x / s) };
 }
 
+// RootSIFT (Arandjelovic & Zisserman 2012): each 128-byte descriptor divided by its sum and square-rooted, then scaled
+// to bytes as SIFT's (x 512, at most 255, as COLMAP's L1_ROOT): their dot product is then the Hellinger kernel of the
+// histograms, which the matcher's distances compare better than SIFT's Euclidean one. A new array
+export function rootSift(desc) {
+  const out = new Uint8Array(desc.length);
+  for (let o = 0; o < desc.length; o += 128) {
+    let s = 0;
+    for (let i = 0; i < 128; i++) s += desc[o + i];
+    if (!(s > 0)) continue;
+    for (let i = 0; i < 128; i++) out[o + i] = Math.min(255, Math.round(512 * Math.sqrt(desc[o + i] / s)));
+  }
+  return out;
+}
+
 export class GpuSift {
   static async create(device = null) {
     device ??= (await initGPU(null)).device;

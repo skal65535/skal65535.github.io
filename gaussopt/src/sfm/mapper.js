@@ -1,13 +1,14 @@
-// mapper.js — Sequential incremental mapping with window bundle adjustment (DESIGN-sfm §5.3, S2).
+// mapper.js — Sequential incremental mapping with local and global bundle adjustment (DESIGN-sfm §5.3, S2).
 // Input is the `input` shape of synth.js / dump.js: { camera, images: [{ name, keypoints }],
 // pairs: [{ i, j, type, matches }] } with images in time order; or { cameras: [camera], images:
 // [{ name, keypoints, camera (index) }] }, a camera model per lens and zoom (DESIGN-sfm §13 P8). Only pairs of `pairTypes` are
-// used ('seq' by default: loop pairs are S3's job). Steps:
+// used ('seq' by default; reconstruct.js maps with the loop pairs too, as COLMAP). Steps:
 //   1. focal self-calibration from fundamental matrices of sequential pairs (focal.js)
 //   2. initial pair with enough parallax that a homography does not explain
-//   3. repeatedly: register the frame with the most 2D-3D matches (P3P RANSAC + pose refinement),
-//      triangulate its new tracks, run a window BA (intrinsics free for the first frames),
-//      and drop observations that no longer reproject.
+//   3. repeatedly: register the frame whose 2D-3D matches cover the image best (nextImage; P3P RANSAC + pose
+//      refinement), triangulate its new tracks, run a local BA (localBA; intrinsics free for the first frames),
+//      complete and merge the tracks, and drop observations that no longer reproject (up to localRefinements times);
+//      a global BA each time the segment grows by globalBARatio.
 "use strict";
 
 import { makeRng, dist } from '../math.js';
@@ -21,18 +22,24 @@ import { mul3, mulVec3, rotationAngle } from './linalg.js';
 import { compose, inverse, apply, fromPose, toPose } from './sim3.js';
 import { WINDOW } from './defaults.js';
 
-// p, or STALLED thrown once ms have passed (the GPU's solves: one that never ends falls back as an error does)
-const STALLED = new Error('stalled');
-function watchdog(p, ms) {
-  let timer;
-  const stall = new Promise((_, reject) => { timer = setTimeout(() => reject(STALLED), ms); });
-  return Promise.race([p, stall]).finally(() => clearTimeout(timer));
+// run(beat)'s promise, or STALLED thrown once ms have passed since it began or last called beat() (the GPU's solves:
+// one that never ends falls back as an error does; one that goes on, its GPU answering, is not stalled however long:
+// autumn-garden's global BA of 677 frames passed 120 s in its Cholesky and turned the GPU off for every BA after it)
+export const STALLED = new Error('stalled');
+const TRACK_PARTS = 50;  // the retriangulation's parts (extendTracks)
+export function watchdog(run, ms) {
+  let timer, fail, over = false;
+  const stall = new Promise((_, reject) => { fail = reject; });
+  // beats after the race (a stalled solve that goes on) arm nothing
+  const beat = () => { if (over) return; clearTimeout(timer); timer = setTimeout(() => fail(STALLED), ms); };
+  beat();
+  return Promise.race([run(beat), stall]).finally(() => { over = true; clearTimeout(timer); });
 }
 
 const DEFAULTS = {
   seed: 1,
   pairTypes: ['seq'],
-  window: WINDOW,          // window BA: the last `window` registered frames around the new one are free
+  window: WINDOW,          // localBA 'window' and the sweeps: the `window` registered frames nearest the new one are free
   focal: 'auto',           // 'auto' | pixels | 'prior' (keep the input camera)
   hfovDeg: null,           // horizontal field of view instead of `focal` (DESIGN-sfm §5.3: hfov=)
   minFocalSharpness: 1.3,  // below: the focal is unobservable from F, use the fallback field of view
@@ -41,14 +48,14 @@ const DEFAULTS = {
   fallbackFocal: null,     // pixels, instead of fallbackHfovDeg (a photo set's EXIF focal); override both with hfovDeg / focal
   maxFocalGap: 8,          // focal calibration: widest frame gap tried per frame
   maxFocalPairs: 200,      // and number of frames sampled
-  // the intrinsics refined in each window BA while mapping (frames 6..refineIntrinsicsUntil registered, null: all), and
+  // the intrinsics refined in each local BA while mapping (frames 6..refineIntrinsicsUntil registered, null: all), and
   // their terms: on gare2 (COLMAP's matches) the lens fixed from its first 50 frames left the path 25% off COLMAP's at
   // the ends, f and k1 alone as far off, p1, p2 too without k2 6.5% at p90: all of them, in every window, 0.35% median,
   // 1.2% p90. refineUnobserved: those of them refined when F does not observe the focal (it is given, the fallback or the
   // prior): over flat ground seen from above, k2, p1, p2 moved it 3.65% off (mapper_test's nadir pass; 0.23% with f, k1)
   refineIntrinsicsUntil: null,
-  refine: ['f', 'k1', 'k2', 'p1', 'p2'],
-  refineUnobserved: ['f', 'k1'],
+  refine: ['f', 'k1', 'k2', 'p1', 'p2', 'fy'],  // fy apart from fx: COLMAP's OPENCV
+  refineUnobserved: ['f', 'k1', 'fy'],
   minCameraFrames: 5,      // several cameras: while mapping, one's intrinsics are refined once it has this many registered frames (P8.3)
   minCameraFramesSweeps: 2, // and in the final sweeps (refine()) from this many: a lens with a few photos is fitted to the
                             // whole map instead of keeping its EXIF ratio (DESIGN-sfm §13 P8)
@@ -59,26 +66,79 @@ const DEFAULTS = {
   relScaleTol: 0.1,        // relative, for that agreement
   relMaxTurnDeg: 10,       // and the most the pose refinement may turn the pair's rotation
   regrowSegments: false,   // after mapping: offer the frames of smaller segments to the largest (photo sets)
+  joinPieces: false,       // the segments loop.js cannot merge by their 3D points placed by joinpieces.js (photo sets)
   scanFocal: false,        // several cameras: those but camera 0 get their focal from their first frame to register (scanFocalOf: a video's zooms)
   scanMinCorr: 60,         // 2D-3D correspondences that frame needs
   mergeInliers: 0.97,      // a scanned camera joins a known one that its frame fits nearly as well (this fraction of the inliers)
   mergeMaxRatio: 1.1,      // at a focal this close
-  pnpThreshold: 4,         // px
+  pnpThreshold: 12,        // px (COLMAP's abs_pose_max_error)
   maxReproj: 4,            // px, triangulation and filtering
   minAngleDeg: 1.5,        // triangulation angle of new points
   initMinAngleDeg: 3,      // median triangulation angle of the initial pair
   initOrder: 'time',       // initial pair: 'time' (first frames first) | 'strongest' (most matches first)
   baIterations: 10,
-  // the window BAs (localBA): the GPU solver (ba_gpu.js) for a window worth it (gpuFriendly), ba.js otherwise, and ba.js
-  // from the start where the GPU solve fails (illReason, an error) or there is no WebGPU
+  // a global BA (every frame of the segment free, the intrinsics as the window's) each time the segment has grown by
+  // this ratio since the last one (COLMAP's ba_global_frames_ratio), from globalBAMinFrames frames on, then the
+  // segment retriangulated with the poses it fixed; null: none. Window BAs alone let the scale drift where little
+  // parallax holds it (gare2's pan at 34-38 s: the steps after it 1/11 of COLMAP's)
+  globalBARatio: 1.1,
+  globalBAMinFrames: 20,
+  globalBAIterations: 10,
+  // a match too narrow for its pair (minAngleDeg) triangulated from its track instead (triangulateTrack): while the
+  // camera turns, each pair of frames is too narrow for the near points, the track across the turn is not (gare2's
+  // pavement through the pan: without them, a step sideways taken for a turn, 30 deg off COLMAP 8 s later)
+  trackTriangulation: true,
+  // COLMAP's local BA after each registration ('covisible'): the new frame and its localBAImages - 1 most covisible frames
+  // (those localBAMinAngleDeg apart first, as FindLocalBundle), its points of tracks up to localBAMaxTrack and the points
+  // seen only by those frames free, the others held; localBAIterations, the loss localBALoss at localBALossScale px on the
+  // first pass, least squares on the repeats (on ba.js: the GPU solver has neither held points nor those losses).
+  // 'window': the window frames nearest in time, all their points free
+  localBA: 'covisible',
+  localBAImages: 6,
+  localBAMinAngleDeg: 6,
+  localBAMaxTrack: 15,
+  localBAIterations: 25,
+  localBALoss: 'softl1',
+  localBALossScale: 1,
+  triMaxReproj: null,      // px, creating and continuing a point; null: triMaxDeg at the focal, else maxReproj
+  triMaxDeg: 2,            // COLMAP's create/continue_max_angle_error (33 px at f 950)
+  completeMerge: true,     // COLMAP's CompleteAndMergeTracks after each local BA (the bundle's points) and global BA (all)
+  completeHops: 5,         // COLMAP's complete_max_transitivity
+  localRefinements: 2,     // COLMAP's ba_local_max_refinements: the local BA, completion, merge and filter again while they change >= 0.001 of the observations
+  globalRefinements: 5,    // COLMAP's ba_global_max_refinements, at 0.0005; > 1 also completes, merges and retriangulates (reMaxDeg) before the BA
+  reMaxDeg: 5,             // COLMAP's re_max_angle_error
+  // that retriangulation skips a frame pair whose matches are this much one point already (COLMAP's re_min_ratio, its 0.2);
+  // null: none skipped. Autumn-garden's first 450 keyframes: 396 -> 291 s, 1 segment as before (at 0.2: 2), its end's
+  // poses nearer COLMAP's (its 220-frame model: 1.43 -> 0.53% RMS)
+  reMinRatio: 0.05,
+  ignoreTwoView: true,     // COLMAP's ignore_two_view_tracks: no point made from a keypoint matched in one other frame only
+  nextImage: 'pyramid',    // 'pyramid': COLMAP's MIN_UNCERTAINTY (a 6-level visibility pyramid of the correspondences); 'count': the most
+  filterMinAngle: true,    // COLMAP's filter_min_tri_angle: a point whose widest pair of views is under minAngleDeg removed
+  maxTrack: 40,            // the frames of a track at most
+  // the BAs without held points (localBA): the GPU solver (ba_gpu.js) for one worth it (gpuFriendly), ba.js otherwise, and
+  // ba.js from the start where the GPU solve fails (illReason, an error) or there is no WebGPU
   baIllPivot: 1e-4,        // a pose pivot under it (the gauge fixed) fails the GPU solve
   baIllRmse: true,         // and so does its RMSE up
   baGpuMinObs: 2000,       // fewer observations to ba.js (gpuFriendly)
   baGpu: null,             // the GPU solver (a GpuBundleAdjuster or its promise; null: GpuBundleAdjuster.shared())
-  baGpuTimeoutMs: 120000,  // a GPU solve, or the solver's making, not done by then: stalled, the GPU off from there
+  baDenseMax: undefined,   // the most reduced-system unknowns solved by dense Cholesky (rcs.js DENSE_MAX), conjugate gradients past it
+  baCgTol: undefined,      // and their stop (rcs.js CG_TOL)
+  baGpuTimeoutMs: 120000,  // a GPU solve silent that long (no readback), or the solver's making not done by then: stalled, the GPU off from there
   log: () => {},
   progress: () => {},       // (stage, done, total): 'init' over the candidate pairs, 'register' while growing, 'refine' per window
+  // async (mapper) after a registration once checkpointMs have passed since the mapping began or the last one: the state
+  // saved (toState) for run({ resume }) to go on from (a long video maps for hours: a crash, a timeout, the machine
+  // asleep lose them); null: none
+  checkpoint: null,
+  checkpointMs: 15 * 60000,
 };
+
+// The keypoint of e.other matched to keypoint k of the edge's frame (n keypoints), -1: none. The edge's inverse
+// index is made on first use (an Int32Array of n: on gare2, 16 KB an edge)
+function matchOf(e, k, n) {
+  if (!e.inv) { e.inv = new Int32Array(n).fill(-1); for (let m = 0; m < e.a.length; m++) e.inv[e.a[m]] = e.b[m]; }
+  return e.inv[k];
+}
 
 // Copy of a mapper's mutable state, or of a snapshot of it (features and pair matches are shared,
 // never mutated)
@@ -123,6 +183,9 @@ export class SequentialMapper {
     // explains it (rotation only, a plane); initializeWith skips them (a pair added or reindexed is a new one)
     this.noInit = new WeakSet();
   }
+
+  // an event for the SfM theatre (trace.js; the `trace` option, none by default)
+  trace(kind, info = {}) { this.o.trace?.(this, kind, info); }
 
   // camera 0 (the only one, or the reference of several: the worker puts the largest group first)
   get camera() { return this.cameras[0]; }
@@ -242,6 +305,7 @@ export class SequentialMapper {
       let created = 0;
       for (const { m, X } of kept) created += this.addPoint(X, [[i, e.a[m]], [e.other, e.b[m]]]) >= 0;
       this.o.log(`segment ${seg}: init frames ${i}-${e.other}, ${rel.F.numInliers} F inliers, ${created} points, median angle ${med.toFixed(1)} deg`);
+      this.trace('init', { segment: seg, i, j: e.other, points: created, angleDeg: med });
       await this.localBA(e.other, { refineIntrinsics: false, iterations: 20 });
       return true;
     }
@@ -249,7 +313,7 @@ export class SequentialMapper {
   }
 
   addPoint(X, obs, checkReproj = false) {
-    if (checkReproj && obs.some(([img, kp]) => this.reprojErr(img, kp, X) > this.o.maxReproj)) return -1;
+    if (checkReproj && obs.some(([img, kp]) => this.reprojErr(img, kp, X) > this.triMax())) return -1;
     const id = this.points.length;
     this.points.push({ X, obs: new Map(obs) });
     for (const [img, kp] of obs) this.kpPoint[img][kp] = id;
@@ -270,6 +334,21 @@ export class SequentialMapper {
     return byKp;
   }
 
+  // COLMAP's VisibilityPyramid score: levels of 2x2 .. 64x64 cells over the image, each cell holding a correspondence adds its level's cell count
+  pyramidScore(img, corr) {
+    const { width, height } = this.camera, seen = new Set();
+    let score = 0;
+    for (const kp of corr.keys()) {
+      const [x, y] = this.pixel(img, kp);
+      let cx = Math.min(63, Math.max(0, Math.floor(64 * x / width))), cy = Math.min(63, Math.max(0, Math.floor(64 * y / height)));
+      for (let l = 5; l >= 0; l--, cx >>= 1, cy >>= 1) {
+        const key = (l << 12) | (cy << 6) | cx;
+        if (!seen.has(key)) { seen.add(key); score += 4 ** (l + 1); }
+      }
+    }
+    return score;
+  }
+
   // ── 3. registration ───────────────────────────────────────────────────────
   register(img, seg = this.nextSegmentId - 1) {
     const corr = [...this.correspondences(img, seg)];
@@ -285,7 +364,7 @@ export class SequentialMapper {
     this.segment[img] = seg;
     for (const [kp, pid] of inl) {
       const P = this.points[pid];
-      if (P && !P.obs.has(img) && this.reprojErr(img, kp, P.X) <= this.o.maxReproj) {
+      if (P && !P.obs.has(img) && this.reprojErr(img, kp, P.X) <= this.triMax()) {
         P.obs.set(img, kp);
         this.kpPoint[img][kp] = pid;
       }
@@ -438,14 +517,30 @@ export class SequentialMapper {
 
   reprojErr(img, kp, X) { return this.reprojWith(this.poses[img], img, kp, X); }
 
-  // New tracks of `img` with its registered neighbours, and extension of existing ones
-  triangulateNew(img) {
+  // New tracks of `img` with its registered neighbours, and extension of existing ones. seen (a Set, optional): the
+  // frame pairs done in a pass over many frames, each done once (from its first frame's side, not again from the other's:
+  // its matches are the same both ways). minRatio: a pair whose matches are that much one point already skipped (COLMAP's
+  // re_min_ratio)
+  triangulateNew(img, seen = null, minRatio = null) {
     const C = poseCenter(this.poses[img]);
     const minAngle = this.o.minAngleDeg * Math.PI / 180;
-    const nbrs = this.adj[img].filter(e => this.poses[e.other] && this.segment[e.other] === this.segment[img])
+    const pairKey = (e) => img < e.other ? img * this.n + e.other : e.other * this.n + img;
+    const done = (e) => {
+      let n = 0;
+      for (let m = 0; m < e.a.length; m++) { const p = this.kpPoint[img][e.a[m]]; if (p >= 0 && p === this.kpPoint[e.other][e.b[m]]) n++; }
+      return n >= minRatio * e.a.length;
+    };
+    const nbrs = this.adj[img].filter(e => this.poses[e.other] && this.segment[e.other] === this.segment[img] && !seen?.has(pairKey(e)) &&
+                                           !(minRatio != null && done(e)))
       .map(e => ({ e, base: dist(poseCenter(this.poses[e.other]), C) }))
       .sort((p, q) => q.base - p.base);
+    // img's keypoints whose track failed (triangulateTrack): walked once, not again from each narrow neighbour (on
+    // autumn-garden's first 450 keyframes, 19.0M of 24.5M walks, the mapping 430 -> 266 s). The track can change
+    // meanwhile (the keypoints the loop gives points to leave it), so a later walk could succeed where this skips it:
+    // there the same 449/450 registered, 1 segment
+    const failed = new Set();
     let created = 0;
+    for (const { e } of nbrs) seen?.add(pairKey(e));
     for (const { e } of nbrs) {
       const Co = poseCenter(this.poses[e.other]);
       for (let m = 0; m < e.a.length; m++) {
@@ -453,14 +548,21 @@ export class SequentialMapper {
         const pa = this.kpPoint[img][a], pb = this.kpPoint[e.other][b];
         if (pa >= 0 && pb < 0) {  // extend the track to the neighbour
           const P = this.points[pa];
-          if (!P.obs.has(e.other) && this.reprojErr(e.other, b, P.X) <= this.o.maxReproj) { P.obs.set(e.other, b); this.kpPoint[e.other][b] = pa; }
+          if (!P.obs.has(e.other) && this.reprojErr(e.other, b, P.X) <= this.triMax()) { P.obs.set(e.other, b); this.kpPoint[e.other][b] = pa; }
         } else if (pa < 0 && pb >= 0) {
           const P = this.points[pb];
-          if (!P.obs.has(img) && this.reprojErr(img, a, P.X) <= this.o.maxReproj) { P.obs.set(img, a); this.kpPoint[img][a] = pb; }
+          if (!P.obs.has(img) && this.reprojErr(img, a, P.X) <= this.triMax()) { P.obs.set(img, a); this.kpPoint[img][a] = pb; }
         } else if (pa < 0 && pb < 0) {
+          if (this.o.ignoreTwoView && this.matchCount(img)[a] === 1) continue;  // a two-view track
           const X = triangulate([this.poses[img], this.poses[e.other]], [this.ray(img, a), this.ray(e.other, b)]);
           if (!X || depthIn(this.poses[img], X) <= 0 || depthIn(this.poses[e.other], X) <= 0) continue;
-          if (triangulationAngle(C, Co, X) < minAngle) continue;
+          if (triangulationAngle(C, Co, X) < minAngle) {
+            if (this.o.trackTriangulation && !failed.has(a)) {
+              if (this.triangulateTrack(img, a, minAngle) >= 0) created++;
+              else failed.add(a);
+            }
+            continue;
+          }
           if (this.addPoint(X, [[img, a], [e.other, b]], true) >= 0) created++;
         }
       }
@@ -468,13 +570,133 @@ export class SequentialMapper {
     return created;
   }
 
-  // ── window BA ─────────────────────────────────────────────────────────────
-  // Free: the `window` registered frames nearest in time to `center`; fixed: other observers.
-  async localBA(center, { refineIntrinsics = false, iterations = this.o.baIterations, frames = null, minCameraFrames = this.o.minCameraFrames } = {}) {
+  // The track of keypoint `a` of `img`: its matches, theirs, and so on (breadth first, at most maxTrack), in registered
+  // frames of img's segment with no point yet. Triangulated from all of them; the views it reprojects in (maxReproj, in
+  // front) kept, at least 2 with their widest pair minAngle apart. A frame twice in it: ambiguous, none. Returns the
+  // point's id or -1.
+  triangulateTrack(img, a, minAngle) {
+    const seg = this.segment[img], frames = new Set([img]), track = [[img, a]];
+    for (let q = 0; q < track.length && track.length < this.o.maxTrack; q++) {
+      const [f, k] = track[q];
+      for (const e of this.adj[f]) {
+        if (!this.poses[e.other] || this.segment[e.other] !== seg) continue;
+        const b = matchOf(e, k, this.images[f].keypoints.length >> 1);
+        if (b < 0 || this.kpPoint[e.other][b] >= 0) continue;
+        if (frames.has(e.other)) {
+          if (!track.some(([g, c]) => g === e.other && c === b)) return -1;
+          continue;
+        }
+        frames.add(e.other); track.push([e.other, b]);
+        if (track.length >= this.o.maxTrack) break;
+      }
+    }
+    if (track.length < 3) return -1;
+    const X = triangulate(track.map(([f]) => this.poses[f]), track.map(([f, k]) => this.ray(f, k)));
+    if (!X) return -1;
+    const ok = track.filter(([f, k]) => depthIn(this.poses[f], X) > 0 && this.reprojErr(f, k, X) <= this.triMax());
+    const Cs = ok.map(([f]) => poseCenter(this.poses[f]));
+    let widest = 0;
+    for (let i = 0; i < Cs.length; i++) for (let j = i + 1; j < Cs.length; j++) widest = Math.max(widest, triangulationAngle(Cs[i], Cs[j], X));
+    return ok.length >= 2 && widest >= minAngle ? this.addPoint(X, ok) : -1;
+  }
+
+  // COLMAP's CompleteTracks then MergeTracks on points `pids` (maxReproj: its complete/merge_max_reproj_error 4 px).
+  // Complete: each point's observations followed through the matches (completeHops) to registered frames of its segment
+  // whose keypoint has no point, added where it reprojects; merge: a match between two points' keypoints, the two fused
+  // at their track-weighted mean when it reprojects in every view (and they share no frame). Returns [added, merged,
+  // the observations moved by the merges].
+  completeAndMerge(pids) {
+    let added = 0, merged = 0, mergedObs = 0;
+    const n = (f) => this.images[f].keypoints.length >> 1, list = [...new Set(pids)];
+    for (const pid of list) {
+      const P = this.points[pid];
+      if (!P) continue;
+      const seg = this.segment[P.obs.keys().next().value];
+      let front = [...P.obs];
+      for (let hop = 0; hop < this.o.completeHops && front.length; hop++) {
+        const next = [];
+        for (const [f, k] of front) for (const e of this.adj[f]) {
+          const b = matchOf(e, k, n(f));
+          if (b < 0 || P.obs.has(e.other) || !this.poses[e.other] || this.segment[e.other] !== seg || this.kpPoint[e.other][b] >= 0) continue;
+          if (depthIn(this.poses[e.other], P.X) > 0 && this.reprojErr(e.other, b, P.X) <= this.o.maxReproj) {
+            P.obs.set(e.other, b); this.kpPoint[e.other][b] = pid; added++; next.push([e.other, b]);
+          }
+        }
+        front = next;
+      }
+    }
+    const tried = new Set();
+    for (const pid0 of list) {
+      let pid = pid0;
+      for (let again = true; again;) {
+        again = false;
+        const P = this.points[pid];
+        if (!P) break;
+        for (const [f, k] of P.obs) {
+          for (const e of this.adj[f]) {
+            if (!this.poses[e.other]) continue;
+            const b = matchOf(e, k, n(f)), q = b >= 0 ? this.kpPoint[e.other][b] : -1;
+            if (q < 0 || q === pid || !this.points[q]) continue;
+            const key = pid < q ? `${pid},${q}` : `${q},${pid}`;
+            if (tried.has(key)) continue;
+            tried.add(key);
+            const Q = this.points[q];
+            if ([...P.obs.keys()].some(g => Q.obs.has(g))) continue;
+            const wp = P.obs.size, wq = Q.obs.size, X = P.X.map((x, i) => (wp * x + wq * Q.X[i]) / (wp + wq));
+            const fits = (R) => [...R.obs].every(([g, c]) => depthIn(this.poses[g], X) > 0 && this.reprojErr(g, c, X) <= this.o.maxReproj);
+            if (!fits(P) || !fits(Q)) continue;
+            Q.X = X;
+            const np = P.obs.size;
+            if (this.fuseTracks(pid, q)) { merged++; mergedObs += np; pid = q; again = true; break; }
+          }
+          if (again) break;
+        }
+      }
+    }
+    return [added, merged, mergedObs];
+  }
+
+  // A global BA of segment `seg` (globalBARatio), then its frames retriangulated and its points filtered
+  async globalBA(seg, center, refineIntrinsics) {
+    const frames = [...this.segment.keys()].filter(k => this.poses[k] && this.segment[k] === seg);
+    const t = performance.now();
+    let created = 0, r = null, its = 1;
+    if (this.o.globalRefinements > 1) {  // COLMAP's IterativeGlobalRefinement: complete, merge, retriangulate, then BA, complete, merge, filter while they change
+      const cm = () => { const [a, m, mo] = this.completeAndMerge(this.points.keys()); this.stats.cm = [(this.stats.cm?.[0] ?? 0) + a, (this.stats.cm?.[1] ?? 0) + m]; return a + mo; };
+      cm();
+      const tri = this.o.triMaxReproj;
+      this.o.triMaxReproj = this.o.reMaxDeg ? this.camera.params[0] * Math.tan(this.o.reMaxDeg * Math.PI / 180) : tri;
+      const seen = new Set();
+      for (const k of frames) created += this.triangulateNew(k, seen, this.o.reMinRatio);
+      this.o.triMaxReproj = tri;
+      for (let it = 0; it < this.o.globalRefinements; it++) {
+        its = it + 1;
+        let nObs = 0;
+        for (const P of this.points) if (P) nObs += P.obs.size;
+        r = await this.localBA(center, { frames, refineIntrinsics, iterations: this.o.globalBAIterations });
+        const changed = (cm() + this.filter(this.points.keys()) + (r?.filtered ?? 0)) / Math.max(1, nObs);
+        if (changed < 0.0005) break;
+      }
+    } else {
+      r = await this.localBA(center, { frames, refineIntrinsics, iterations: this.o.globalBAIterations });
+      const seen = new Set();
+      for (const k of frames) created += this.triangulateNew(k, seen);
+      if (this.o.completeMerge) { const [a, m] = this.completeAndMerge(this.points.keys()); this.stats.cm = [(this.stats.cm?.[0] ?? 0) + a, (this.stats.cm?.[1] ?? 0) + m]; }
+      this.filter(this.points.keys());
+    }
+    (this.stats.globalBAs ??= []).push({ segment: seg, frames: frames.length, rmse: r?.rmse ?? NaN, created, its });
+    this.o.log(`global BA of segment ${seg}, ${frames.length} frames: rmse ${r?.rmse?.toFixed(3)} px, f ${this.camera.params[0].toFixed(1)}, ` +
+               `${created} points retriangulated, ${((performance.now() - t) / 1e3).toFixed(1)} s`);
+  }
+
+  // ── local BA ──────────────────────────────────────────────────────────────
+  // Free: `frames`, else the local bundle of `center` (covisible), else the `window` registered frames nearest in time to
+  // it; fixed: the other observers.
+  async localBA(center, { refineIntrinsics = false, iterations = this.o.baIterations, frames = null, minCameraFrames = this.o.minCameraFrames, covisible = false, loss = null } = {}) {
     const t0 = performance.now();
     const reg = [];
     for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === this.segment[center]) reg.push(k);
-    const freeSet = new Set(frames ?? reg.sort((a, b) => Math.abs(a - center) - Math.abs(b - center)).slice(0, this.o.window));
+    const freeSet = new Set(covisible ? this.localBundle(center) : frames ?? reg.sort((a, b) => Math.abs(a - center) - Math.abs(b - center)).slice(0, this.o.window));
     const pids = new Set();
     for (const img of freeSet) for (const pid of this.kpPoint[img]) if (pid >= 0) pids.add(pid);
     const camIndex = new Map(), camList = [];
@@ -489,19 +711,27 @@ export class SequentialMapper {
     if (!camList.length) return null;
     // gauge: with no fixed observer (first window), the earliest free frame is held fixed
     const free = Uint8Array.from(camList, img => freeSet.has(img) ? 1 : 0);
+    // COLMAP's local BA: a point held unless it is the new frame's with a short track, or seen by the free frames only
+    const fixedPoints = covisible ? Uint8Array.from(ptList, pid => {
+      const obs = this.points[pid].obs;
+      if (obs.has(center) && obs.size <= this.o.localBAMaxTrack) return 0;
+      for (const img of obs.keys()) if (!freeSet.has(img)) return 1;
+      return 0;
+    }) : null;
     if (free.every(Boolean)) free[camList.indexOf(Math.min(...camList))] = 0;
     const prob = {
       cameras: this.cameras, poseCam: Int32Array.from(camList, img => this.camOf[img]), poses: camList.map(img => this.poses[img]), free,
       points: Float64Array.from(ptList.flatMap(pid => this.points[pid].X)),
       obsCam: Int32Array.from(obsCam), obsPoint: Int32Array.from(obsPoint), obsUV: Float64Array.from(obsUV),
     };
-    const opts = { refine: refineIntrinsics ? this.refineTerms() : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations };
-    const solver = this.gpuFriendly(prob) ? await this.gpuSolver() : null;
+    const opts = { refine: refineIntrinsics ? this.refineTerms() : [], refineCameras: this.refinable(minCameraFrames), maxIterations: iterations, fixedPoints,
+                   ...(this.o.baDenseMax !== undefined ? { denseMax: this.o.baDenseMax } : {}), ...(this.o.baCgTol !== undefined ? { cgTol: this.o.baCgTol } : {}), ...(covisible ? { loss: loss ?? this.o.localBALoss, lossScale: this.o.localBALossScale } : {}) };
+    const solver = !fixedPoints && this.gpuFriendly(prob) ? await this.gpuSolver() : null;
     this.time.route[solver ? 'gpu' : 'cpu']++;
     const t1 = performance.now();
     const start = solver && { cameras: prob.cameras, poses: prob.poses.slice(), points: prob.points.slice() };
     let error = '', stalled = false;
-    let out = solver ? await watchdog(solver.bundleAdjust(prob, opts), this.o.baGpuTimeoutMs).catch((e) => { error = e.message; stalled = e === STALLED; return null; })
+    let out = solver ? await watchdog((alive) => solver.bundleAdjust(prob, { ...opts, alive }), this.o.baGpuTimeoutMs).catch((e) => { error = e.message; stalled = e === STALLED; return null; })
                      : bundleAdjust(prob, opts);
     const reason = error ? 'GPU error' : solver ? this.illReason(out.cond) : '';
     if (reason) {  // solved again by ba.js, from the start (a stalled solve, should it end, writes to the arrays prob had)
@@ -518,10 +748,47 @@ export class SequentialMapper {
     this.cameras = prob.cameras;  // a camera for all its frames, whatever this window made of it
     camList.forEach((img, c) => { if (free[c]) this.poses[img] = prob.poses[c]; });
     ptList.forEach((pid, li) => { this.points[pid].X = Array.from(prob.points.subarray(3 * li, 3 * li + 3)); });
-    this.filter(ptList);
+    out.filtered = this.filter(ptList);
     this.time.baCalls++;
     this.time.ba += performance.now() - t0;
+    this.trace('ba', { center, free: camList.filter((_, c) => free[c]), observers: camList.length, points: ptList.length });
     return out;
+  }
+
+  // COLMAP's FindLocalBundle: img and the registered frames of its segment sharing the most of its points, those whose
+  // shared points' triangulation angle (75th percentile) reaches localBAMinAngleDeg / [1, 1.5, ... 6] with at least
+  // [0.6, ... 0.1] of its points shared first, then by count
+  localBundle(img) {
+    const shared = new Map(), mine = new Set();
+    for (const pid of this.kpPoint[img]) {
+      if (pid < 0 || !this.points[pid]) continue;
+      mine.add(pid);
+      for (const k of this.points[pid].obs.keys()) if (k !== img && this.poses[k] && this.segment[k] === this.segment[img]) shared.set(k, (shared.get(k) ?? 0) + 1);
+    }
+    const over = [...shared].sort((a, b) => b[1] - a[1]), want = Math.min(this.o.localBAImages - 1, over.length), out = [];
+    if (over.length > want) {
+      const C = poseCenter(this.poses[img]), angle = new Map();
+      const tri = (k) => {
+        if (!angle.has(k)) {
+          const Ck = poseCenter(this.poses[k]), a = [];
+          for (const pid of this.kpPoint[k]) if (pid >= 0 && mine.has(pid)) a.push(triangulationAngle(C, Ck, this.points[pid].X));
+          a.sort((x, y) => x - y);
+          angle.set(k, a.length ? a[Math.min(a.length - 1, Math.floor(0.75 * a.length))] : 0);
+        }
+        return angle.get(k);
+      };
+      const min = this.o.localBAMinAngleDeg * Math.PI / 180, used = new Set();
+      for (const [div, frac] of [[1, 0.6], [1.5, 0.6], [2, 0.5], [2.5, 0.4], [3, 0.3], [4, 0.2], [5, 0.1], [6, 0.1]]) {
+        for (const [k, c] of over) {
+          if (c < frac * mine.size) break;
+          if (used.has(k)) continue;
+          if (tri(k) >= min / div) { out.push(k); used.add(k); if (out.length >= want) break; }
+        }
+        if (out.length >= want) break;
+      }
+      for (const [k] of over) { if (out.length >= want) break; if (!used.has(k)) { out.push(k); used.add(k); } }
+    } else out.push(...over.map(([k]) => k));
+    return [img, ...out];
   }
 
   // ms: ba, the window BAs (localBA) in all, solve their bundleAdjust, baCalls their count; focal, init: calibrateFocal,
@@ -555,7 +822,7 @@ export class SequentialMapper {
   // The GPU solver (baGpu, or the realm's), made once; null where there is none (its windows then on ba.js, said once)
   async gpuSolver() {
     if (this._gpu === undefined) {
-      this._gpu = await watchdog(Promise.resolve(this.o.baGpu ?? GpuBundleAdjuster.shared()), this.o.baGpuTimeoutMs).catch((e) => {
+      this._gpu = await watchdog(() => Promise.resolve(this.o.baGpu ?? GpuBundleAdjuster.shared()), this.o.baGpuTimeoutMs).catch((e) => {
         this.o.log(`no GPU solver (${e?.message ?? e}): the window BAs on ba.js`);
         return null;
       });
@@ -574,20 +841,43 @@ export class SequentialMapper {
 
   // Drop observations that no longer reproject, and points left with < 2 observations
   filter(pids) {
+    let removed = 0;
     for (const pid of pids) {
       const P = this.points[pid];
       if (!P) continue;
       for (const [img, kp] of [...P.obs]) {
-        if (this.reprojErr(img, kp, P.X) > this.o.maxReproj) { P.obs.delete(img); this.kpPoint[img][kp] = -1; }
+        if (this.reprojErr(img, kp, P.X) > this.o.maxReproj) { P.obs.delete(img); this.kpPoint[img][kp] = -1; removed++; }
       }
-      if (P.obs.size < 2) {
+      if (P.obs.size < 2 || (this.o.filterMinAngle && !this.wideEnough(P))) {
         for (const [img, kp] of P.obs) this.kpPoint[img][kp] = -1;
+        removed += P.obs.size;
         this.points[pid] = null;
       }
     }
+    return removed;
   }
 
-  async run() {
+  // triangulateNew on the registered of `frames`, then their points filtered: triangulateNew creates and extends at
+  // triMax, wider than maxReproj, which only a BA's filter applies otherwise. Returns the points made
+  triangulateAndFilter(frames) {
+    let made = 0;
+    const pids = new Set();
+    for (const k of frames) if (this.poses[k]) made += this.triangulateNew(k);
+    for (const k of frames) if (this.poses[k]) for (const pid of this.kpPoint[k]) if (pid >= 0) pids.add(pid);
+    this.filter(pids);
+    return made;
+  }
+
+  // Whether some two of P's views are minAngleDeg apart (COLMAP's HasPoint3DSufficientTriangulationAngle)
+  wideEnough(P) {
+    const min = this.o.minAngleDeg * Math.PI / 180, C = [...P.obs.keys()].map(img => poseCenter(this.poses[img]));
+    for (let a = 0; a < C.length; a++) for (let b = a + 1; b < C.length; b++) if (triangulationAngle(C[a], C[b], P.X) >= min) return true;
+    return false;
+  }
+
+  // resume: go on from a checkpoint's state (setState): the focal as it was, the segment it was growing grown on, then
+  // the next ones
+  async run({ resume = false } = {}) {
     // key's time outside its window BAs, key + 'BA' within them
     const timed = async (key, fn) => {
       const t = performance.now(), ba = this.time.ba, r = await fn(), inBA = this.time.ba - ba;
@@ -595,15 +885,27 @@ export class SequentialMapper {
       this.time[`${key}BA`] += inBA;
       return r;
     };
-    await timed('focal', () => this.calibrateFocal());
+    this.lastCheckpoint = performance.now();
+    const ended = (seg) => {
+      let size = 0;
+      const frames = [];
+      for (let k = 0; k < this.n; k++) if (this.segment[k] === seg) { frames.push(k); if (this.poses[k]) size++; }
+      this.stats.segments.push({ id: seg, size, first: frames[0], last: frames.at(-1) });
+      this.o.log(`segment ${seg}: ${size} frames (${frames[0]}..${frames.at(-1)})`);
+      this.trace('segment', { segment: seg, size, first: frames[0], last: frames.at(-1) });
+    };
+    const growing = this.nextSegmentId - 1;
+    if (!resume) await timed('focal', () => this.calibrateFocal());
+    else if (growing >= 0 && !this.stats.segments.some(s => s.id === growing)) {
+      this.o.log(`mapping resumed: ${this.stats.registered}/${this.n} registered, segment ${growing} growing`);
+      await this.grow(growing);
+      ended(growing);
+    }
     while (await timed('init', () => this.initialize())) {
       const seg = this.nextSegmentId - 1;
       this.stats.registered += 2;
-      const size = 2 + await this.grow(seg);
-      const frames = [];
-      for (let k = 0; k < this.n; k++) if (this.segment[k] === seg) frames.push(k);
-      this.stats.segments.push({ id: seg, size, first: frames[0], last: frames.at(-1) });
-      this.o.log(`segment ${seg}: ${size} frames (${frames[0]}..${frames.at(-1)})`);
+      await this.grow(seg);
+      ended(seg);
     }
     if (this.o.regrowSegments) await this.regrowSegments();
     return this.model();
@@ -642,17 +944,20 @@ export class SequentialMapper {
     }
   }
 
-  // Register frames into segment `seg`, the one with the most 2D-3D matches first, each followed
-  // by triangulation and a window BA (intrinsics free while few frames are registered in all).
-  // candidates: Set of frame indices (default: every frame). Returns the number registered.
-  async grow(seg, candidates = null) {
+  // Register frames into segment `seg`, the next one chosen by nextImage, each followed by triangulation and the local
+  // refinement (intrinsics free while few frames are registered in all), then a global BA when the segment has grown.
+  // candidates: Set of frame indices (default: every frame). intrinsics false: the cameras held (a repair's grow: a
+  // window's BA would refit the camera every frame shares). Returns the number registered.
+  async grow(seg, candidates = null, { intrinsics = true } = {}) {
     const failed = new Map(), relFailed = new Map();  // per frame: PnP failures, registerRelative failures
     let added = 0;
     for (;;) {
       let best = -1, bestCount = 0;
       for (let k = 0; k < this.n; k++) {
         if (this.poses[k] || (failed.get(k) ?? 0) > 1 || (candidates && !candidates.has(k))) continue;
-        const c = this.correspondences(k, seg).size;  // a full rescan: cheap next to the BAs
+        const corr = this.correspondences(k, seg);  // a full rescan: cheap next to the BAs
+        if (corr.size < this.o.minInliers) continue;
+        const c = this.o.nextImage === 'pyramid' ? this.pyramidScore(k, corr) : corr.size;
         if (c > bestCount) { best = k; bestCount = c; }
       }
       if (best < 0 || bestCount < this.o.minInliers) {
@@ -663,17 +968,59 @@ export class SequentialMapper {
       } else if (!this.register(best, seg)) { failed.set(best, (failed.get(best) ?? 0) + 1); continue; }
       const registered = ++this.stats.registered;
       added++;
+      this.trace('register', { img: best, segment: seg });
       this.o.progress('register', registered, this.n);
       this.triangulateNew(best);
-      await this.localBA(best, { refineIntrinsics: registered >= 6 && registered <= (this.o.refineIntrinsicsUntil ?? Infinity) });
+      const refineIntrinsics = intrinsics && registered >= 6 && registered <= (this.o.refineIntrinsicsUntil ?? Infinity);
+      for (let it = 0; it < this.o.localRefinements; it++) {  // COLMAP's IterativeLocalRefinement: the robust loss on the first only
+        (this.stats.localIts ??= [0, 0])[it ? 1 : 0]++;  // the first passes, the repeats
+        const r = this.o.localBA === 'covisible' ? await this.localBA(best, { refineIntrinsics, covisible: true, iterations: this.o.localBAIterations, loss: it ? 'trivial' : null })
+                                                 : await this.localBA(best, { refineIntrinsics });
+        if (!this.o.completeMerge) break;
+        const pids = new Set();  // COLMAP's, on the points of the local bundle's frames, then those filtered
+        for (const k of this.localBundle(best)) for (const pid of this.kpPoint[k]) if (pid >= 0 && this.points[pid]) pids.add(pid);
+        let nObs = 0;
+        for (const pid of pids) nObs += this.points[pid].obs.size;
+        const [a, m, mo] = this.completeAndMerge(pids);
+        this.stats.cm = [(this.stats.cm?.[0] ?? 0) + a, (this.stats.cm?.[1] ?? 0) + m];
+        const changed = (a + mo + this.filter(pids) + (r?.filtered ?? 0)) / Math.max(1, nObs);
+        if (changed < 0.001) break;
+      }
+      if (this.o.globalBARatio) {
+        let size = 0;
+        for (let k = 0; k < this.n; k++) if (this.poses[k] && this.segment[k] === seg) size++;
+        const last = (this.stats.globalAt ??= {})[seg] ?? 0;  // the segment's size at its last global BA (a retry's grow goes on from it)
+        if (size >= this.o.globalBAMinFrames && size >= last * this.o.globalBARatio) { await this.globalBA(seg, best, refineIntrinsics); this.stats.globalAt[seg] = size; }
+      }
       if (registered % 50 === 0) this.o.log(`registered ${registered}/${this.n}, ${this.numPoints()} points, f ${this.camera.params[0].toFixed(1)}`);
+      // the mapping's grows only: a regrow's trial (candidates, regrowSegments) is undone from a snapshot a checkpoint
+      // does not hold
+      if (this.o.checkpoint && !candidates && performance.now() - (this.lastCheckpoint ?? 0) >= this.o.checkpointMs) {
+        await this.o.checkpoint(this);
+        this.lastCheckpoint = performance.now();
+      }
     }
     return added;
+  }
+
+  // px for creating and continuing a point (triMaxReproj, else triMaxDeg at the focal, else maxReproj)
+  triMax() {
+    return this.o.triMaxReproj ?? (this.o.triMaxDeg ? this.camera.params[0] * Math.tan(this.o.triMaxDeg * Math.PI / 180) : this.o.maxReproj);
+  }
+
+  // Per keypoint of img, the frames it is matched in (cached, reset by addPairs)
+  matchCount(img) {
+    const c = (this._matchCount ??= [])[img];
+    if (c) return c;
+    const n = new Uint16Array(this.images[img].keypoints.length >> 1);
+    for (const e of this.adj[img]) for (const a of e.a) n[a]++;
+    return (this._matchCount[img] = n);
   }
 
   // Pairs usable for registration, track extension and triangulation (the constructor's, then
   // e.g. loop pairs once segments are merged); a pair already known is skipped
   addPairs(pairs) {
+    this._matchCount = null;
     const have = new Set(this.adj.flatMap((list, i) => list.map(e => `${i},${e.other}`)));
     for (const { i, j, matches } of pairs) {
       if (have.has(`${i},${j}`)) continue;
@@ -745,9 +1092,19 @@ export class SequentialMapper {
   // End of S4 (DESIGN-sfm §5.5, final retriangulation, mapping side): with the final poses, extend
   // tracks and triangulate new ones over all usable pairs, then drop observations that no longer
   // reproject. Existing points keep their BA positions; the trainer's stricter point filter is
-  // export.js datasetFromMapper's.
-  extendTracks() {
-    for (let k = 0; k < this.n; k++) if (this.poses[k]) this.triangulateNew(k);
+  // export.js datasetFromMapper's. In TRACK_PARTS parts of the keyframes (minutes on a long video): each says how far
+  // it is (progress), records its new points for the theatre (a 'tracks' event) and lets the worker post them
+  async extendTracks() {
+    const step = Math.max(1, Math.ceil(this.n / TRACK_PARTS)), seen = new Set();
+    for (let first = 0; first < this.n; first += step) {
+      const last = Math.min(this.n, first + step) - 1;
+      let created = 0;
+      for (let k = first; k <= last; k++) if (this.poses[k]) created += this.triangulateNew(k, seen);
+      this.o.progress('retriangulate', last + 1, this.n);
+      this.trace('tracks', { first, last, created });
+      await new Promise(r => setTimeout(r, 0));
+    }
+    this.o.progress('filterPoints', 0, 0);
     this.filter(this.points.keys());
   }
 
@@ -781,6 +1138,7 @@ export class SequentialMapper {
       this.byFlow[k] = 0;
       this.segment[k] = -1;
     }
+    this.trace('unregister', { frames: [...frames] });
   }
 
   // New frame list: oldIndex[k] = the previous index of new frame k, or -1 for an inserted frame
@@ -819,6 +1177,13 @@ export class SequentialMapper {
     }
   }
 
+  // An unregistered frame placed at `pose` in segment `seg`, without points
+  place(k, pose, seg) {
+    this.poses[k] = pose;
+    this.segment[k] = seg;
+    this.stats.registered++;
+  }
+
   // Frames of segment `from` into segment `to`
   relabelSegment(from, to) {
     for (let k = 0; k < this.n; k++) if (this.segment[k] === from) this.segment[k] = to;
@@ -846,7 +1211,7 @@ export class SequentialMapper {
     const live = this.points.filter(Boolean);
     const obs = live.flatMap(P => [...P.obs].flat());
     return {
-      json: { camera: this.camera, cameras: this.cameras, nextSegmentId: this.nextSegmentId, stats: this.stats, o: { ...this.o, log: undefined, progress: undefined },
+      json: { camera: this.camera, cameras: this.cameras, nextSegmentId: this.nextSegmentId, stats: this.stats, o: { ...this.o, log: undefined, progress: undefined, trace: undefined, checkpoint: undefined },
               merged: Array.from(this.merged), focalKnown: Array.from(this.focalKnown), byFlow: [...this.byFlow.keys()].filter(k => this.byFlow[k]) },
       poses: Float64Array.from(this.poses.flatMap(p => p ? [...p.R, ...p.t] : new Array(12).fill(NaN))),
       segment: this.segment.slice(),
@@ -858,7 +1223,7 @@ export class SequentialMapper {
 
   // Inverse of toState(), on a mapper built from the same keyframes and pairs (all of them)
   setState({ json, poses, segment, pointX, pointObsCount, pointObs }) {
-    Object.assign(this, { cameras: json.cameras ?? [json.camera], nextSegmentId: json.nextSegmentId ?? json.numSegments, stats: json.stats, o: { ...this.o, ...json.o, log: this.o.log, progress: this.o.progress } });
+    Object.assign(this, { cameras: json.cameras ?? [json.camera], nextSegmentId: json.nextSegmentId ?? json.numSegments, stats: json.stats, o: { ...this.o, ...json.o, log: this.o.log, progress: this.o.progress, trace: this.o.trace } });
     if (json.merged) {  // absent when saved before scanFocal: every camera its own, every focal known
       this.merged = Int32Array.from(json.merged);
       this.focalKnown = Uint8Array.from(json.focalKnown);

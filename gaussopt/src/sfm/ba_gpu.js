@@ -6,15 +6,18 @@
 // (normalizeFrame). The points and the GPU's sums are f32, the poses, intrinsics and the reduced system f64.
 "use strict";
 
-import { expSO3, mul3, mulVec3, choleskySolve, choleskyFactor } from './linalg.js';
+import { expSO3, mul3, mulVec3, choleskyFactor } from './linalg.js';
+import { ReducedSystem, DENSE_MAX, CG_TOL } from './rcs.js';
 import { intrinsics, distortionParams, paramIndex, withFocal } from './camera.js';
 import { INTRINSICS, normalizeFrame } from './ba.js';
 import { computePipelines } from '../gpu.js';
-import { initGPU } from '../../../common/webgpu.js';
+import { initGPU, writeInPieces } from '../../../common/webgpu.js';
 
 const ENTRIES = ['linearize', 'points', 'pointPred', 'system', 'gradient', 'back', 'cost'];
 const CHUNK = 2048;  // terms per workgroup
 const U = globalThis.GPUBufferUsage;
+// bytes rounded up to 16, at least 16 (arithmetic: & ~15 wraps from 2^31 bytes on)
+export const pad16 = (n) => Math.max(16, Math.ceil(n / 16) * 16);
 let shared = null;
 
 export class GpuBundleAdjuster {
@@ -29,6 +32,12 @@ export class GpuBundleAdjuster {
     return shared;
   }
 
+  // The realm's solver idle (idle), once it is made: a worker between its actions
+  static async releaseShared() {
+    const g = await shared?.catch(() => null);
+    g?.idle();
+  }
+
   static async create(device = null) {
     device ??= (await initGPU(null)).device;
     return new GpuBundleAdjuster(device, await computePipelines(device, new URL('./ba_gpu.wgsl', import.meta.url), ENTRIES));
@@ -38,6 +47,24 @@ export class GpuBundleAdjuster {
     this.device = device; this.pipelines = pipelines;
     this.lost = false;  // the device lost: every solve fails from then on
     device.lost?.then(() => { this.lost = true; });
+    // the buffers kept from one solve to the next, by role, grown when a window needs more (they were 26 made and
+    // destroyed a solve, hundreds of solves a mapping); solving: the solve that has them (its token; another one at the
+    // same time, a stalled one's successor, makes its own)
+    this.pool = new Map();
+    this.solving = null;
+  }
+
+  // The kept buffers destroyed (the next solve makes them again)
+  release() {
+    for (const b of this.pool.values()) b.destroy();
+    this.pool.clear();
+  }
+
+  // Between its caller's actions: the kept buffers destroyed, the next solve's kept again (a solve on now is one its
+  // caller's watchdog gave up: it fails on its destroyed buffers)
+  idle() {
+    this.release();
+    this.solving = null;
   }
 
   // problem, opts: ba.js bundleAdjust's. Returns { initialCost, cost, iterations, rmse,
@@ -45,10 +72,13 @@ export class GpuBundleAdjuster {
   // reduced system read back), cholesky (its assembly and solve), eval (the step's back-substitution and cost read back),
   // in ms, and the counts (solves, evals, terms, chunks)
   async bundleAdjust(problem, opts = {}) {
-    const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false } = opts;
+    const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false, fixedPoints = null, loss = 'huber',
+            denseMax = DENSE_MAX, cgTol = CG_TOL, alive = null } = opts;
+    if (fixedPoints || loss !== 'huber') throw new Error('the GPU solver has the Huber loss only and no fixedPoints: ba.js has them');
     const { device, pipelines } = this, now = () => performance.now();
     let t = now();
-    const { poses, free, points, obsCam, obsPoint, obsUV } = problem;
+    const { poses, free, points } = problem;
+    let { obsCam, obsPoint, obsUV } = problem;
     const single = !problem.cameras, numPoses = poses.length, poseCam = problem.poseCam ?? new Int32Array(numPoses);
     let cams = single ? [problem.camera] : [...problem.cameras];
     const model = cams[0].model;
@@ -71,6 +101,18 @@ export class GpuBundleAdjuster {
     if (ni) cams.forEach((_, k) => { if (used.has(k) && (!refineCameras || refineCameras[k])) intrOf[k] = nm++; });
     const nB = nb + nm, iOff = 6 * nb, m = iOff + ni * nm;
     const size = (k) => (k < nb ? 6 : ni), offset = (k) => (k < nb ? 6 * k : iOff + ni * (k - nb));
+    // the observations of a free pose or a refined lens first, nA of them: theirs alone have pose and lens rows on the
+    // GPU (JH, Y), the others their residual and point rows (JP) only (a large window's most: 3.7M of 4.15M)
+    const active = (o) => blockOf[obsCam[o]] >= 0 || intrOf[poseCam[obsCam[o]]] >= 0;
+    let nA = 0;
+    for (let o = 0; o < numObs; o++) if (active(o)) nA++;
+    if (nA < numObs) {
+      const order = new Uint32Array(numObs);
+      for (let o = 0, a = 0, f = nA; o < numObs; o++) order[active(o) ? a++ : f++] = o;
+      const cam = new Int32Array(numObs), pt = new Int32Array(numObs), uv = new Float64Array(2 * numObs);
+      order.forEach((o, k) => { cam[k] = obsCam[o]; pt[k] = obsPoint[o]; uv[2 * k] = obsUV[2 * o]; uv[2 * k + 1] = obsUV[2 * o + 1]; });
+      obsCam = cam; obsPoint = pt; obsUV = uv;
+    }
     const halfBlock = new Int32Array(2 * numObs);
     for (let o = 0; o < numObs; o++) {
       const k = obsCam[o], io = intrOf[poseCam[k]];
@@ -115,8 +157,8 @@ export class GpuBundleAdjuster {
       return { ranges: Uint32Array.from(ranges.length ? ranges : [0, 0]), owner, n: owner.length };
     };
     const sys = chunked(pairCount, nPair);
-    const pairBlocks = [];  // pair -> [a, b]
-    for (let a = 0; a < nB; a++) for (let b = 0; b <= a; b++) pairBlocks[pairOf(a, b)] = [a, b];
+    const blocksOf = (q) => { let a = Math.floor((Math.sqrt(8 * q + 1) - 1) / 2); if (pairOf(a + 1, 0) <= q) a++; else if (pairOf(a, 0) > q) a--; return [a, q - pairOf(a, 0)]; };
+    const sizes = Array.from({ length: nB }, (_, k) => size(k));
     // per block, its halves (the gradient's terms)
     const gStart = new Uint32Array(nB + 1);
     for (let h = 0; h < 2 * numObs; h++) if (halfBlock[h] >= 0) gStart[halfBlock[h] + 1]++;
@@ -129,6 +171,8 @@ export class GpuBundleAdjuster {
     // a pass of n workgroups dispatched as x by y, x at most maxComputeWorkgroupsPerDimension (a window of 4.5M observations
     // has 101k chunks), y too
     const maxGroups = device.limits.maxComputeWorkgroupsPerDimension;
+    // a kept buffer's growth: within a binding's limit (none given: a test's limits)
+    const maxPooled = Math.floor((device.limits.maxStorageBufferBindingSize ?? Infinity) / 16) * 16;
     if (Math.max(Math.ceil(numObs / 64), sys.n, grad.n) > maxGroups * maxGroups)
       throw new Error(`GpuBundleAdjuster: ${numObs} observations, ${sys.n} chunks: over ${maxGroups}^2 workgroups a pass`);
 
@@ -136,15 +180,23 @@ export class GpuBundleAdjuster {
     // destroyed and the error scope popped whatever happens)
     device.pushErrorScope('validation');
     let scoped = true;
-    const buffers = [];
+    const token = {}, pooled = !this.solving, buffers = [];
+    let failed = false;
+    if (pooled) this.solving = token;
     try {
-      const buf = (bytes, usage = U.STORAGE) => {
-        const b = device.createBuffer({ size: Math.max(16, (bytes + 15) & ~15), usage: usage | U.COPY_DST | U.COPY_SRC });
-        buffers.push(b);
+      // the role's kept buffer when it is large enough, else one a quarter larger than asked (fewer regrowths as the
+      // windows grow); a solve beside another: its own, destroyed at its end
+      const make = (name, bytes, usage) => {
+        const size = pad16(bytes), kept = pooled ? this.pool.get(name) : null;
+        if (kept && kept.size >= size && kept.usage === usage) return kept;
+        kept?.destroy();
+        const b = device.createBuffer({ size: pooled ? Math.max(size, Math.min(pad16(1.25 * size), maxPooled)) : size, usage });
+        if (pooled) this.pool.set(name, b); else buffers.push(b);
         return b;
       };
-      const upload = (data, usage) => { const b = buf(data.byteLength, usage); if (data.byteLength) device.queue.writeBuffer(b, 0, data); return b; };
-      const staging = (bytes) => { const b = device.createBuffer({ size: Math.max(16, (bytes + 15) & ~15), usage: U.MAP_READ | U.COPY_DST }); buffers.push(b); return b; };
+      const buf = (name, bytes, usage = U.STORAGE) => make(name, bytes, usage | U.COPY_DST | U.COPY_SRC);
+      const upload = (name, data, usage) => { const b = buf(name, data.byteLength, usage); writeInPieces(device.queue, b, 0, data); return b; };
+      const staging = (name, bytes) => make(name, bytes, U.MAP_READ | U.COPY_DST);
       const poseData = (Ps) => {
         const a = new Float32Array(16 * numPoses), bits = new Uint32Array(a.buffer);
         Ps.forEach(({ R, t: tt }, k) => {
@@ -161,26 +213,28 @@ export class GpuBundleAdjuster {
         obsData[4 * o] = obsCam[o]; obsData[4 * o + 1] = obsPoint[o]; uvBits[4 * o + 2] = obsUV[2 * o]; uvBits[4 * o + 3] = obsUV[2 * o + 1];
       }
       const params = new ArrayBuffer(64), pf = new Float32Array(params), pu = new Uint32Array(params);
-      pf[0] = lossScale; pu[2] = numObs; pu[3] = numPoints; pu[4] = ni; pu[5] = fixPoints ? 1 : 0; pu[6] = sys.n; pu[7] = grad.n;
-      kIdx.forEach((k, j) => { pu[8 + j] = k; });
+      pf[0] = lossScale; pu[2] = numObs; pu[3] = numPoints; pu[4] = ni; pu[5] = fixPoints ? 1 : 0; pu[6] = sys.n; pu[7] = grad.n; pu[13] = nA;
+      kIdx.forEach((k, j) => { pu[j < 5 ? 8 + j : 14] = k; });  // k, k4, then k5
       const costBytes = 16 * Math.ceil(numObs / 256), ppN = Math.ceil(numPoints / 256);
       const pose0 = poseData(P), lens0 = lensData(cams);
       const B = {
-        params: upload(params, U.UNIFORM), lens: upload(lens0), poses: upload(pose0), pts: upload(X), obs: upload(obsData),
-        J: buf(144 * numObs), Y: buf(144 * numObs), ptStart: upload(ptStart), ptObs: upload(ptObs), halfBlock: upload(halfBlock),
-        Vi: buf(64 * numPoints), chunks: upload(sys.ranges), terms: upload(terms), S: buf(168 * sys.n),
-        gChunks: upload(grad.ranges), gTerms: upload(gTerms), G: buf(24 * grad.n), dX: buf(24 * nB),
-        ptsCand: upload(X), posesCand: upload(pose0), lensCand: upload(lens0), C: buf(costBytes), PP: buf(4 * ppN),
+        params: upload('params', params, U.UNIFORM), lens: upload('lens', lens0), poses: upload('poses', pose0), pts: upload('pts', X),
+        obs: upload('obs', obsData), JP: buf('JP', 36 * numObs), JH: buf('JH', 96 * nA), Y: buf('Y', 144 * nA),
+        ptStart: upload('ptStart', ptStart), ptObs: upload('ptObs', ptObs), halfBlock: upload('halfBlock', halfBlock.subarray(0, 2 * nA)),
+        Vi: buf('Vi', 64 * numPoints),
+        chunks: upload('chunks', sys.ranges), terms: upload('terms', terms), S: buf('S', 168 * sys.n), gChunks: upload('gChunks', grad.ranges),
+        gTerms: upload('gTerms', gTerms), G: buf('G', 24 * grad.n), dX: buf('dX', 24 * nB), ptsCand: upload('ptsCand', X),
+        posesCand: upload('posesCand', pose0), lensCand: upload('lensCand', lens0), C: buf('C', costBytes), PP: buf('PP', 4 * ppN),
       };
-      const sysBytes = 168 * sys.n + 24 * grad.n + 4 * ppN, sysRead = staging(sysBytes), costRead = staging(costBytes);
+      const sysBytes = 168 * sys.n + 24 * grad.n + 4 * ppN, sysRead = staging('sysRead', sysBytes), costRead = staging('costRead', costBytes);
       const group = (name, list) => device.createBindGroup({ layout: pipelines[name].getBindGroupLayout(0),
         entries: list.map(([binding, b]) => ({ binding, resource: { buffer: B[b] } })) });
       const groups = {
-        linearize: group('linearize', [[0, 'params'], [1, 'lens'], [2, 'poses'], [3, 'pts'], [4, 'obs'], [5, 'J']]),
-        points: group('points', [[0, 'params'], [5, 'J'], [6, 'Y'], [7, 'ptStart'], [8, 'ptObs'], [9, 'halfBlock'], [10, 'Vi']]),
+        linearize: group('linearize', [[0, 'params'], [1, 'lens'], [2, 'poses'], [3, 'pts'], [4, 'obs'], [5, 'JP'], [23, 'JH']]),
+        points: group('points', [[0, 'params'], [5, 'JP'], [6, 'Y'], [7, 'ptStart'], [8, 'ptObs'], [9, 'halfBlock'], [10, 'Vi'], [23, 'JH']]),
         pointPred: group('pointPred', [[0, 'params'], [10, 'Vi'], [22, 'PP']]),
-        system: group('system', [[0, 'params'], [5, 'J'], [6, 'Y'], [11, 'chunks'], [12, 'terms'], [13, 'S']]),
-        gradient: group('gradient', [[0, 'params'], [4, 'obs'], [5, 'J'], [6, 'Y'], [10, 'Vi'], [14, 'gChunks'], [15, 'gTerms'], [16, 'G']]),
+        system: group('system', [[0, 'params'], [5, 'JP'], [6, 'Y'], [11, 'chunks'], [12, 'terms'], [13, 'S'], [23, 'JH']]),
+        gradient: group('gradient', [[0, 'params'], [4, 'obs'], [5, 'JP'], [6, 'Y'], [10, 'Vi'], [14, 'gChunks'], [15, 'gTerms'], [16, 'G'], [23, 'JH']]),
         back: group('back', [[0, 'params'], [3, 'pts'], [6, 'Y'], [7, 'ptStart'], [8, 'ptObs'], [9, 'halfBlock'], [10, 'Vi'], [17, 'dX'], [18, 'ptsCand']]),
         cost: group('cost', [[0, 'params'], [4, 'obs'], [18, 'ptsCand'], [19, 'posesCand'], [20, 'lensCand'], [21, 'C']]),
       };
@@ -193,8 +247,9 @@ export class GpuBundleAdjuster {
         p.end();
       };
       const read = async (dst, bytes) => {
-        await dst.mapAsync(GPUMapMode.READ, 0, (bytes + 15) & ~15);
-        const out = new Float32Array(dst.getMappedRange(0, (bytes + 15) & ~15).slice(0, bytes));
+        await dst.mapAsync(GPUMapMode.READ, 0, pad16(bytes));
+        alive?.();  // the GPU answered (the caller's watchdog: a long solve is not a stalled one)
+        const out = new Float32Array(dst.getMappedRange(0, pad16(bytes)).slice(0, bytes));
         dst.unmap();
         return out;
       };
@@ -226,11 +281,11 @@ export class GpuBundleAdjuster {
         enc.copyBufferToBuffer(B.PP, 0, sysRead, 168 * sys.n + 24 * grad.n, 4 * ppN);
         device.queue.submit([enc.finish()]);
         const raw = await read(sysRead, sysBytes);
-        const S = new Float64Array(m * m), g = new Float64Array(m), ud = new Float64Array(m);
+        const S = new ReducedSystem(sizes, { denseMax, tol: cgTol }), g = new Float64Array(m), ud = new Float64Array(m);
         sys.owner.forEach((q, c) => {
-          const [a, b] = pairBlocks[q], oa = offset(a), ob = offset(b), na = size(a), nbw = size(b);
+          const [a, b] = blocksOf(q), oa = offset(a), na = size(a), nbw = size(b), [A, base, stride] = S.at(a, b);
           for (let i = 0; i < na; i++) {
-            for (let j = 0, nj = a === b ? i + 1 : nbw; j < nj; j++) S[(oa + i) * m + ob + j] += raw[42 * c + 6 * i + j];
+            for (let j = 0, nj = a === b ? i + 1 : nbw; j < nj; j++) A[base + i * stride + j] += raw[42 * c + 6 * i + j];
             if (a === b) ud[oa + i] += raw[42 * c + 36 + i];
           }
         });
@@ -239,7 +294,7 @@ export class GpuBundleAdjuster {
         let pp = 0;
         for (let k = 0; k < ppN; k++) pp += raw[g0 + 6 * grad.n + k];
         // an f32 overflow (a NaN, an infinity) thrown: it would fail every Cholesky, the solve then taking no step, unseen
-        if (!Number.isFinite(S.reduce((a, x) => a + x, 0) + g.reduce((a, x) => a + x, 0) + pp)) throw new Error('GpuBundleAdjuster: the reduced system is not finite');
+        if (!Number.isFinite(S.sum() + g.reduce((a, x) => a + x, 0) + pp)) throw new Error('GpuBundleAdjuster: the reduced system is not finite');
         return { S, g, ud, pp };
       };
 
@@ -261,9 +316,11 @@ export class GpuBundleAdjuster {
           profile.build += now() - t; t = now();
           profile.solves++;
           const D = Float64Array.from(ud, x => lambda * Math.max(x, 1e-6));
-          for (let i = 0; i < m; i++) S[i * m + i] += D[i];
-          const dx = m ? choleskySolve(S, g.map(x => -x), m) : new Float64Array(0);
+          S.addDiagonal(D);
+          const dx = S.solve(g.map(x => -x));
+          alive?.();  // a long solve on the CPU is no stall either
           profile.cholesky += now() - t;
+          if (!S.dense) { profile.cg = (profile.cg ?? 0) + S.iterations; if (!S.converged) profile.cgCut = (profile.cgCut ?? 0) + 1; }
           if (!dx) { lambda *= 10; continue; }
           // the decrease the model predicts, the points' alone and the reduced system's -g^T dx + dx^T D dx (f64; the points'
           // damping left out): under ba.js's 1e-7 of the cost, converged (the f32 cost itself resolves about 1e-6: its sums,
@@ -319,10 +376,10 @@ export class GpuBundleAdjuster {
       let minPivot = gaugeFree ? null : 1;
       const Ms = new Float64Array(36), Ls = new Float64Array(36);
       for (let b = 0; S && b < nb; b++) {
-        const d = Array.from({ length: 6 }, (_, i) => Math.sqrt(S[(6 * b + i) * m + 6 * b + i]));
+        const [A, base, stride] = S.at(b, b), d = Array.from({ length: 6 }, (_, i) => Math.sqrt(A[base + i * stride + i]));
         let piv = 0;
         if (d.every(x => x > 0)) {
-          for (let i = 0; i < 6; i++) for (let j = 0; j <= i; j++) Ms[6 * i + j] = S[(6 * b + i) * m + 6 * b + j] / (d[i] * d[j]);
+          for (let i = 0; i < 6; i++) for (let j = 0; j <= i; j++) Ms[6 * i + j] = A[base + i * stride + j] / (d[i] * d[j]);
           if (choleskyFactor(Ms, 0, Ls, 0, 6)) { piv = Infinity; for (let i = 0; i < 6; i++) piv = Math.min(piv, Ls[7 * i] ** 2); }
         }
         minPivot = Math.min(minPivot, piv);
@@ -331,7 +388,7 @@ export class GpuBundleAdjuster {
 
       // ── back to the problem's frame (fixed points as they were, not through f32) ──
       if (!fixPoints) {
-        const back = staging(16 * numPoints), enc = device.createCommandEncoder();
+        const back = staging('back', 16 * numPoints), enc = device.createCommandEncoder();
         enc.copyBufferToBuffer(B.pts, 0, back, 0, 16 * numPoints);
         device.queue.submit([enc.finish()]);
         const Xs = await read(back, 16 * numPoints);
@@ -344,9 +401,14 @@ export class GpuBundleAdjuster {
       }
       if (single) problem.camera = cams[0]; else problem.cameras = cams;
       return { initialCost, cost, iterations: it, rmse, profile, cond };
+    } catch (e) {
+      failed = true;
+      throw e;
     } finally {
       if (scoped) await device.popErrorScope().catch(() => {});
       for (const b of buffers) b.destroy();
+      // a failed solve's buffers not trusted again; the flag left to a newer solve when releaseShared took them meanwhile
+      if (pooled && this.solving === token) { if (failed) this.release(); this.solving = null; }
     }
   }
 }

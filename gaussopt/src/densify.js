@@ -21,6 +21,7 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
     decayOccluders = true,        // a splat of much error loses opacity (x 0.65); off: kept as it is
     floaterDepth   = 'observed',  // nearCameraCone's depth
     floaterSpare   = null,        // nearCameraCone's spare: { positions, count, radius } (the SfM points)
+    conflict       = null,        // { score: Float32Array(count), cut }: a splat of score > cut is a floater (rule 4)
     splitMinViews  = 0,           // > 0: no split / clone of a splat seen from fewer views (N_eff / visitsPerView)
     visitsPerView  = 1,           // steps per training view since the moments were zeroed: N_eff = W^2 / S counts
                                   // view visits (S grows each step), so a photo set's one view counts K / n times
@@ -42,7 +43,7 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
   // stipple seeds come before splits: the room they need is kept free (at the cap, the room the prunes free)
   const nSeeds = seedSplats ? seedSplats.length / SPLAT_FLOATS : 0;
   const out = new KeptSplats(params, count);
-  const stats = { split: 0, cloned: 0, pruned: 0, floaters: 0, floaterRules: [0, 0, 0], merged: 0, teleported: 0, seeded: 0 };
+  const stats = { split: 0, cloned: 0, pruned: 0, floaters: 0, floaterRules: [0, 0, 0, 0], merged: 0, teleported: 0, seeded: 0 };
   // monte_carlo: the dead splats (pruned, floaters) are not dropped but moved onto live ones, after the pass
   let dead = 0;
   const teleport = () => optMethod === 'monte_carlo' && ++dead > 0;
@@ -64,7 +65,7 @@ export function reconcileAndGrow(octree, params, count, moments, images, opts = 
     }
     // B. Floaters (removed, or teleported); high-error occluders lose opacity
     if (enableFloaters) {
-      const rule = isFloater(params, b, alpha, leaf, W, S, R, nearCamera, floaterFewViews);
+      const rule = isFloater(params, b, alpha, leaf, W, S, R, nearCamera, floaterFewViews) || (conflict && conflict.score[i] > conflict.cut ? 4 : 0);
       if (rule) {
         stats.floaterRules[rule - 1]++;
         if (!teleport()) stats.floaters++;

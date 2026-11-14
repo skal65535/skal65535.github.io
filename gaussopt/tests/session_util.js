@@ -36,10 +36,10 @@ export function accuracy(session, scene) {
 // The session tests' orbit: 30 frames (half the time of 50 to map); the stretches they damage fit in it
 const SESSION_ORBIT = { ...ORBIT, numFrames: 30 };
 
-export async function session(options = {}, keep = null) {
+export async function session(options = {}, keep = null, sessionOptions = {}) {
   const scene = makeSyntheticScene({ ...SESSION_ORBIT, ...options });
   const input = keep ? subset(scene.input, keep) : scene.input;
-  const s = new SfmSession(input, { pairSource: tablePairSource(scene.input) });
+  const s = new SfmSession(input, { pairSource: tablePairSource(scene.input), ...sessionOptions });
   await s.reconstruct();
   return { scene, s };
 }

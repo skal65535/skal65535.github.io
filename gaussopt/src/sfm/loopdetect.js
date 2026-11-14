@@ -18,7 +18,7 @@ function topPairs(n, scored, perFrame) {
   return [...out].map(k => k.split(',').map(Number)).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
 
-const DEFAULTS = { words: 1024, samplesPerImage: 150, iterations: 8, perFrame: 8, minGap: 20, minScoreRatio: 0.2 };
+const DEFAULTS = { words: 1024, samplesPerImage: 150, iterations: 8, perFrame: 8, minGap: 20, minScoreRatio: 0.2, crossPerFrame: 8 };
 
 // unit L2 x 512 -> u8 (COLMAP's descriptor scale, so the matcher's angles apply to centroids)
 function toDescriptor(v, out, off) {
@@ -94,25 +94,34 @@ export async function bagOfWords(features, vocab, matcher) {
 
 // Loop candidates [[i, j]] (i < j, j - i >= minGap): per frame the `perFrame` most similar frames
 // whose score is at least minScoreRatio x its similarity to the next frame (which always overlaps).
+// Several videos (clips: per frame its video, null: one): that within its own video, and the crossPerFrame most
+// similar frames of the others besides (no gap between videos), so its own video's revisits do not crowd them out.
 export function loopCandidates(vectors, options = {}) {
-  const o = { ...DEFAULTS, ...options };
+  const o = { ...DEFAULTS, ...options }, clips = o.clips ?? null;
   const n = vectors.length, words = vectors[0]?.length ?? 0;
   const sim = (a, b) => { let s = 0; for (let w = 0; w < words; w++) s += vectors[a][w] * vectors[b][w]; return s; };
-  return topPairs(n, (i) => {
-    const floor = o.minScoreRatio * (sim(i, Math.min(n - 1, i + 1)) || 1);
+  const same = (i, j) => !clips || clips[i] === clips[j];
+  const next = (i) => (same(i, Math.min(n - 1, i + 1)) ? Math.min(n - 1, i + 1) : i);  // the last of its video: itself
+  const best = (want) => (i) => {
+    const floor = o.minScoreRatio * (sim(i, next(i)) || 1);
     const scored = [];
-    for (let j = 0; j < n; j++) if (Math.abs(i - j) >= o.minGap) scored.push([j, sim(i, j)]);
+    for (let j = 0; j < n; j++) if (want(i, j)) scored.push([j, sim(i, j)]);
     return scored.filter(([, s]) => s >= floor).sort((a, b) => b[1] - a[1]);
-  }, o.perFrame);
+  };
+  const within = topPairs(n, best((i, j) => same(i, j) && Math.abs(i - j) >= o.minGap), o.perFrame);
+  if (!clips) return within;
+  const keys = new Set(within.map(p => p.join())), across = topPairs(n, best((i, j) => !same(i, j)), o.crossPerFrame);
+  return [...within, ...across.filter(p => !keys.has(p.join()))].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
 
 // Loop candidates by geometry, after sequential mapping: frames of the same segment, far apart in
 // time, that should match — a sample of frame i's points lands inside frame j, seen from a
 // similar direction (rays within maxRayDeg) and a similar distance (depth ratio < depthRatio),
 // which is what SIFT matching needs. Drift makes this approximate; matching and verification
-// absorb that. rng (required, for the point samples). Returns [[i, j]] (i < j), the `perFrame` best per frame.
+// absorb that. rng (required, for the point samples). before (after segment merges): each frame's segment before
+// them, only the frames then apart looked at (the others were). Returns [[i, j]] (i < j), the `perFrame` best per frame.
 export function geometricCandidates(mapper, { minGap = 20, perFrame = 8, minOverlap = 0.1, samples = 200, depthRatio = 1.5,
-                                               maxRayDeg = 25, rng }) {
+                                               maxRayDeg = 25, before = null, rng }) {
   if (!rng) throw new Error('geometricCandidates: rng is required (deterministic candidates)');
   const { camera } = mapper;
   const frames = [];
@@ -142,7 +151,7 @@ export function geometricCandidates(mapper, { minGap = 20, perFrame = 8, minOver
   };
   return topPairs(mapper.n, (i) => {
     if (!mapper.poses[i] || sampleOf.get(i).length < 20) return [];
-    return frames.filter(j => Math.abs(i - j) >= minGap && mapper.segment[i] === mapper.segment[j])
+    return frames.filter(j => Math.abs(i - j) >= minGap && mapper.segment[i] === mapper.segment[j] && !(before && before[i] === before[j]))
       .map(j => [j, overlap(i, j)]).filter(([, o]) => o >= minOverlap).sort((a, b) => b[1] - a[1]);
   }, perFrame);
 }

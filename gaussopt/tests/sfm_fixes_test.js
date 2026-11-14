@@ -18,7 +18,8 @@ Deno.test('adaptive RANSAC keeps sampling when the all-inlier probability underf
 });
 
 const scene = makeSyntheticScene({ numFrames: 16, maxFeatures: 800, numGround: 6000, numBoxes: 6, numFar: 500 });
-const mapper = new SequentialMapper(scene.input, {});
+// two-view points kept (ignoreTwoView false): points the trainer's filter drops
+const mapper = new SequentialMapper(scene.input, { ignoreTwoView: false });
 await mapper.run();
 
 Deno.test('trainer points: >= 3 observations, each within 2 px', () => {
@@ -52,4 +53,29 @@ Deno.test('matchedPixels: interleaved matches and { a, b } index arrays agree', 
   const [x1, x2] = matchedPixels(kpA, kpB, matches);
   const [y1, y2] = matchedPixels(kpA, kpB, { a: Int32Array.of(0, 3, 19), b: Int32Array.of(5, 2, 7) });
   assert(JSON.stringify([x1, x2]) === JSON.stringify([y1, y2]) && x2[1][0] === 104, JSON.stringify([x1, x2]));
+});
+
+Deno.test('the GPU solve watchdog: a long solve that beats is not stalled, a silent one is', async () => {
+  const { watchdog, STALLED } = await import('../src/sfm/mapper.js');
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const t = performance.now();
+  const long = await watchdog(async (beat) => { for (let k = 0; k < 15; k++) { await wait(20); beat(); } return 'done'; }, 100);
+  assert(long === 'done' && performance.now() - t >= 280, `${long} after ${performance.now() - t} ms`);
+  const silent = await watchdog(async () => { await wait(300); return 'done'; }, 100).catch(e => e);
+  assert(silent === STALLED, `silent: ${silent}`);
+});
+
+// A stalled solve that goes on beating arms no timer (each beat would leave one pending past the race)
+Deno.test('the GPU solve watchdog: beats after a stall arm nothing', async () => {
+  const { watchdog, STALLED } = await import('../src/sfm/mapper.js');
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  let solve, beats = 0, armed = 0;
+  const r = await watchdog((beat) => (solve = (async () => {
+    await wait(150);
+    const set = globalThis.setTimeout;
+    globalThis.setTimeout = (...a) => { armed++; return set(...a); };
+    try { for (let k = 0; k < 4; k++) { beats++; beat(); } } finally { globalThis.setTimeout = set; }
+  })()), 100).catch(e => e);
+  await solve;
+  assert(r === STALLED && beats === 4 && armed === 0, `${r}: ${beats} beats after the stall armed ${armed} timers`);
 });

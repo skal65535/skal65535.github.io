@@ -21,24 +21,31 @@ import { GaussOptTrainer } from './trainer.js';
 import { haltBefore } from './schedule.js';
 import {
   VISU_MODES, COLOR_MODES, COMPARE_MODES, FRUSTUM_IMAGES, MESH_VIEWS, MESH_KINDS, MESH_TEXTURES, OPT_METHODS, TIPS, DATASETS, NOT_A_URL, POINTS3D,
-  SNAPSHOT_PARAMS, PROJECT_PARAMS, defaultParams, applyUrlParams, urlNamesOf, URL_FLAGS,
+  SNAPSHOT_PARAMS, PROJECT_PARAMS, MAX_SPLATS, defaultParams, applyUrlParams, urlNamesOf, URL_FLAGS,
 } from './params.js';
 import { urlAfterChange, urlWithFirst, replaceSearch } from './url.js';
 import { Drone } from './drone.js';
 import { DemoFlight } from './demo.js';
 import { shortestPath, pathStats, PATH_ROT_WEIGHT, PATH_MAX } from './path.js';
-import { encodeSnapshot, decodeSnapshot, isSnapshotName, SNAPSHOT_EXT } from './snapshot.js';
+import { decodeSnapshot, isSnapshotName, snapshotKind, snapshotOfScene, SNAPSHOT_EXT } from './snapshot.js';
 import { backingInputs, meshFromTrainer, meshFromPly, textureFromTrainer } from './mesh.js';
 import { BACKING } from './mesh_grow.js';
 import { LogPanel } from './ui/log.js';
 import { Shell } from './ui/shell.js';
 import { FramesSheet } from './ui/frames.js';
+import { SfmTheatre } from './ui/theatre.js';
+import { ViewSwitch, PhotoButton } from './ui/view_switch.js';
 import { ProjectPanel } from './ui/project_panel.js';
 import { downloadBlob } from './ui/download.js';
 import { isPhoto, isVideo } from './ui/files.js';
 import { DomeStep, DOME_FILL_LABELS } from './ui/dome_step.js';
+import { EditPanel, EDIT_TIPS } from './ui/edit_panel.js';
+import { optionsChanged } from './ui/phases.js';
 import { FramePacer } from './pace.js';
+import { alignTrack } from './sfm/flight.js';
 
+// Make mesh's options (the Mesh step's "Options changed": ui/phases.js)
+const MESH_KEYS = ['mesh_kind', 'mesh_res', 'mesh_simplify', 'mesh_texture'];
 // CPU time budget per frame for training steps (FramePacer sets their count, steps_per_frame
 // bounds it)
 const TRAIN_BUDGET_MS = 20;
@@ -122,7 +129,8 @@ export class GaussOptApp {
     this.project     = null;  // the project folder (src/project/project.js), null: none
     this.projectPanel = null; // its controls (src/ui/project_panel.js)
     this.guis        = [];    // control groups (project, train, view, mesh), see _setupGui()
-    this.meshState   = null;  // the last Make mesh: { running, step, faces?, texture?, mb?, error? } (ui/phases.js)
+    this.meshState   = null;  // the last Make mesh: { running, step, opts (MESH_KEYS), faces?, texture?, mb?, error? } (ui/phases.js)
+    this.saved       = {};    // per phase, its last save: { at, file, where, step? } (ui/phases.js; stageSaved)
     this.domeStep    = new DomeStep(this);
     this.datasetFolder = null;
     this.servedDatasets = null;  // mounts listed by serve.py's datasets.json (null: no server)
@@ -137,6 +145,8 @@ export class GaussOptApp {
     this.worldUp     = [0, -1, 0]; // orbit up axis: the cameras' up (upEstimate) through sceneTransform
     this.upEstimate  = [0, -1, 0]; // the up estimated from the cameras (estimateWorldUp)
     this.sceneTransform = [...IDENTITY4];  // the scene's global transform, leveled by Level (project.json `transform`)
+    this.telemetry   = null;       // the video's flight record (setTelemetry), its fit to the cameras in gpsFit
+    this.gpsFit      = null;
     this.pickedCam   = -1;    // camera shown in #frustum-thumb (-1 = none)
     this.flyAnim     = null;  // active spline fly-to animation
     this.lastView    = null;  // { view, center, fx, fy, cx, cy } of the last 3D frame (for picking / fly-from)
@@ -173,6 +183,11 @@ export class GaussOptApp {
     this.renderer = await GaussOptRenderer.create(this.gpu.device, this.gpu.context, this.gpu.format);
     this.frames = new FramesSheet(document.getElementById('frames-sheet'), document.getElementById('BtnFrames'),
                                   names => this.sfm?.pickFrames(names));
+    this.theatre = new SfmTheatre(document.getElementById('sfm-theatre'), null);
+    const $ = (id) => document.getElementById(id);
+    this.viewSwitch = new ViewSwitch({ buttons: { '3d': $('BtnView3d'), frames: $('BtnFrames'), sfm: $('BtnTheatre') },
+                                       layers: { frames: this.frames, sfm: this.theatre }, inThreeD: [$('BtnTarget'), $('BtnView')],
+                                       onSet: (m) => { if (m !== '3d') { $('view-popover').classList.remove('shown'); $('BtnView').classList.remove('on'); } } });
     this.shell = new Shell(this);
     this._setupEvents();
     this._setupGui();
@@ -182,7 +197,7 @@ export class GaussOptApp {
     if ((!video && !photos) || q.has('dataset')) await this.loadDatasetUrl(this.params.dataset_url, this.params.resume_ply);
     requestAnimationFrame(() => this.frame());
     this._watchFrames();
-    if (video) this.openVideoPanel(video);
+    if (video) this.openVideoPanel(video.includes(',') ? video.split(',').filter(Boolean) : video);
     else if (photos) this.openPhotoUrls(photos.split(',').filter(Boolean));
   }
 
@@ -190,14 +205,14 @@ export class GaussOptApp {
   // optimizer, growth, evaluation, snapshots) and the view popover (visualization, camera).
   _setupGui() {
     const P = this.params;
-    const gui = mkGui(document.getElementById('gui-container'), { draggable: false, tips: TIPS });
+    const gui = mkGui(document.getElementById('gui-container'), { draggable: false, tips: { ...TIPS, ...EDIT_TIPS } });
     const proj = mkGui(document.getElementById('project-gui'), { draggable: false, tips: TIPS });
     const view = mkGui(this.shell.viewHost, { draggable: false, tips: TIPS });
-    // Export step: Make mesh's settings (the mesh's display stays in Visualization)
+    // Mesh step: Make mesh's settings (the mesh's display stays in Visualization)
     const domeG = mkGui(document.getElementById('dome-gui'), { draggable: false, tips: TIPS });
     domeG.add(P, 'dome', ['auto', 'off']).name('dome').onChange(() => this.shell.refresh());
     domeG.add(P, 'dome_fill', DOME_FILL_LABELS).name('fill').onChange(() => this.domeStep.refill());
-    const meshF = mkGui(document.getElementById('export-mesh'), { draggable: false, tips: TIPS }).addFolder('Mesh');
+    const meshF = mkGui(document.getElementById('mesh-gui'), { draggable: false, tips: TIPS }).addFolder('Mesh');
     meshF.add(P, 'mesh_kind', MESH_KINDS).name('kind');
     meshF.add(P, 'mesh_res', 64, 512, 32).name('grid');
     meshF.add(P, 'mesh_simplify', 0, 4, 0.25).name('simplify (voxels)');
@@ -205,12 +220,7 @@ export class GaussOptApp {
     this.guis = [proj, gui, view, meshF, domeG];
     // any control (the SfM panel's too) puts the settings into the project once the user pauses; a param given in
     // the URL follows its control (the SfM panel's as sfm_<name>): the URL keeps reloading the page as shown
-    onAnyChange((obj, key, value) => {
-      this.drawGen++;
-      this._settingsChanged();
-      const names = obj === this.params ? urlNamesOf(key) : obj === this.sfm?.o ? [`sfm_${key}`] : [];
-      if (names.length) replaceSearch(urlAfterChange(location.search, names, value, URL_FLAGS));
-    });
+    onAnyChange((obj, key, value) => this._optionChanged(obj, key, value));
     const wire = () => this._refreshWireframes();
 
     this.projectPanel = new ProjectPanel(this, document.getElementById('project-folder'));
@@ -226,7 +236,7 @@ export class GaussOptApp {
     const runF = gui.addFolder('Training');
     runF.add(P, 'opt_method', OPT_METHODS).name('method').onChange(() => this._showMethodFolders());
     runF.add(P, 'train_steps', 0, 100000, 1000).name('planned steps');
-    runF.add(P, 'max_splats', 10000, 2000000, 10000).name('max splats');
+    runF.add(P, 'max_splats', 10000, MAX_SPLATS, 10000).name('max splats');
     runF.add(P, 'ssim', 0, 1, 0.05).name('D-SSIM weight');
     runF.add(P, 'exposure_lr', 0, 0.05, 0.001).name('exposure rate');
     runF.add(P, 'pose_lr', 0, 0.002, 0.0001).name('pose rate');
@@ -288,6 +298,7 @@ export class GaussOptApp {
     overF.add(P, 'frustum_images', FRUSTUM_IMAGES).name('frustum photos');
     overF.add(P, 'frustum_scale', 0.2, 4.0, 0.05).name('frustum size').onChange(wire);
     overF.add(P, 'show_path').name('camera path').onChange(wire);
+    overF.add(P, 'show_gps').name('GPS track').onChange(wire);
     overF.add(P, 'path_order', ['capture', 'shortest']).name('path order').onChange(() => { this._applyPathOrder(); wire(); });
     overF.add(P, 'show_octree').name('octree boxes').onChange(wire);
     overF.add(P, 'octree_hidden', 0, 1, 0.05).name('boxes behind splats');
@@ -317,6 +328,7 @@ export class GaussOptApp {
     growF.add(P, 'opacity_reset', [0, 1000, 2000, 3000, 5000]).name('opacity reset every');
     growF.add(P, 'drop_rate', 0, 0.5, 0.05).name('DropGaussian rate');
     growF.add(P, 'robust_loss', 0, 0.5, 0.01).name('robust loss tau (0: off)');
+    growF.add(P, 'random_bg').name('random background (training)');
     growF.add(P, 'decay_occluders').name('decay high-error splats');
     growF.add(P, 'max_splat_angle', 0, 0.2, 0.005).name('max splat angle (0: none)');
     growF.add(P, 'max_anisotropy', 0, 50, 1).name('max anisotropy (0: none)');
@@ -326,6 +338,9 @@ export class GaussOptApp {
     floatF.add(P, 'floater_few_views').name('few-view floaters');
     floatF.add(P, 'floater_depth', ['observed', 'view']).name('near-camera carve depth');
     floatF.add(P, 'floater_spare', 0, 0.05, 0.001).name('spare near SfM points');
+    floatF.add(P, 'floater_conflict', 0, 0.05, 0.001).name('views in conflict');
+    floatF.add(P, 'floater_conflict_by', ['hurt', 'single']).name('conflict score');
+    this.edit = new EditPanel(this, gui);  // the floaters picked or found, deleted (ui/edit_panel.js)
 
     const schedF = gui.addFolder('Schedule (E7)', { collapsed: true });
     schedF.add(P, 'cap_lease', 0, 1, 0.05).name('cap lease');
@@ -515,14 +530,19 @@ export class GaussOptApp {
     // clears mouse.down, so drags that started off-canvas are ignored.
     cv.addEventListener('pointerup', e => {
       if (!this.mouse.down || Math.hypot(e.clientX - this.mouse.sx, e.clientY - this.mouse.sy) >= 5) return;
+      if (this.edit.picking && this.params.compare_mode === 0 && !this.holdTarget) {  // Edit: the cluster under it
+        const rect = cv.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          this.edit.clickAt((e.clientX - rect.left) * (cv.width / rect.width), (e.clientY - rect.top) * (cv.height / rect.height));
+        }
+        return;
+      }
       const hit = this._pickFrustumAt(e);
       if (hit >= 0) this.openThumbnail(hit);
     });
     window.addEventListener('pointerup', () => { this.mouse.down = false; });
-    // hold target: captured, so releasing off the button still ends the hold
-    const tgt = $('BtnTarget');
-    tgt.addEventListener('pointerdown', e => { tgt.setPointerCapture(e.pointerId); this.setHoldTarget(true); });
-    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) tgt.addEventListener(ev, () => this.setHoldTarget(false));
+    // the training photo: held or clicked on (view_switch.js PhotoButton)
+    this.photoButton = new PhotoButton($('BtnTarget'), (on) => this.setHoldTarget(on));
     cv.addEventListener('dblclick', e => {
       const hit = this._pickFrustumAt(e);
       if (hit >= 0) this.flyToCamera(hit);
@@ -565,6 +585,8 @@ export class GaussOptApp {
     window.addEventListener('keydown', e => {
       if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target?.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
       const key = keyName(e);
+      if (this.theatre?.key(key)) { e.preventDefault(); return; }  // the SfM theatre over the view: its keys
+      if (this.viewSwitch.key(key)) { e.preventDefault(); return; }  // 1 / 2 / 3, Escape out of frames
       if (key === 'h' || key === '?') { help.classList.toggle('shown'); return; }
       if (key === 'escape') {
         help.classList.remove('shown');
@@ -615,6 +637,7 @@ export class GaussOptApp {
   openFiles(files) {
     const f = files[0], n = f.name, one = files.length === 1;
     if (one && isVideo(f)) this.openVideoPanel(f);
+    else if (!one && [...files].every(x => isVideo(x) && !/\.gosfm$/i.test(x.name))) this.openVideoPanel([...files]);  // videos of one place
     else if (!one && [...files].every(isPhoto)) this.openVideoPanel([...files]);
     else if (one && /\.glb$/i.test(n)) this.loadGlbFile(f);
     else if (one && /\.mesh\.ply$/i.test(n)) this.loadMeshFile(f);
@@ -832,7 +855,8 @@ export class GaussOptApp {
       if (tex) out.push([i, tex]);
       else missing.push(i);
     }
-    if (missing.length > 0 && !this.frustumLoad) this._loadFrustumTextures(missing);
+    // all of them: as many as the trainer keeps (loading more would drop others, loaded again the next frame)
+    if (missing.length > 0 && !this.frustumLoad && (mode !== 'all' || !this.trainer.gtCacheFull())) this._loadFrustumTextures(missing);
     return out;
   }
 
@@ -841,13 +865,23 @@ export class GaussOptApp {
     const trainer = this.trainer;
     try {
       for (const i of idxs) {
-        if (this.trainer !== trainer || this.params.frustum_images === 'off') break;
+        if (this.trainer !== trainer || this.params.frustum_images === 'off' || (this.params.frustum_images === 'all' && trainer.gtCacheFull())) break;
         const ok = await trainer.ensureGtTexture(i).then(t => !!t, () => false);
         if (!ok && this.trainer === trainer) this.frustumFail.add(i);
       }
     } finally {
       this.frustumLoad = false;
     }
+  }
+
+  // The photo button: the selected camera's (#index, the photo's name in its title), off without a photo to show
+  _photoButtonFor(img, idx) {
+    const b = this.photoButton?.button, can = !!img && this.gtAvailable, label = can ? `◎ photo #${idx}` : '◎ photo';
+    if (!b || (b.textContent === label && b.disabled === !can)) return;
+    b.textContent = label;
+    b.disabled = !can;
+    b.title = `${can ? `${img.name}: ` : 'no training photo: '}hold to see it, click to keep it (click again: back)`;
+    if (!can) this.photoButton.reset();
   }
 
   setHoldTarget(v) {
@@ -921,7 +955,7 @@ export class GaussOptApp {
   }
 
   // The "Video → Cameras" panel (src/ui/sfm_panel.js, DESIGN-sfm §7), loaded on first use.
-  // file: File | URL string (?video=) | [File] (photos) | null (choose in the panel)
+  // file: File | URL string (?video=) | [URL] (?video=a,b: videos of one place) | [File] (photos, or videos) | null (choose in the panel)
   async openVideoPanel(file = null) {
     try {
       const { SfmPanel } = await import('./ui/sfm_panel.js');
@@ -930,6 +964,9 @@ export class GaussOptApp {
       if (typeof file === 'string') {
         this._onProgress(`Fetching video ${file}...`);
         file = await fetchFile(file, 'video.mp4');
+      } else if (Array.isArray(file) && typeof file[0] === 'string') {
+        this._onProgress(`Fetching ${file.length} videos...`);
+        file = await Promise.all(file.map(u => fetchFile(u, 'video.mp4')));
       }
       if (file) this.sfm.load(file);
     } catch (e) {
@@ -1053,6 +1090,10 @@ export class GaussOptApp {
         await this.restoreSnapshot(buf, rel, colmap, gen, { ply: plyRel });
         return;
       }
+      if (snapshotKind(buf) === 'glb') {  // a scene, a snapshot with its training state
+        await this.loadSceneGlb(buf, rel, colmap, gen, { ply: plyRel });
+        return;
+      }
       const { splats, octree } = this._parseSplats(buf, rel, colmap.images);
       if (!await this._initOctreeAndTrainer(splats, colmap, gen, { octree, ply: plyRel })) return;
       const octMsg = octree ? ` [pre-built octree: ${octree.leaves.length} leaves]` : '';
@@ -1109,6 +1150,10 @@ export class GaussOptApp {
         await this.restoreSnapshot(buf, name, colmap, gen, opts);
         return;
       }
+      if (snapshotKind(buf) === 'glb') {  // a scene, a snapshot with its training state
+        await this.loadSceneGlb(buf, name, colmap, gen, opts);
+        return;
+      }
       const { splats, octree } = this._parseSplats(buf, name, colmap?.images || []);
       if (!await this._initOctreeAndTrainer(splats, colmap, gen, { ...opts, octree })) return;
       this.log(`Loaded ${name} (${splats.count} splats${octree ? ', embedded octree' : ''})`, 'ok');
@@ -1161,10 +1206,11 @@ export class GaussOptApp {
     this.droneLive = false;
     this._onImagesChanged(images);
     this.lastSnapStep = this.lastValStep = this.trainStartStep = this.savedStep = trainer.stepCount;
+    this.edit?.reset();
     this._syncUrl();
 
     // Without the photos (e.g. a sparse/ model only) the geometry is still viewable: cameras,
-    // path, points. Training, compare views and "hold target" need them.
+    // path, points. Training, compare views and the photo button need them.
     this.gtAvailable = false;
     const gt = images.length > 0 && await trainer.ensureGtTexture(0).then(t => !!t, () => false);
     if (this.trainer !== trainer) return true;
@@ -1253,7 +1299,37 @@ export class GaussOptApp {
       pathOrder:    this.colmap?.path ?? null,
       frustumScale: this.params.frustum_scale,
       splitVectors: this.params.show_splits ? this.trainer?.splitVectors : null,
+      gpsTrack:     this.params.show_gps ? this._gpsTrack()?.points : null,
     });
+  }
+
+  // The video's flight record (flight.js readTelemetry; null: none), shown as the GPS track; into the project
+  // (flight.json) unless it came from there
+  setTelemetry(tel, { save = true } = {}) {
+    this.telemetry = tel;
+    this.gpsFit = null;
+    if (tel) {
+      // several videos' tracks joined (flight.js joinTelemetry): no flight from the end of one to the start of the next
+      const d = tel.enu.slice(1).reduce((a, p, k) => a + (tel.breaks?.includes(k + 1) ? 0 : Math.hypot(...p.map((x, j) => x - tel.enu[k][j]))), 0);
+      this.log(`GPS track (${tel.source}): ${tel.t.length} fixes over ${(tel.t.at(-1) - tel.t[0]).toFixed(1)} s` +
+               `${tel.breaks?.length ? ` (${tel.breaks.length + 1} flights)` : ''}, ${d.toFixed(0)} m flown`, 'info', 'sfm');
+      if (save && this.project) this.project.write('flight.json', JSON.stringify(tel)).catch(e => this.log(`flight.json: ${e.message}`, 'warn'));
+    }
+    this._refreshWireframes();
+  }
+
+  // The GPS track in the cameras' world (alignTrack), made again when the cameras change
+  _gpsTrack() {
+    const tel = this.telemetry, images = this.colmap?.images;
+    if (!tel || !images?.length) return null;
+    const key = `${images.length} ${images[0].center} ${images.at(-1).center}`;
+    if (this.gpsFit?.colmap === this.colmap && this.gpsFit.key === key) return this.gpsFit.fit;
+    const fit = alignTrack(tel, images);
+    this.gpsFit = { colmap: this.colmap, key, fit };
+    this.log(fit ? `GPS track fitted to ${fit.cameras} cameras: median ${fit.residual.toFixed(2)} m between a camera and the track at its time ` +
+                   `(${(1 / fit.scale).toFixed(2)} m a scene unit; GPS: metres of error)`
+                 : 'GPS track: not fitted (too few cameras with a keyframe time in the track, or a hover)', fit ? 'info' : 'warn', 'sfm');
+    return fit;
   }
 
   // serve.py POST /save: writes `name` into <dataset>/splats_gaussopt/, returns { path }.
@@ -1268,12 +1344,12 @@ export class GaussOptApp {
     return resp.json();
   }
 
-  // Save into the project's splats/, else via serve.py, else as a browser download
+  // Save into the project's splats/, else via serve.py, else as a browser download: { where, file } (stageSaved)
   async _saveOrDownload(bytes, name, type, okMsg) {
     if (this.project) {
       await this.project.write(`splats/${name}`, bytes);
       this.log(okMsg(`${this.project.where} splats/${name}`), 'ok');
-      return;
+      return { where: 'project', file: `splats/${name}` };
     }
     const dataset = this.colmap?.baseUrl;
     let why = !this.serverOk ? 'no serve.py' : !dataset ? 'dataset not served by serve.py' : null;
@@ -1281,7 +1357,7 @@ export class GaussOptApp {
       try {
         const j = await this._postSave(name, bytes, dataset);
         this.log(okMsg(j.path), 'ok');
-        return;
+        return { where: 'server', file: name };
       } catch (e) {
         // TypeError = no server; anything else is the server's answer
         if (e instanceof TypeError) why = 'no serve.py';
@@ -1290,43 +1366,75 @@ export class GaussOptApp {
     }
     downloadBlob(new Blob([bytes], { type }), name);
     this.log(`Downloaded ${name} (${why})`, 'ok');
+    return { where: 'download', file: name };
   }
+
+  // A phase saved (ui/phases.js saved): its mark on the stepper and a notice
+  stageSaved(phase, entry) {
+    this.saved = { ...this.saved, [phase]: { at: Date.now(), ...entry } };
+    this.shell.toast(phase, this.saved[phase]);
+  }
+
+  // A control changed (or setOptions): drawn again, into the project's settings and the URL
+  _optionChanged(obj, key, value) {
+    this.drawGen++;
+    this._settingsChanged();
+    const names = obj === this.params ? urlNamesOf(key) : obj === this.sfm?.o ? [`sfm_${key}`] : [];
+    if (names.length) replaceSearch(urlAfterChange(location.search, names, value, URL_FLAGS));
+  }
+
+  // Options set as if by their controls (the stepper's Revert the options), the controls shown so
+  setOptions(obj, values) {
+    for (const [k, v] of Object.entries(values)) if (obj[k] !== v) { obj[k] = v; this._optionChanged(obj, k, v); }
+    this._refreshGui();
+    this.shell.refresh();
+  }
+
+  // The mesh's options changed since it was made ('' no: phases.js optionsChanged)
+  meshOptionsChanged() { return this.meshState?.faces ? optionsChanged(this.meshState.opts, this.params, MESH_KEYS) : ''; }
+  revertMeshOptions() { if (this.meshState?.opts) this.setOptions(this.params, this.meshState.opts); }
 
   requestSnapshot(kind = 'manual') {
     if (!this.snapshotsOk) { this.log('Snapshot unavailable: no project folder, serve.py not reachable', 'warn'); return; }
     if (this.trainer && this.trainer.count > 0) this.snapRequest = kind;
   }
 
-  // The full training state as a .gosnap: { buf, name, counters }
+  // The full training state as a scene .glb with it (snapshot.js): { buf, name, counters }
   async _encodeSnapshot(kind) {
-    const trainer = this.trainer;
+    const trainer = this.trainer, c = this.colmap;
     const { blobs, ...counters } = await trainer.readbackTrainingState();
     const octJson = this.octree.toJSON();
     const leafIdx = octJson.leafIndices ? new Uint32Array(octJson.leafIndices) : null;
-    delete octJson.leafIndices;
-    const imgs = this.colmap?.images || [];
-    const buf = encodeSnapshot({
-      savedAt:     new Date().toISOString(),
-      dataset_url: this.colmap?.baseUrl ?? null,
-      numImages:   imgs.length,
-      firstImage:  imgs[0]?.name || null,
-      splatFloats: blobs.params.length / Math.max(1, counters.count),
-      params:      Object.fromEntries(SNAPSHOT_PARAMS.map(k => [k, this.params[k]])),
-      state:       counters,
-      octree:      octJson,
-      transform:   [...this.sceneTransform],  // the scene's leveling (setSceneTransform)
-    }, { ...blobs, leaf_idx: leafIdx });
+    const imgs = c?.images || [], savedAt = new Date().toISOString();
+    const bytes = writeSceneGlb({
+      count: counters.count, params: blobs.params, octree: this.octree, cameras: imgs, path: c?.path ?? null,
+      points: c?.points3D && !c.points3D.fallback ? c.points3D : null, transform: this.sceneTransform, upEstimate: this.upEstimate,
+      mesh: this.shownMesh ?? null, env: await this.domeStep.sceneEnv(),
+      extras: { step: counters.stepCount, settings: this.settings(), dataset: c?.baseUrl ?? null, savedAt },
+      training: { header: {
+        savedAt,
+        dataset_url: c?.baseUrl ?? null,
+        numImages:   imgs.length,
+        firstImage:  imgs[0]?.name || null,
+        splatFloats: blobs.params.length / Math.max(1, counters.count),
+        params:      Object.fromEntries(SNAPSHOT_PARAMS.map(k => [k, this.params[k]])),
+        state:       counters,
+      }, blobs: { ...blobs, leaf_idx: leafIdx } },
+    });
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     return { buf, counters, name: `gaussopt_snap_${kind === 'auto' ? 'latest' : pad5(counters.stepCount)}${SNAPSHOT_EXT}` };
   }
 
-  // A snapshot into `project`'s splats/, recorded in its manifest as the one to resume from
-  async writeSnapshotTo(project, kind = 'manual') {
+  // A snapshot into `project`'s splats/, recorded in its manifest as the one to resume from; marked as the Train step's
+  // save unless `mark` is false (a .zip being packed)
+  async writeSnapshotTo(project, kind = 'manual', mark = true) {
     const { buf, name, counters } = await this._encodeSnapshot(kind);
     await project.write(`splats/${name}`, buf);
     const val = this.trainer.valHistory.at(-1);
     await project.update({ phases: { train: { step: counters.stepCount, splats: counters.count, latest: `splats/${name}`,
                                               ...(val ? { valPsnr: +val.psnr.toFixed(2), valSsim: +val.ssim.toFixed(3) } : {}) } } });
     this._snapshotSaved(counters, buf, `${project.where} splats/${name}`);
+    if (mark) this.stageSaved('train', { file: `splats/${name}`, where: 'project', step: counters.stepCount });
   }
 
   _snapshotSaved(counters, buf, where) {
@@ -1361,6 +1469,7 @@ export class GaussOptApp {
       throw new Error(`serve.py unreachable, snapshots disabled (${e.message})`);
     }
     this._snapshotSaved(counters, buf, j.path);
+    this.stageSaved('train', { file: name, where: 'server', step: counters.stepCount });
     if (this.colmap?.baseUrl === dataset) this._addCheckpointEntry(`splats_gaussopt/${name}`);
   }
 
@@ -1372,10 +1481,13 @@ export class GaussOptApp {
     this._rebuildPlySelector(this.colmap.availablePlys);
   }
 
-  // A .gosnap of `colmap` (load generation `gen`); opts: see _initOctreeAndTrainer()
-  async restoreSnapshot(buf, name, colmap, gen, opts = {}) {
+  // A snapshot of `colmap` (load generation `gen`): a scene .glb with its training state, or an older .gosnap; opts:
+  // see _initOctreeAndTrainer(). The scene's background and mesh with it (a .glb's)
+  async restoreSnapshot(buf, name, colmap, gen, { scene: read, ...opts } = {}) {
     this.log(`Restoring snapshot ${name} (${mb(buf)} MB)...`);
-    const snap = decodeSnapshot(buf);
+    const scene = read ?? (snapshotKind(buf) === 'glb' ? readSceneGlb(buf) : null);
+    const snap = scene ? snapshotOfScene(scene) : decodeSnapshot(buf);
+    if (!snap) throw new Error(`${name}: a scene without its training state (load it as a scene)`);
     const h = snap.header;
     const imgs = colmap?.images || [];
     if (h.numImages !== imgs.length || (h.firstImage && imgs[0]?.name !== h.firstImage)) {
@@ -1398,6 +1510,7 @@ export class GaussOptApp {
     const splats = { count, params: snap.blobs.params, octreeData: null };
     if (!await this._initOctreeAndTrainer(splats, colmap, gen, { ...opts, octree, snapshot: snap })) return;
     if (h.transform) this.setSceneTransform(h.transform);  // its leveling (an older snapshot has none: the current one stays)
+    if (scene) await this._sceneExtras(scene);
     this.log(`Resumed snapshot ${name} @ step ${this.trainer.stepCount} (${count} splats, ${octree.leaves.length} leaves, saved ${h.savedAt})`, 'ok');
   }
 
@@ -1407,14 +1520,17 @@ export class GaussOptApp {
     const step = this.trainer.stepCount;
     await this.trainer.syncSplatsFromGpu();
     const bytes = exportPlyBuffer(this.trainer.cpuParams, this.trainer.count, this.octree);
-    await this._saveOrDownload(bytes, `gaussopt_${pad5(this.trainer.stepCount)}.ply`, 'application/octet-stream',
+    const saved = await this._saveOrDownload(bytes, `gaussopt_${pad5(this.trainer.stepCount)}.ply`, 'application/octet-stream',
       path => `Saved PLY + embedded octree (${this.octree.leaves.length} leaves) to: ${path}`);
     this._saved(step);
+    this.stageSaved('export', { ...saved, step });
   }
 
   // Dirty: training steps since the last save (the SfM's session is kept by the page itself, OPFS / the project)
   get dirty() { return !!this.trainer && this.trainer.stepCount > this.savedStep; }
   _saved(step) { this.savedStep = Math.max(this.savedStep, step); }
+  // An edit (ui/edit_panel.js) at the trainer's step: unsaved, as a training step
+  editedAt(step) { this.savedStep = Math.min(this.savedStep, step - 1); }
 
   // DESIGN §9 E5: the rendered depth of every view fused (TSDF) and meshed (training pauses meanwhile),
   // then simplified in a worker, textured from the photos (mesh_texture; training pauses again) and
@@ -1422,11 +1538,12 @@ export class GaussOptApp {
   async saveMesh() {
     if (!this.trainer || this.trainer.count === 0 || this.meshState?.running) return;
     const step = this.trainer.stepCount;
-    this.meshState = { running: true, step };  // the Export step (ui/phases.js)
+    const opts = Object.fromEntries(MESH_KEYS.map(k => [k, this.params[k]]));
+    this.meshState = { running: true, step, opts };  // the Mesh step (ui/phases.js)
     try {
-      this.meshState = { running: false, step, ...await this._makeMesh(step) };
+      this.meshState = { running: false, step, opts, ...await this._makeMesh(step) };
     } catch (e) {
-      this.meshState = { running: false, step, error: e.message };
+      this.meshState = { running: false, step, opts, error: e.message };
       this.log(`Mesh failed: ${e.message}`, 'warn');
     }
   }
@@ -1489,7 +1606,9 @@ export class GaussOptApp {
       }
     }
     this.showMesh({ ...shown, voxel: info.voxel });
-    await this._saveOrDownload(glb, `gaussopt_${pad5(step)}.mesh.glb`, 'model/gltf-binary', path => `Saved mesh to: ${path}`);
+    const saved = await this._saveOrDownload(glb, `gaussopt_${pad5(step)}.mesh.glb`, 'model/gltf-binary', path => `Saved mesh to: ${path}`);
+    this.stageSaved('mesh', { ...saved, step });
+    await this.saveSceneGlb();  // the splats with it: the mesh's .glb holds the mesh alone
     return { faces: shown.faces.length / 3, texture, mb: glb.length / 1e6 };
   }
 
@@ -1515,9 +1634,10 @@ export class GaussOptApp {
       mesh: this.shownMesh ?? null, env,
       extras: { step, settings: this.settings(), dataset: c?.baseUrl ?? null, savedAt: new Date().toISOString() },
     });
-    await this._saveOrDownload(bytes, `gaussopt_${pad5(step)}.scene.glb`, 'model/gltf-binary',
+    const saved = await this._saveOrDownload(bytes, `gaussopt_${pad5(step)}.scene.glb`, 'model/gltf-binary',
       path => `Saved the scene (${tr.count} splats, ${this.octree.leaves.length} leaves, ${c?.images.length ?? 0} cameras${this.shownMesh ? ', the mesh' : ''}) to: ${path}`);
     this._saved(step);
+    this.stageSaved('export', { ...saved, step });
   }
 
   // The dataset's photos as one .glb of images (scene_glb.js writePhotosGlb), by name
@@ -1545,33 +1665,45 @@ export class GaussOptApp {
     else await this.loadMeshFile(file);
   }
 
-  async loadSceneGlb(buf, name, colmap = this.colmap, gen = ++this.loadGen) {
+  // A scene .glb of `colmap`: its splats, or with its training state a snapshot (restoreSnapshot); opts: see
+  // _initOctreeAndTrainer() (default: a local file). A checkpoint's (plyRel) failure is thrown, its caller says it
+  async loadSceneGlb(buf, name, colmap = this.colmap, gen = ++this.loadGen, opts = { fromFile: true }) {
     try {
       this.clearError();
       if (!colmap) throw new Error('open its dataset first (the scene keeps the cameras, not the photos)');
       const r = readSceneGlb(buf), imgs = colmap.images;
-      if (r.cameras.length !== imgs.length || r.cameras[0]?.name !== imgs[0]?.name) {
+      if (r.cameras.length && (r.cameras.length !== imgs.length || r.cameras[0]?.name !== imgs[0]?.name)) {  // none: a converted .gosnap
         this.log(`${name}: ${r.cameras.length} cameras (${r.cameras[0]?.name ?? '-'}...), the dataset ${imgs.length} (${imgs[0]?.name ?? '-'}...)`, 'warn');
       }
       if (r.info.settings) this.applySettings(r.info.settings);
+      if (r.training) {  // a snapshot: training goes on from it
+        await this.restoreSnapshot(buf, name, colmap, gen, { ...opts, scene: r });
+        if (this.trainer) this._saved(this.trainer.stepCount);
+        return;
+      }
       const octree = r.octree ? LooseOctree.fromJSON(r.octree) : null;
       if (octree) octree.updateCameraAndNeighborStats(imgs);
-      if (!await this._initOctreeAndTrainer({ count: r.count, params: r.params, octreeData: null }, colmap, gen, { octree, fromFile: true })) return;
+      if (!await this._initOctreeAndTrainer({ count: r.count, params: r.params, octreeData: null }, colmap, gen, { ...opts, octree })) return;
       this.setSceneTransform(r.transform);
-      if (r.env?.n === ENV_N) this.trainer.setEnv(r.env.rgb);
-      else if (r.env) this.domeStep.set({ worth: true, farShare: r.env.sky ?? null, n: r.env.n, cube: r.env.rgb, latlong: null });
-      if (r.mesh) {
-        if (r.mesh.texture) r.mesh.image = await decodeImage(r.mesh.texture);
-        this.showMesh(r.mesh);
-      }
+      await this._sceneExtras(r);
       this._saved(this.trainer.stepCount);
       this.log(`Loaded the scene ${name} (${r.count} splats${octree ? `, ${octree.leaves.length} leaves` : ''}, ${r.cameras.length} cameras${r.mesh ? ', a mesh' : ''}${r.env ? ', a background' : ''})`, 'ok');
     } catch (e) {
       if (this._stale(gen)) return;
+      if (opts.ply) throw e;
       this.showError(`Failed to load "${name}": ${e.message}`);
     }
   }
 
+  // A scene's background (the learned one, or a dome) and mesh into the page (loadSceneGlb, restoreSnapshot)
+  async _sceneExtras(r) {
+    if (r.env?.n === ENV_N) this.trainer.setEnv(r.env.rgb);
+    else if (r.env) this.domeStep.set({ worth: true, farShare: r.env.sky ?? null, n: r.env.n, cube: r.env.rgb, latlong: null });
+    if (r.mesh) {
+      if (r.mesh.texture) r.mesh.image = await decodeImage(r.mesh.texture);
+      this.showMesh(r.mesh);
+    }
+  }
 
   _logRebalance() {
     const st = this._loggedStats = this.octree.lastStats;
@@ -1579,7 +1711,7 @@ export class GaussOptApp {
     const extra = (st.seeded ? `, +${st.seeded} stipple` : '') + (st.teleported ? `, ${st.teleported} relocated (MC)` : '') + (st.relocateDropped ? ` (${st.relocateDropped} dropped: their copies too faint)` : '') + (st.trimmed ? `, ${st.trimmed} trimmed to the budget` : '') +
                   (tr.lastOpacityReset === tr.stepCount ? ', opacity reset' : '');
     this.log(`Rebalance @ step ${tr.stepCount}: +${st.split} split, +${st.cloned} clone, ` +
-             `-${st.pruned} prune, -${st.floaters} floaters${st.floaterRules ? ` (near ${st.floaterRules[0]}, few views ${st.floaterRules[1]}, empty ${st.floaterRules[2]})` : ''}, -${st.merged} merge${extra} -> ${tr.count} splats, ` +
+             `-${st.pruned} prune, -${st.floaters} floaters${st.floaterRules ? ` (near ${st.floaterRules[0]}, few views ${st.floaterRules[1]}, empty ${st.floaterRules[2]}${st.floaterRules[3] ? `, conflict ${st.floaterRules[3]}` : ''})` : ''}, -${st.merged} merge${extra} -> ${tr.count} splats, ` +
              `${this.octree.leaves.length} leaves` + (tr.lastRebalanceMs ? ` in ${tr.lastRebalanceMs.total.toFixed(0)} ms` : ''), 'info', 'train');
     const si = tr.lastSeedInfo;
     if (si) {
@@ -1767,6 +1899,7 @@ export class GaussOptApp {
     const W = this.canvas.width, H = this.canvas.height;
     const imgs = this.colmap?.images || [];
     const camIdx = Math.min(Math.max(0, P.cam_idx | 0), Math.max(0, imgs.length - 1));
+    this._photoButtonFor(imgs[camIdx], camIdx);
     // what the frame draws, but the camera (added below): unchanged, and the frame is skipped
     const nowT = performance.now();
     const baseKey = [this.drawGen, W, H, tr.stepCount, tr.count, tr.valHistory?.length, tr.gtTextures?.size, camIdx,

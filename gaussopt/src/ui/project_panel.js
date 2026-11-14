@@ -41,6 +41,15 @@ const TIPS = {
   zip: 'everything of the project as one .zip',
 };
 
+// What a project has saved, per phase, as project.json records it (the stepper's saved marks: app.js saved)
+export function savedOf(m) {
+  const at = (p) => Date.parse(m.phases[p]?.at ?? m.updated), out = { project: { at: Date.parse(m.updated), file: 'project.json', where: 'project' } };
+  if (m.phases.keyframes?.count) out.keyframes = { at: at('keyframes'), file: 'cache/features.gosfm', where: 'project' };
+  if (m.phases.cameras) out.cameras = { at: at('cameras'), file: 'cache/model.gosfm', where: 'project' };
+  if (m.phases.train?.latest) out.train = { at: at('train'), file: m.phases.train.latest, where: 'project', step: m.phases.train.step };
+  return out;
+}
+
 export class ProjectPanel {
   constructor(app, host) {
     this.app = app;
@@ -119,8 +128,11 @@ export class ProjectPanel {
       app.project = project;
       this.state.where = project.where;
       app.setSnapshotsEnabled(app.serverOk);
-      if (project.isNew) await this.fill(project);
-      else await this.resume(project);
+      if (project.isNew) {
+        await this.fill(project);
+        app.saved = { ...app.saved, project: { at: Date.now(), file: 'project.json', where: 'project' } };
+      } else await this.resume(project);
+      app.shell.refresh();
       app.log(`Project: ${project.where}`, 'ok');
     } catch (e) {
       app.showError(`Project: ${e.message}`);
@@ -128,13 +140,14 @@ export class ProjectPanel {
   }
 
   // What the page has, into a new project: the SfM session and its results (worker; a memory store's files come
-  // back to be written here), the trainer's state
-  async fill(project) {
+  // back to be written here), the trainer's state; mark: the stepper's saved marks (not for a .zip)
+  async fill(project, mark = true) {
     const app = this.app;
     if (app.sfm?.videoName) await project.update({ source: app.sfm.sourceInfo(), ...app.sfm.keyframesRecord() });
     const files = app.sfm ? await app.sfm.flush() : null;
     for (const [path, blob] of files ?? []) await project.write(path, blob);
-    if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project);
+    if (app.trainer?.stepCount > 0) await app.writeSnapshotTo(project, 'manual', mark);
+    if (app.telemetry) await project.write('flight.json', JSON.stringify(app.telemetry));
     await project.update({ settings: app.settings(), transform: [...app.sceneTransform] });
   }
 
@@ -142,10 +155,14 @@ export class ProjectPanel {
   // dataset into the trainer, from its latest snapshot when there is one
   async resume(project) {
     const app = this.app, m = project.manifest, transform = m.transform;  // read first: the writes below update m
+    app.saved = savedOf(m);
     app.applySettings(m.settings);  // first: e.g. val_split and downsample apply to the load
     if (!app.sfm?.quality && await project.read('cache/features.gosfm')) {
-      await app.openVideoPanel(null);
-      app.sfm.restoreFromStore();
+      if (app.sfm?.file || app.sfm?.photos) app.sfm.restoreSaved();  // over the open frames: Run maps them again
+      else {
+        await app.openVideoPanel(null);
+        app.sfm.restoreFromStore();
+      }
     }
     if (!await project.read('gs/sparse/cameras.bin')) return;
     const sparse = {};
@@ -161,6 +178,8 @@ export class ProjectPanel {
     await app.loadProjectModel(colmap, snap && await snap.arrayBuffer(), latest);
     app.applySettings(m.settings);  // over the snapshot's own (the settings may have changed since)
     app.setSceneTransform(transform);  // its leveling (the identity when it has none)
+    const tel = await project.read('flight.json');
+    if (tel) app.setTelemetry(JSON.parse(await tel.text()), { save: false });
     if (app.sfm && m.phases.cameras) app.sfm.markSent(m.phases.cameras.version);
   }
 
@@ -173,7 +192,7 @@ export class ProjectPanel {
       const project = await Project.open(store);
       app.project = project;
       if (app.sfm) app.sfm.setStore(store.describe());
-      await this.fill(project);
+      await this.fill(project, false);
       const zip = await zipBlob([...store.files]);
       downloadBlob(zip, `${store.name}.zip`);
       app.log(`Downloaded ${store.name}.zip (${store.files.size} files, ${(zip.size / 1e6).toFixed(0)} MB)`, 'ok');

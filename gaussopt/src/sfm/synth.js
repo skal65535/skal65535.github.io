@@ -26,13 +26,20 @@ const DEFAULTS = {
   turns: 1.25,          // orbit: > 1 gives loops
   radius: 12, altitude: 7, pitchDeg: 30,
   length: 60,           // line: flight length
-  spin: null,           // { at: 0..1, frames, deg }: yaw in place (no parallax) inserted along the path
+  spin: null,           // { at: 0..1, frames, deg, speedAfter = 1, step = 0, hold = 0, ramp = 0 }: yaw in place (no parallax)
+                        // inserted along the path, the path after it flown speedAfter times as fast (its steps that much
+                        // longer); step: the camera moving on during the turn, by this fraction of the path's step per frame;
+                        // hold: frames standing still after it, ramp: frames then speeding up from rest (a drone's stop and go)
   numGround: 12000, numBoxes: 12, pointsPerBox: 600, numFar: 3000,
   maxFeatures: 4096, noisePx: 0.5, maxDepth: 120,
   overlap: 10,          // sequential pairs: |i - j| <= overlap
   minLoopMatches: 40,   // revisit pairs (|i - j| > overlap) kept when sharing at least this many points
   outlierFrac: 0,       // fraction of each pair's matches replaced by random keypoint pairs
   cut: null,            // 0..1: no sequential pair crosses that frame (only revisits link both sides)
+  clips: null,          // several videos of the place: [{ path options (numFrames, radius, altitude, phase (rad), ...) }],
+                        // one after the other, each keyframe's `clip`, no sequential pair across two; clip c's times
+                        // after the last one's by clipGap seconds
+  clipGap: 10,
   fps: 30, keyframeEvery: 6,  // timestamps: keyframe k at k * keyframeEvery / fps seconds
   // several lenses (DESIGN-sfm §13 P8): params of each, frame k's lens cameraOf(k), and the focal
   // priors the input cameras start from (else COLMAP's default focal); null: one camera, `params`
@@ -86,7 +93,7 @@ function makePath(o) {
     const u = k / Math.max(1, o.numFrames - 1);
     let C, yaw;
     if (o.path === 'orbit') {
-      const a = 2 * Math.PI * o.turns * u;
+      const a = (o.phase ?? 0) + 2 * Math.PI * o.turns * u;
       const r = o.radius * (1 + 0.08 * Math.sin(3 * a));
       C = [r * Math.cos(a), r * Math.sin(a), o.altitude + 0.8 * Math.sin(2 * a)];
       yaw = Math.atan2(-C[1], -C[0]) + 0.15 * Math.sin(5 * a);  // toward the center, with some sway
@@ -99,11 +106,22 @@ function makePath(o) {
   }
   if (o.spin) {
     const at = Math.round(o.spin.at * (frames.length - 1));
-    const { C, yaw } = frames[at];
+    const { C, yaw } = frames[at], d = C.map((x, i) => (o.spin.step ?? 0) * (x - frames[Math.max(0, at - 1)].C[i]));
     const spin = Array.from({ length: o.spin.frames }, (_, k) =>
-      ({ C: [...C], yaw: yaw + (o.spin.deg * Math.PI / 180) * (k + 1) / o.spin.frames }));
-    const back = spin.at(-1).yaw - yaw;  // keep turning: the rest of the path is yawed by the spin
-    frames.splice(at + 1, 0, ...spin, ...frames.splice(at + 1).map(f => ({ ...f, yaw: f.yaw + back })));
+      ({ C: C.map((x, i) => x + (k + 1) * d[i]), yaw: yaw + (o.spin.deg * Math.PI / 180) * (k + 1) / o.spin.frames }));
+    const back = spin.at(-1).yaw - yaw, v = o.spin.speedAfter ?? 1, C1 = spin.at(-1).C;  // keep turning: the rest of the path is yawed by the spin
+    let after = frames.splice(at + 1).map(f => ({ C: f.C.map((x, i) => C1[i] + v * (x - C[i])), yaw: f.yaw + back }));
+    const hold = o.spin.hold ?? 0, ramp = o.spin.ramp ?? 0;
+    if (hold || ramp) {  // the j-th frame after the turn at x along the path (x = -1: the turn's end), its steps 0, then rising
+      const path = [{ C: C1, yaw: yaw + back }, ...after];
+      let x = -1;
+      after = after.map((_, j) => {
+        x += j < hold ? 0 : Math.min(1, (j - hold + 1) / Math.max(1, ramp));
+        const m = Math.floor(x + 1), f = x + 1 - m, P = path[m], Q = path[Math.min(m + 1, path.length - 1)];
+        return { C: P.C.map((c, i) => c + f * (Q.C[i] - c)), yaw: P.yaw + f * (Q.yaw - P.yaw) };
+      });
+    }
+    frames.splice(at + 1, 0, ...spin, ...after);
   }
   return frames.map(({ C, yaw }) => {
     const fwd = [Math.cos(yaw) * Math.cos(pitch), Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch)];
@@ -119,7 +137,12 @@ export function makeSyntheticScene(options = {}) {
   const camera = lenses[0];
   const points = makePoints(o, rng);
   const strength = points.map(() => rng());  // detector response: the same points win in every frame
-  const poses = makePath(o);
+  const clipOf = [], at = [];  // per keyframe: its clip, its time (s)
+  const poses = (o.clips ?? [{}]).flatMap((c, k) => {
+    const p = makePath({ ...o, ...c }), t0 = at.length ? at.at(-1) + o.clipGap : 0;
+    p.forEach((_, m) => { clipOf.push(k); at.push(t0 + m * o.keyframeEvery / o.fps); });
+    return p;
+  });
 
   const images = poses.map((pose, k) => {
     const camera = lenses[lensOf(k)];
@@ -143,8 +166,8 @@ export function makeSyntheticScene(options = {}) {
       keypoints[2 * i + 1] = v + o.noisePx * gaussian(rng);
       pointIds[i] = p;
     });
-    const ms = Math.round(1000 * k * o.keyframeEvery / o.fps);
-    return { name: `t${String(ms).padStart(7, '0')}.jpg`, keypoints, pointIds, R: pose.R, t: pose.t };
+    const ms = Math.round(1000 * at[k]);
+    return { name: `t${String(ms).padStart(7, '0')}.jpg`, keypoints, pointIds, R: pose.R, t: pose.t, clip: clipOf[k] };
   });
 
   const pairs = [];
@@ -154,7 +177,7 @@ export function makeSyntheticScene(options = {}) {
     for (let j = i + 1; j < images.length; j++) {
       const m = [];
       for (const [p, a] of index[i]) { const b = index[j].get(p); if (b !== undefined) m.push(a, b); }
-      const type = j - i <= o.overlap ? 'seq' : 'loop';
+      const type = j - i <= o.overlap && clipOf[i] === clipOf[j] ? 'seq' : 'loop';
       if (m.length === 0 || (type === 'loop' && m.length / 2 < o.minLoopMatches)) continue;
       if (cutAt !== null && type === 'seq' && i < cutAt && j >= cutAt) continue;
       const numOut = Math.round(o.outlierFrac * m.length / 2);
@@ -174,7 +197,7 @@ export function makeSyntheticScene(options = {}) {
     input: {
       camera: prior(0),
       ...(o.cameras ? { cameras: lenses.map((_, k) => prior(k)) } : {}),
-      images: images.map(({ name, keypoints }, k) => ({ name, keypoints, ...(o.cameras ? { camera: lensOf(k) } : {}) })),
+      images: images.map(({ name, keypoints, clip }, k) => ({ name, keypoints, ...(o.cameras ? { camera: lensOf(k) } : {}), ...(o.clips ? { clip } : {}) })),
       pairs,
     },
     truth: {

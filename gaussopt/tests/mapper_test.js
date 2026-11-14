@@ -255,3 +255,91 @@ Deno.test('mapper, synthetic zooms: a scanned focal per zoom, a camera back at a
   const fails = checkThresholds(m, 'truth');
   assert(fails.length === 0, `${tag}: ${fails.join(', ')}`);
 });
+
+// Track triangulation: a slow turn (the camera moving on 3% of a step a frame) matched only to the next frame: no pair
+// of the turn is wide enough for a point (minAngleDeg), its tracks across it are. Without triangulateTrack, no point
+// seen by the turn's frames only (gare2's pan: its pavement)
+Deno.test('mapper, synthetic slow turn with neighbour pairs: points of the turn triangulated from their tracks', async () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 40, overlap: 1, spin: { at: 0.5, frames: 20, deg: 60, step: 0.05 } });
+  const mapper = new SequentialMapper(scene.input);
+  const model = await mapper.run(), m = compareModels(model, scene.truth.model);
+  const turn = (k) => k >= 20 && k < 40;  // the 20 frames inserted at the path's middle
+  const own = mapper.points.filter(P => P && [...P.obs.keys()].every(turn));
+  const worst = Math.max(...own.flatMap(P => [...P.obs].map(([img, kp]) => mapper.reprojErr(img, kp, P.X))));
+  const tag = `${own.length} points of the turn's frames only (worst ${worst.toFixed(2)} px), ${m.numCommon} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
+  assert(own.length >= 30 && own.every(P => P.obs.size >= 3) && worst <= mapper.o.maxReproj, tag);
+  assert(m.numCommon === 60 && checkThresholds(m, 'truth').length === 0, tag);
+});
+
+// The same slow turn matched to 3 frames on: a keypoint has several neighbours too narrow for it, its track walked once
+// per triangulateNew though, not once per neighbour, and the turn's points still made
+Deno.test('mapper, synthetic slow turn with 3 neighbours: a failed track walked once per triangulateNew', async () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 40, overlap: 3, spin: { at: 0.5, frames: 20, deg: 60, step: 0.05 } });
+  const mapper = new SequentialMapper(scene.input);
+  const tn = mapper.triangulateNew, tt = mapper.triangulateTrack;
+  let walks = null, repeats = 0, calls = 0;
+  mapper.triangulateNew = function (img) { walks = new Map(); try { return tn.call(this, img); } finally { walks = null; } };
+  mapper.triangulateTrack = function (img, a, minAngle) {
+    calls++;
+    if (walks) { const key = `${img},${a}`, n = (walks.get(key) ?? 0) + 1; walks.set(key, n); if (n > 1) repeats++; }
+    return tt.call(this, img, a, minAngle);
+  };
+  const model = await mapper.run(), m = compareModels(model, scene.truth.model);
+  const turn = (k) => k >= 20 && k < 40;
+  const own = mapper.points.filter(P => P && [...P.obs.keys()].every(turn));
+  const tag = `${calls} track walks, ${repeats} repeated within a triangulateNew, ${own.length} points of the turn's frames only, ` +
+              `${m.numCommon} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%`;
+  assert(calls > 0 && repeats === 0, tag);
+  assert(own.length >= 30 && m.numCommon === 60 && checkThresholds(m, 'truth').length === 0, tag);
+});
+
+// A pass over many frames (a global BA's retriangulation, extendTracks): each frame pair done once, from its first
+// frame's side; a pass again with the same pairs done does nothing
+Deno.test('mapper, synthetic slow turn: triangulateNew with a pass\'s pairs does each frame pair once', async () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 40, overlap: 3, spin: { at: 0.5, frames: 20, deg: 60, step: 0.05 } });
+  const mapper = new SequentialMapper(scene.input);
+  await mapper.run();
+  const reg = [...mapper.poses.keys()].filter(k => mapper.poses[k]), pairs = new Set();
+  for (const k of reg) for (const e of mapper.adj[k]) if (mapper.poses[e.other] && mapper.segment[e.other] === mapper.segment[k]) pairs.add(Math.min(k, e.other) * mapper.n + Math.max(k, e.other));
+  const seen = new Set();
+  for (const k of reg) mapper.triangulateNew(k, seen);
+  let reproj = 0, walks = 0;
+  const re = mapper.reprojErr, tt = mapper.triangulateTrack;
+  mapper.reprojErr = function (...a) { reproj++; return re.apply(this, a); };
+  mapper.triangulateTrack = function (...a) { walks++; return tt.apply(this, a); };
+  let created = 0;
+  for (const k of reg) created += mapper.triangulateNew(k, seen);
+  const tag = `${pairs.size} frame pairs, ${seen.size} done; again: ${created} points, ${reproj} reprojections, ${walks} track walks`;
+  assert(pairs.size > reg.length && seen.size === pairs.size, tag);
+  assert(created === 0 && reproj === 0 && walks === 0, tag);
+});
+
+// The pass with a minRatio (COLMAP's re_min_ratio): only the frame pairs whose matches are under that much one point already
+Deno.test('mapper, synthetic slow turn: triangulateNew with a minRatio does only the pairs under it', async () => {
+  const scene = makeSyntheticScene({ ...BASE, numFrames: 40, overlap: 3, spin: { at: 0.5, frames: 20, deg: 60, step: 0.05 } });
+  const mapper = new SequentialMapper(scene.input);
+  await mapper.run();
+  const reg = [...mapper.poses.keys()].filter(k => mapper.poses[k]), all = new Set(), under = new Set();
+  for (const k of reg) for (const e of mapper.adj[k]) {
+    if (k > e.other || !mapper.poses[e.other] || mapper.segment[e.other] !== mapper.segment[k]) continue;
+    let n = 0;
+    for (let m = 0; m < e.a.length; m++) { const p = mapper.kpPoint[k][e.a[m]]; if (p >= 0 && p === mapper.kpPoint[e.other][e.b[m]]) n++; }
+    all.add(k * mapper.n + e.other);
+    if (n < 0.9 * e.a.length) under.add(k * mapper.n + e.other);
+  }
+  const seen = new Set();
+  for (const k of reg) mapper.triangulateNew(k, seen, 0.9);
+  const tag = `${all.size} frame pairs, ${under.size} under 0.9 triangulated, ${seen.size} done`;
+  assert(under.size > 0 && under.size < all.size, tag);
+  assert(seen.size === under.size && [...seen].every(p => under.has(p)), tag);
+});
+
+// Global BAs: each time a segment has grown by globalBARatio, from globalBAMinFrames on (30 frames: at 20, 22, 25, 28)
+Deno.test('mapper, synthetic: a global BA each time the segment grows by 10%, from 20 frames', async () => {
+  const { mapper, m } = await mapSynthetic({});
+  const sizes = (mapper.stats.globalBAs ?? []).map(g => g.frames);
+  assert(JSON.stringify(sizes) === '[20,22,25,28]' && mapper.stats.globalAt[0] === 28, `global BAs at ${JSON.stringify(sizes)}`);
+  assert(checkThresholds(m, 'truth').length === 0, `RMS ${(100 * m.rmsCenterRel).toFixed(3)}%`);
+  const { mapper: off } = await mapSynthetic({}, { globalBARatio: null });
+  assert(!off.stats.globalBAs, 'globalBARatio null: none');
+});

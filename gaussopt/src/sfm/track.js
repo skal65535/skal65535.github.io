@@ -8,6 +8,7 @@
 
 import { pyrDown } from './frames.js';
 import { verifyPacked } from './frontend.js';
+import { pacer } from './pace.js';
 
 export const TRACK_DEFAULTS = {
   maxGap: 20,       // keyframes: the farthest two a track matches (the loop stage takes pairs farther apart, loop.js longRange)
@@ -225,13 +226,35 @@ export class PointTracker {
   }
 }
 
+// The tracks' pairs as a project keeps them (worker.js): pairs [i, j, matches' length] a pair, matches one pair's after
+// the other. Typed arrays all through: a video's tracks are tens of millions of matches (alpine_lake_01: 54M), more
+// than a JS array may hold (V8: 150M elements are an invalid array length).
+export function packTrackPairs(trackPairs) {
+  const pairs = new Uint32Array(3 * trackPairs.length), matches = new Uint32Array(trackPairs.reduce((s, p) => s + p.matches.length, 0));
+  let at = 0;
+  trackPairs.forEach((p, q) => {
+    pairs.set([p.i, p.j, p.matches.length], 3 * q);
+    matches.set(p.matches, at);
+    at += p.matches.length;
+  });
+  return { pairs, matches };
+}
+
+export function unpackTrackPairs(pairs, matches) {
+  const out = [];
+  for (let q = 0, at = 0; q < pairs.length; q += 3) { out.push({ i: pairs[q], j: pairs[q + 1], matches: matches.slice(at, at + pairs[q + 2]) }); at += pairs[q + 2]; }
+  return out;
+}
+
 // The pairs with the tracks' matches (trackPairs: PointTracker result's, keyframe indices as `images`'): per pair,
 // the tracks' matches and the SIFT ones of keypoints no track matched, verified again (frontend.js's F check);
 // pairs only the tracks have are added as 'seq'. images: the mapper's ([x, y] keypoints, the added ones included).
+// onProgress(done, total) every 256 pairs, the worker given way to every paceMs (pace.js).
 // Returns { pairs (sorted), stats: { pairs (with tracks), added (matches more than SIFT's) } }.
-export function mergeTrackPairs(pairs, images, trackPairs, { maxError = 4, minInliers = 15, seed = 1 } = {}) {
-  const byKey = new Map(pairs.map(p => [`${p.i},${p.j}`, p])), stats = { pairs: 0, added: 0 };
-  for (const { i, j, matches } of trackPairs) {
+export async function mergeTrackPairs(pairs, images, trackPairs, { maxError = 4, minInliers = 15, seed = 1, onProgress = () => {}, paceMs = 100 } = {}) {
+  const byKey = new Map(pairs.map(p => [`${p.i},${p.j}`, p])), stats = { pairs: 0, added: 0 }, pace = pacer(paceMs);
+  for (const [n, { i, j, matches }] of trackPairs.entries()) {
+    if (n % 256 === 0) { onProgress(n, trackPairs.length); await pace(); }
     const key = `${i},${j}`, old = byKey.get(key), raw = Array.from(matches), tracked = new Set();
     for (let q = 0; q < matches.length; q += 2) tracked.add(matches[q]);
     if (old) for (let q = 0; q < old.matches.length; q += 2) if (!tracked.has(old.matches[q])) raw.push(old.matches[q], old.matches[q + 1]);
@@ -248,5 +271,6 @@ export function mergeTrackPairs(pairs, images, trackPairs, { maxError = 4, minIn
     stats.added += m.length / 2 - (old ? old.matches.length / 2 : 0);
     byKey.set(key, { i, j, type: old?.type ?? 'seq', F: res.F, matches: m });
   }
+  onProgress(trackPairs.length, trackPairs.length);
   return { pairs: [...byKey.values()].sort((a, b) => a.i - b.i || a.j - b.j), stats };
 }

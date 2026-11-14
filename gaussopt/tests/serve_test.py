@@ -72,6 +72,20 @@ class ServeProjects(unittest.TestCase):
         self.assertEqual(self.request("GET", "/project/jardin/images/t0000000.jpg?optional"), (204, b""))
         self.assertEqual(self.request("PUT", "/project/jardin/a.txt", b"x", {"Origin": None})[0], 200)  # no Origin: not a browser page
 
+    # a file in pieces (?append=offset, &last=1): nothing at its path until the last, a piece out of order refused
+    def test_write_in_pieces(self):
+        path = "/project/big/cache/features.gosfm"
+        self.assertEqual(self.request("PUT", f"{path}?append=0", b"abc")[0], 200)
+        self.assertEqual(self.request("PUT", f"{path}?append=3", b"de")[0], 200)
+        self.assertFalse((self.root / "big" / "cache" / "features.gosfm").exists())
+        self.assertEqual(self.request("PUT", f"{path}?append=9", b"x")[0], 400)
+        self.assertEqual(self.request("PUT", f"{path}?append=5&last=1", b"f")[0], 200)
+        self.assertEqual((self.root / "big" / "cache" / "features.gosfm").read_bytes(), b"abcdef")
+        self.assertEqual((self.root / "big" / "cache" / "features.gosfm").stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.root / "big" / "cache" / ".features.gosfm.part").exists())
+        self.assertEqual(self.request("PUT", f"{path}?append=0&last=1", b"g")[0], 200)  # written again, whole
+        self.assertEqual((self.root / "big" / "cache" / "features.gosfm").read_bytes(), b"g")
+
     def test_foreign_writes_refused(self):
         self.assertEqual(self.request("PUT", "/project/p/x.txt", b"x", {"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(self.request("PUT", "/project/p/x.txt", b"x", {"Host": "evil.example"})[0], 403)

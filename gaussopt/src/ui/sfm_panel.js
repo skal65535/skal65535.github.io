@@ -13,7 +13,9 @@ import { loadColmapFromMemory, setPose, valSplitOf } from '../colmap.js';
 import { robustUmeyama } from '../sfm/align.js';
 import { compose, inverse, apply, fromPose, toPose } from '../sfm/sim3.js';
 import { rotationAngle } from '../sfm/linalg.js';
-import { SESSION_DEFAULTS } from '../sfm/defaults.js';
+import { SESSION_DEFAULTS, KEYFRAME_KEYS, CAMERA_KEYS } from '../sfm/defaults.js';
+import { readTelemetry, joinTelemetry } from '../sfm/flight.js';
+import { blobReader } from '../sfm/mp4.js';
 import { DirStore } from '../project/store.js';
 import { downloadBlob } from './download.js';
 
@@ -21,21 +23,26 @@ import { downloadBlob } from './download.js';
 const STRIP_COLORS = { kept: 'rgba(148, 163, 184, 0.9)', blurry: '#f87171', zoom: '#a78bfa' };
 import { IDENTITY4 } from '../math.js';
 import { urlOptions as urlOptionsOf } from '../url.js';
-import { isPhoto, chooseFiles } from './files.js';
+import { isPhoto, isVideo, chooseFiles } from './files.js';
 import { SCORE_CSS } from './frames.js';
+import { optionsChanged } from './phases.js';
 
 // progress stages (worker.js, pipeline.js, mapper.js, reconstruct.js); total 0: no count
 const STAGES = { analyze: 'analyzing frames', features: 'keyframes + SIFT', match: 'matching', register: 'mapping: registered',
                  init: 'mapping: finding an initial pair', track: 'tracking points', loopMatch: 'matching loop candidates', loops: 'closing loops', refine: 'refining windows',
-                 retriangulate: 'retriangulating', lateMerge: 'merging segments', repair: 'repairing stretches', undistort: 'undistorting' };
+                 retriangulate: 'retriangulating: keyframes', flowJoin: 'joining turns in place', loopDetect: 'finding loop candidates',
+                 trackMerge: 'adding the tracked matches: pairs', loopMerge: 'closing loops: pieces merged, of at most', loopVerify: 'closing loops: loop pairs checked',
+                 poseGraph: 'closing loops: pose graphs', loopFuse: 'closing loops: tracks fused, loops', filterPoints: 'retriangulating: checking the points', lateMerge: 'merging segments', repair: 'repairing stretches', undistort: 'undistorting' };
 const SCORE_ABGR = { green: 0xff80de4a, amber: 0xff24bffb, red: 0xff7171f8 }, SELECTED_ABGR = 0xffffffff;
 
 const DEFAULTS = { ...SESSION_DEFAULTS, autoSend: true, fixFocal: true };
+const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k]]));
 
 // Tooltips of the video, keyframes and cameras controls (mkGui tips: by key, or by folder name)
 const TIPS = {
   source: 'the video the keyframes and cameras come from',
-  pick: 'open another video file (the current session is replaced)',
+  pick: 'open another video file (the current session is replaced); several videos of one place: picked together, ' +
+        'mapped as one (in the order picked, each one\'s keyframes after the one before)',
   status: 'what this step is doing, or its last result',
   'Frames (S0)': 'which video frames become keyframes: sampled, scored for sharpness, picked by motion',
   sampleFps: 'frames per second of the video looked at (sharpness and motion are measured on these)',
@@ -51,6 +58,8 @@ const TIPS = {
   model: 'which cameras the trainer has: the current model, or an older one (before repairs)',
   autoSend: 'start training with the cameras as soon as they are found',
   autoRepair: 'once the cameras are found, run Repair all (one undo reverts it)',
+  trace: 'record the mapping as it happens for the SfM theatre (◈ SfM over the view): each keyframe placed, each bundle ' +
+         'adjustment, each loop closed and piece merged, played live and kept in the project to replay',
   track: 'follow each keyframe\'s points through every frame of the video to the next keyframes (a diamond search, then ' +
          'sub-pixel): a point is matched across many keyframes instead of a few, which keeps the map\'s scale from drifting. ' +
          'A third pass over the video',
@@ -75,6 +84,8 @@ const TIPS = {
   'Features & matching (S1–S2)': 'SIFT features and which keyframe pairs are matched',
   maxFeatures: 'most SIFT features per keyframe',
   siftPeak: 'SIFT contrast threshold (the DoG peak); lower: more features on low-contrast frames (a thermal camera)',
+  rootSift: 'RootSIFT: each descriptor L1-normalized and square-rooted, so the matching compares them by the Hellinger kernel (better matches, the same features)',
+  siftLift: 'the dark tones lifted for SIFT: a shadow\'s texture gives features as a lit one\'s, instead of the highlights taking them all. video: a video\'s frames only (the default), log: photos too, none: as it is',
   window: 'each keyframe is matched to the next W ones (also the size of the bundle adjustment windows)',
   loops: 'look for loop closures: keyframes far apart in time that see the same place',
   'Camera & mapping (S2–S4)': 'intrinsics and the mapper',
@@ -110,10 +121,14 @@ export class SfmPanel {
     this.o = { ...DEFAULTS, ...known(app.project?.manifest.settings?.sfm), ...urlOptions() };
     this.state = { source: '(no video)', status: 'idle', selection: '(none)', model: '' };
     this.worker = null;
-    this.file = null;           // the open video (null for a .gosfm alone, or photos)
+    this.file = null;           // the open video (null for a .gosfm alone, or photos); several: the first
+    this.files = null;          // several videos of one place, mapped as one (worker.js clips); null: one
     this.photos = null;         // the open photo set: [File] (DESIGN-sfm §13), null for a video
     this.videoName = null;      // the open video's name, or the one a .gosfm was made from
     this.keyframeCount = null;  // keyframes of the last selection + features (worker 'keyframes')
+    this.ranWith = { keyframes: null, cameras: null };  // the options of the keyframes and cameras shown (KEYFRAME_KEYS, CAMERA_KEYS), null: not known
+    this.runOptions = null;     // the options of the run going (or last)
+    this.progress = null;       // { done, total } of the run's stage going (worker 'progress')
     this.result = null;     // last { sparse, images, masks, summary } from the worker
     this.quality = null;    // last per-keyframe scores
     this.selected = [];     // selected keyframe names (time order)
@@ -195,6 +210,8 @@ export class SfmPanel {
     const fm = cams.addFolder('Features & matching (S1–S2)', { collapsed: true });
     fm.add(o, 'maxFeatures', [1024, 2048, 4096, 8192, 16384]).name('max features');
     fm.add(o, 'siftPeak', 0.001, 0.02, 0.0001).name('SIFT contrast');
+    fm.add(o, 'siftLift', ['none', 'video', 'log']).name('SIFT dark lift');
+    fm.add(o, 'rootSift').name('RootSIFT');
     fm.add(o, 'window', 3, 30, 1).name('window W');
     fm.add(o, 'loops').name('loop closure');
     const cam = cams.addFolder('Camera & mapping (S2–S4)', { collapsed: true });
@@ -203,6 +220,7 @@ export class SfmPanel {
     cam.add(o, 'hfovDeg', 0, 120, 1).name('HFOV ° (0 = estimate)');
     cam.add(o, 'sweeps', 0, 4, 1).name('refinement sweeps');
     cam.add(o, 'autoRepair').name('repair all when found');
+    cam.add(o, 'trace').name('record for the SfM theatre');
 
     const exp = mkGui(document.getElementById('export-sfm'), { draggable: false, tips: TIPS }).addFolder('Cameras (video)');
     this.exportBtn = exp.add({ exp: () => this.exportFolder() }, 'exp').name('Export gs/ folder…');
@@ -304,30 +322,59 @@ export class SfmPanel {
   // reopen: a new worker (after Stop) opens the current video again
   _worker(reopen = true) {
     if (this.worker) return this.worker;
-    this.worker = new Worker(new URL('../sfm/worker.js', import.meta.url), { type: 'module' });
+    // ?sfm_gpuLedger: the worker's GPU buffers and textures in its log (sfm/gpu_ledger.js)
+    const ledger = new URLSearchParams(location.search).has('sfm_gpuLedger') ? '?gpuLedger' : '';
+    this.worker = new Worker(new URL(`../sfm/worker.js${ledger}`, import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }) => this._message(data);
     this.worker.onerror = (e) => { this._fail(e.message || 'worker failed to start'); };
     if (this.storeDesc) this.worker.postMessage({ type: 'store', store: this.storeDesc });
-    if (reopen && this.file) this.worker.postMessage({ type: 'open', file: this.file });
+    if (reopen && this.file) this.worker.postMessage({ type: 'open', file: this.file, ...(this.files ? { files: this.files } : {}) });
     if (reopen && this.photos) this.worker.postMessage({ type: 'photos', files: this.photos });
     return this.worker;
   }
 
-  // file: a video, a .gosfm, or [File] photos (a photo set)
+  // file: a video, a .gosfm, [File] photos (a photo set) or [File] videos (of one place)
   load(file) {
-    if (Array.isArray(file)) return this._loadPhotos(file);
+    if (Array.isArray(file) && file.length > 1 && file.every(f => isVideo(f) && !/\.gosfm$/i.test(f.name))) return this._loadVideos(file);
+    if (Array.isArray(file)) return file.length === 1 ? this.load(file[0]) : this._loadPhotos(file);
     if (this.running || this.busy) { this._log(`${file.name}: stop the current work first`, 'warn'); return; }
     this.file = file;
+    this.files = null;
     this.photos = null;
     this._opening(file.name, 'opening…');
     const project = /\.gosfm$/i.test(file.name);  // a saved session: repairs, no re-run without the video
     if (project) this.file = null;
     (this.worker ?? this._worker(false)).postMessage({ type: project ? 'project' : 'open', file });
+    if (!project) readTelemetry(blobReader(file)).then(tel => { if (this.file === file && tel) this.app.setTelemetry(tel); })
+      .catch(e => this._log(`${file.name}: no telemetry read (${e.message})`, 'warn'));
+  }
+
+  // Several videos of one place: one map (worker.js clips); their GPS tracks joined once their offsets are known
+  _loadVideos(files) {
+    if (this.running || this.busy) { this._log(`${files.length} videos: stop the current work first`, 'warn'); return; }
+    this.file = files[0];
+    this.files = files;
+    this.photos = null;
+    this._opening(files.map(f => f.name).join(' + '), 'opening…');
+    (this.worker ?? this._worker(false)).postMessage({ type: 'open', file: files[0], files });
+  }
+
+  // The open videos' GPS tracks as one (videos: the worker's, their offsets)
+  async _joinTelemetry(videos) {
+    const files = this.files;
+    try {
+      const tels = await Promise.all(files.map(f => readTelemetry(blobReader(f)).catch(() => null)));
+      const tel = joinTelemetry(tels.map((t, k) => ({ tel: t, offset: videos[k].offset })));
+      if (this.files === files && tel) this.app.setTelemetry(tel);
+    } catch (e) {
+      this._log(`no telemetry read (${e.message})`, 'warn');
+    }
   }
 
   _loadPhotos(files) {
     if (this.running || this.busy) { this._log(`${files.length} photos: stop the current work first`, 'warn'); return; }
     this.file = null;
+    this.files = null;
     this.photos = files;
     this.filterChanges = 0;  // a new set: no filter change to undo
     this._opening(`${files.length} photos`, 'reading the photos…');
@@ -337,8 +384,11 @@ export class SfmPanel {
   // A new source (video, project, photo set): nothing of the previous one is shown
   _opening(name, status) {
     this.app.setSceneTransform(IDENTITY4, { save: false });  // another scene: not leveled (a project's own comes last, project_panel.js)
+    this.app.setTelemetry(null);  // nor its GPS track (a video's comes from load, a project's from flight.json)
     this.videoName = name;
     this.result = this.quality = this.frameAnalysis = this.duration = this.keyframeCount = null;
+    this.ranWith = { keyframes: null, cameras: null };
+    if (!this.restoring) this.app.saved = this.app.saved.project ? { project: this.app.saved.project } : {};  // the previous source's saves
     this.selected = [];
     this.state.source = name;
     this.state.status = status;
@@ -359,6 +409,13 @@ export class SfmPanel {
     this.busy = true;
     this._enable();
     return new Promise((resolve) => { this.flushing = resolve; this.worker.postMessage({ type: 'flush' }); });
+  }
+
+  // The attached project's session over the open video or photos (they stay: Run maps them again)
+  restoreSaved() {
+    this.restoring = true;
+    this.state.status = 'restoring the project…';
+    this._worker(false).postMessage({ type: 'restoreSaved' });
   }
 
   // A project's saved session, without its video (repairs; re-runs need the video)
@@ -382,13 +439,36 @@ export class SfmPanel {
     const v = this.videoInfo ?? {}, f = this.file;
     return { name: v.name ?? this.videoName, size: f?.size ?? null, lastModified: f?.lastModified ?? null,
              duration: v.duration ?? null, width: v.width ?? null, height: v.height ?? null, fps: v.fps ?? null,
-             ...(this.photos ? { photos: this.photos.length } : {}) };
+             ...(this.photos ? { photos: this.photos.length } : {}), ...(v.videos ? { videos: v.videos.map(({ name, duration, offset, start, end }) => ({ name, duration, offset, start, end })) } : {}) };
   }
 
   // The Keyframes phase of the manifest (null before the keyframes exist)
   keyframesRecord() {
     const { sampleFps, spacing, minRate, blurRel, zoomRate, maxDim, maxFeatures } = this.o;
     return this.keyframeCount ? { phases: { keyframes: { count: this.keyframeCount, options: { sampleFps, spacing, minRate, blurRel, zoomRate, maxDim, maxFeatures } } } } : null;
+  }
+
+  // The done steps whose options changed since they ran: { keyframes?, cameras? } (phases.js optionsChanged)
+  changedOptions() {
+    if (this.running) return {};
+    const out = {}, kf = optionsChanged(this.ranWith.keyframes, this.o, KEYFRAME_KEYS), cams = optionsChanged(this.ranWith.cameras, this.o, CAMERA_KEYS);
+    if (kf && !this.photos) out.keyframes = kf;  // a photo set: no Keyframes step
+    if (cams) out.cameras = cams;
+    return out;
+  }
+
+  // A step's options back to those it ran with (the stepper's Revert the options)
+  revertOptions(phase) {
+    const ran = this.ranWith[phase];
+    if (!ran) return;
+    this.app.setOptions(this.o, ran);
+    for (const g of this.guis) g.updateDisplay();
+  }
+
+  // The options of a project's keyframes and cameras (project.json), as they ran
+  ranFrom(phases) {
+    this.ranWith = { keyframes: phases.keyframes?.options ?? null,
+                     cameras: phases.cameras ? pick(phases.cameras, CAMERA_KEYS.filter(k => k in phases.cameras)) : null };
   }
 
   // The options the controls set, for project.json (app.js settings())
@@ -422,6 +502,8 @@ export class SfmPanel {
     if (!this.file && !this.photos) { this._pickFile(); return; }
     this.running = true;
     this.runUntil = until;
+    this.runOptions = { ...this.o };
+    this.progress = null;
     this.quality = null;
     this.keyframeCount = null;
     if (this.app.params.training) this._log('training paused while the video is processed (one GPU)', 'warn');
@@ -584,22 +666,38 @@ export class SfmPanel {
       }
       this.state.source = `${v.name} — ${v.width}×${v.height}, ${v.fps.toFixed(2)} fps, ${v.duration.toFixed(1)} s`;
       if (this.app.project) this._record({ source: this.sourceInfo() });
+      if (v.videos && this.files) {
+        this._joinTelemetry(v.videos);
+        this._log(`${v.videos.length} videos of one place, mapped as one: ${v.videos.map(c => `${c.name} at ${c.offset.toFixed(1)} s`).join(', ')}`);
+      }
       this._log(`${v.name}: ${v.codec}, ${v.width}×${v.height}${v.rotation ? ` (rotated ${v.rotation}°)` : ''}, ` +
                 `${v.frames} frames, ${v.fps.toFixed(2)} fps, ${v.duration.toFixed(1)} s`);
+    } else if (m.type === 'trace') {  // the mapping's events (sfm/trace.js), for the theatre
+      const th = this.app.theatre;
+      if (m.reset) th.reset(); else if (m.replay) th.load(m.replay); else th.push(m.events);
+    } else if (m.type === 'saved') {  // a session file into the project, or the browser's storage
+      const phase = { 'cache/features.gosfm': 'keyframes', 'cache/model.gosfm': 'cameras' }[m.path];
+      if (phase && this.storeDesc?.type !== 'memory') this.app.stageSaved(phase, { file: m.path, where: m.where });  // memory: a .zip being packed
     } else if (m.type === 'log') {
       this._log(m.text, m.level || 'info');
     } else if (m.type === 'progress') {
+      this.progress = { done: m.done, total: m.total };
       this.state.status = `${STAGES[m.stage] ?? m.stage}${m.total ? ` ${m.done}/${m.total}` : '…'}`;
     } else if (m.type === 'selection') {
       this.frameAnalysis = m;
       this._drawStrip();
     } else if (m.type === 'keyframes') {  // selection + features done (or restored)
       this.keyframeCount = m.count;
+      if (this.running) this.ranWith.keyframes = pick(this.runOptions, KEYFRAME_KEYS);
+      else if (this.restoring) this.ranFrom(this.app.project?.manifest.phases ?? {});  // as the project recorded them
       if (!this.restoring) this._record(this.keyframesRecord());
       this.app.shell.refresh();
     } else if (m.type === 'thumbs') {
-      this.app.frames.set(m.frames, m.aspect);
-      if (this.app.shell.current === 'keyframes' || (this.photos && this.app.shell.current === 'video')) this.app.frames.toggle(true);
+      if (m.append) this.app.frames.add(m.frames, m.aspect);  // more keyframes of a run: the view left as it is
+      else {
+        this.app.frames.set(m.frames, m.aspect);
+        if (this.app.shell.current === 'keyframes' || (this.photos && this.app.shell.current === 'video')) this.app.viewSwitch.set('frames');
+      }
       this._select(this.selected);
     } else if (m.type === 'quality') {
       this.quality = m.quality;
@@ -622,6 +720,7 @@ export class SfmPanel {
       this._enable();
     } else if (m.type === 'result') {
       this.result = m;
+      if (this.runOptions && this.running) this.ranWith.cameras = pick(this.runOptions, CAMERA_KEYS);
       const s = m.summary;
       this.busy = !!this.flushing;  // a flush goes on until 'flushed'
       this._done(`done: ${s.exported} cameras, ${s.points} points`);
@@ -638,6 +737,7 @@ export class SfmPanel {
                 `${s.points} points, focal ${s.focal.toFixed(1)} px`, 'ok');
     } else if (m.type === 'restored') {
       this.restored = true;
+      this.restoredRepaired = m.repaired;  // false: saved before the run's repair
       this.state.status = 'restored the saved session';
       if (this.o.autoSend && !this.restoring) this.requestSend();
       this.restoring = false;
@@ -648,6 +748,7 @@ export class SfmPanel {
       this.flushing = null;
     } else if (m.type === 'idle') {
       this.busy = false;
+      this.restoring = false;  // a restore that found no model
       if (this.running) {  // a run that stopped early (until)
         this._done(m.status);
         if (this.runUntil === 'keyframes') this.app.shell.advance('keyframes');
@@ -708,6 +809,11 @@ export class SfmPanel {
         ctx.fillStyle = STRIP_COLORS[status[i]] ?? 'rgba(148, 163, 184, 0.3)';
         ctx.fillRect(x, 32 - h, Math.max(1, c.width / sharpness.length), h);
       });
+    }
+    const videos = this.videoInfo?.videos ?? [];
+    for (let k = 1; k < videos.length; k++) {  // several videos: a line in the gap between two
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.6)';
+      ctx.fillRect(this._x((videos[k - 1].end + videos[k].start) / 2), 0, 1, c.height);
     }
     if (!this.quality) return;
     const sel = new Set(this.selected), main = this.quality.main;

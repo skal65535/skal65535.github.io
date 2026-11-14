@@ -7,7 +7,7 @@
 //   sharpness.csv      every sampled frame: sharpness, motion, keyframe status
 //   sparse/0/          the distorted model of images/ (cameras.bin with the SfM camera, e.g. OPENCV)
 //   gs/                the trainer's dataset: undistorted images/ + sparse/ (PINHOLE)
-//   splats/            snapshots (.gosnap), .ply and .octree.json checkpoints
+//   splats/            snapshots (.scene.glb with the training state; older ones .gosnap), .ply and .octree.json checkpoints
 //   cache/             the SfM session (features.gosfm, model.gosfm), to resume repairs
 // The files are the truth: the manifest only records what made them. It is written last after
 // each change, so an interrupted write leaves the previous one.

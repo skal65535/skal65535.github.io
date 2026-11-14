@@ -1,6 +1,6 @@
 // render.js — Pure draw layer for Gauss-Opt:
 //   - Free-view & COLMAP-pose splat renderer (shapes + diagnostic heatmaps)
-//   - 3D wireframe overlays (Loose Octree boxes, COLMAP camera frustums, camera path, WLBG split vectors)
+//   - 3D wireframe overlays (Loose Octree boxes, COLMAP camera frustums, camera path, GPS track, WLBG split vectors)
 //   - Split-screen Target / Render / Residual comparison
 // (the side canvas's telemetry: ui/telemetry.js; the fly-to: fly.js)
 "use strict";
@@ -32,6 +32,7 @@ const FRUSTUM_EDGES = [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [
 const FRUSTUM_TRIS  = [[1, 2, 3], [1, 3, 4], [0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
 const COL_TRAIN = 0xff22ccff, COL_VAL = 0xffffff00, COL_ACTIVE = 0xff22ff22, COL_SPLIT = 0xff66ff66;  // ABGR
 const COL_PATH = 0xffff55ff;  // camera path: magenta
+const COL_GPS = 0xff0099ff;   // the video's GPS track: orange
 
 function pointInTri(u, v, a, b, c) {
   const d1 = (u - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (v - b[1]);
@@ -144,18 +145,19 @@ export class GaussOptRenderer {
   // Rebuild the line buffer (octree leaves + camera frustums + camera path + WLBG split vectors)
   // and frustum quads. splitVectors: flat [x0, y0, z0, x1, y1, z1, ...] segments.
   // The camera path joins the camera centers in pathOrder (indices into images; null: image-name
-  // order, = capture order for video frames and photo sets; DESIGN-sfm §13.3 P7).
+  // order, = capture order for video frames and photo sets; DESIGN-sfm §13.3 P7). gpsTrack: a polyline in the world
+  // ([[x, y, z]]; flight.js alignTrack).
   updateWireframes({
     octree, images, activeCamIdx = -1,
     showOctree = true, showLoose = false, showCameras = true, showPath = false,
-    frustumScale = 1.0, splitVectors = null, pathOrder = null,
+    frustumScale = 1.0, splitVectors = null, pathOrder = null, gpsTrack = null,
   }) {
     const octVerts = (showOctree && octree && octree.leaves.length > 0) ? octree.buildWireframeVertices({ showLoose }) : null;
     const numCams  = (showCameras && images) ? images.length : 0;
     const numSplit = splitVectors ? Math.floor(splitVectors.length / 6) : 0;
     const path = (showPath && images?.length > 1) ? (pathOrder ?? images.map((_, i) => i)).map(i => images[i].center) : [];
-    const numPath = Math.max(0, path.length - 1);
-    const totalVerts = (octVerts ? octVerts.vertexCount : 0) + numCams * 16 + numSplit * 2 + numPath * 2;
+    const numPath = Math.max(0, path.length - 1), numGps = Math.max(0, (gpsTrack?.length ?? 0) - 1);
+    const totalVerts = (octVerts ? octVerts.vertexCount : 0) + numCams * 16 + numSplit * 2 + (numPath + numGps) * 2;
 
     const verts = new Float32Array(totalVerts * 4);
     const vu32  = new Uint32Array(verts.buffer);
@@ -186,6 +188,7 @@ export class GaussOptRenderer {
 
     for (let i = 0; i < 2 * numSplit; i++) put(splitVectors, COL_SPLIT, 3 * i);
     for (let i = 0; i < numPath; i++) { put(path[i], COL_PATH); put(path[i + 1], COL_PATH); }
+    for (let i = 0; i < numGps; i++) { put(gpsTrack[i], COL_GPS); put(gpsTrack[i + 1], COL_GPS); }
 
     this.wireCount = totalVerts;
     if (totalVerts === 0) return;

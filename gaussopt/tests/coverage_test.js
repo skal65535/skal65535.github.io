@@ -52,8 +52,8 @@ Deno.test('coverage: the advice lists the worst gaps first, maxGaps of them', as
   await mapper.run();
   const c = coverage(mapper);
   assert(c.inMain === 10 && c.gaps.length === 2, `${c.inMain} in main, gaps ${JSON.stringify(c.gaps)}`);
-  const worst = [...c.gaps].sort((a, b) => b.turnDeg - a.turnDeg)[0];  // both step < maxStep here: the turn decides
-  assert(c.gaps.every(g => g.step < 0.5 && g.turnDeg > 30), JSON.stringify(c.gaps));
+  const worst = [...c.gaps].sort((a, b) => b.turnDeg - a.turnDeg)[0];  // each gap further over maxTurnDeg (30) than over maxStep (0.5): the turn decides
+  assert(c.gaps.every(g => g.turnDeg > 30 && g.turnDeg / 30 > g.step / 0.5), JSON.stringify(c.gaps));
   const advice = coverageAdvice(c, name, { maxGaps: 1 });
   const listed = advice.filter(s => s.startsWith('between'));
   assert(listed.length === 1 && listed[0].startsWith(`between ${name(worst.a)} and ${name(worst.b)}`), advice.join('\n'));

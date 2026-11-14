@@ -14,7 +14,7 @@ await run(async (page) => {
   await appReady(page);
   const r = await page.evaluate(async (TAU) => {
     const app = window.app, tr = app.trainer, P = app.params;
-    const { train } = await import('./e2e/page_util.js');
+    const { train } = await import('./e2e/page_util.js'), { MOMENT_FLOATS: M } = await import('./src/octree.js');
     await train(app, 300);
     Object.assign(P, { opt_method: 'adam', enable_rebalance: false, drop_rate: 0 });
     const v = tr.trainViews[0], img = tr.images[v], k = tr.intrinsics(img), W = tr.trainW, H = tr.trainH, bpr = tr.rowPitch;
@@ -29,23 +29,23 @@ await run(async (page) => {
       }
       tr.device.queue.writeTexture({ texture: gtTex }, y, { bytesPerRow: bpr }, [W, H]);
       tr.device.queue.writeBuffer(tr.grads2dBuf, 0, new Float32Array(tr.count * 12));
-      tr.device.queue.writeBuffer(tr.momentsBuf, 0, new Float32Array(tr.count * 12));
+      tr.device.queue.writeBuffer(tr.momentsBuf, 0, new Float32Array(tr.count * M));
       tr._writeUniforms(img, k, [0, 0, 0, 0, 0, 0, 0, 1, 0.03, 1, Math.log(10), 0, 0, 0, 0, tau]);
       tr._runPasses(gtTex);
-      const [g, m] = await tr._readback('robust_g2', [{ buf: tr.grads2dBuf, bytes: tr.count * 48 }, { buf: tr.momentsBuf, bytes: tr.count * 48 }]);
+      const [g, m] = await tr._readback('robust_g2', [{ buf: tr.grads2dBuf, bytes: tr.count * 48 }, { buf: tr.momentsBuf, bytes: tr.count * M * 4 }]);
       return { g: g.slice(), m: m.slice() };
     };
-    // the ratio of a's slots to b's, least squares over the splats
-    const ratio = (a, b, slots) => {
+    // the ratio of a's slots to b's (stride floats a splat: grads_2d 12, the moments M), least squares over the splats
+    const ratio = (a, b, slots, stride = 12) => {
       let ab = 0, bb = 0;
-      for (let i = 0; i < tr.count; i++) for (const j of slots) { ab += a[i * 12 + j] * b[i * 12 + j]; bb += b[i * 12 + j] ** 2; }
+      for (let i = 0; i < tr.count; i++) for (const j of slots) { ab += a[i * stride + j] * b[i * stride + j]; bb += b[i * stride + j] ** 2; }
       return ab / bb;
     };
     const out = [];
     for (const d of [5, 100]) {
       const g0 = await grads(d, 0), g1 = await grads(d, TAU);
       out.push({ d, want: 1 / (1 + (d / 255 / TAU) ** 2), grad: ratio(g1.g, g0.g, [0, 1, 2, 3, 4, 5, 6, 7, 8]),
-                 view: ratio(g1.g, g0.g, [9]), err: ratio(g1.m, g0.m, [2]) });
+                 view: ratio(g1.g, g0.g, [9]), err: ratio(g1.m, g0.m, [2], M) });
     }
     tr._pass = pass;
     return out;

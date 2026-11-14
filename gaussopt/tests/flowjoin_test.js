@@ -16,8 +16,8 @@ import { tablePairSource } from './session_util.js';
 const BASE = { numFrames: 40, maxFeatures: 1000, numGround: 8000, numBoxes: 8, numFar: 1000 };
 
 // A straight flight with a 180 deg yaw in place halfway: the map cannot follow the turn
-function turnInPlace() {
-  const scene = makeSyntheticScene({ ...BASE, path: 'line', spin: { at: 0.5, frames: 12, deg: 180 } });
+function turnInPlace(spin = {}, scene0 = {}) {
+  const scene = makeSyntheticScene({ ...BASE, ...scene0, path: 'line', spin: { at: 0.5, frames: 12, deg: 180, ...spin } });
   const [fx, fy, cx, cy] = scene.truth.camera.params;
   const K = [fx, 0, cx, 0, fy, cy, 0, 0, 1], Ki = [1 / fx, 0, -cx / fx, 0, 1 / fy, -cy / fy, 0, 0, 1], R0 = scene.truth.images[0].R;
   scene.input.images.forEach((im, k) => {
@@ -31,7 +31,7 @@ function turnInPlace() {
 Deno.test('flow join: the pieces before and after a turn in place, apart without it, one map with it', async () => {
   const scene = turnInPlace();
   const run = async (flowJoin) => {
-    const { model, stats } = await reconstruct(scene.input, { loops: false, flowJoin });  // no loop closure: the flow alone joins them
+    const { model, stats } = await reconstruct(scene.input, { loops: false, flowJoin, pairTypes: ['seq'] });  // no loop closure, no loop pairs while mapping: the flow alone joins them
     return { stats, m: compareModels(model, scene.truth.model) };
   };
   const tag = ({ stats, m }) => `${stats.numSegments} segments, ${m.numCommon} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
@@ -45,7 +45,7 @@ Deno.test('flow join: a segment holding pieces on both sides of another\'s, the 
   // the two pieces of the turn, each moved onto the truth; the last frames of the later one handed to the
   // earlier one's segment (as a loop merge of a stretch seen again would): the segments interleave in time,
   // then the later one is moved off by a similarity for the join to undo
-  const scene = turnInPlace(), { mapper } = await mapSequential(scene.input, {});
+  const scene = turnInPlace(), { mapper } = await mapSequential(scene.input, { pairTypes: ['seq'] });  // no loop pairs: the pieces apart
   const segs = [...new Set(mapper.segment.filter((s, k) => mapper.poses[k]))];
   assert(segs.length === 2, `segments ${segs}`);
   for (const seg of segs) {
@@ -54,12 +54,53 @@ Deno.test('flow join: a segment holding pieces on both sides of another\'s, the 
   }
   const [early, late] = segs.sort((p, q) => mapper.segment.indexOf(p) - mapper.segment.indexOf(q)), n = mapper.n;
   for (let k = n - 5; k < n; k++) mapper.segment[k] = early;
+  // the handed frames' own copies of the tracks they share with the rest of the later piece (a segment's
+  // tracks are its own: the mapper registers and triangulates within one)
+  for (const P of [...mapper.points]) {
+    const mine = P ? [...P.obs].filter(([img]) => img >= n - 5) : [];
+    if (!mine.length || mine.length === P.obs.size) continue;
+    for (const [img] of mine) P.obs.delete(img);
+    mapper.addPoint([...P.X], mine);
+  }
   mapper.transformSegment(late, { s: 2.5, R: [0, -1, 0, 1, 0, 0, 0, 0, 1], t: [3, -1, 7] });
   const stats = joinByFlow(mapper);
   const m = compareModels(mapper.model(), scene.truth.model);
   const tag = `${JSON.stringify(stats.joins)}, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%, rot ${m.medianRotDeg.toFixed(3)} deg`;
   assert(stats.joins.length === 1 && stats.joins[0].from === late && new Set(mapper.segment.filter((s, k) => mapper.poses[k])).size === 1, tag);
   assert(m.rmsCenterRel < 0.005 && m.medianRotDeg < 0.5, tag);
+});
+
+Deno.test('flow join: the scale from the keyframes posed in both pieces, not from their speeds', async () => {
+  // the camera drifting on slowly while it turns (as canyon3.mp4's at 64.5 s), the way after the turn flown
+  // at half the speed: the pieces' speeds next to the gap say nothing of their scales, the frames of each
+  // that see the other's points do
+  const scene = turnInPlace({ step: 0.1, speedAfter: 0.5 });
+  const run = async (options) => {
+    const { mapper } = await mapSequential(scene.input, { pairTypes: ['seq'] });  // no loop pairs: the pieces apart
+    const segs = new Set(mapper.segment.filter((s, k) => mapper.poses[k])).size, stats = joinByFlow(mapper, options);
+    await mapper.refine({ sweeps: 2 });
+    const m = compareModels(mapper.model(), scene.truth.model);
+    return { segs, join: stats.joins[0], m, tag: `${segs} segments, ${JSON.stringify(stats.joins)}, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%` };
+  };
+  const shared = await run({}), speeds = await run({ minShared: Infinity });
+  assert(shared.segs === 2 && shared.join?.by === 'shared' && shared.join.observed > 0, shared.tag);
+  assert(shared.m.numCommon === scene.input.images.length && shared.m.rmsCenterRel < 0.002, shared.tag);
+  assert(speeds.join?.by === 'speed' && speeds.m.rmsCenterRel > 0.02, `by the speeds: ${speeds.tag}`);
+});
+
+Deno.test('flow join by the speeds: a stop, a turn, a hover and the speed back up, by the pieces\' fastest', async () => {
+  // as a drone's (canyon2.mp4 at 73 s): at full speed into the turn, standing still 2 s after it, back to full
+  // speed over 2 s; the speeds of the steps next to the gap compare the cruise with the hover
+  const scene = turnInPlace({ hold: 10, ramp: 10 }, { numFrames: 100, length: 100 });
+  const run = async (options) => {
+    const { mapper } = await mapSequential(scene.input, { pairTypes: ['seq'] });  // no loop pairs: the pieces apart
+    const stats = joinByFlow(mapper, { minShared: Infinity, ...options });
+    await mapper.refine({ sweeps: 2 });
+    const m = compareModels(mapper.model(), scene.truth.model);
+    return { join: stats.joins[0], m, tag: `${JSON.stringify(stats.joins)}, ${m.numCommon} registered, RMS ${(100 * m.rmsCenterRel).toFixed(3)}%` };
+  };
+  const r = await run({});
+  assert(r.join?.by === 'speed' && r.m.numCommon === scene.input.images.length && r.m.rmsCenterRel < 0.01, r.tag);
 });
 
 Deno.test('flow rotation: a rotation homography gives its rotation, a homography of a moving camera none', () => {
@@ -90,7 +131,7 @@ Deno.test('flow join: the keyframes it places are rotation only, not weak, and r
   // the turn's middle frames matched to nothing: the join places them, with no points
   const scene = turnInPlace(), blind = (k) => k >= 23 && k <= 30;
   const input = { ...scene.input, pairs: scene.input.pairs.filter(p => !blind(p.i) && !blind(p.j)) };
-  const s = new SfmSession(input, { pairSource: tablePairSource(input), loops: false });
+  const s = new SfmSession(input, { pairSource: tablePairSource(input), loops: false, mapping: { pairTypes: ['seq'] } });  // no loop pairs: the pieces apart
   const r = await s.reconstruct();
   assert(r.stats.flowJoin.joins.length === 1 && r.stats.flowJoin.joins[0].carried === 8, JSON.stringify(r.stats.flowJoin.joins));
   const placed = (q) => q.frames.filter(f => blind(f.index));

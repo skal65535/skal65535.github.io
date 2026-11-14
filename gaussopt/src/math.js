@@ -41,6 +41,14 @@ export function makeRng(seed) {
   };
 }
 
+// Union-find over 0..n-1 (path halving); a union keeps the smaller root
+export function unionFind(n) {
+  const parent = Int32Array.from({ length: n }, (_, i) => i);
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (i, j) => { const a = find(i), b = find(j); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); };
+  return { find, union };
+}
+
 // ── vec3 ─────────────────────────────────────────────────────────────────────
 export const dot   = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 export const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];

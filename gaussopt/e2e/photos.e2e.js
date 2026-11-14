@@ -43,7 +43,7 @@ await run(async (page) => {
     find: [...document.querySelectorAll('#phase-foot button')].find(b => /Find cameras/.test(b.textContent))?.disabled ?? null,
   }));
   console.log(`Photos phase: ${JSON.stringify(ui)}`);
-  if (ui.title !== 'Photos' || ui.steps.join() !== 'Project,Photos,Cameras,Dome,Train,Export' || ui.timeline || !ui.sheet) fail(`Photos phase: ${JSON.stringify(ui)}`);
+  if (ui.title !== 'Photos' || ui.steps.join() !== 'Project,Photos,Cameras,Dome,Train,Mesh,Export' || ui.timeline || !ui.sheet) fail(`Photos phase: ${JSON.stringify(ui)}`);
   if (!/^p001 · 24 mm · portrait · 0 s$/.test(ui.caption ?? '')) fail(`photo caption: ${ui.caption}`);
   if (ui.find !== false) fail(`Find cameras button: ${ui.find === null ? 'missing' : 'disabled'}`);
   await page.evaluate(() => [...document.querySelectorAll('#phase-foot button')].find(b => /Find cameras/.test(b.textContent)).click());

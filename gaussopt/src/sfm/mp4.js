@@ -1,7 +1,7 @@
 // mp4.js — ISO BMFF (.mp4 / .mov) demuxer for the first video track (DESIGN-sfm §5.1, §5.7):
 // the sample table (offset, size, decode and presentation time, key flag) and a WebCodecs
 // VideoDecoder configuration (codec string, avcC / hvcC description, coded size, rotation) for
-// H.264, HEVC and VP9.
+// H.264, HEVC and VP9; and the samples of a data track by its format (dataTrack: e.g. DJI's djmd telemetry).
 // Reads through `read(offset, length) -> Promise<Uint8Array>`, so a browser File and a Deno file
 // work alike, and only the boxes are read, not the media data.
 "use strict";
@@ -155,28 +155,50 @@ function sampleTable(t, mediaTime) {
   return samples;
 }
 
+// A track's timescale and the media time its presentation starts at (the first edit that maps media time: the
+// B-frame delay)
+function timing(t) {
+  const mdhd = t.get('mdhd')[0], md = view(mdhd);
+  const timescale = mdhd[0] === 1 ? md.getUint32(20) : md.getUint32(12);
+  let mediaTime = 0;
+  const elst = t.get('elst')?.[0];
+  if (elst) {
+    const e = view(elst), v1 = elst[0] === 1;
+    for (let k = 0, o = 8; k < e.getUint32(4); k++, o += v1 ? 20 : 12) {
+      const mt = v1 ? Number(e.getBigInt64(o + 8)) : e.getInt32(o + 4);
+      if (mt >= 0) { mediaTime = mt; break; }
+    }
+  }
+  return { timescale, mediaTime };
+}
+
+// The tracks of an unfragmented file: [index of the trak's boxes] (index())
+async function tracks(reader) {
+  const moov = await readMoov(reader);
+  if (boxes(moov).some(b => b.type === 'mvex')) throw new Error('fragmented MP4 is not supported: remux it, e.g. ffmpeg -i in.mp4 -c copy out.mp4');
+  return boxes(moov).filter(b => b.type === 'trak').map(trak => index(moov, trak.start, trak.end));
+}
+
+// The first track whose sample entry is `format` (e.g. 'djmd'): { timescale, samples: [{ offset, size, pts }] } (pts
+// in timescale units, the video's clock), or null
+export async function dataTrack(reader, format) {
+  for (const t of await tracks(reader)) {
+    const stsd = t.get('stsd')?.[0], entry = stsd && boxes(stsd, 8)[0];
+    if (!entry || fourcc(stsd, entry.start - 4) !== format) continue;
+    const { timescale, mediaTime } = timing(t);
+    return { timescale, samples: sampleTable(t, mediaTime) };
+  }
+  return null;
+}
+
 // Returns { codec, codedWidth, codedHeight, description, rotation, timescale, duration (s),
 //           samples: [{ offset, size, dts, pts, key }] (decode order; pts in timescale units) }
 export async function demux(reader) {
-  const moov = await readMoov(reader);
   const remux = 'remux it, e.g. ffmpeg -i in.mp4 -c copy out.mp4';
-  if (boxes(moov).some(b => b.type === 'mvex')) throw new Error(`fragmented MP4 is not supported: ${remux}`);
-  for (const trak of boxes(moov).filter(b => b.type === 'trak')) {
-    const t = index(moov, trak.start, trak.end);
+  for (const t of await tracks(reader)) {
     const hdlr = t.get('hdlr')?.[0];
     if (!hdlr || fourcc(hdlr, 8) !== 'vide') continue;
-    const mdhd = t.get('mdhd')[0], md = view(mdhd);
-    const timescale = mdhd[0] === 1 ? md.getUint32(20) : md.getUint32(12);
-    // first edit that maps media time: presentation starts there (B-frame delay)
-    let mediaTime = 0;
-    const elst = t.get('elst')?.[0];
-    if (elst) {
-      const e = view(elst), v1 = elst[0] === 1;
-      for (let k = 0, o = 8; k < e.getUint32(4); k++, o += v1 ? 20 : 12) {
-        const mt = v1 ? Number(e.getBigInt64(o + 8)) : e.getInt32(o + 4);
-        if (mt >= 0) { mediaTime = mt; break; }
-      }
-    }
+    const { timescale, mediaTime } = timing(t);
     const samples = sampleTable(t, mediaTime);
     if (!samples.length) throw new Error(`no samples in the video track (fragmented MP4?): ${remux}`);
     const last = samples.reduce((m, x) => Math.max(m, x.pts), 0);

@@ -1,12 +1,16 @@
-// shell.js — The page layout (index.html, gaussopt.css): the phase stepper, the inspector that shows
-// the current phase's controls with its next-step buttons pinned at the bottom, the dock tabs
+// shell.js — The page layout (index.html, gaussopt.css): the phase stepper (each step's state, what it waits
+// for, its progress, when it was saved), the inspector that says what the current phase is and why it is in its state,
+// shows its controls with its next-step buttons pinned at the bottom, and a notice when a phase is saved, the dock tabs
 // (timeline / charts / log), the view toolbar and help, and the 3D canvas fitted to the view.
 // refresh() re-derives the phase states (phases.js) from the app; the DOM changes only when they do.
 "use strict";
 
-import { PHASES, STATE_ICONS, phaseStates, advanceTo, phaseLabel, phaseShown, phaseActions, followRunning } from './phases.js';
+import { PHASES, STATE_ICONS, phaseStates, advanceTo, phaseLabel, phaseShown, phaseActions, followRunning, phaseWhat, phaseNote, savedLine,
+         savedNotice } from './phases.js';
 
-const DOCK_TAB = { project: 'log', video: 'timeline', keyframes: 'timeline', cameras: 'timeline', dome: 'log', train: 'charts', export: 'log' };
+const DOCK_TAB = { project: 'log', video: 'timeline', keyframes: 'timeline', cameras: 'timeline', dome: 'log', train: 'charts', mesh: 'log', export: 'log' };
+const TOAST_MS = 8000;
+const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 // a photo set has no timeline (DESIGN-sfm §13.3 P5): its contact sheet is the view of the Photos phase
 const DOCK_TAB_PHOTOS = { ...DOCK_TAB, video: 'log', keyframes: 'log', cameras: 'log' };
 const DOCK_FOLDED_KEY = 'gaussopt.dockFolded';  // this browser's choice
@@ -21,13 +25,20 @@ export class Shell {
     this.summary = $('phase-summary');
     this.foot = $('phase-foot');
     this.label = $('project-label');
+    this.chip = $('phase-chip');
+    this.position = $('phase-position');
+    this.what = $('phase-what');
+    this.note = $('phase-note');
+    this.savedEl = $('phase-saved');
+    this.toastEl = $('phase-toast');
     this.sections = Object.fromEntries([...document.querySelectorAll('#phase-body > section')].map(s => [s.dataset.phase, s]));
     this.steps = {};
     PHASES.forEach((p) => {
       const b = document.createElement('button');
       b.className = 'step todo';
       b.dataset.phase = p;
-      b.innerHTML = `<span class="step-icon"></span><span class="step-label">${phaseLabel(p)}</span><span class="step-sum"></span>`;
+      b.innerHTML = `<span class="step-icon"></span><span class="step-label">${phaseLabel(p)}</span><span class="step-chip"></span>` +
+                    '<span class="step-sum"></span><span class="step-saved"></span><span class="step-bar"><span></span></span>';
       b.addEventListener('click', () => this.show(p));
       this.stepper.append(b);
       this.steps[p] = b;
@@ -66,10 +77,11 @@ export class Shell {
     const photos = this.photos;
     this.title.textContent = phaseLabel(phase, { photos });
     this.setDock((photos ? DOCK_TAB_PHOTOS : DOCK_TAB)[phase]);
-    // the keyframes are what the Keyframes phase is about (a photo set: the Photos phase); Train and
-    // Export are about the 3D view
-    if ((phase === 'keyframes' || (photos && phase === 'video')) && this.app.frames.order.length) this.app.frames.toggle(true);
-    if (phase === 'train' || phase === 'export') this.app.frames.toggle(false);
+    // the keyframes are what the Keyframes phase is about (a photo set: the Photos phase); Train, Mesh
+    // and Export are about the 3D view
+    const vs = this.app.viewSwitch;
+    if ((phase === 'keyframes' || (photos && phase === 'video')) && this.app.frames.order.length) vs.set('frames');
+    if (['train', 'mesh', 'export'].includes(phase) && vs.mode === 'frames') vs.set('3d');
     this.statesKey = this.footKey = '';
     this.refresh();
   }
@@ -94,27 +106,45 @@ export class Shell {
     const follow = this.states && followRunning(this.states, states, this.current);
     this.states = states;
     if (follow) return this.show(follow);
-    const key = JSON.stringify([states, photos]);
+    const key = JSON.stringify([states, photos, input.saved, this.current]);
     if (key !== this.statesKey) {
       this.statesKey = key;
-      let n = 0;  // the shown steps are numbered
+      let n = 0, k = 0;  // the shown steps are numbered
       for (const p of PHASES) {
-        const b = this.steps[p], { state, summary } = states[p], label = phaseLabel(p, { photos });
-        const shown = phaseShown(p, { photos });  // style, not `hidden`: .step sets its display
+        const b = this.steps[p], { state, chip, summary, progress } = states[p], label = phaseLabel(p, { photos });
+        const shown = phaseShown(p, { photos }), saved = input.saved[p];  // style, not `hidden`: .step sets its display
         if (shown) n++;
+        if (p === this.current) k = n;
         b.className = `step ${state}${p === this.current ? ' current' : ''}`;
         b.style.display = shown ? '' : 'none';
         b.querySelector('.step-label').textContent = label;
-        b.querySelector('.step-icon').textContent = state === 'todo' ? n : STATE_ICONS[state];
+        b.querySelector('.step-icon').textContent = STATE_ICONS[state] ?? (state === 'locked' ? '' : n);
+        b.querySelector('.step-chip').textContent = chip;
+        b.querySelector('.step-chip').className = `step-chip ${state}`;
         // the Project's summary is the header's project label
         b.querySelector('.step-sum').textContent = p === 'project' ? '' : summary;
-        b.title = `${label}: ${state}${summary ? ` (${summary})` : ''}`;
+        b.querySelector('.step-saved').textContent = saved ? `saved ${hhmm(saved.at)}` : '';
+        b.querySelector('.step-bar').style.display = progress == null ? 'none' : '';
+        b.querySelector('.step-bar > span').style.width = `${Math.round(100 * (progress ?? 0))}%`;
+        b.title = `${label}: ${chip}${summary ? ` (${summary})` : ''}${saved ? `; ${savedLine(p, saved, hhmm(saved.at))}` : ''}`;
+        b.setAttribute('aria-label', `${label}: ${chip}`);
       }
       this.title.textContent = phaseLabel(this.current, { photos });
       for (const t of this.tabs) if (t.dataset.tab === 'timeline') t.style.display = photos ? 'none' : '';
       // the phase may have been shown before the photo set was known: off the timeline then
       if (photos && this.tabs.some(t => t.dataset.tab === 'timeline' && t.classList.contains('on'))) this.setDock(DOCK_TAB_PHOTOS[this.current]);
-      this.summary.textContent = states[this.current].summary;
+      const cur = states[this.current], saved = input.saved[this.current];
+      this.summary.textContent = cur.summary;
+      this.chip.textContent = cur.chip;
+      this.chip.className = `step-chip ${cur.state}`;
+      this.position.textContent = `step ${k} of ${n}`;
+      this.what.textContent = phaseWhat(this.current, { photos });
+      const note = phaseNote(this.current, input, states);
+      this.note.textContent = note;
+      this.note.className = cur.state;
+      this.note.hidden = !note;
+      this.savedEl.textContent = saved ? savedLine(this.current, saved, hhmm(saved.at)) : '';
+      this.savedEl.hidden = !saved;
       this.label.textContent = states.project.summary;
     }
     const actions = phaseActions(this.current, input, states);
@@ -136,6 +166,16 @@ export class Shell {
     }));
   }
 
+  // A phase saved (app.js stageSaved): its notice over the inspector for a while
+  toast(phase, saved) {
+    const el = this.toastEl;
+    el.textContent = savedNotice(phase, saved);
+    el.hidden = false;
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => { el.hidden = true; }, TOAST_MS);
+    this.refresh();
+  }
+
   _input() {
     const app = this.app, sfm = app.sfm, tr = app.trainer, colmap = app.colmap;
     const q = sfm?.quality;
@@ -144,6 +184,7 @@ export class Shell {
       video: sfm?.videoName ? { name: sfm.videoName, projectOnly: !sfm.file && !sfm.photos, ...(sfm.photos ? { photos: sfm.videoInfo?.photos ?? sfm.photos.length } : {}) } : null,
       sfm: sfm ? {
         running: sfm.running ? (sfm.keyframeCount === null ? 'keyframes' : 'cameras') : null,
+        progress: sfm.running ? sfm.progress : null,
         busy: sfm.busy,
         keyframes: sfm.keyframeCount,
         quality: q ? { keyframes: q.frames.length, registered: q.frames.filter(f => f.registered).length,
@@ -152,9 +193,11 @@ export class Shell {
         canRun: !!(sfm.file || sfm.photos), ready: sfm.ready, canUpdate: sfm.canUpdate,
       } : null,
       colmap: colmap ? { cams: colmap.images.length, fromSfm: !!colmap.fromSfm } : null,
-      trainer: tr ? { step: tr.stepCount, training: app.params.training, psnr: tr.lastPsnr, gt: !!app.gtAvailable } : null,
+      trainer: tr ? { step: tr.stepCount, training: app.params.training, psnr: tr.lastPsnr, gt: !!app.gtAvailable, steps: app.params.train_steps } : null,
       mesh: app.meshState,
       dome: app.domeStep.state,
+      changed: { ...sfm?.changedOptions(), ...(app.meshOptionsChanged() ? { mesh: app.meshOptionsChanged() } : {}) },
+      saved: app.saved,
     };
   }
 
@@ -162,6 +205,8 @@ export class Shell {
   _run(id) {
     const app = this.app, sfm = app.sfm;
     if (id.startsWith('go:')) return this.show(id.slice(3));
+    if (id === 'revert:mesh') return app.revertMeshOptions();
+    if (id.startsWith('revert:')) return sfm.revertOptions(id.slice(7));
     switch (id) {
       case 'stop': return sfm.stop();
       case 'runAll': return sfm.run(null, true);
@@ -171,7 +216,8 @@ export class Shell {
       case 'send': return sfm.requestSend('restart');
       case 'train': return app.setTraining(!app.params.training);
       case 'step': return app.stepOnce();
-      case 'mesh': this.show('export'); return app.saveMesh();
+      case 'mesh': this.show('mesh'); return app.saveMesh();
+      case 'scene': return app.saveSceneGlb();
       case 'dome': return app.domeStep.build();
       case 'domeOff': return app.domeStep.set(null);
     }

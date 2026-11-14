@@ -7,7 +7,9 @@
 //
 // Splat layout (4 vec4f): [x, y, z, logit_op], [log_sx, log_sy, log_sz, leaf_id],
 //                         [qw, qx, qy, qz], [f_dc_r, f_dc_g, f_dc_b, flags]
-// Moments (12 f32): W, S, R, R1.xyz, R2.(xx, yy, zz, xy, xz, yz)
+//                         (flags: 1 for the editor's selection, splats_render tints it; else 0)
+// Moments (16 f32): W, S, R, R1.xyz, R2.(xx, yy, zz, xy, xz, yz), then the views' opacity gradient g: H = sum
+//                   max(-g, 0), H2 = sum max(-g, 0)^2, U = sum max(g, 0), U2 (octree.js MOMENT_FLOATS)
 // Grads   (12 f32): dL/drgb.xyz, dL/dlogit_op, dL/du0, dL/dv0,
 //                   dL/dconic.(a, b, c), w_view, w_err_view, (unused)
 
@@ -219,7 +221,7 @@ struct RenderUniforms {
 
 @group(0) @binding(0) var<uniform> u : RenderUniforms;
 @group(0) @binding(1) var<storage, read> splats     : array<vec4f>; // 4 per splat
-@group(0) @binding(2) var<storage, read> moments    : array<vec4f>; // 3 per splat
+@group(0) @binding(2) var<storage, read> moments    : array<vec4f>; // 4 per splat
 @group(0) @binding(3) var<storage, read> sorted_idx : array<u32>;
 
 struct VOut {
@@ -310,14 +312,18 @@ fn vs(@builtin(vertex_index) vid: u32,
   if (cmode == 1u) {        // octree leaf id
     rgb = palette_leaf(u32(max(0.0, p1.w)));
   } else if (cmode == 2u) { // WLBG error mass R_i, relative to 2 * avg_R
-    let m0 = moments[idx * 3u];
+    let m0 = moments[idx * 4u];
     rgb = heatmap_coolwarm(m0.z / max(1e-5, u.thresholds.x * 2.0));
   } else if (cmode == 3u) { // N_eff = W^2 / S: magenta = single-view, green = multi-view
-    let m0 = moments[idx * 3u];
+    let m0 = moments[idx * 4u];
     let n_eff = select(1.0, (m0.x * m0.x) / max(1e-6, m0.y), m0.y > 1e-6);
     rgb = mix(vec3f(1.0, 0.1, 0.8), vec3f(0.1, 0.95, 0.4), clamp((n_eff - 1.0) / 4.0, 0.0, 1.0));
   } else if (cmode == 4u) { // depth
     rgb = heatmap_coolwarm(1.0 - clamp(vpos.z / max(1.0, u.screen.w * 2.5), 0.0, 1.0));
+  }
+  if (p3.w > 0.5) {         // the editor's selection (flags 1, trainer.js setSelected): magenta, half opaque at least
+    out.color = vec4f(mix(rgb, vec3f(1.0, 0.1, 0.8), 0.75), max(alpha, 0.5));
+    return out;
   }
   out.color = vec4f(rgb, alpha);
   return out;
@@ -1125,7 +1131,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 @group(0) @binding(4) var                      hat_tex     : texture_2d<f32>;
 @group(0) @binding(5) var<storage, read>       pix_state   : array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> grads_2d    : array<atomic<u32>>; // 12 f32 per splat
-@group(0) @binding(7) var<storage, read_write> moments     : array<atomic<u32>>; // 12 f32 per splat
+@group(0) @binding(7) var<storage, read_write> moments     : array<atomic<u32>>; // 16 f32 per splat
 @group(0) @binding(8) var<storage, read_write> loss_acc    : array<atomic<u32>>;
 @group(0) @binding(9) var<storage, read>       tile_ranges : array<vec2u>;
 @group(0) @binding(10) var<storage, read>      tile_list   : array<u32>;
@@ -1432,11 +1438,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u,
         let j = s / nv;
         let val = bitcast<f32>(atomicExchange(&wg_acc[s], 0u));
         if (wg_u0v0zr[j].w > 0.0) {
-          let gi = bitcast<u32>(wg_conic[j].w) * 12u;
+          let si = bitcast<u32>(wg_conic[j].w);
+          let gi = si * 12u;
+          let mi = si * 16u;
           if (c < 10u) { add_global_grad(gi + c, val); }
-          if (c == 9u) { add_global_mom(gi, val); }                  // W
-          else if (c == 10u) { add_global_mom(gi + 2u, val); }       // R
-          else if (c > 10u) { add_global_mom(gi + c - 8u, val); }
+          if (c == 9u) { add_global_mom(mi, val); }                  // W
+          else if (c == 10u) { add_global_mom(mi + 2u, val); }       // R
+          else if (c > 10u) { add_global_mom(mi + c - 8u, val); }
         }
       }
       if (lid == 0u) { atomicStore(&wg_hits, 0u); }
@@ -1508,7 +1516,8 @@ fn main(@builtin(local_invocation_index) lid: u32) {
 
 // === adam_step ===
 // Per-splat update, one thread per visible splat (sorted_idx, the training sort: only those have grads):
-//   1. reads and clears grads_2d, adds w_view^2 to moments.S;
+//   1. reads and clears grads_2d, adds w_view^2 to moments.S and the view's opacity gradient to H, H2 (wanted more
+//      opaque) or U, U2 (less);
 //   2. chains the 2D grads to 3D (position incl. through the EWA Jacobian,
 //      log-scale, quaternion), Adam step (sparse: splats with no grad are
 //      skipped), clamps and shape limits;
@@ -1606,9 +1615,15 @@ fn step_splat(k: u32) {
   let w_view  = load_grad(gbase + 9u);
   for (var c = 0u; c < 12u; c++) { grads_2d[gbase + c] = 0u; }
 
-  // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S).
+  // S_i += w_{i,c}^2 (view concentration, N_eff = W^2 / S); the view's opacity gradient: H, H2 when it wants the
+  // splat more opaque (g < 0), U, U2 when less
   if (w_view > 1e-6 && tu.cam.y == 0.0) {
-    moments[gbase + 1u] = bitcast<u32>(bitcast<f32>(moments[gbase + 1u]) + w_view * w_view);
+    let mb = idx * 16u;
+    moments[mb + 1u] = bitcast<u32>(bitcast<f32>(moments[mb + 1u]) + w_view * w_view);
+    let g = abs(dL_dop);
+    let k = select(14u, 12u, dL_dop < 0.0);
+    moments[mb + k] = bitcast<u32>(bitcast<f32>(moments[mb + k]) + g);
+    moments[mb + k + 1u] = bitcast<u32>(bitcast<f32>(moments[mb + k + 1u]) + g * g);
   }
 
   let grad_norm = abs(dL_drgb.x) + abs(dL_drgb.y) + abs(dL_drgb.z) + abs(dL_dop) + abs(dL_du0) + abs(dL_dv0);

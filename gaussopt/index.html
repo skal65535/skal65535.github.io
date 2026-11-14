@@ -36,12 +36,17 @@
         <div id="error-line"></div>
       </div>
       <div id="view-toolbar">
-        <button id="BtnFrames" title="the keyframes as a contact sheet" disabled>▦ frames</button>
-        <button id="BtnTarget" title="show the training photo of the selected camera while held">◎ target</button>
+        <div class="seg" role="group" aria-label="what the view shows (1 / 2 / 3)">
+          <button id="BtnView3d" title="the 3D view (1)">3D</button>
+          <button id="BtnFrames" title="the keyframes as a contact sheet (2)" disabled>▦ frames</button>
+          <button id="BtnTheatre" title="the mapping played back: keyframes placed, bundle adjustments, loops closed, pieces merged (3)">◈ SfM</button>
+        </div>
+        <button id="BtnTarget" title="the selected camera's training photo: hold to see it, click to keep it (click again: back)" disabled>◎ photo</button>
         <button id="BtnView" title="splat shape, colors, overlays, camera">⚙ view ▾</button>
       </div>
       <div id="view-popover"></div>
       <div id="frames-sheet"></div>
+      <div id="sfm-theatre" tabindex="-1"></div>
       <div id="help-overlay">
         <div class="help-title">Keys &amp; mouse <span>(H or Esc to close)</span></div>
         <table>
@@ -59,10 +64,16 @@
           <tr><th colspan="2">Cameras</th></tr>
           <tr><td>click frustum</td><td>show its photo</td></tr>
           <tr><td>double-click</td><td>fly to that view</td></tr>
+          <tr><th colspan="2">Edit (⚙ Edit)</th></tr>
+          <tr><td>click</td><td>with 'click picks a cluster': the cluster under it, in magenta, to delete</td></tr>
+          <tr><td>Find floater clusters</td><td>each cluster apart from the scene in turn (‹ ›), to delete or skip</td></tr>
+          <tr><th colspan="2">View</th></tr>
+          <tr><td>1 / 2 / 3</td><td>3D / frames / SfM playback (Esc: back to 3D)</td></tr>
+          <tr><td>◎ photo</td><td>hold: the selected camera's photo; click: keep it</td></tr>
           <tr><th colspan="2">General</th></tr>
           <tr><td>G</td><td>demo / drone camera</td></tr>
           <tr><td>H or ?</td><td>this help</td></tr>
-          <tr><td>drop a file</td><td>video, gs/ folder, .ply / .splat / .gosnap, .gosfm</td></tr>
+          <tr><td>drop a file</td><td>video, gs/ folder, a scene or snapshot (.scene.glb), .ply / .splat, an older .gosnap</td></tr>
         </table>
       </div>
       <div id="frustum-thumb">
@@ -77,11 +88,22 @@
           <button id="thumb-fly" title="fly the view to this camera">Fly to View ↗</button>
         </div>
       </div>
+      <div id="edit-box">
+        <div class="edit-row"><span id="edit-title"></span><button id="edit-close" title="close (the training goes on if it was on)">×</button></div>
+        <div id="edit-info"></div>
+        <div class="edit-row">
+          <span><button id="edit-prev" title="the previous floater">‹</button> <button id="edit-next" title="the next floater">›</button></span>
+          <span><button id="edit-fly" title="the view on it">Fly to</button> <button id="edit-delete" title="delete these splats">Delete</button></span>
+        </div>
+      </div>
     </div>
   </div>
 
   <aside id="go-inspector">
-    <div id="phase-head"><span id="phase-title"></span><span id="phase-summary"></span></div>
+    <div id="phase-toast" role="status" hidden></div>
+    <div id="phase-head"><span id="phase-title"></span><span id="phase-chip" class="step-chip"></span><span id="phase-summary"></span>
+      <span id="phase-position"></span></div>
+    <div id="phase-intro"><p id="phase-what"></p><p id="phase-note" hidden></p><p id="phase-saved" hidden></p></div>
     <div id="phase-body">
       <section data-phase="project">
         <p class="hint">Start from a <b>video</b> or a set of <b>photos</b> (JPEG), or open a <b>gs/</b> folder
@@ -89,7 +111,7 @@
         <div class="actions">
           <button class="button wide" id="BtnVideo" title="video file or photos -> keyframes -> cameras, in the browser">Open video or photos…</button>
           <label class="button" for="FolderElmt" title="a gs/ folder (sparse/ + images/): cameras, points and photos from an SfM">Open gs/ folder…</label>
-          <label class="button" for="PlyElmt" title="a scene (.scene.glb), a .ply / .splat / .gosnap checkpoint, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
+          <label class="button" for="PlyElmt" title="a scene or a snapshot (.scene.glb: a snapshot goes on training from where it was), a .ply / .splat checkpoint, an older .gosnap, .octree.json for the current splats, or a mesh (.glb, .mesh.ply) to show over them">Open checkpoint…</label>
         </div>
         <div class="gui-host" id="project-gui"></div>
         <div class="gui-host" id="project-folder"></div>
@@ -128,10 +150,14 @@
           <button class="button" id="BtnExportScene" title="the scene as one glTF .glb: the splats (KHR_gaussian_splatting), the octree, the cameras, their path, the sparse points, the mesh on show, the background, the leveling and the settings">Save scene (.glb)</button>
           <button class="button" id="BtnExportPhotos" title="the dataset's photos as one .glb of images, by name (for the trainer; kept apart from the scene)">Save photos (.glb)</button>
           <button class="button" id="BtnExportPly" title="the splats as a standard 3DGS .ply, with the octree appended (other viewers ignore it)">Save .ply (+ octree)</button>
-          <button class="button" id="BtnSnapshot" title="full training state (splats + Adam + moments + octree), resumable">Save snapshot</button>
+          <button class="button" id="BtnSnapshot" title="the scene (.scene.glb) with its full training state (splats as trained, Adam, moments, octree): viewable, and training goes on from it">Save snapshot</button>
         </div>
-        <div class="gui-host" id="export-mesh"></div>
         <div class="gui-host" id="export-sfm"></div>
+      </section>
+      <section data-phase="mesh">
+        <p class="hint">A triangle mesh of the splats: the rendered depth of every camera fused, simplified, textured from the
+          photos; saved as .mesh.glb, then the scene with it (.scene.glb), and shown in the 3D view (⚙ view &gt; Mesh).</p>
+        <div class="gui-host" id="mesh-gui"></div>
       </section>
     </div>
     <div id="phase-foot"></div>

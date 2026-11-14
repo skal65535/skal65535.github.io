@@ -8,27 +8,31 @@ import { SequentialMapper } from './mapper.js';
 import { closeLoops, mergeSegments } from './loop.js';
 import { joinByFlow } from './flowjoin.js';
 
-// options: mapper options, plus { loops: true, sweeps: 2, retriangulate: true, flowJoin: true }
+// options: mapper options (pairTypes ['seq', 'loop']: mapped with the loop pairs too, as COLMAP), plus { loops: true,
+// sweeps: 2, retriangulate: true, flowJoin: true }
 export async function reconstruct(input, options = {}) {
   return finish(input, await mapSequential(input, options), options);
 }
 
 const split = ({ loops = true, sweeps = 2, retriangulate = true, flowJoin = true, ...mapperOptions }) => ({ loops, sweeps, retriangulate, flowJoin, mapperOptions });
 
-export async function mapSequential(input, options) {
+// resume: a mapper from a checkpoint (the mapper's checkpoint option), its mapping gone on with
+export async function mapSequential(input, options, { resume = null } = {}) {
   const t = performance.now();
-  const mapper = new SequentialMapper(input, { ...split(options).mapperOptions, pairTypes: ['seq'] });
-  await mapper.run();
+  const mapper = resume ?? new SequentialMapper(input, { ...split(options).mapperOptions, pairTypes: options.pairTypes ?? ['seq', 'loop'] });
+  mapper.trace('stage', { name: 'map' });
+  try { await mapper.run({ resume: !!resume }); } finally { mapper.o.checkpoint = null; }  // the mapping's only (repairs grow too)
   return { mapper, timings: { map: performance.now() - t, 'map.ba': mapper.time.ba } };
 }
 
-// S3 + S4 on a sequential map (session.js replays them after rejecting a loop)
-export async function finish(input, { mapper, timings }, options) {
+// S3 + S4 on a sequential map (session.js replays them after rejecting a loop). afterMerge: closeLoops'
+export async function finish(input, { mapper, timings }, options, { afterMerge = null } = {}) {
   const { loops, sweeps, retriangulate, flowJoin, mapperOptions } = split(options);
   if (timings.map === undefined) mapper.resetTime();  // a replay (session.js): its own time, not the map's since it was made
   // timings[name]: a stage's ms, timings[name + '.ba']: of which in window BAs
   const stage = async (name, fn) => {
     mapperOptions.progress?.(name, 0, 0);
+    mapper.trace('stage', { name });
     const t = performance.now(), ba = mapper.time.ba, r = await fn();
     timings[name] = (timings[name] ?? 0) + performance.now() - t;
     timings[`${name}.ba`] = (timings[`${name}.ba`] ?? 0) + mapper.time.ba - ba;
@@ -36,7 +40,7 @@ export async function finish(input, { mapper, timings }, options) {
   };
   let loopStats = null;
   if (loops) {
-    loopStats = await stage('loops', () => closeLoops(mapper, input.pairs, { rng: makeRng(mapperOptions.seed ?? 1), log: mapperOptions.log }));
+    loopStats = await stage('loops', () => closeLoops(mapper, input.pairs, { rng: makeRng(mapperOptions.seed ?? 1), log: mapperOptions.log, afterMerge }));
     mapper.addPairs(input.pairs);
   }
   // pieces still apart across a turn in place: joined by the video's optical flow (flowjoin.js; keyframes
@@ -47,14 +51,16 @@ export async function finish(input, { mapper, timings }, options) {
   // refinement and retriangulation extend tracks across segment gaps: segments that could not be
   // merged before may be now (DESIGN-sfm R5)
   if (loops && sweeps) {
-    const late = await stage('lateMerge', () => mergeSegments(mapper, input.pairs, { rng: makeRng((mapperOptions.seed ?? 1) + 1), log: mapperOptions.log }));
-    if (late.merges) {  // tracks across the joint first, then the sweeps (R5)
+    const late = await stage('lateMerge', () => mergeSegments(mapper, input.pairs, { rng: makeRng((mapperOptions.seed ?? 1) + 1), log: mapperOptions.log, stage: 'lateMerge' }));
+    if (late.merges || late.joinedFrames) {  // tracks across the joint first, then the sweeps (R5)
       loopStats.merges += late.merges;
+      loopStats.joinedFrames += late.joinedFrames;
       await stage('retriangulate', () => mapper.extendTracks());
       await stage('refine', () => mapper.refine({ sweeps }));
       await stage('retriangulate', () => mapper.extendTracks());
     }
   }
+  mapper.trace('end');
   const model = mapper.model();
   return { mapper, model, stats: { ...mapper.stats, loops: loopStats, flowJoin: flowStats, numSegments: new Set(model.images.map(im => im.segment)).size, timings, time: copyTime(mapper.time) } };
 }
@@ -84,6 +90,8 @@ function windowsLine(windows) {
   // ba.js's parts, and the GPU solver's (ba_gpu.js) when it solved some
   const gpu = ['setup', 'build', 'eval'].filter(k => windows.some(w => w[k] !== undefined));
   const parts = ['linearize', 'normal', 'schur', 'cholesky', 'back', 'cost', ...gpu].map(k => `${k} ${(sum(k) / 1000).toFixed(1)} s`);
+  // the conjugate gradients' (rcs.js, past its denseMax): their iterations, the solves stopped at their most
+  const cg = sum('cg') ? `, ${sum('cg')} conjugate gradient iterations (${sum('cgCut')} solves stopped unconverged)` : '';
   return `; a window: ${stat('obs')} observations, ${stat('freeObs')} of them by free frames, ${stat('points')} points, ` +
-         `${stat('free')} free frames; solving: ${parts.join(', ')}, ${sum('solves')} solves, ${sum('evals')} cost evaluations`;
+         `${stat('free')} free frames; solving: ${parts.join(', ')}, ${sum('solves')} solves, ${sum('evals')} cost evaluations${cg}`;
 }

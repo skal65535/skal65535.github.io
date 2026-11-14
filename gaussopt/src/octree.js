@@ -14,7 +14,9 @@ const OCTREE_DEFAULTS = { maxLeafSize: 256, maxDepth: 10, beta: 0.20 };
 // [2]: R   error mass (sum w * |I_gt - I_hat|)
 // [3..5]:  R1 first error moment of delta = X - mu
 // [6..11]: R2 second error moment: xx, yy, zz, xy, xz, yz
-export const MOMENT_FLOATS = 12;
+// [12..15]: the views' opacity gradient g (dL/dlogit, one view's sum a step): H = sum max(-g, 0) (the views that want
+//           the splat more opaque), H2 = sum max(-g, 0)^2, U = sum max(g, 0) (those that want it less), U2
+export const MOMENT_FLOATS = 16;
 
 // Root box: exact bounds of all finite points. Scene center / radius (orbit framing):
 // per-axis median and 0.85 x the largest 10th-90th percentile span (8192-point sample).

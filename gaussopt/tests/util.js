@@ -2,7 +2,7 @@
 "use strict";
 
 import { makeRng, cross, normalize, makeViewMatrix } from '../src/math.js';
-import { gaussian } from '../src/sfm/synth.js';
+import { gaussian, makeSyntheticScene } from '../src/sfm/synth.js';
 import { expSO3, mul3 } from '../src/sfm/linalg.js';
 import { poseFromCenter, poseCenter } from '../src/sfm/camera.js';
 import { loadDump, denoReader } from '../src/sfm/dump.js';
@@ -77,4 +77,13 @@ export function problemFrom(scene, r, { poseNoise = 0.01, pointNoise = 0.05, foc
   camera.params[0] *= focalScale; camera.params[1] *= focalScale;
   const free = Uint8Array.from(poses, (_, c) => (c < 2 ? 0 : 1));  // two fixed poses fix the gauge
   return { camera, poses, free, points, obsCam: Int32Array.from(obsCam), obsPoint: Int32Array.from(obsPoint), obsUV: Float64Array.from(obsUV) };
+}
+
+// problemFrom on an OPENCV scene (fx, fy apart), fy then 1% off fx's ratio (ba_test, ba_gpu_test)
+let OPENCV = null;
+export function fyOff(r) {
+  OPENCV ??= makeSyntheticScene({ numFrames: 15, numGround: 3000, numBoxes: 4, numFar: 300, maxFeatures: 1500, model: 'OPENCV' });
+  const prob = problemFrom(OPENCV, r);
+  prob.camera.params[1] *= 1.01;
+  return prob;
 }

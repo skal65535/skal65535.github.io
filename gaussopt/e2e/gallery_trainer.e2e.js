@@ -3,7 +3,7 @@
 // The cameras: a training view's own (VIEW) and that view turned 8 degrees about the point at its render's median depth.
 // The trainer: the photos (PHOTOS) mapped again (the SfM is deterministic: the scene's cameras), the scene's scene.glb
 // loaded as a checkpoint (app.loadSceneGlb), the view's pose replaced; the viewer: its page with the camera and the
-// field of view set through a hook patched into the served index.html. On a local gallery scene (GALLERY_SCENE,
+// field of view set through a hook patched into the served viewer.js. On a local gallery scene (GALLERY_SCENE,
 // default pavilion-cams-off, the synthetic Barcelona Pavilion's SfM run; gallery/scenes: the scenes' folder) and its
 // photos (PHOTOS), at its training size (ds 2). Fails without the trainer's 0.3 px^2 low-pass in the viewer (about 26 dB
 // on pavilion-cams-off's p001, 29.5 with it: hence MIN_DB).
@@ -104,12 +104,12 @@ await run(async (page) => {
 
   // the viewer, in the same page: the canvas alone at the trainer's size, its camera and horizontal field of view ours
   await page.setViewportSize({ width: T.W, height: T.H });
-  await page.route('**/gallery/index.html*', async (route) => {
+  await page.route('**/gallery/viewer.js*', async (route) => {
     const r = await route.fetch(); let s = await r.text();
     const a = 'function current_camera(dt) {', b = '  render.fx = 1. / Math.tan(params.fov * Math.PI / 360.);';
-    if (s.split(a).length !== 2 || s.split(b).length !== 2) throw new Error('gallery/index.html: the hook points moved');
+    if (s.split(a).length !== 2 || s.split(b).length !== 2) throw new Error('gallery/viewer.js: the hook points moved');
     s = s.replace(a, `${a}\n  if (window.__cam) return window.__cam;`).replace(b, `  if (window.__fov) params.fov = window.__fov;\n${b}`);
-    await route.fulfill({ response: r, body: s, headers: { ...r.headers(), 'content-type': 'text/html' } });
+    await route.fulfill({ response: r, body: s, headers: { ...r.headers(), 'content-type': 'text/javascript' } });
   });
   await page.goto(`http://localhost:${GPORT}/gallery/index.html?scene=${SCENE}&mode=orbit&canvas-only&cameras-hidden`);
   await galleryShown(page);

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- theatre.html — The SfM theatre alone (src/ui/theatre.js) on a recorded trace: ?trace=URL (a trace.bin,
+     sfm/trace.js encodeTrace), or one dropped on the page. For theatre.e2e.js and for looking at one. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SfM theatre</title>
+<link rel="stylesheet" href="../../common/main.css">
+<link rel="stylesheet" href="../gaussopt.css">
+<style>
+  body { margin: 0; background: #0d0e13; }
+  #wrap { position: absolute; inset: 0; }
+  #sfm-theatre { border-radius: 0; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="sfm-theatre" tabindex="-1"></div></div>
+<script type="module">
+  import { SfmTheatre } from '../src/ui/theatre.js';
+  import { decodeTrace } from '../src/sfm/trace.js';
+  const th = window.theatre = new SfmTheatre(document.getElementById('sfm-theatre'), null);
+  th.toggle(true);
+  const open = (buf) => th.load(decodeTrace(buf).events);
+  const url = new URLSearchParams(location.search).get('trace');
+  if (url) fetch(url).then(r => r.arrayBuffer()).then(open);
+  document.body.addEventListener('dragover', (e) => e.preventDefault());
+  document.body.addEventListener('drop', async (e) => { e.preventDefault(); open(await e.dataTransfer.files[0].arrayBuffer()); });
+</script>
+</body>
+</html>

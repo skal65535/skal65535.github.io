@@ -94,14 +94,15 @@ function verifyPool(size) {
   };
 }
 
-// features: [{ name, keypoints: Float32Array(4 n), descriptors: Uint8Array(128 n) }] in time order.
+// features: [{ name, keypoints: Float32Array(4 n), descriptors: Uint8Array(128 n), clip? }] in time order (clip: the
+// video of a keyframe of several, none of their sequential pairs across two).
 // loopCandidates: [[i, j]] (i < j) to match as well. Returns { images, pairs, stats }.
 // seq: the sequential pairs already matched ({ pairs, stats }: adaptFeatures'), the loop candidates then matched alone
 export async function matchFeatures(features, matcher, { rng, loopCandidates = [], onProgress = () => {}, seq = null, ...options } = {}) {
   const o = { ...FRONTEND_DEFAULTS, ...options };
   const n = features.length;
-  const todo = seq ? [] : seqTodo(n, o.window);
-  for (const [i, j] of loopCandidates) if (j - i > o.window) todo.push([i, j, 'loop']);
+  const clips = clipsOf(features), todo = seq ? [] : seqTodo(n, o.window, clips);
+  for (const [i, j] of loopCandidates) if (j - i > o.window || (clips && clips[i] !== clips[j])) todo.push([i, j, 'loop']);
   let { pairs, stats } = await matchPairs(features, matcher, todo, { rng, onProgress, ...o });
   if (seq) {
     pairs = [...seq.pairs, ...pairs].sort((a, b) => a.i - b.i || a.j - b.j);
@@ -110,12 +111,17 @@ export async function matchFeatures(features, matcher, { rng, loopCandidates = [
   return { images: features.map(f => ({ ...imageRecord(f), keypoints: mapperKeypoints(f) })), pairs, stats };
 }
 
-// The sequential pairs of n frames: each with the next `window`
-const seqTodo = (n, window) => {
+// The sequential pairs of n frames: each with the next `window` of its clip (clips: per frame, null: one)
+export const seqTodo = (n, window, clips = null) => {
   const todo = [];
-  for (let i = 0; i < n; i++) for (let j = i + 1; j <= Math.min(n - 1, i + window); j++) todo.push([i, j, 'seq']);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j <= Math.min(n - 1, i + window) && (!clips || clips[j] === clips[i]); j++) todo.push([i, j, 'seq']);
+  }
   return todo;
 };
+
+// Per frame its clip (several videos, `clip` of the features or images), null when they are one video's
+export const clipsOf = (frames) => (frames.some(f => f.clip > 0) ? frames.map(f => f.clip ?? 0) : null);
 
 // A keyframe's features (sift.js extract's, the strongest first) trimmed to the strongest maxFeatures of response
 // >= peak: what an extraction with those settings gives
@@ -126,10 +132,12 @@ export function trimFeatures(f, maxFeatures, peak) {
   return { ...f, keypoints: f.keypoints.slice(0, 4 * n), descriptors: f.descriptors.slice(0, 128 * n), responses: f.responses.slice(0, n) };
 }
 
-// Per boundary k | k+1 of n frames, the inliers of the sequential pairs crossing it (i <= k < j, j - i <= window)
-export function linkStrength(pairs, n, window) {
+// Per boundary k | k+1 of n frames, the inliers of the sequential pairs crossing it (i <= k < j, j - i <= window);
+// NaN between two clips (clips: per frame, null: one video), which no sequential pair crosses
+export function linkStrength(pairs, n, window, clips = null) {
   const s = new Float64Array(Math.max(0, n - 1));
   for (const p of pairs) if (p.type === 'seq' && p.j - p.i <= window) for (let k = p.i; k < p.j; k++) s[k] += p.matches.length / 2;
+  if (clips) for (let k = 0; k < n - 1; k++) if (clips[k] !== clips[k + 1]) s[k] = NaN;
   return s;
 }
 
@@ -140,9 +148,9 @@ export function linkStrength(pairs, n, window) {
 // the boundaries of keyframes 40..50 are at 0.01-0.03 of the median, the weakest of table1's at 0.22.
 // Returns { feats, seq: { pairs, stats } (matchFeatures' seq), weak: [k], denseFrames: [k] }.
 export async function adaptFeatures(dense, matcher, { rng, maxFeatures, peak, window = WINDOW, minLink = 0.1, radius = 3, onProgress = () => {}, ...options } = {}) {
-  const n = dense.length, feats = dense.map(f => trimFeatures(f, maxFeatures, peak));
-  const todo = seqTodo(n, window), first = await matchPairs(feats, matcher, todo, { rng, onProgress, window, ...options });
-  const s = linkStrength(first.pairs, n, window), med = median(Array.from(s));
+  const n = dense.length, feats = dense.map(f => trimFeatures(f, maxFeatures, peak)), clips = clipsOf(dense);
+  const todo = seqTodo(n, window, clips), first = await matchPairs(feats, matcher, todo, { rng, onProgress, window, ...options });
+  const s = linkStrength(first.pairs, n, window, clips), med = median(Array.from(s).filter(Number.isFinite));
   const weak = [...s.keys()].filter(k => s[k] < minLink * med);
   const denseFrames = new Set();
   for (const k of weak) for (let i = Math.max(0, k - radius + 1); i <= Math.min(n - 1, k + radius); i++) denseFrames.add(i);
@@ -156,8 +164,8 @@ export async function adaptFeatures(dense, matcher, { rng, maxFeatures, peak, wi
 }
 
 // A keyframe's own fields, as the mapper and a saved session keep them (camera: its zoom stretch's;
-// flowH, flowChain: flowjoin.js)
-export const imageRecord = (f) => ({ name: f.name, time: f.time, ...(f.camera !== undefined ? { camera: f.camera } : {}),
+// flowH, flowChain: flowjoin.js; clip: its video of several)
+export const imageRecord = (f) => ({ name: f.name, time: f.time, ...(f.camera !== undefined ? { camera: f.camera } : {}), ...(f.clip > 0 ? { clip: f.clip } : {}),
                                      ...(f.flowH ? { flowH: f.flowH, flowChain: f.flowChain } : {}) });
 
 // Match and verify given pairs [[i, j, type]]: one GPU batch per first frame, descriptors kept on

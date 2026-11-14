@@ -1,6 +1,6 @@
 // mesh.e2e.js — "Make mesh" and the mesh view (DESIGN.md §9 E5) in the page: the synthetic room
 // (photo_runs/tools/synth_room.py) served as a dataset, 600 training steps, then the Train step's
-// "Make mesh →": the page moves to the Export step (its mesh settings there, done with the mesh's summary once saved), the mesh
+// "Make mesh →": the page moves to the Mesh step (its mesh settings there, done with the mesh's summary and saved mark once saved), the mesh
 // (src/mesh.js on the trainer's forward renders, simplified in mesh_worker.js, textured from the photos
 // by mesh_texture.js) reaches the save path as a .glb with a JPEG texture, whose vertices are nearly all
 // inside the room (once turned back from glTF's +Y up to the app's world up), and is drawn in the 3D view
@@ -9,13 +9,15 @@
 // splats' shows some of the mesh (the splats behind its surface hidden; drawn unhidden and opaque, they
 // would cover nearly all of it); 'wireframe + splats' hides them too (a quad in front of the camera as
 // the mesh: its diagonal alone drawn, no fill, no splat); without the mesh, the splats are colored.
-// The save itself is captured (it would write into the dataset's splats_gaussopt/).
+// Then the scene's .glb: the splats (as many as the trainer's) with that mesh. The saves are captured (they would write
+// into the dataset's splats_gaussopt/).
 //   cd e2e && node mesh.e2e.js   (env: MESH_E2E_ROOM, the synthetic room's directory; see harness.js)
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { APP, fail, appUrl, run, room, appReady } from './harness.js';
 
 const { readGlb, rotationToY } = await import(join(APP, 'src', 'glb.js'));
+const { readSceneGlb } = await import(join(APP, 'src', 'scene_glb.js'));
 const ROOM = room();
 const geo = JSON.parse(readFileSync(join(ROOM, 'scene_sdf.json'), 'utf8'));
 
@@ -26,7 +28,7 @@ await run(async (page) => {
   await page.evaluate(async () => (await import('./e2e/page_util.js')).train(window.app, 600));
   const r = await page.evaluate(async () => {
     const app = window.app;
-    const saved = new Promise(res => { app._saveOrDownload = async (bytes, name) => res({ bytes: Array.from(bytes), name }); });
+    const saves = [], saved = new Promise(res => { app._saveOrDownload = async (bytes, name) => { saves.push({ bytes: Array.from(bytes), name }); if (saves.length === 1) res(saves[0]); }; });
     const show = app.showMesh;
     app.showMesh = function (m) { window.__shown = m; return show.call(this, m); };
     app.shell.show('train');
@@ -34,20 +36,25 @@ await run(async (page) => {
     const make = [...document.querySelectorAll('#phase-foot button')].find(b => b.textContent === 'Make mesh →');
     if (!make || make.disabled) return { noButton: [...document.querySelectorAll('#phase-foot button')].map(b => b.textContent) };
     make.click();
-    const phase = app.shell.current, settings = [...document.querySelectorAll('#export-mesh .skal-folder-title')].map(t => t.textContent);
+    const phase = app.shell.current, settings = [...document.querySelectorAll('#mesh-gui .skal-folder-title')].map(t => t.textContent);
     const got = await Promise.race([saved, new Promise(res => setTimeout(() => res(null), 120000))]);
-    for (let t = 0; t < 50 && !app.meshState?.faces; t++) await new Promise(res => setTimeout(res, 100));  // saveMesh returns after the save
+    for (let t = 0; t < 600 && !app.meshState?.faces; t++) await new Promise(res => setTimeout(res, 100));  // saveMesh returns after both saves
     app.shell.refresh();
-    const step = document.querySelector('.step[data-phase="export"]');
-    return got && { ...got, up: app.worldUp, view: app.params.mesh_view, shownVoxel: window.__shown?.voxel, log: app.logText().split('\n').filter(l => /Mesh/.test(l)), phase, settings,
-                    exportStep: { cls: step.className, sum: step.querySelector('.step-sum').textContent } };
+    const step = document.querySelector('.step[data-phase="mesh"]');
+    return got && { ...got, scene: saves[1] ?? null, splats: app.trainer.count, up: app.worldUp, view: app.params.mesh_view, shownVoxel: window.__shown?.voxel, log: app.logText().split('\n').filter(l => /Mesh/.test(l)), phase, settings,
+                    meshStep: { cls: step.className, sum: step.querySelector('.step-sum').textContent, saved: step.querySelector('.step-saved').textContent } };
   });
   if (r?.noButton) fail(`no enabled "Make mesh →" in the Train step: ${JSON.stringify(r.noButton)}`);
   if (!r) throw new Error('nothing saved 120 s after Make mesh');
-  if (r.phase !== 'export') fail(`Make mesh → shows the ${r.phase} step, not export`);
-  if (!r.settings.includes('Mesh')) fail(`no Mesh settings in the Export step: ${JSON.stringify(r.settings)}`);
-  if (!(/\bdone\b/.test(r.exportStep.cls) && /^\d+k faces · \d+² · [\d.]+ MB$/.test(r.exportStep.sum))) fail(`Export step after the mesh: ${JSON.stringify(r.exportStep)}`);
+  if (r.phase !== 'mesh') fail(`Make mesh → shows the ${r.phase} step, not mesh`);
+  if (!r.settings.includes('Mesh')) fail(`no Mesh settings in the Mesh step: ${JSON.stringify(r.settings)}`);
+  if (!(/\bdone\b/.test(r.meshStep.cls) && /^\d+k faces · \d+² · [\d.]+ MB$/.test(r.meshStep.sum) && /^saved \d\d:\d\d$/.test(r.meshStep.saved))) fail(`Mesh step after the mesh: ${JSON.stringify(r.meshStep)}`);
   if (!/^gaussopt_\d{5}\.mesh\.glb$/.test(r.name)) fail(`saved as ${r.name}`);
+  if (!r.scene || !/^gaussopt_\d{5}\.scene\.glb$/.test(r.scene.name)) fail(`no scene .glb after the mesh's: ${r.scene?.name ?? 'none saved'}`);
+  else {
+    const sc = readSceneGlb(Uint8Array.from(r.scene.bytes).buffer), mf = readGlb(Uint8Array.from(r.bytes).buffer).faces.length;
+    if (!(sc.count === r.splats && sc.count > 0 && sc.mesh?.faces.length === mf)) fail(`the scene .glb: ${sc.count} splats (the trainer ${r.splats}), its mesh ${sc.mesh?.faces.length ?? 'none'} of ${mf} face indices`);
+  }
   const mesh = readGlb(Uint8Array.from(r.bytes).buffer, { gltfFrame: true }), nv = mesh.positions.length / 3, nf = mesh.faces.length / 3;
   if (!(nv > 1000 && nf > 1000)) fail(`${nv} vertices, ${nf} faces`);
   // the grid's voxel, as logged (3 digits), in the .glb and on the mesh shown

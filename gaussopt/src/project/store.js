@@ -1,5 +1,6 @@
 // store.js — Where a project folder lives, behind one interface (paths are relative, '/'-separated):
-//   read(path) -> Blob | null, write(path, Blob | ArrayBuffer | string), list(dir) -> [{ name, kind }].
+//   read(path) -> Blob | null, write(path, Blob | ArrayBuffer | string | [pieces]), list(dir) -> [{ name, kind }].
+// [pieces]: a file's content in order (Uint8Array | Blob, project.js packPieces), written without making it one Blob.
 // DirStore: a folder the user picked (File System Access API, Chrome / Edge).
 // ServerStore: serve.py's /project/<name>/<path> (GET / PUT), any browser.
 // MemoryStore: files in memory, the content of a project .zip (zip.js).
@@ -8,6 +9,8 @@
 "use strict";
 
 const parts = (path) => path.split('/').filter(Boolean);
+const PIECE = 32 * 2 ** 20;  // ServerStore: the most bytes a request
+const sizeOf = (pieces) => pieces.reduce((s, p) => s + (p.size ?? p.byteLength), 0);
 
 export class DirStore {
   constructor(root) {
@@ -45,7 +48,7 @@ export class DirStore {
     const fh = await (await this._dir(p.slice(0, -1), true)).getFileHandle(p.at(-1), { create: true });
     const w = await fh.createWritable();  // written to a temporary file, swapped in on close
     try {
-      await w.write(data);
+      for (const piece of Array.isArray(data) ? data : [data]) await w.write(piece);
       await w.close();
     } catch (e) {
       await w.abort().catch(() => {});
@@ -97,9 +100,44 @@ export class ServerStore {
     return r.blob();
   }
 
+  // the body a Blob: an ArrayBuffer's bytes go into the browser's network events whole (a driving Playwright of
+  // 150 MB of them gets a message too long for a string and stops), a Blob's do not. Pieces more than PIECE bytes in
+  // all: PIECE at a time (serve.py ?append=), each request's bytes copied into one Uint8Array of PIECE at most, none
+  // of the whole: Blobs of them add up in Chrome's blob storage, the pieces sent not freed in time
+  // (ERR_BLOB_OUT_OF_MEMORY past ~500 MB), and PIECE bytes in the network events are fine
   async write(path, data) {
-    const r = await fetch(this._url(path), { method: 'PUT', body: data });
+    if (Array.isArray(data) && sizeOf(data) > PIECE) return this._writePieces(path, data);
+    await this._put(this._url(path), data instanceof Blob ? data : new Blob(Array.isArray(data) ? data : [data]), path);
+  }
+
+  async _put(url, body, path) {
+    const r = await fetch(url, { method: 'PUT', body });
     if (!r.ok) throw new Error(`PUT ${path}: ${await r.text().catch(() => r.statusText)}`);
+  }
+
+  async _writePieces(path, pieces) {
+    const total = sizeOf(pieces);
+    let batch = [], size = 0, at = 0;
+    const send = async () => {
+      const body = new Uint8Array(size);
+      let o = 0;
+      for (const b of batch) {
+        const u = b instanceof Blob ? new Uint8Array(await b.arrayBuffer()) : new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+        body.set(u, o); o += u.length;
+      }
+      await this._put(`${this._url(path)}?append=${at}${at + size === total ? '&last=1' : ''}`, body, path);
+      at += size; batch = []; size = 0;
+    };
+    for (const p of pieces) {
+      const n = p.size ?? p.byteLength;
+      for (let k = 0; k < n;) {  // a piece of more than PIECE: in parts of it
+        const m = Math.min(n - k, PIECE - size);
+        batch.push(k === 0 && m === n ? p : p instanceof Blob ? p.slice(k, k + m) : p.subarray(k, k + m));
+        size += m; k += m;
+        if (size === PIECE) await send();
+      }
+    }
+    if (size) await send();
   }
 
   async list(dir = '') {
@@ -122,7 +160,7 @@ export class MemoryStore {
   describe() { return { type: 'memory', name: this.name }; }
 
   async read(path) { return this.files.get(parts(path).join('/')) ?? null; }
-  async write(path, data) { this.files.set(parts(path).join('/'), data instanceof Blob ? data : new Blob([data])); }
+  async write(path, data) { this.files.set(parts(path).join('/'), data instanceof Blob ? data : new Blob(Array.isArray(data) ? data : [data])); }
 
   async list(dir = '') {
     const pre = parts(dir).join('/'), out = new Map();

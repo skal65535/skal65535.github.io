@@ -1,6 +1,9 @@
-// snapshot.js — Full training-state snapshot (.gosnap) codec.
+// snapshot.js — A full training-state snapshot: training goes on from it as it was. Written as a scene .glb with its
+// training state (scene_glb.js training: the splats as trained, the optimizer's moments, the counters and settings), the
+// scene's other parts with it (cameras, points, background, mesh): one file to view, share and resume. Read also from
+// the older .gosnap (below), which gosnapToSceneGlb turns into one.
 //
-// Layout (little-endian):
+// The .gosnap layout (little-endian):
 //   [0..7]   magic 'GOSNAP01'
 //   [8..11]  u32 JSON header byte length (incl. padding to 4 bytes)
 //   [12..]   UTF-8 JSON header: { format, version, state: { count, stepCount, ... }, ...,
@@ -14,13 +17,43 @@
 //              leaf_idx: Uint32 (optional octree leaf index permutation)
 "use strict";
 
+import { writeSceneGlb } from './scene_glb.js';
+
 const MAGIC = 'GOSNAP01';
 export const SNAPSHOT_FORMAT  = 'gaussopt_snapshot';
 export const SNAPSHOT_VERSION = 1;
-export const SNAPSHOT_EXT     = '.gosnap';
+export const SNAPSHOT_EXT     = '.scene.glb';  // a snapshot's name: gaussopt_snap_NNNNN.scene.glb
+export const GOSNAP_EXT       = '.gosnap';
 
+// An older snapshot by its name (.gosnap); a .glb's kind is in its content (snapshotKind)
 export function isSnapshotName(name) {
-  return typeof name === 'string' && name.toLowerCase().endsWith(SNAPSHOT_EXT);
+  return typeof name === 'string' && name.toLowerCase().endsWith(GOSNAP_EXT);
+}
+
+// 'gosnap', 'glb' (a scene, with or without its training state) or null, by the file's first bytes
+export function snapshotKind(buf) {
+  const u8 = new Uint8Array(buf, 0, Math.min(8, buf.byteLength));
+  if (u8.length === 8 && String.fromCharCode(...u8) === MAGIC) return 'gosnap';
+  if (u8.length >= 4 && new DataView(buf).getUint32(0, true) === 0x46546c67) return 'glb';  // 'glTF'
+  return null;
+}
+
+// A scene .glb's snapshot (readSceneGlb's result): decodeSnapshot's { header, blobs }, the octree and the leveling
+// from the scene; null without a training state (a scene saved to view: its splats load, the optimizer starts anew)
+export function snapshotOfScene(r) {
+  if (!r.training) return null;
+  const { header, blobs } = r.training;
+  return { header: { ...header, octree: r.octree ? { ...r.octree, leafIndices: null } : null, transform: r.info.transform ?? null }, blobs };
+}
+
+// A .gosnap as a scene .glb with its training state: the same splats, octree, optimizer and counters; scene: the parts
+// a .gosnap has not (cameras, path, points, upEstimate, env, mesh, extras), when known (none: a scene of splats alone)
+export function gosnapToSceneGlb(buf, scene = {}) {
+  const { header, blobs } = decodeSnapshot(buf), { octree, transform, blobs: _, format: __, version: ___, ...rest } = header;
+  const count = header.state.count | 0;
+  return writeSceneGlb({ ...scene, count, params: blobs.params, octree: octree ? { toJSON: () => octree } : null, transform: transform ?? null,
+                         extras: { step: header.state.stepCount | 0, savedAt: header.savedAt ?? null, from: 'gosnap', ...(scene.extras ?? {}) },
+                         training: { header: rest, blobs } });
 }
 
 // header: plain JSON-able object; blobs: { name: TypedArray }

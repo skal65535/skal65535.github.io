@@ -2,7 +2,7 @@ import { bundleAdjust, linearizeObservation, reprojectionErrors } from '../src/s
 import { makeCamera, poseFromCenter, poseCenter } from '../src/sfm/camera.js';
 import { expSO3, mul3, mulVec3, transpose3, rotationAngle } from '../src/sfm/linalg.js';
 import { makeSyntheticScene, gaussian } from '../src/sfm/synth.js';
-import { assert, assertClose, rng, problemFrom } from './util.js';
+import { assert, assertClose, rng, problemFrom, fyOff } from './util.js';
 
 const CAM = makeCamera('OPENCV', 1920, 1080, [1230, 1240, 960, 540, -0.05, 0.01, 0.001, -0.0005]);
 
@@ -36,6 +36,7 @@ Deno.test('BA Jacobians match central finite differences', () => {
       (e) => { const p = [...CAM.params]; p[5] += e; return p; },
       (e) => { const p = [...CAM.params]; p[6] += e; return p; },
       (e) => { const p = [...CAM.params]; p[7] += e; return p; },
+      (e) => { const p = [...CAM.params]; p[1] += e; return p; },  // 'fy'
     ];
     intr.forEach((mk, k) => {
       const d = fd(e => res({ ...CAM, params: mk(e) }, pose, X));
@@ -88,3 +89,55 @@ Deno.test('BA with a Huber loss is robust to 5% outlier observations', () => {
   assertClose(prob.camera.params[0], 1230, 1230 * 5e-3, 'focal');
 });
 
+
+// COLMAP's OPENCV model: fx and fy apart. fy 1% off fx's ratio: 'fy' finds it, 'f' alone (fy at fx's ratio) cannot
+Deno.test('BA refines fy apart from fx', () => {
+  const run = (refine) => { const prob = fyOff(rng(31)); bundleAdjust(prob, { refine, maxIterations: 50 }); return prob.camera.params; };
+  const a = run(['f', 'k1', 'fy']), b = run(['f', 'k1']);
+  assert(Math.abs(a[0] / 1230 - 1) < 1e-3 && Math.abs(a[1] / 1230 - 1) < 1e-3, `with fy: fx ${a[0]}, fy ${a[1]} (truth 1230)`);
+  assert(Math.abs(b[1] / b[0] - 1) > 5e-3, `without fy: fx ${b[0]}, fy ${b[1]}`);
+});
+
+// 5% outliers: least squares (trivial) pulled off by them, soft L1 at 1 px not; an unknown loss refused
+Deno.test('BA with the soft L1 loss is robust to 5% outliers, least squares is not', () => {
+  const run = (loss) => {
+    const prob = problemFrom(SCENE, rng(32), { outliers: 0.05 });
+    bundleAdjust(prob, { refine: ['f'], loss, lossScale: 1, maxIterations: 50 });
+    const errs = Array.from(reprojectionErrors(prob)).sort((a, b) => a - b);
+    return { median: errs[errs.length >> 1], f: prob.camera.params[0] };
+  };
+  const soft = run('softl1'), ls = run('trivial');
+  assert(soft.median < 1 && Math.abs(soft.f / 1230 - 1) < 5e-3, `soft L1: median ${soft.median} px, f ${soft.f}`);
+  assert(ls.median > 2 * soft.median, `least squares: median ${ls.median} px, f ${ls.f}`);
+  let threw = false;
+  try { bundleAdjust(problemFrom(SCENE, rng(32)), { loss: 'cauchy' }); } catch { threw = true; }
+  assert(threw, 'an unknown loss taken');
+});
+
+// fixedPoints: the held points' positions kept to the bit, the others adjusted with the poses
+Deno.test('BA holds the fixedPoints', () => {
+  const prob = problemFrom(SCENE, rng(33)), n = prob.points.length / 3, before = prob.points.slice();
+  const fixedPoints = Uint8Array.from({ length: n }, (_, p) => p % 2);
+  const out = bundleAdjust(prob, { refine: [], fixedPoints, maxIterations: 20 });
+  let held = 0, moved = 0;
+  for (let p = 0; p < n; p++) {
+    const same = [0, 1, 2].every(k => prob.points[3 * p + k] === before[3 * p + k]);
+    if (fixedPoints[p]) held += same ? 1 : 0; else moved += same ? 0 : 1;
+  }
+  assert(held === n >> 1 && moved > 0.9 * (n - (n >> 1)) && out.cost < 0.5 * out.initialCost, `${held} held, ${moved} moved, cost ${out.initialCost} -> ${out.cost}`);
+});
+
+Deno.test('BA with its reduced system by conjugate gradients (denseMax 0) lands where the dense Cholesky does', () => {
+  const a = problemFrom(SCENE, rng(31)), b = problemFrom(SCENE, rng(31));
+  const oa = bundleAdjust(a, { refine: ['f', 'k1'], maxIterations: 50 });
+  const ob = bundleAdjust(b, { refine: ['f', 'k1'], maxIterations: 50, denseMax: 0 });
+  assert(ob.profile.cg > 0 && !oa.profile.cg, `${ob.profile.cg} conjugate gradient iterations`);
+  let rot = 0, cen = 0;
+  a.poses.forEach((p, k) => {
+    rot = Math.max(rot, rotationAngle(p.R, b.poses[k].R) * 180 / Math.PI);
+    cen = Math.max(cen, Math.hypot(...poseCenter(p).map((x, i) => x - poseCenter(b.poses[k])[i])));
+  });
+  assert(rot < 1e-5 && cen < 1e-5, `poses apart by ${rot} deg, ${cen} in centre`);
+  assertClose(ob.cost, oa.cost, 1e-7 * oa.cost, 'cost');
+  assertClose(b.camera.params[0], a.camera.params[0], 1e-4, 'focal');
+});

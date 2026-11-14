@@ -147,5 +147,5 @@ export async function browser(pageOptions = {}) {
     if (m.type() === 'error') seen.push(`console: ${m.text()} ${m.location()?.url ?? ''}`);  // a failed load names its URL only there
     if (process.env.VERBOSE) console.log(`  [${m.type()}] ${m.text()}`);
   });
-  return { page, close: async () => { await b.close(); rmSync(profile, { recursive: true, force: true }); }, errors: async () => seen.filter(e => !/favicon/.test(e)) };
+  return { page, close: async () => { await b.close(); rmSync(profile, { recursive: true, force: true }); }, errors: async () => seen.filter(e => !/favicon/.test(e)), profile };
 }

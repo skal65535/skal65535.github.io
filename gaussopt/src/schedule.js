@@ -4,6 +4,7 @@
 "use strict";
 
 import { MOMENT_FLOATS } from './octree.js';
+import { makeRng } from './math.js';
 
 export const SEED_LEAD = 16;  // steps between the read of the stipple seeds' view and their rebalance (_prepareSeeds)
 
@@ -22,12 +23,18 @@ export const TRAIN_DEFAULTS = {
   decay_occluders: true,       // a splat of much error loses opacity at each rebalance (densify.js)
   floater_depth:   'observed',  // near-camera carve depth: 'observed' | 'view' (octree.js nearCameraCone)
   floater_spare:   0.01,        // x sceneRadius: splats this near an SfM point are not carved (0: off; DESIGN.md §5)
+  floater_conflict: 0,          // the share of the splats removed a rebalance by their views' opacity gradient (0: off)
+  floater_conflict_by: 'hurt',  // its score: 'hurt' (U / H) | 'single' (help from the fewest views, low H^2 / H2)
   max_splats:      300000,
   cap_lease:       0,      // E7: the count may go this fraction over max_splats until the consolidation (needs train_steps)
   train_steps:     0,      // E7: the planned length of the training (0: open-ended, no lease)
   consolidate_frac: 0.2,   // E7: the last fraction of train_steps, back to max_splats (splatBudget)
   polish:          false,  // E7: Monte-Carlo's noise and L1 terms off over that last fraction (plain Adam steps)
-  prune_opacity:   0.008,
+  prune_opacity:   0.05,   // under it a splat is dead at a rebalance (Monte-Carlo moves it onto a copy of a live one);
+                           // lower leaves a haze of faint splats
+  prune_opacity_start: 0.008, // the threshold at step 0, ramped linearly to prune_opacity (pruneOpacityAt): 0.05 from the
+                           // start recycles splats before they settle
+  prune_opacity_ramp: 30000,  // the ramp's length in steps (0: prune_opacity throughout)
   hysteresis:      0.35,
   stipple_seed:    true,   // E4: seed new splats from residual stippling
   stipple_count:   2000,
@@ -50,8 +57,15 @@ export const TRAIN_DEFAULTS = {
   lr_quat:         0.002,
   lr_color:        0.0025,
   lr_opacity:      0.01,   // brush's; higher floats splats under floors (DESIGN.md E9)
-  ssim:            0,      // D-SSIM loss weight (0 = off: 0.8 L1 + 0.2 L2), see tile_backward
+  view_order:      'shuffle',  // the training views' visiting order (viewOrder): 'shuffle' | 'time' (as given; autumn-garden's
+                              // 2798 keyframes: 17.11 dB held out, shuffled 19.80)
+  ssim:            0.2,    // D-SSIM loss weight, 0.8 L1 + 0.2 D-SSIM (3DGS, brush; 0 = off: 0.8 L1 + 0.2 L2), see tile_backward;
+                           // jardin5 SSIM 0.604 -> 0.643, autumn-garden 0.469 -> 0.510, PSNR the same
   bg_lr:           0,      // the background's learning rate (env.js, DESIGN.md E13; 0 = off: black)
+  random_bg:       true,   // each training step's background one random color (not learned; off under a learned background,
+                           // bg_lr, or a dome): a pixel left transparent shows it and costs error, so a dark area takes opaque dark
+                           // splats, not the black background through faint ones (jardin5's shadows: 0.124 of the background
+                           // through, 6.1% mostly, -> 0.000; PSNR the same)
   exposure_lr:     0,      // each training view's exposure, its learning rate (exposure.js, DESIGN.md E19; 0 = off)
   exposure_from:   1000,   // ... learned from this step on (the splats formed first)
   pose_lr:         0,      // each training view's pose (poses.js, DESIGN.md E19; rad a visit, the translation x the scene radius; 0 = off)
@@ -77,6 +91,10 @@ export const TRAIN_DEFAULTS = {
 // lr_decay_steps when open-ended, then flat
 export const posLrDecay = (P, step) =>
   Math.pow(P.lr_pos_final, Math.min(1, step / Math.max(1, P.train_steps > 0 ? P.train_steps : P.lr_decay_steps)));
+
+// prune_opacity at `step`: prune_opacity_start to prune_opacity over prune_opacity_ramp steps, then flat
+export const pruneOpacityAt = (P, step) => !(P.prune_opacity_ramp > 0) ? P.prune_opacity :
+  P.prune_opacity_start + (P.prune_opacity - P.prune_opacity_start) * Math.min(1, step / P.prune_opacity_ramp);
 
 // The shape limits as TrainUniforms.limits.xyz: max scale / depth, max world scale, log(max anisotropy); 0 is none
 const NO_LIMIT = 1e6;
@@ -173,3 +191,13 @@ export function remapVisibility(vis, src) {
 // the last consolidate_frac of a planned length: the lease's consolidation, and with polish Monte-Carlo's noise and L1 terms off
 export const endPhase = (P, step) => P.train_steps > 0 && step > P.train_steps * (1 - P.consolidate_frac);
 export const consolidating = (P, step) => P.cap_lease > 0 && endPhase(P, step);
+
+// The training views' visiting order, one visit each a cycle (GaussOptTrainer._splitViews): 'time', as given (a video's
+// keyframes in time order: a place's views come in one run, then not for the cycle); 'shuffle', a fixed permutation of
+// them (seeded), a place's views spread over the cycle
+export function viewOrder(views, order, seed = 1) {
+  if (order !== 'shuffle') return views;
+  const v = views.slice(), rnd = makeRng(seed);
+  for (let i = v.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [v[i], v[j]] = [v[j], v[i]]; }
+  return v;
+}

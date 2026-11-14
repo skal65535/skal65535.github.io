@@ -18,15 +18,22 @@ import { LOSS_ENV_AT, LOSS_EXPO_AT, LOSS_WORDS, CAMG_FLOATS } from './loss_acc.j
 import { Poses } from './poses.js';
 import { adamFrom } from './per_view.js';
 import { setPose } from './colmap.js';
-import { TRAIN_DEFAULTS, posLrDecay, shapeLimits, rebalanceDue, opacityResetDue, nextOpacityReset, seedPrepDue, splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, SEED_LEAD } from './schedule.js';
+import { TRAIN_DEFAULTS, posLrDecay, pruneOpacityAt, shapeLimits, rebalanceDue, opacityResetDue, nextOpacityReset, seedPrepDue, splatBudget, visibilityScore, remapVisibility, endPhase, consolidating, SEED_LEAD, viewOrder } from './schedule.js';
 
 const UNIFORM_BYTES = 224;     // TrainUniforms (shaders.wgsl): 56 x f32
 const EXPO_OFF  = LOSS_EXPO_AT * 4;      // loss_acc's bytes of the camera's gradient (loss_acc.js)
 const EXPO_RING = 16;          // the camera gradients of this many steps read back at once (_expoRecord)
 const HISTORY_LEN   = 300;     // training-PSNR history kept for the telemetry plot
+// The ground truths kept on the GPU: gt_cache_mb (params.js) at most. The first ones kept stay (pinned) but for
+// GT_CACHE_MIN of them, which go round the others least recently used first (a step's view and its 3 prefetched, a
+// texture a caller is using: never dropped under them): the views come in turn, which a cache of the least recently
+// used alone would always miss (3190 views, 2 GB: every step a photo loaded); pinned, (capacity - GT_CACHE_MIN) / views
+// of them hit. Every training photo was kept: 2 MB a view at 960 x 540, 6.6 GB for 3190 views
+export const GT_CACHE_MIN = 64;
 const OPT_METHODS   = { adam: 0, monte_carlo: 1 };
 const BUF_RW   = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 const BUF_READ = () => GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST;
+export const XFER_BYTES = 64 * 2 ** 20;  // a readback's staging and an upload's writes at most (_readback, _write)
 
 // The angle in degrees between two rotations (row-major 3 x 3)
 const turnDeg = (A, B) => {
@@ -59,6 +66,31 @@ function viewKey(view) {
   for (const i of [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]) key += `,${view[i].toFixed(4)}`;
   return key;
 }
+
+// H, H2, U, U2 (moments 12..15) a splat, 4 floats: decay x the carried ones (when their count matches) + the window's
+function carryOpacityGrad(prev, moments, count, decay = 0.95) {
+  const out = new Float32Array(count * 4), ok = prev?.length === count * 4;
+  for (let i = 0; i < count; i++) for (let k = 0; k < 4; k++) {
+    out[4 * i + k] = (ok ? decay * prev[4 * i + k] : 0) + moments[i * MOMENT_FLOATS + 12 + k];
+  }
+  return out;
+}
+// Rule 4's score a splat from its carried opacity gradient, 0 without help: by 'hurt', U / H (its views wanting it less
+// opaque over those wanting it more); by 'single', H2 / H^2 (1 / the views wanting it more); and the cut leaving `frac`
+// of the splats above it: { score, cut }
+export function conflictCut(G, count, frac, by = 'hurt') {
+  const k = Math.floor(frac * count);
+  if (!(G?.length === count * 4) || k < 1) return null;
+  const score = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    const H = G[4 * i];
+    score[i] = !(H > 0) ? 0 : by === 'single' ? G[4 * i + 1] / (H * H) : G[4 * i + 2] / H;
+  }
+  const sorted = Float32Array.from(score).sort();
+  return { score, cut: sorted[count - k - 1] };
+}
+// rows through a rebalance (src[i]: splat i's pre-rebalance index, -1 new: zero); null stays null
+function remapRows(rows, src, stride) { return rows && gatherRows(rows, src, stride); }
 
 // out[i] = src[idx[i]] (rows of `stride` floats); idx[i] < 0 leaves row i zeroed.
 function gatherRows(src, idx, stride) {
@@ -111,7 +143,10 @@ export class GaussOptTrainer {
     this.lastOpacityReset = -1;
     this.trainViews    = [];
     this.valViews      = [];
-    this.gtTextures    = new Map(); // image index -> GPUTexture
+    this.gtTextures    = new Map(); // image index -> GPUTexture, the least recently used first
+    this.gtPinned      = new Set(); // image indices of gtTextures never dropped (_keepGt)
+    this.gtCacheBytes  = (params?.gt_cache_mb ?? 2048) * 2 ** 20;
+    this.xferBytes     = XFER_BYTES;  // a multiple of 4
     this.gtLoading     = new Map(); // image index -> in-flight Promise<GPUTexture>
     this.pendingLossRead = null;
     this.points3D      = null;  // COLMAP points3D (set by the app): depth for stipple seeds
@@ -195,6 +230,7 @@ export class GaussOptTrainer {
     await this._settleGtLoads();
     for (const tex of this.gtTextures.values()) tex.destroy();
     this.gtTextures.clear();
+    this.gtPinned.clear();
   }
 
   // Forget the cached training sort, display sort key and hatTex render
@@ -202,12 +238,13 @@ export class GaussOptTrainer {
     this._lastSortKey = this._lastViewSortKey = this._lastHatKey = '';
   }
 
-  // Training / validation view indices; with no training view, view 0 trains
+  // Training / validation view indices, the training ones in params.view_order; with no training view, view 0 trains
   _splitViews() {
     this.trainViews = [];
     this.valViews = [];
     this.images.forEach((im, i) => (im.isValidation ? this.valViews : this.trainViews).push(i));
     if (this.trainViews.length === 0 && this.images.length > 0) this.trainViews = [0];
+    this.trainViews = viewOrder(this.trainViews, this.params.view_order);
   }
 
   // Free the GPU buffers and cached GT textures, after any step in flight. The trainer is
@@ -261,6 +298,11 @@ export class GaussOptTrainer {
     this.envVBuf    = this._buffer('env_v', ENV_TEXELS * 16, BUF_RW());
     this.envTex     = this.device.createTexture({ size: [ENV_N, 6 * ENV_N], format: 'rgba32float', label: 'env_tex',
                                                   usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    // params.random_bg: a training step's background, one color in every texel of a cube map of 2 a face (a fixed one:
+    // tile_backward learns only a texture of ENV_N), in place of envTex for that step (_bgTex)
+    this.randomBgTex = this.device.createTexture({ size: [2, 12], format: 'rgba32float', label: 'random_bg_tex',
+                                                   usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    this._bgTex = null;
 
     this._allocResolution();
     this.binUniformBuf = this._buffer('bin_uniforms', 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -306,19 +348,16 @@ export class GaussOptTrainer {
     if (this.count > this.capacity) {
       this._allocateSplatBuffers(Math.max(this.count * 2, this.capacity * 2));
     }
-    const q = this.device.queue;
     const splatFloats = this.count * SPLAT_FLOATS;
-    q.writeBuffer(this.splatsBuf, 0, this.cpuParams, 0, splatFloats);
-    const zeroMoments = new Uint32Array(this.count * MOMENT_FLOATS);
-    q.writeBuffer(this.momentsBuf, 0, zeroMoments);
-    q.writeBuffer(this.grads2dBuf, 0, zeroMoments);
+    this._write(this.splatsBuf, 0, this.cpuParams.subarray(0, splatFloats));
+    this._clear(this.momentsBuf, this.count * MOMENT_FLOATS * 4);
+    this._clear(this.grads2dBuf, this.count * MOMENT_FLOATS * 4);
     if (adam) {
-      q.writeBuffer(this.adamMBuf, 0, adam.adamM, 0, splatFloats);
-      q.writeBuffer(this.adamVBuf, 0, adam.adamV, 0, splatFloats);
+      this._write(this.adamMBuf, 0, adam.adamM.subarray(0, splatFloats));
+      this._write(this.adamVBuf, 0, adam.adamV.subarray(0, splatFloats));
     } else {
-      const zeroAdam = new Uint32Array(splatFloats);
-      q.writeBuffer(this.adamMBuf, 0, zeroAdam);
-      q.writeBuffer(this.adamVBuf, 0, zeroAdam);
+      this._clear(this.adamMBuf, splatFloats * 4);
+      this._clear(this.adamVBuf, splatFloats * 4);
       this.adamStepCount = 0;
     }
     this.octree.updateExtents(this.cpuParams);
@@ -329,7 +368,8 @@ export class GaussOptTrainer {
   // Load and cache a ground-truth image texture at (trainW, trainH).
   // Concurrent loads (prefetch, frustum images, compare view) are deduped.
   async ensureGtTexture(imgIdx) {
-    if (this.gtTextures.has(imgIdx)) return this.gtTextures.get(imgIdx);
+    const kept = this.gtTextures.get(imgIdx);
+    if (kept) { this.gtTextures.delete(imgIdx); this.gtTextures.set(imgIdx, kept); return kept; }  // now the most recent
     let p = this.gtLoading.get(imgIdx);
     if (!p) {
       p = this._loadGtTexture(imgIdx).finally(() => this.gtLoading.delete(imgIdx));
@@ -366,9 +406,30 @@ export class GaussOptTrainer {
       this.device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, size);
     }
     bmp.close();
-    this.gtTextures.set(imgIdx, tex);
+    this._keepGt(imgIdx, tex);
     return tex;
   }
+
+  // The ground truths gtCacheBytes holds, GT_CACHE_MIN at least
+  _gtCapacity() { return Math.max(GT_CACHE_MIN, Math.floor(this.gtCacheBytes / (4 * this.trainW * this.trainH))); }
+
+  // A ground truth kept: pinned while the pinned leave GT_CACHE_MIN free, else among those going round, the least
+  // recently used of them dropped (destroyed) beyond the capacity
+  _keepGt(imgIdx, tex) {
+    const cap = this._gtCapacity();
+    this.gtTextures.set(imgIdx, tex);
+    if (this.gtPinned.size < cap - GT_CACHE_MIN) this.gtPinned.add(imgIdx);
+    for (const [i, t] of this.gtTextures) {
+      if (this.gtTextures.size <= cap) break;
+      if (this.gtPinned.has(i)) continue;
+      t.destroy();
+      this.gtTextures.delete(i);
+    }
+  }
+
+  // Whether another ground truth would drop one (the frustums' 'all' photos load no more then: each frame would
+  // load and drop them in turn)
+  gtCacheFull() { return this._gtCapacity() <= this.gtTextures.size; }
 
   // Intrinsics of image `img` at training resolution (+ NDC-normalized focals for the sort), at `zoom` x its focals.
   intrinsics(img, zoom = 1) {
@@ -432,8 +493,9 @@ export class GaussOptTrainer {
                this.tilesX, this.tilesY);
 
     const lists = [this.tileRangesBuf, this.tileListBuf];
+    const bgTex = this._bgTex ?? this.envTex;  // a training step's random one, else the background
     this._pass(enc, this.pipeForward, [U, this.splatsBuf, this.projSplatsBuf, this.hatTex.createView(), this.pixStateBuf,
-                                       ...lists, this.envTex.createView()], this.tilesX, this.tilesY);
+                                       ...lists, bgTex.createView()], this.tilesX, this.tilesY);
     if (gtTex) {
       if (this.params.ssim > 0) {
         const wx = Math.ceil(this.trainW / 16), wy = Math.ceil(this.trainH / 16);
@@ -444,9 +506,9 @@ export class GaussOptTrainer {
       const backward = this.params.split_mode === 'error' ? this.pipeBackwardDir : this.pipeBackward;
       this._pass(enc, backward, [U, this.splatsBuf, this.projSplatsBuf, gtTex.createView(), this.hatTex.createView(),
                                           this.pixStateBuf, this.grads2dBuf, this.momentsBuf, this.lossBuf, ...lists,
-                                          this.ssimGradTex.createView(), this.envTex.createView()],
+                                          this.ssimGradTex.createView(), bgTex.createView()],
                  this.tilesX, this.tilesY);
-      if (this.params.bg_lr > 0 && !this.domeN && !this._camOnly) {
+      if (this.params.bg_lr > 0 && !this.domeN && !this._camOnly && !this._bgTex) {
         this._pass(enc, this.pipeEnvAdam, [U, this.envBuf, this.lossBuf, this.envMBuf, this.envVBuf], Math.ceil(ENV_TEXELS / 64));
         enc.copyBufferToTexture({ buffer: this.envBuf, bytesPerRow: ENV_N * 16 }, { texture: this.envTex }, [ENV_N, 6 * ENV_N]);
       } else {
@@ -492,32 +554,60 @@ export class GaussOptTrainer {
     this.sortGen++;
   }
 
-  // Copy GPU resources into one staging buffer and return CPU copies, one per source.
+  // Copy GPU resources to the CPU and return the copies, one per source, through a staging buffer of XFER_BYTES at most
+  // (this.xferBytes; one of the whole state, 1.3 GB at 3M splats, left Chrome's shared memory held after it).
   // src: { buf, bytes } (-> Float32Array) or { tex } (rgba8, -> Uint8Array with rowPitch).
   async _readback(label, srcs) {
     const texBytes = this.rowPitch * this.trainH;
     let total = 0;
     const offs = srcs.map(s => { const o = total; total += s.tex ? texBytes : s.bytes; return o; });
-    const staging = this._buffer(label, total, BUF_READ());
+    // the pieces: a texture whole, a buffer in pieces of XFER_BYTES at most; batches of them filling the staging
+    const pieces = [];
+    srcs.forEach((s, i) => {
+      if (s.tex) pieces.push({ i, at: 0, n: texBytes });
+      else for (let at = 0; at < s.bytes; at += this.xferBytes) pieces.push({ i, at, n: Math.min(this.xferBytes, s.bytes - at) });
+    });
+    const out = new ArrayBuffer(total);
+    const staging = this._buffer(label, Math.min(Math.max(total, 4), Math.max(this.xferBytes, texBytes)), BUF_READ());
     try {
-      const enc = this.device.createCommandEncoder({ label });
-      srcs.forEach((s, i) => {
-        if (s.tex) {
-          enc.copyTextureToBuffer({ texture: s.tex }, { buffer: staging, offset: offs[i], bytesPerRow: this.rowPitch },
-                                  [this.trainW, this.trainH]);
-        } else if (s.bytes > 0) {
-          enc.copyBufferToBuffer(s.buf, 0, staging, offs[i], s.bytes);
+      for (let k = 0; k < pieces.length;) {
+        const enc = this.device.createCommandEncoder({ label }), batch = [];
+        for (let o = 0; k < pieces.length; k++) {
+          const p = pieces[k], at = o;  // 4-aligned: every size a multiple of 4
+          if (at + p.n > staging.size && batch.length) break;
+          if (srcs[p.i].tex) enc.copyTextureToBuffer({ texture: srcs[p.i].tex }, { buffer: staging, offset: at, bytesPerRow: this.rowPitch },
+                                                     [this.trainW, this.trainH]);
+          else enc.copyBufferToBuffer(srcs[p.i].buf, p.at, staging, at, p.n);
+          batch.push([at, offs[p.i] + p.at, p.n]);
+          o = at + p.n;
         }
-      });
-      this.device.queue.submit([enc.finish()]);
-      await staging.mapAsync(GPUMapMode.READ);
-      const data = staging.getMappedRange().slice(0);
-      staging.unmap();
-      return srcs.map((s, i) => s.tex ? new Uint8Array(data, offs[i], texBytes)
-                                      : new Float32Array(data, offs[i], s.bytes / 4));
+        this.device.queue.submit([enc.finish()]);
+        await staging.mapAsync(GPUMapMode.READ);
+        const mapped = staging.getMappedRange();
+        for (const [at, dst, n] of batch) new Uint8Array(out, dst, n).set(new Uint8Array(mapped, at, n));
+        staging.unmap();
+      }
+      return srcs.map((s, i) => s.tex ? new Uint8Array(out, offs[i], texBytes)
+                                      : new Float32Array(out, offs[i], s.bytes / 4));
     } finally {
       staging.destroy();
     }
+  }
+
+  // queue.writeBuffer of `data` (a typed array) into `buf` at `offset` bytes, in writes of this.xferBytes at most
+  _write(buf, offset, data) {
+    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    for (let at = 0; at < bytes.length; at += this.xferBytes) {
+      this.device.queue.writeBuffer(buf, offset + at, bytes, at, Math.min(this.xferBytes, bytes.length - at));
+    }
+  }
+
+  // `bytes` of `buf` set to 0 on the GPU (no upload)
+  _clear(buf, bytes) {
+    if (bytes <= 0) return;
+    const enc = this.device.createCommandEncoder({ label: 'clear' });
+    enc.clearBuffer(buf, 0, bytes);
+    this.device.queue.submit([enc.finish()]);
   }
 
   // Training-loss PSNR from the fixed-point (x65536) 64-bit squared-error sum [lo, hi] in lossBuf.
@@ -782,10 +872,19 @@ export class GaussOptTrainer {
     const needRebalance = rebalanceDue(P, this.stepCount, this.lastRebalanceStep, this.count);
     const needLossPoll  = !needRebalance && (this.stepCount % 5 === 0) && !this.pendingLossRead;
     let expoRead = null;
-    this._runPasses(gtTex, enc => {
-      if (needLossPoll) enc.copyBufferToBuffer(this.lossBuf, 0, this.lossReadBuf, 0, 16);
-      if (learnExpo || learnCam) expoRead = this._expoRecord(enc, img, { expo: learnExpo, cam: learnCam });
-    });
+    if (P.random_bg && !(P.bg_lr > 0) && !this.domeN) {  // a learned background or a dome: the scene's own, trained with
+      const c = [Math.random(), Math.random(), Math.random(), 1];
+      this.device.queue.writeTexture({ texture: this.randomBgTex }, new Float32Array(24 * 4).map((_, i) => c[i % 4]), { bytesPerRow: 2 * 16 }, [2, 12]);
+      this._bgTex = this.randomBgTex;
+    }
+    try {
+      this._runPasses(gtTex, enc => {
+        if (needLossPoll) enc.copyBufferToBuffer(this.lossBuf, 0, this.lossReadBuf, 0, 16);
+        if (learnExpo || learnCam) expoRead = this._expoRecord(enc, img, { expo: learnExpo, cam: learnCam });
+      });
+    } finally {
+      this._bgTex = null;
+    }
     if (expoRead) this._expoRead(expoRead);
 
     let hatTex = this.hatTex;
@@ -857,12 +956,13 @@ export class GaussOptTrainer {
     return this._withStepLock(async () => {
       await this._settleGtLoads();
       const index = new Map(images.map((im, i) => [im.name, i]));
-      const textures = new Map();
+      const textures = new Map(), pinned = new Set();
       for (const [i, tex] of this.gtTextures) {
         const k = index.get(this.images[i]?.name);
-        if (keepTextures && k !== undefined) textures.set(k, tex);
+        if (keepTextures && k !== undefined) { textures.set(k, tex); if (this.gtPinned.has(i)) pinned.add(k); }
         else tex.destroy();
       }
+      this.gtPinned = pinned;
       const kept = images.filter(im => this.images.some(o => o.name === im.name)).length;
       const dropped = this.images.length - kept;
       this.images = images;
@@ -890,7 +990,7 @@ export class GaussOptTrainer {
     }
   }
 
-  // Full optimizer state (splats, WLBG moments, Adam m/v) for a .gosnap snapshot.
+  // Full optimizer state (splats, WLBG moments, Adam m/v) for a snapshot (snapshot.js).
   async readbackTrainingState() {
     return this._withStepLock(async () => {
       await this._drainLossRead();
@@ -921,14 +1021,20 @@ export class GaussOptTrainer {
       }
       return b || null;
     };
-    const moments = check('moments', MOMENT_FLOATS);
+    // a snapshot of 12 floats a splat (before the opacity gradient's H, H2, U, U2): those start at 0
+    const old = blobs.moments?.length === this.count * 12 && MOMENT_FLOATS > 12 ? blobs.moments : null;
+    let moments = check('moments', old ? 12 : MOMENT_FLOATS);
+    if (old) {
+      moments = new Float32Array(this.count * MOMENT_FLOATS);
+      for (let i = 0; i < this.count; i++) moments.set(old.subarray(12 * i, 12 * i + 12), i * MOMENT_FLOATS);
+    }
     this.seedPrep = null;
     const adamM   = check('adam_m',  SPLAT_FLOATS);
     const adamV   = check('adam_v',  SPLAT_FLOATS);
-    if (moments) this.device.queue.writeBuffer(this.momentsBuf, 0, moments);
+    if (moments) this._write(this.momentsBuf, 0, moments);
     if (adamM && adamV) {
-      this.device.queue.writeBuffer(this.adamMBuf, 0, adamM);
-      this.device.queue.writeBuffer(this.adamVBuf, 0, adamV);
+      this._write(this.adamMBuf, 0, adamM);
+      this._write(this.adamVBuf, 0, adamV);
       this.adamStepCount = state.adamStepCount | 0;
     }
     this.stepCount   = state.stepCount | 0;
@@ -942,6 +1048,89 @@ export class GaussOptTrainer {
     this.poses       = Poses.fromJSON(state.poses, this.images, this.octree.sceneRadius || 1);
     this.poses.apply(this.images);
     this.expoRing    = [];
+  }
+
+  // The editor (ui/edit_panel.js): the splats as on the GPU now, into cpuParams (count rows of SPLAT_FLOATS)
+  async readSplats() {
+    return this._withStepLock(async () => {
+      await this._drainLossRead();
+      const [params] = await this._readback('edit_read', [{ buf: this.splatsBuf, bytes: this.count * SPLAT_FLOATS * 4 }]);
+      this._toCpuParams(params);
+      return this.cpuParams.subarray(0, this.count * SPLAT_FLOATS);
+    });
+  }
+
+  // The editor's selection: flags (slot 15, which nothing else reads or writes but the readbacks) 1 for `indices`
+  // (splats_render tints them), 0 back with on = false. The indices are those of the splats now: the training
+  // paused meanwhile (a rebalance reorders them).
+  setSelected(indices, on) {
+    const one = new Float32Array([on ? 1 : 0]);
+    for (const i of indices) {
+      if (i < 0 || i >= this.count) continue;
+      this.device.queue.writeBuffer(this.splatsBuf, (i * SPLAT_FLOATS + 15) * 4, one);
+      this.cpuParams[i * SPLAT_FLOATS + 15] = one[0];
+    }
+    this.sortGen++;
+  }
+
+  // The editor's deletion: the splats `indices` taken out, the others kept with their Adam state and moments, the
+  // octree built again. Returns { removed: the rows taken out, for restoreSplats; newIndex: each splat's index now
+  // (-1: removed) }.
+  async removeSplats(indices) {
+    return this._withStepLock(async () => {
+      await this._drainLossRead();
+      const [params, moments, adamM, adamV] = await this._readSplatState('edit_remove');
+      const drop = new Uint8Array(this.count);
+      for (const i of indices) if (i >= 0 && i < this.count) drop[i] = 1;
+      const keep = [], gone = [];
+      for (let i = 0; i < this.count; i++) (drop[i] ? gone : keep).push(i);
+      const rows = { params, moments, adamM, adamV, opGrad: this.opGrad?.length === this.count * 4 ? this.opGrad : null };
+      const removed = {};
+      for (const [k, v] of Object.entries(rows)) removed[k] = v && gatherRows(v, gone, v.length / this.count);
+      removed.count = gone.length;
+      const order = this._replaceSplats(rows, keep), newIndex = new Int32Array(drop.length).fill(-1);
+      order.forEach((k, i) => { newIndex[k] = i; });
+      return { removed, newIndex };
+    });
+  }
+
+  // The rows removeSplats took out put back (after the splats now), the octree built again
+  async restoreSplats(removed) {
+    return this._withStepLock(async () => {
+      await this._drainLossRead();
+      const [params, moments, adamM, adamV] = await this._readSplatState('edit_restore');
+      const n = this.count, all = n + removed.count, cat = (a, b, f) => {
+        const out = new Float32Array(all * f);
+        if (a) out.set(a.subarray(0, n * f));
+        if (b) out.set(b, n * f);
+        return out;
+      };
+      const op = this.opGrad?.length === n * 4 ? this.opGrad : null;
+      this._replaceSplats({
+        params: cat(params, removed.params, SPLAT_FLOATS), moments: cat(moments, removed.moments, MOMENT_FLOATS),
+        adamM: cat(adamM, removed.adamM, SPLAT_FLOATS), adamV: cat(adamV, removed.adamV, SPLAT_FLOATS),
+        opGrad: op || removed.opGrad ? cat(op, removed.opGrad, 4) : null,
+      }, Int32Array.from({ length: all }, (_, i) => i));
+    });
+  }
+
+  // The splats rows src of `rows` (params, moments, adamM, adamV, opGrad: per-splat arrays), the flags 0, binned in
+  // a new octree; the per-splat state carried through its order; uploaded (the moments kept, not zeroed). Returns
+  // that order: splat i now is row order[i] of `rows`.
+  _replaceSplats({ params, moments, adamM, adamV, opGrad }, src) {
+    this.count = src.length;
+    this.cpuParams = gatherRows(params, src, SPLAT_FLOATS);
+    for (let b = 15; b < this.cpuParams.length; b += SPLAT_FLOATS) this.cpuParams[b] = 0;
+    this.octree.build(this.cpuParams, this.count, this.images);
+    const order = Int32Array.from(this.octree.lastPerm, k => src[k]);
+    const m = gatherRows(moments, order, MOMENT_FLOATS);
+    this.opGrad = opGrad ? gatherRows(opGrad, order, 4) : null;
+    if (this.vis) this.vis = remapVisibility(this.vis, order.map(k => k < this.vis.sum.length ? k : -1));  // put back: none
+    this.seedPrep = null;
+    this.splitVectors = null;
+    this._uploadSplats({ adamM: gatherRows(adamM, order, SPLAT_FLOATS), adamV: gatherRows(adamV, order, SPLAT_FLOATS) });
+    this._write(this.momentsBuf, 0, m);
+    return order;
   }
 
   // The next step that may reset the opacities (nextOpacityReset; train.mjs checkpoints just before it)
@@ -1199,6 +1388,9 @@ export class GaussOptTrainer {
     // over the windows it lived (decay 0.7 a window: a video's window does not visit every view)
     const budget = splatBudget(P, this.stepCount), lease = P.cap_lease > 0 && P.train_steps > 0;
     if (lease) this.vis = visibilityScore(this.vis, moments, this.count);
+    // the views' opacity gradient (moments 12..15) carried over the rebalances, decayed 0.95 a window: a window
+    // (100-400 steps) visits a fraction of a video's views, a splat's views over several (floater study)
+    this.opGrad = carryOpacityGrad(this.opGrad, moments, this.count);
     // E7's repair: the stuck regions (regions.js RegionTracker) split more easily and draw more relocations
     let repairMask = null;
     if (P.region_repair > 0) {
@@ -1231,12 +1423,13 @@ export class GaussOptTrainer {
         keepScore:      lease ? this.vis.score : null,
         repairMask,
         repairBoost:    P.region_repair,
-        pruneOpacity:   P.prune_opacity,
+        pruneOpacity:   pruneOpacityAt(P, this.stepCount),
         hysteresis:     P.hysteresis,
         enableFloaters: P.remove_floaters,
         floaterFewViews: P.floater_few_views,
         decayOccluders: P.decay_occluders,
         floaterDepth:   P.floater_depth,
+        conflict:       P.floater_conflict > 0 ? conflictCut(this.opGrad, this.count, P.floater_conflict, P.floater_conflict_by) : null,
         floaterSpare:   P.floater_spare > 0 && this.points3D && !this.points3D.fallback
                           ? { positions: this.points3D.positions, count: this.points3D.count, radius: P.floater_spare * this.octree.sceneRadius }
                           : null,
@@ -1267,6 +1460,7 @@ export class GaussOptTrainer {
     const adamM = gatherRows(adamM0, src, SPLAT_FLOATS);
     const adamV = gatherRows(adamV0, src, SPLAT_FLOATS);
     if (lease) this.vis = remapVisibility(this.vis, src);
+    this.opGrad = remapRows(this.opGrad, src, 4);
     lap('gather');
 
     // Periodic opacity reset (3DGS): cap alpha at 0.01, so splats that don't earn their

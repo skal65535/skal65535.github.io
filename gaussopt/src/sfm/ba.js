@@ -1,22 +1,23 @@
 // ba.js — Bundle adjustment: robust Levenberg-Marquardt with a Schur complement on the points
-// (DESIGN-sfm D2, JS f64 reference backend). Sized for windows (tens of cameras, ~1e5 points):
-// the reduced camera system is dense and solved by Cholesky.
+// (DESIGN-sfm D2, JS f64 reference backend). The reduced camera system (rcs.js): dense and solved by Cholesky up to
+// denseMax unknowns (a window's tens of cameras), by blocks and conjugate gradients past it (a segment's global BA).
 //
 // Parameters: free camera poses (camera-frame update q' = exp(dw) q + dt: 6 each), the intrinsics
-// of each camera model shared by its poses (any of 'f', 'k1', 'k2', 'p1', 'p2'; fy keeps its ratio to fx, the principal
-// point stays fixed; a model per lens and zoom, DESIGN-sfm §13 P8),
+// of each camera model shared by its poses (any of 'f', 'k1', 'k2', 'p1', 'p2', 'fy'; 'f' scales fx and fy together, 'fy'
+// moves fy alone (COLMAP's OPENCV: fx, fy apart); the principal point stays fixed; a model per lens and zoom, DESIGN-sfm §13 P8),
 // and all observed points (3 each). Fixed poses still constrain the points.
 "use strict";
 
-import { expSO3, mul3, mulVec3, choleskySolve, invert3 } from './linalg.js';
+import { expSO3, mul3, mulVec3, invert3 } from './linalg.js';
+import { ReducedSystem, DENSE_MAX, CG_TOL } from './rcs.js';
 import { intrinsics, distortionParams, paramIndex, withFocal } from './camera.js';
 import { median } from './util.js';
 
-export const INTRINSICS = ['f', 'k1', 'k2', 'p1', 'p2'];
+export const INTRINSICS = ['f', 'k1', 'k2', 'p1', 'p2', 'fy'];
 const NI = INTRINSICS.length;
 
 // Projection of camera-space point q with Jacobians: out.uv, out.dq (2 x 3, d(uv)/dq) and
-// out.dk (2 x NI, d(uv)/d[f, k1, k2, p1, p2], with fy = f * fy/fx)
+// out.dk (2 x NI, d(uv)/d[f, k1, k2, p1, p2, fy]; 'f' keeps fy / fx)
 function projectCameraPoint(cam, q, out) {
   const [fx, fy, cx, cy] = intrinsics(cam), [k1, k2, p1, p2] = distortionParams(cam);
   const iz = 1 / q[2], x = q[0] * iz, y = q[1] * iz;
@@ -35,11 +36,12 @@ function projectCameraPoint(cam, q, out) {
   dq[0] = a00 * iz; dq[1] = a01 * iz; dq[2] = -(a00 * x + a01 * y) * iz;
   dq[3] = a10 * iz; dq[4] = a11 * iz; dq[5] = -(a10 * x + a11 * y) * iz;
   const dk = out.dk;
-  dk[0] = xd;                     dk[5] = (fy / fx) * yd;
-  dk[1] = fx * x * r2;            dk[6] = fy * y * r2;
-  dk[2] = fx * x * r2 * r2;       dk[7] = fy * y * r2 * r2;
-  dk[3] = fx * 2 * x * y;         dk[8] = fy * (r2 + 2 * y * y);
-  dk[4] = fx * (r2 + 2 * x * x);  dk[9] = fy * 2 * x * y;
+  dk[0] = xd;                     dk[NI] = (fy / fx) * yd;
+  dk[1] = fx * x * r2;            dk[NI + 1] = fy * y * r2;
+  dk[2] = fx * x * r2 * r2;       dk[NI + 2] = fy * y * r2 * r2;
+  dk[3] = fx * 2 * x * y;         dk[NI + 3] = fy * (r2 + 2 * y * y);
+  dk[4] = fx * (r2 + 2 * x * x);  dk[NI + 4] = fy * 2 * x * y;
+  dk[5] = 0;                      dk[NI + 5] = yd;
 }
 
 const scratch = () => ({ uv: new Float64Array(2), dq: new Float64Array(6), dk: new Float64Array(2 * NI) });
@@ -71,8 +73,10 @@ export function linearizeObservation(camera, pose, X, uv) {
   return { r, Jpose, Jpoint, Jintr: Array.from(tmp.dk) };
 }
 
-// Huber loss: [rho(s), rho'(s)] for squared residual s and scale d
-const rho = (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / Math.sqrt(s)]);
+// The losses: [rho(s), rho'(s)] for squared residual s and scale d. Huber; soft L1 (Ceres's SoftLOneLoss, COLMAP's local
+// BA), 2 d^2 (sqrt(1 + s / d^2) - 1); trivial (least squares)
+const rhoHuber = (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / Math.sqrt(s)]);
+const rhoSoftL1 = (s, d) => { const q = Math.sqrt(1 + s / (d * d)); return [2 * d * d * (q - 1), 1 / q]; };
 
 // problem: {
 //   camera: { model, width, height, params },  one camera model for every pose, or
@@ -82,7 +86,8 @@ const rho = (s, d) => (s <= d * d ? [s, 1] : [2 * d * Math.sqrt(s) - d * d, d / 
 //   obsCam: Int32Array, obsPoint: Int32Array, obsUV: Float64Array(2 m)
 // }
 // opts: { refine: ['f', 'k1'], refineCameras: [bool] per camera model (default: all of them),
-// lossScale: 2 (px, of the Huber loss), maxIterations: 30, fixPoints: false }; stops when an accepted step lowers the cost by
+// loss: 'huber' | 'softl1' | 'trivial', lossScale: 2 (px), maxIterations: 30, fixPoints: false (every point held),
+// fixedPoints: null | Uint8Array per point (1: held, its residuals on the poses and intrinsics only) }; stops when an accepted step lowers the cost by
 // less than 1e-7 (relative)
 // Returns { initialCost, cost, iterations, rmse (px, of the non-robust residuals), profile }. profile: the problem's
 // size (obs, freeObs: those of free poses, points, free poses) and where the time went, in ms (linearize, normal: the
@@ -97,7 +102,9 @@ export function normalizeFrame(points) {
 }
 
 export function bundleAdjust(problem, opts = {}) {
-  const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false } = opts;
+  const { refine = [], refineCameras = null, lossScale = 2, maxIterations = 30, fixPoints = false, fixedPoints = null, loss = 'huber', denseMax = DENSE_MAX, cgTol = CG_TOL } = opts;
+  const rho = { huber: rhoHuber, softl1: rhoSoftL1, trivial: (s) => [s, 1] }[loss];
+  if (!rho) throw new Error(`loss ${loss}`);
   const { poses, free, points, obsCam, obsPoint, obsUV } = problem;
   const single = !problem.cameras, poseCam = problem.poseCam ?? new Int32Array(poses.length);
   let cams = single ? [problem.camera] : [...problem.cameras];
@@ -121,6 +128,7 @@ export function bundleAdjust(problem, opts = {}) {
   if (ni) cams.forEach((_, k) => { if (used.has(k) && (!refineCameras || refineCameras[k])) intrBlock[k] = nm++; });
   const m = 6 * nc + ni * nm, iOff = 6 * nc;  // reduced system: free poses, then intrinsics per model
   const camOfObs = (o) => cams[poseCam[obsCam[o]]], intrOfObs = (o) => intrBlock[poseCam[obsCam[o]]];
+  const blockSizes = [...new Array(nc).fill(6), ...new Array(nm).fill(ni)], blockAt = (off) => (off < iOff ? off / 6 : nc + (off - iOff) / ni);
 
   // Observations of each point
   const ptStart = new Int32Array(numPoints + 1);
@@ -201,13 +209,14 @@ export function bundleAdjust(problem, opts = {}) {
   const solve = (lambda) => {
     profile.solves++;
     let t = now();
-    const S = new Float64Array(m * m), g = new Float64Array(m), dPts = new Float64Array(3 * numPoints);
+    const S = new ReducedSystem(blockSizes, { denseMax, tol: cgTol }), g = new Float64Array(m), dPts = new Float64Array(3 * numPoints);
     // J^T w J and J^T w r of the pose / intrinsics blocks: block a (offset oa, size na, rows A at ao) with block b.
-    // S's lower triangle only: choleskySolve reads no other (the blocks do not overlap: oa > ob, or the same block)
+    // S's lower triangle only: its solve reads no other (the blocks do not overlap: oa > ob, or the same block)
     const addS = (w, oa, na, A, ao, ob, nb, B, bo) => {
       if (oa < ob) return;
+      const [T, base, stride] = S.at(blockAt(oa), blockAt(ob));
       for (let i = 0; i < na; i++) for (let j = 0, nj = oa === ob ? i + 1 : nb; j < nj; j++)
-        S[(oa + i) * m + ob + j] += w * (A[ao + i] * B[bo + j] + A[ao + na + i] * B[bo + nb + j]);
+        T[base + i * stride + j] += w * (A[ao + i] * B[bo + j] + A[ao + na + i] * B[bo + nb + j]);
     };
     const addG = (w, o, oa, na, A, ao) => {
       for (let i = 0; i < na; i++) g[oa + i] += w * (A[ao + i] * res[2 * o] + A[ao + na + i] * res[2 * o + 1]);
@@ -227,7 +236,7 @@ export function bundleAdjust(problem, opts = {}) {
         addG(w, o, oi, ni, Ji, io);
       }
     }
-    for (let i = 0; i < m; i++) S[i * m + i] += lambda * Math.max(S[i * m + i], 1e-6);
+    S.addDiagonal(S.diagonal().map(x => lambda * Math.max(x, 1e-6)));
     profile.normal += now() - t; t = now();
     // Schur complement over the points: S -= W V^-1 W^T, g -= W V^-1 gp
     const V = new Float64Array(9), gp = new Float64Array(3), Vinv = new Float64Array(9);
@@ -239,6 +248,7 @@ export function bundleAdjust(problem, opts = {}) {
     };
     ptOk.fill(0);
     for (let p = 0; p < (fixPoints ? 0 : numPoints); p++) {
+      if (fixedPoints && fixedPoints[p]) continue;  // held: no step
       V.fill(0); gp.fill(0);
       const s0 = slotStart[p], s1 = slotStart[p + 1], w0 = slotW[s0];
       wBuf.fill(0, w0, slotW[s1]);
@@ -267,15 +277,17 @@ export function bundleAdjust(problem, opts = {}) {
         for (let b = s0; b < s1; b++) {
           const ob = slotOff[b], nb = slotSize[b], B = slotW[b];
           if (oa < ob) continue;  // the lower triangle (addS)
+          const [T, base, stride] = S.at(blockAt(oa), blockAt(ob));
           for (let i = 0; i < na; i++) for (let j = 0, nj = oa === ob ? i + 1 : nb; j < nj; j++)
-            S[(oa + i) * m + ob + j] -= wvBuf[A + 3 * i] * wBuf[B + 3 * j] + wvBuf[A + 3 * i + 1] * wBuf[B + 3 * j + 1] + wvBuf[A + 3 * i + 2] * wBuf[B + 3 * j + 2];
+            T[base + i * stride + j] -= wvBuf[A + 3 * i] * wBuf[B + 3 * j] + wvBuf[A + 3 * i + 1] * wBuf[B + 3 * j + 1] + wvBuf[A + 3 * i + 2] * wBuf[B + 3 * j + 2];
         }
         for (let i = 0; i < na; i++) g[oa + i] -= wvBuf[A + 3 * i] * gp[0] + wvBuf[A + 3 * i + 1] * gp[1] + wvBuf[A + 3 * i + 2] * gp[2];
       }
     }
     profile.schur += now() - t; t = now();
-    const dCam = m ? choleskySolve(S, g.map(x => -x), m) : new Float64Array(0);
+    const dCam = S.solve(g.map(x => -x));
     profile.cholesky += now() - t; t = now();
+    if (!S.dense) { profile.cg = (profile.cg ?? 0) + S.iterations; if (!S.converged) profile.cgCut = (profile.cgCut ?? 0) + 1; }
     if (!dCam) return null;
     const rhs = new Float64Array(3);
     for (let p = 0; p < numPoints; p++) {  // back-substitution: dX = -V^-1 (gp + W^T dCam)

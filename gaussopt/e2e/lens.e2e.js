@@ -16,7 +16,8 @@ await run(async (page) => {
     const app = window.app, tr = app.trainer, P = app.params;
     const { train: trainOf, photoIsRender } = await import('./e2e/page_util.js'), train = (n) => trainOf(app, n);
     await train(1000);
-    Object.assign(P, { opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
+    Object.assign(P, { random_bg: false,  // the photos are renders behind black: training draws them so
+                       opt_method: 'adam', lr_pos: 0, lr_scale: 0, lr_quat: 0, lr_color: 0, lr_opacity: 0, opacity_reset: 0,
                        enable_rebalance: false, drop_rate: 0, lens_lr: 1e-3, pose_from: 0 });
     const views = tr.trainViews, steps = 150 * views.length;
     await photoIsRender(tr, views);

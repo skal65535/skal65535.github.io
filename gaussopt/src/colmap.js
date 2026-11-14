@@ -10,7 +10,7 @@ export const SPLAT_FLOATS = 16; // 64 bytes/splat:
 // [0..3]:   x, y, z, logit_opacity
 // [4..7]:   log_sx, log_sy, log_sz, leaf_id
 // [8..11]:  qw, qx, qy, qz
-// [12..15]: f_dc_0, f_dc_1, f_dc_2, flags
+// [12..15]: f_dc_0, f_dc_1, f_dc_2, flags (1: selected in the editor, trainer.js setSelected; else 0)
 
 export const rgbToSh0  = (r01) => (r01 - 0.5) / SH_C0;
 export const sh0ToRgb01 = (dc) => Math.min(1, Math.max(0, 0.5 + SH_C0 * dc));
@@ -529,7 +529,8 @@ export async function loadColmapFromFiles(fileList, { onProgress, valSplit } = {
   }
   const availablePlys = [];
   for (const [name, file] of byRel) {
-    if ((name.endsWith('.ply') && !name.endsWith('.mesh.ply')) || name.endsWith('.splat')) availablePlys.push({ name, file });  // .mesh.ply: mesh.js's, not splats
+    // .mesh.ply: mesh.js's, not splats; .scene.glb: a scene or a snapshot (snapshot.js), .gosnap: an older snapshot
+    if ((name.endsWith('.ply') && !name.endsWith('.mesh.ply')) || /\.(splat|gosnap|scene\.glb)$/.test(name)) availablePlys.push({ name, file });
   }
   return { baseUrl: null, ...ds, availablePlys };
 }

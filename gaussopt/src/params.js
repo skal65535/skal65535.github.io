@@ -6,6 +6,7 @@
 import { TRAIN_DEFAULTS } from './schedule.js';
 import { urlFlagOn } from './url.js';
 
+export const MAX_SPLATS = 5000000;  // the most max_splats may be (URL, GUI)
 export const VISU_MODES = { 'gaussian': 0, 'cone': 1, 'ellipsis': 2, 'small_dot': 3, 'axis': 4 };
 
 export const COLOR_MODES = {
@@ -53,7 +54,7 @@ export const TIPS = {
   View: 'what the view shows (the 3D scene, or the photo against the render) and from where',
   Splats: 'how the splats are drawn (the view only, training is not changed)',
   Overlays: 'cameras, camera path, octree and split axes drawn over the splats',
-  Mesh: 'Export: the settings of Make mesh. ⚙ view: how the mesh (Make mesh, or a dropped .glb) is shown',
+  Mesh: 'the Mesh step: the settings of Make mesh. ⚙ view: how the mesh (Make mesh, or a dropped .glb) is shown',
   'Free camera': 'the orbit, drone and demo cameras (F, G; H lists the keys)',
   visu_mode: 'gaussian: the real render. cone, ellipsis, small dot, axis: shapes to inspect the splats',
   color_mode: 'learned colors, or a diagnostic: octree leaf, error mass R (WLBG), effective view count Neff, depth',
@@ -88,6 +89,7 @@ export const TIPS = {
   show_loose: 'the loose boxes of the leaves, (1 + 2β) times their nominal size',
   show_cameras: 'the training cameras as frustums (validation ones in another color, the active one highlighted)',
   show_path: 'a line through the camera centers, in the camera path order',
+  show_gps: 'the video\'s own GPS track (a DJI telemetry track, when it has one), fitted to the cameras by their times: information only, the SfM does not use it',
   path_order: 'the camera path (path line, demo flight): capture order, or the shortest path through every camera (photo sets taken back and forth); names and training unchanged',
   show_splits: 'the error axes along which the last rebalance split splats',
   Level: 'turn the picture about the view direction until the scene stands upright ([ / ] keys); orbit to another side and turn again. The orbit, drone and demo cameras and the mesh\'s .glb use this up (estimated from the cameras, turned by the scene\'s transform: saved in the project\'s project.json)',
@@ -123,6 +125,12 @@ export const TIPS = {
                  'in its view, also those only other cameras saw (better early in training on gare-st-lazare)',
   floater_spare: 'a splat this near an SfM point (x the scene radius) is never too near a camera, whichever camera saw ' +
                  'the point (0: off). Without it, cameras walking past an object they did not see carve it',
+  floater_conflict: 'at each rebalance, remove this share of the splats (0: none): those whose views want them less opaque the ' +
+                    'most against the views that want them more (the opacity gradient summed over the views, carried over the rebalances)',
+  floater_conflict_by: 'what floater_conflict removes first: hurt, the splats their views want less opaque the most against those ' +
+                       'wanting them more (U / H); single, those wanted more opaque by the fewest views (H^2 / H2)',
+  view_order: 'the order the training views are visited in, each once a cycle. shuffle (the default): a fixed random order, ' +
+              'a place\'s views spread over the cycle; time: as given (a video\'s in time order, a place seen once a cycle)',
   enable_split: 'split splats with much unexplained error along the main axis of that error, or clone small ones',
   enable_merge: 'merge overlapping splats of nearly the same color',
   max_splats: 'growth stops at this many splats',
@@ -141,6 +149,10 @@ export const TIPS = {
               '\'shape\' (two halves drawn within its own shape, scales / sqrt 2, opacity 1 - sqrt(1 - o), as brush)',
   bg_lr: 'E13: the learning rate of a background behind the splats (a cube map of the directions, at infinity): far ' +
          'content (sky, the far end of a valley) goes there instead of onto a sheet of splats at the scene\'s edge. 0: off (black)',
+  random_bg: 'each training step draws a random color behind the splats (on by default; not with a learned background or a ' +
+             'dome, which training uses; renders to view and score keep theirs): a pixel the splats leave transparent then costs ' +
+             'error whatever its photo, so shadows get opaque dark splats instead of faint ones over the black background (holes ' +
+             'seen from other views)',
   exposure_lr: 'E19: each training photo\'s exposure learned with the splats (a gain and an offset per color): its learning ' +
                'rate (0: off). The held-out views have none: their score after the best gain is logged too',
   exposure_from: 'E19: the step the exposures start learning at (the splats formed first)',
@@ -153,8 +165,8 @@ export const TIPS = {
   pose_refit: 'E19: every N steps (with the pose rate on), each training photo\'s camera refitted with the splats frozen ' +
               '(pose refit steps a photo): a pose otherwise moves one step a pass over the photos. 0: never',
   pose_refit_iters: 'E19: the steps of each photo\'s camera in a refit',
-  ssim: 'weight of the D-SSIM loss, (1 - w) L1 + w (1 - SSIM) / 2 as in 3DGS (0.2 there). 0: off, ' +
-        '0.8 L1 + 0.2 L2 (the default)',
+  ssim: 'weight of the D-SSIM loss, (1 - w) L1 + w (1 - SSIM) / 2 as in 3DGS (0.2, the default: sharper than without, ' +
+        'the same PSNR). 0: off, 0.8 L1 + 0.2 L2',
   max_anisotropy: 'largest ratio of a splat\'s longest axis to its middle one (no needles; 0: none, the default)',
   opacity_reset: 'every N steps, all opacities are lowered to 0.01 so useless splats fade out and get pruned (0: never). ' +
                  'Validation right at a reset reads low',
@@ -166,6 +178,7 @@ export const TIPS = {
   region_repair: 'E7: the regions whose error is high and falls slower than the scene\'s split more easily and get more of the relocated splats (0: off)',
   val_every: 'PSNR / SSIM on the held-out cameras (never trained on) every N steps (0: never)',
   val: 'evaluate the held-out views now',
+  gt_cache_mb: 'the training photos kept on the GPU (MB): beyond it the least recently used is dropped, loaded again when its view comes',
   autosnap_every: 'save a snapshot (the full training state, to resume later) every N steps (0: never); each one replaces the last. Export: save one now',
 };
 
@@ -190,14 +203,14 @@ const URL_ALIASES = {
 // Other URL params read by the app: &video=URL, &photos=URL,URL (SfM panel), &nosg, &sfm_* (src/ui/sfm_panel.js)
 const isOtherUrlParam = k => k === 'video' || k === 'photos' || k === 'nosg' || k.startsWith('sfm_');
 
-// Params saved in / restored from a .gosnap snapshot (optimizer + growth settings)
+// Params saved in / restored from a snapshot (optimizer + growth settings; snapshot.js)
 export const SNAPSHOT_PARAMS = [
   'opt_method', 'mc_noise', 'mc_opacity_reg', 'mc_scale_reg', 'mc_relocate', 'mc_relocate_mode',
   'max_leaf_size', 'beta', 'rebalance_every', 'rebalance_every_cap',
-  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_few_views', 'decay_occluders', 'floater_depth', 'floater_spare',
-  'max_splats', 'cap_lease', 'train_steps', 'consolidate_frac', 'polish', 'prune_opacity', 'hysteresis', 'stipple_seed', 'stipple_count', 'region_repair', 'region_res',
-  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'ssim', 'bg_lr', 'exposure_lr', 'exposure_from', 'pose_lr', 'lens_lr', 'pose_from', 'pose_prior', 'pose_refit', 'pose_refit_iters',
-  'drop_rate', 'robust_loss', 'split_min_views', 'split_mode',
+  'enable_rebalance', 'enable_split', 'enable_merge', 'remove_floaters', 'floater_few_views', 'decay_occluders', 'floater_depth', 'floater_spare', 'floater_conflict', 'floater_conflict_by',
+  'max_splats', 'cap_lease', 'train_steps', 'consolidate_frac', 'polish', 'prune_opacity', 'prune_opacity_start', 'prune_opacity_ramp', 'hysteresis', 'stipple_seed', 'stipple_count', 'region_repair', 'region_res',
+  'lr_pos', 'lr_scale', 'lr_quat', 'lr_color', 'lr_opacity', 'lr_decay_steps', 'lr_pos_final', 'ssim', 'bg_lr', 'random_bg', 'exposure_lr', 'exposure_from', 'pose_lr', 'lens_lr', 'pose_from', 'pose_prior', 'pose_refit', 'pose_refit_iters',
+  'drop_rate', 'robust_loss', 'split_min_views', 'split_mode', 'view_order',
   'max_splat_angle', 'max_splat_scale', 'max_anisotropy', 'opacity_reset', 'opacity_reset_until',
 ];
 
@@ -206,7 +219,7 @@ export const SNAPSHOT_PARAMS = [
 export const PROJECT_PARAMS = [
   ...SNAPSHOT_PARAMS, 'downsample', 'aniso_init', 'val_every', 'val_split', 'stop_after', 'autosnap_every',
   'split_x', 'visu_mode', 'color_mode', 'compare_mode', 'haze',
-  'show_octree', 'octree_hidden', 'show_loose', 'show_cameras', 'show_path', 'path_order', 'show_splits', 'frustum_images', 'frustum_scale',
+  'show_octree', 'octree_hidden', 'show_loose', 'show_cameras', 'show_path', 'show_gps', 'path_order', 'show_splits', 'frustum_images', 'frustum_scale',
   'mesh_view', 'mesh_shaded', 'mesh_margin', 'mesh_kind', 'mesh_res', 'mesh_simplify', 'mesh_texture', 'dome', 'dome_fill', 'show_dome', 'dome_only',
 ];
 
@@ -227,7 +240,7 @@ export function defaultParams() {
     ...TRAIN_DEFAULTS,
     downsample:      parse_arg('ds', TRAIN_DEFAULTS.downsample, 1, 8),
     opt_method:      parse_arg_str('opt', TRAIN_DEFAULTS.opt_method),
-    max_splats:      parse_arg('max_splats', TRAIN_DEFAULTS.max_splats, 1000, 2000000),
+    max_splats:      parse_arg('max_splats', TRAIN_DEFAULTS.max_splats, 1000, MAX_SPLATS),
     stipple_seed:    urlFlagOn(parse_arg_str('stipple', '1')),  // on by default (E6; stipple=0: off; a bare 'stipple': on)
 
     // Camera & view
@@ -253,6 +266,7 @@ export function defaultParams() {
     show_loose:      false,
     show_cameras:    true,
     show_path:       false,  // COLMAP camera path (centers in path_order)
+    show_gps:        false,  // the video's GPS track (flight.js), fitted to the cameras
     path_order:      'capture',  // the camera path: 'capture' (name order) | 'shortest' (path.js, DESIGN-sfm §13.3 P7)
     show_splits:     false,
     frustum_images:  'off',
@@ -279,8 +293,9 @@ export function defaultParams() {
     val_split:       'every8',  // held-out views, on load: 'every8' or 'block' (colmap.js splitValidation)
     stop_after:      0,  // pause training (and run validation) N steps after training (re)starts (0 = never)
 
-    // Auto-snapshot every N steps (0 = off), overwriting gaussopt_snap_latest.gosnap
+    // Auto-snapshot every N steps (0 = off), overwriting gaussopt_snap_latest.scene.glb
     autosnap_every:  parse_arg('autosnap', 0, 0, 100000),
+    gt_cache_mb:     2048,  // the training photos kept on the GPU (trainer.js _keepGt), MB
   };
 }
 

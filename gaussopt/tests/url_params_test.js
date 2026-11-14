@@ -2,6 +2,7 @@
 // leaves the others as typed, and adds nothing
 import { urlNamesOf, URL_FLAGS } from '../src/params.js';
 import { urlAfterChange, urlFlagOn, urlOptions, urlWithFirst } from '../src/url.js';
+import { SESSION_DEFAULTS } from '../src/sfm/defaults.js';
 import { assert } from './util.js';
 
 const eq = (a, b, what) => assert(a === b, `${what}: ${JSON.stringify(a)}, expected ${JSON.stringify(b)}`);
@@ -24,6 +25,11 @@ Deno.test('urlOptions: the prefixed params of the defaults, of their types; a fl
   const o = urlOptions({ a: true, b: true, c: false, n: 1, s: 'x', u: 2 }, '?sfm_a=off&sfm_b=No&sfm_c=1&sfm_n=2.5&sfm_s=y&u=3', 'sfm_');
   eq(JSON.stringify(o), JSON.stringify({ a: false, b: false, c: true, n: 2.5, s: 'y' }), 'options');
   eq(['0', 'false', 'OFF', 'no', '1', 'true', 'on', ''].map(urlFlagOn).join(), 'false,false,false,false,true,true,true,true', 'flags');
+  const sfm = urlOptions(SESSION_DEFAULTS, '?sfm_globalBARatio=0&sfm_globalRefinements=1&sfm_localBA=window&sfm_reMinRatio=0.2', 'sfm_');
+  eq(sfm.globalBARatio, 0, 'sfm_globalBARatio');
+  eq(sfm.globalRefinements, 1, 'sfm_globalRefinements');
+  eq(sfm.localBA, 'window', 'sfm_localBA');
+  eq(sfm.reMinRatio, 0.2, 'sfm_reMinRatio');
 });
 
 Deno.test('urlWithFirst: the given params in front, encoded, their old values out, the rest as typed', () => {

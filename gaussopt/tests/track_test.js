@@ -1,6 +1,6 @@
 // Points tracked through every frame (src/sfm/track.js, DESIGN-sfm §5.2.1): positions on a known motion, a change
 // of content no track follows, and the tracks' matches merged into the SIFT pairs.
-import { PointTracker, mergeTrackPairs, TRACK_DEFAULTS } from '../src/sfm/track.js';
+import { PointTracker, mergeTrackPairs, TRACK_DEFAULTS, packTrackPairs, unpackTrackPairs } from '../src/sfm/track.js';
 import { makeRng } from '../src/math.js';
 import { assert } from './util.js';
 
@@ -135,7 +135,7 @@ Deno.test('tracks: on a grating, no visit a period off (the forward-backward che
   assert(errors[2].length >= 30, `${errors[2].length} points still tracked to keyframe 2`);
 });
 
-Deno.test('tracks merged into the pairs: a SIFT pair grows, a wrong match is dropped, a pair only tracks have is added', () => {
+Deno.test('tracks merged into the pairs: a SIFT pair grows, a wrong match is dropped, a pair only tracks have is added', async () => {
   // points 3-8 deep, seen by cameras at x = 0, 0.3, 0.6 turned a little about y (f 300, centre 160, 120)
   const r = makeRng(7), n = 60, X = Array.from({ length: n }, () => [8 * (r() - 0.5), 6 * (r() - 0.5), 3 + 5 * r()]);
   const view = (cx, turn) => {
@@ -152,10 +152,27 @@ Deno.test('tracks merged into the pairs: a SIFT pair grows, a wrong match is dro
   const sift = [{ i: 0, j: 1, type: 'seq', F: null, matches: Uint32Array.from(range(0, 20)) }];
   const wrong = [55, 3];  // keypoint 55 of 0 with keypoint 3 of 1: off the motion
   const tracks = [{ i: 0, j: 1, matches: Uint32Array.from([...range(20, 50), ...wrong]) }, { i: 0, j: 2, matches: Uint32Array.from(range(0, 40)) }];
-  const { pairs, stats } = mergeTrackPairs(sift, images, tracks);
+  const { pairs, stats } = await mergeTrackPairs(sift, images, tracks);
   const p01 = pairs.find(p => p.i === 0 && p.j === 1), p02 = pairs.find(p => p.i === 0 && p.j === 2);
   assert(p01?.matches.length / 2 === 50, `pair 0-1: ${p01?.matches.length / 2} matches (20 SIFT + 30 tracked)`);
   for (let q = 0; q < p01.matches.length; q += 2) assert(!(p01.matches[q] === wrong[0] && p01.matches[q + 1] === wrong[1]), 'the wrong match dropped');
   assert(p02?.type === 'seq' && p02.matches.length / 2 === 40, `pair 0-2 added: ${p02?.type}, ${p02?.matches.length / 2}`);
   assert(stats.pairs === 2 && stats.added === 70, JSON.stringify(stats));
+  // its progress, up to every pair, and a timer set before it run during it (the worker posts the status on its own)
+  const seen = [];
+  let fired = false;
+  setTimeout(() => { fired = true; }, 0);
+  await mergeTrackPairs(sift, images, tracks, { paceMs: 0, onProgress: (done, total) => seen.push({ done, total, fired }) });
+  assert(seen.at(-1)?.done === 2 && seen.at(-1).total === 2 && seen.some(p => p.fired), JSON.stringify(seen));
+});
+
+// as a project keeps them: 150M matches (V8 holds no JS array that long) packed, and a few read back as they were
+Deno.test('tracks: their pairs packed for a project, more matches than a JS array holds', () => {
+  const all = new Uint32Array(150e6), n = 150, per = all.length / n;
+  for (let k = 0; k < all.length; k += 997) all[k] = k;
+  const pairs = Array.from({ length: n }, (_, q) => ({ i: q, j: q + 1, matches: all.subarray(q * per, (q + 1) * per) }));
+  const packed = packTrackPairs(pairs);
+  assert(packed.matches.length === all.length && packed.pairs.length === 3 * n, `${packed.matches.length} matches`);
+  const back = unpackTrackPairs(packed.pairs, packed.matches.subarray(0, 3 * per));
+  assert(back.length === n && back[2].j === 3 && back[2].matches[997 - (2 * per) % 997] === 2 * per + 997 - (2 * per) % 997, `${back[2].matches[0]}`);
 });

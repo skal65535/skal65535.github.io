@@ -1,7 +1,7 @@
 // Photo sets (DESIGN-sfm §13.3 P1, P8): EXIF reading on JPEG bytes built here, and the plan of a
 // mixed set (capture order, names, labels, rotation, camera groups).
 import { readExif, captureTime, jpegSize } from '../src/sfm/exif.js';
-import { planPhotos, planMore, focalFromExif, photoCameras, photoMapping } from '../src/sfm/photos.js';
+import { planPhotos, planMore, focalFromExif, photoCameras, photoMapping, baseMapping } from '../src/sfm/photos.js';
 import { assert, assertClose, SLOW, env, exists, hasGPU } from './util.js';
 import { GpuSift } from '../src/sfm/sift.js';
 import { GpuMatcher } from '../src/sfm/match.js';
@@ -174,4 +174,16 @@ Deno.test('photoCameras, photoMapping: the cameras\' EXIF focals at the image si
   assert(m.fallbackFocal === focalFromExif(24, w, h) && m.sweeps === 3 && m.focal === 'self' && !('hfovDeg' in m), JSON.stringify(m));
   for (const [k, v] of Object.entries(PHOTO_MAPPING)) assert(JSON.stringify(m[k]) === JSON.stringify(v), `PHOTO_MAPPING.${k}`);
   assert(!('fallbackFocal' in photoMapping({ cameras: [{ focal35: null }] }, {}, w, h)), 'no EXIF focal: no fallback');
+  assert(m.ignoreTwoView === false, 'a photo set keeps its two-view points');  // the mapper's default (a video's): true
+});
+
+Deno.test('baseMapping: sweeps, focal, hfovDeg, globalBARatio (0 -> null), globalRefinements, localBA, reMinRatio (0 -> null)', () => {
+  const m0 = baseMapping({ sweeps: 2, focal: 'auto', hfovDeg: 0 });
+  assert(m0.sweeps === 2 && m0.focal === 'auto' && !('hfovDeg' in m0) && !('globalBARatio' in m0) && !('globalRefinements' in m0) && !('localBA' in m0) && !('reMinRatio' in m0), JSON.stringify(m0));
+  const m1 = baseMapping({ sweeps: 2, focal: 1200, hfovDeg: 75, globalBARatio: 0, globalRefinements: 1, localBA: 'window' });
+  assert(m1.sweeps === 2 && m1.focal === 1200 && m1.hfovDeg === 75 && m1.globalBARatio === null && m1.globalRefinements === 1 && m1.localBA === 'window', JSON.stringify(m1));
+  const m2 = baseMapping({ sweeps: 2, focal: 'auto', globalBARatio: 1.2 });
+  assert(m2.globalBARatio === 1.2, JSON.stringify(m2));
+  const r = [0.2, 0].map(reMinRatio => baseMapping({ sweeps: 2, focal: 'auto', reMinRatio }).reMinRatio);
+  assert(r[0] === 0.2 && r[1] === null, JSON.stringify(r));
 });

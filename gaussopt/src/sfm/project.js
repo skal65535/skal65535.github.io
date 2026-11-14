@@ -11,7 +11,12 @@ const TYPES = { Float64Array, Float32Array, Int32Array, Uint32Array, Uint8Array 
 
 // json: any JSON; parts: { key: TypedArray | Blob | { raw: Blob, type, blob } (a part of another
 // container, copied as is) }. Returns a Blob.
-export function packProject(json, parts) {
+export const packProject = (json, parts) => new Blob(packPieces(json, parts));
+
+// packProject's content as its pieces in order ([Uint8Array | Blob]), not made one: a store writes them one after
+// the other (store.js), where a Blob of them all may be more than the browser holds (in Chrome a Blob of 800 MB
+// cannot be read, sent or sliced)
+export function packPieces(json, parts) {
   const table = [], chunks = [];
   let offset = 0;
   for (const [key, value] of Object.entries(parts)) {
@@ -30,7 +35,7 @@ export function packProject(json, parts) {
   head.set(new TextEncoder().encode(MAGIC));
   new DataView(head.buffer).setUint32(MAGIC.length, header.length, true);
   head.set(header, MAGIC.length + 4);
-  return new Blob([head, ...chunks]);
+  return [head, ...chunks];
 }
 
 // Blob / File -> { json, keys, get(key) -> Promise<TypedArray | Blob> }
